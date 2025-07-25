@@ -1,0 +1,14 @@
+set -uexo pipefail
+
+uci -q batch << EOI
+set system.@system[0].zonename='Australia/Brisbane'
+set system.@system[0].hostname='hub-router'
+commit system
+set network.lan.ipaddr='10.0.1.1'
+commit network
+EOI
+
+service log restart || true
+ntpd -q -p 0.openwrt.pool.ntp.org || true
+
+chsh -s /bin/bash || true
