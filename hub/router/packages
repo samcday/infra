@@ -15,6 +15,7 @@ prometheus-node-exporter-lua
 usbutils
 screen
 shadow-chsh
+tailscale
 tang
 tcpdump
 usb-modeswitch
