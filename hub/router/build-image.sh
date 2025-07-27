@@ -17,7 +17,7 @@ if [[ ! -f "_build/${tarball}" ]]; then
 fi
 
 # rm -rf "$build_dir"
-# mkdir -p "$build_dir"
+mkdir -p "$build_dir"
 
 tar --strip-components=1 -C "${build_dir}" --zstd -xvf "_build/$tarball"
 
