@@ -1,0 +1,55 @@
+variant: fcos
+version: 1.5.0
+storage:
+    disks:
+        - device: /dev/disk/by-id/coreos-boot-disk
+          wipe_table: false
+          partitions:
+            - number: 4
+              label: root
+              size_mib: 9216
+              resize: true
+            - number: 5
+              size_mib: 0
+              label: var
+    filesystems:
+        - path: /var
+          device: /dev/mapper/var
+          format: ext4
+          with_mount_unit: true
+    luks:
+        - name: var
+          device: /dev/disk/by-partlabel/var
+          discard: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:ZrBpGyV+3TAbbrirf78tLKBnX90=,iv:Dr509zNc173+PU/k9iAnFTyLvua+ztGStQwiL4LCns4=,tag:rPZ7EiGArtw0BKcPGyyzFQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBKWEZvTkRkenBXc3JQQ0V6
+            amVOL2pRTkdLelJVcXFvbklBTzAwWFhOTlVBCkoyL0lzNGtPeEhBWWw1M1M4eW5I
+            b3BPMkFOR0RnUVhrTUhtMXlNcWNXOFUKLS0tIEd6ZEplVXdTdXJPTnluQXVzcTdr
+            UldPS2M4OXJ3emZZQXN1N2hRQUIwbUEKaARsS9LT0TqikoNbYmN7nuqiaaLKTzun
+            OITlncxGIdQPErgTMotSrRE0woHTUqlcpazOoxw36DLu3zEEG8Wy/g==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age1fy4cp7t9hmllws7e8e499uhvrgjnp26ys2msunlxzky7qsyrwu3qgvzq9a
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBjby84b2Zza3FKL1I5R1Zj
+            K1JTdmY2NURCeWRhWk5BdzJCNEV2STBUV2prClVhdHFzZjc5S3F1WnJSY0R1THBs
+            WWtHUXlWNDY4WGNTMEdBMTZpLzQwbk0KLS0tIDFwY0IvcS9QY1RoZWhrOG9vNllR
+            SWdtSE1tbWY5SGlwVG55dERqTXp0QjQKOx/9dREgGHEQrd1Kv3ukWgEBB2pD5P8K
+            Sm4uBvytaIoPBmKYMQyF4EwUh7PEULA+zl1b6g+GxZ0x1M4HlWK7Eg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2024-08-04T17:32:05Z"
+    mac: ENC[AES256_GCM,data:aUWUGFTNChEEfCpJnS7EDbXy5wWoeCcs429h8h44m2zZWVYNwgDDKg+lnyggah9UyK2gJ41m3EkI3RKJfQ/y4zhnJCRw0OZ+B+ynemhwf6uzyX5RdfvWHW50uw3letipbRtPPVE8D2ekKWgb+VbdC0ByxTZFjsr3pBvG0rlfIwI=,iv:IinZXfk4kJS9CodeBpsYMNQVNSZLhfHSLvE6r4H8B6k=,tag:upWL5Yok0Zs1AYVdJ/QiIA==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.0
