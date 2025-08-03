@@ -18,4 +18,9 @@ cfssl gencert -ca ca.pem -ca-key <(sops --decrypt ca-key.pem.enc) -config client
 sops --encrypt root.csr > root.csr.enc
 sops --encrypt root-key.pem > root-key.pem.enc
 
+# generate hub-cp client cert
+cfssl gencert -ca ca.pem -ca-key <(sops --decrypt ca-key.pem.enc) -config client-config.json hub-cp-csr.json | cfssljson -bare hub-cp
+sops --encrypt hub-cp.csr > hub-cp.csr.enc
+sops --encrypt hub-cp-key.pem > hub-cp-key.pem.enc
+
 ```
