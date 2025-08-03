@@ -1,0 +1,18 @@
+{
+  "CN": "root",
+  "hosts": [
+    "etcd.hub.internal",
+    "localhost",
+    "127.0.0.1",
+    "10.0.1.10",
+    "10.0.1.11",
+    "10.0.1.12",
+    "hub-az1-cp1.hub.internal",
+    "hub-az1-cp2.hub.internal",
+    "hub-az1-cp3.hub.internal"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  }
+}
