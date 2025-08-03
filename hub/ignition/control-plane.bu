@@ -1,0 +1,116 @@
+variant: fcos
+version: 1.5.0
+storage:
+    directories:
+        - path: /etc/rancher/k3s/config.yaml.d
+        - path: /var/lib/rancher/k3s/server
+    files:
+        - path: /etc/rancher/k3s/config.yaml.d/token.yaml
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:NJ5C1dntpANbf3RdUxtbuxwO+9ExSUnHnC/rPbedYTKpfGl3rv6B4g==,iv:fKoz/qqzx2hRFk+RTsLsGtykVuhwJqjnheVzXR9OJn0=,tag:/ZUlO126GnkgzG1/4KWxCA==,type:str]
+        - path: /var/lib/rancher/k3s/server/etcd-ca.pem
+          contents:
+            inline: |
+                -----BEGIN CERTIFICATE-----
+                MIIC9jCCAd6gAwIBAgIUURMTSE40fCjICgNFNkI/O5Dez2kwDQYJKoZIhvcNAQEL
+                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwHhcNMjUwODAzMDQxODAwWhcNMzAwODAy
+                MDQxODAwWjATMREwDwYDVQQDEwhodWItZXRjZDCCASIwDQYJKoZIhvcNAQEBBQAD
+                ggEPADCCAQoCggEBAK2Gadj6VTGSEcrBoJybWl4OSHHnmft0c/KC0CjBEKmUngXa
+                ZdeBp9MxCE95QbQVovt+hgpxWfvJLaUnwMA0jbdToaLIponLFQ5Zdm6fCudli2+X
+                Q8TkFVVfHy+JikCmRAJQkI8aDCJ/GzGp2ieP27OAW57j6SnsD7ucchsIzJ14b6eq
+                ygSDu59fvvDeT2CI4G3IzwGt6i0VB/+Aw5innOIHdY9JEwDYjlJ2WQzlBwydFIx8
+                7a6sDSlVJ3SjS1upKPrHJ67/5barLNe99G9Eafx6A93jg/Uti4cJtS0f6A5Ai+Yz
+                FCOzRhy/lGp8lkO0UsPAZEY+k9gdHkMnKoH9jkcCAwEAAaNCMEAwDgYDVR0PAQH/
+                BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFNi1ebn7M9ByN7muBYhb
+                u2RWrSBlMA0GCSqGSIb3DQEBCwUAA4IBAQCQiviolp5f0lgmoiG4IrWzSoK+0X5i
+                p98zSuuvjx/jXHzRKIh8npsAr7XemAFf/Dts6tMgRH3EKn1mxSwjTO3vtBz94phL
+                S0IFlk3gDGfjQggFLnJIPa+i8erdcrDQKZLA4u2lNfM08dimEXWhWmHi5WlmacKn
+                t2kO2hceUrl5hVFA+sGdLsZAicvFPRQxoKvVpM5naPEAsG3trzPwaTXCT3tbgMm1
+                jO2wLA+x5ySQ9vtrKg0ilW2QwczoEAWxG54AdPhgcdJIh8pFqVZUO/2YAdN3KoRY
+                I1Eo9qGzkj7Io3ZXpJrjIhgoZ64LRc7L1X/99/Bq/NzEbbqXakXflrEn
+                -----END CERTIFICATE-----
+        - path: /var/lib/rancher/k3s/server/etcd-client.pem
+          contents:
+            inline: |
+                -----BEGIN CERTIFICATE-----
+                MIIDJzCCAg+gAwIBAgIUFuAG8JTWkI2pZCN5b6tHG3jQ4QkwDQYJKoZIhvcNAQEL
+                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwHhcNMjUwODAzMDcyODAwWhcNMjYwODAz
+                MDcyODAwWjARMQ8wDQYDVQQDEwZodWItY3AwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+                DwAwggEKAoIBAQC/ACgbKh6NzhEDtD8/3vJNRHneIoZhEabNy/2t4CFOqRgdHs9R
+                sbS4P8mMkZRAIOYyMqVv/XdGvCJj3LFKZykqHSzx178Ma7pRS1ANVkYTQBucwl8l
+                tjjAewenqI4EwQoNsswAEpRXW3CRzZj2cZadIT1xIMlaqelLzA7KSV5IY+Eeb9Yk
+                VnpuDMWVJNv96fDTyIFH89/hWxcQbXfsCWA5QJ7nwRD0Q8BJkNWvQ6iIPWXURrU+
+                UTemG4+uP1edbfuMAIayOovpnv2VtmhqIvR+5H0m9yeclpECzZQyvUKddo7EWy3P
+                H1KNZdXc/MlszofYcu/gale3ZE5Dkuj1is9FAgMBAAGjdTBzMA4GA1UdDwEB/wQE
+                AwIFoDATBgNVHSUEDDAKBggrBgEFBQcDAjAMBgNVHRMBAf8EAjAAMB0GA1UdDgQW
+                BBT/h9Akgu4H18XaxvPr59vDaeJSGTAfBgNVHSMEGDAWgBTYtXm5+zPQcje5rgWI
+                W7tkVq0gZTANBgkqhkiG9w0BAQsFAAOCAQEAqJIXy6YKJB0LQXyzQQz7OvJ1It5W
+                EkZJZkOOJl22Cu8UO6venY5bT15Rjs3UHvLgTC3kQeXdhu5fUnROiGGMUCozctQW
+                lNFPXtizF8GTIPPegICBGiIny/Lc+GYMRJsmzlkh+sGguQMSFRFTApYyZXACj8WX
+                tEnx5R9zIz4RN+YLPPT/uoIZUqyGvOFDS5VjXvPp90iy8bvyVc3LfWmnMB/B7SHb
+                jbwvGUlw7ZWx2r4qresK39Chq89FWu06bV3zaFZdi0Ld7wqDPEIOkBPd6PGLaOtv
+                eef+lmFpfqKggcILmoiMPjYiZOKOgQPFypRH3JyxW4TGrpwGdREUKJ6R1A==
+                -----END CERTIFICATE-----
+        - path: /var/lib/rancher/k3s/server/etcd-client-key.pem
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:hun7xUWrY1rsfgjLXFt6ybYFGVcHd+AJ81CFHumTCKU=,tag:YkSX7XvDLRgtY0kMmRDPXA==,type:str]
+systemd:
+    units:
+        - name: k3s.service
+          enabled: true
+          contents: |
+            [Unit]
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            ExecStartPre=-podman kill k3s
+            ExecStartPre=-podman rm k3s
+            ExecStart=podman run --rm -it --privileged \
+                --volume /etc/rancher:/etc/rancher:z \
+                --volume /var/lib/rancher/k3s/server:/var/lib/rancher/k3s/server:z \
+                --name k3s \
+                --net=host \
+                docker.io/rancher/k3s:v1.33.3-k3s1 \
+                server \
+                  --datastore-endpoint=https://hub-az1-cp1.hub.internal:2379,https://hub-az1-cp2.hub.internal:2379,https://hub-az1-cp3.hub.internal:2379 \
+                  --datastore-cafile=/var/lib/rancher/k3s/server/etcd-ca.pem \
+                  --datastore-certfile=/var/lib/rancher/k3s/server/etcd-client.pem \
+                  --datastore-keyfile=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+                  --kube-apiserver-arg=etcd-prefix=/hub-cp \
+                  --kube-apiserver-arg=etcd-compaction-interval=0
+            ExecStop=/bin/podman stop k3s
+
+            [Install]
+            WantedBy=multi-user.target
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBBeUVndnpiZjRDTGM1Rkt2
+            UXZaWEpEM3g2S09Kd0QrMmFTTjVoNTV2dmlzCkhXNmR5b3RocGo0eEE5eGRsek54
+            ODBpWEpQTGdNcWRvdGtlUVZuOGIxZk0KLS0tIHduQTZ0ZlRaS3JiVSs0dmQrOWZt
+            U2RZTVdJUnBjajhJZkpEaTl2czV5SjAKVzyqoGmQhEPCGvvNxufogMfg5cYqwt+e
+            G7GzA3ipYgWE1FmcXNHofAPfGCAUZu5X7+mMm/ChPdiTaaLTt1ciEw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age1fy4cp7t9hmllws7e8e499uhvrgjnp26ys2msunlxzky7qsyrwu3qgvzq9a
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBjZitjRTNrbTVtYlhGWm16
+            U2d2bFltQlQvSHJnOEZCTkVWRG9Xbk1ZbTFZCmdlN2pHT2Naek5KSXpzMkhMVnJC
+            MjQ4MEl0WHNwUFBTRVFqTzY2V0ttS1UKLS0tIEVRU1BSM3RjZGdxL1FNZ3hRTDJ4
+            aHBndWpZU0V2QnFYVzVzZVZEcHhKNVEKE60SfJQleUMSRCKG+mXnQE7yz9e/VIpJ
+            OqSHfdOakbV67vGKCKGm9lGnpNFBJ3hRcQMJCrILzqO+25ohIMWb+A==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-03T08:11:29Z"
+    mac: ENC[AES256_GCM,data:AqwtZqVcDQ5EEzxrPvO/XiQsiHw33EozzAlXf1lY+0EdefkGSvDIYUWUXWo8KWinE3eXEP5fvfSYOsnDZPQ/EYQIMXVi2P35f6e+FAXC48TjzbY2lAJ2O/nMl8quF3XJtreElkoQpuT/8k6Dnuol+1S/lbUf5mFDghjdO0my4m8=,iv:HhbUOIyqhGfL/pCLWeoo7+4OhHh5wa16bkg3Q4w3UrM=,tag:pcuc/djMtph3wcuZaA8jcQ==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4
