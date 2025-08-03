@@ -6,9 +6,14 @@ set system.@system[0].hostname='hub-router'
 commit system
 set network.lan.ipaddr='10.0.1.1'
 commit network
+set dhcp.@dnsmasq[0].local='/hub.internal/'
+set dhcp.@dnsmasq[0].domain='hub.internal'
+commit dhcp
 EOI
 
 service log restart || true
 ntpd -q -p 0.openwrt.pool.ntp.org || true
 
 chsh -s /bin/bash || true
+
+service dnsmasq restart || true
