@@ -4,8 +4,6 @@ set -uexo pipefail
 # This should only be used when petting the first node of a new cluster.
 workdir=$(mktemp -d)
 
-hostname="${hostname:-hub-az1-cp1}"
-
 configmerge=
 
 profiles="base var etcd"
@@ -26,10 +24,4 @@ version: 1.5.0
 ignition:
   config:
     merge: $configmerge
-storage:
-  files:
-    - path: /etc/hostname
-      mode: 0644
-      contents:
-        inline: $hostname
 HERE
