@@ -8,7 +8,7 @@ hostname="${hostname:-hub-az1-cp1}"
 
 configmerge=
 
-profiles="base var"
+profiles="base var etcd"
 
 if [[ "${TPM2:-1}" -eq "1" ]]; then
   profiles="$profiles tpm"

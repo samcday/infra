@@ -1,0 +1,120 @@
+variant: fcos
+version: 1.5.0
+storage:
+    directories:
+        - path: /var/lib/etcd
+    files:
+        - path: /var/lib/etcd/ca.pem
+          contents:
+            inline: |
+                -----BEGIN CERTIFICATE-----
+                MIIC9jCCAd6gAwIBAgIUURMTSE40fCjICgNFNkI/O5Dez2kwDQYJKoZIhvcNAQEL
+                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwHhcNMjUwODAzMDQxODAwWhcNMzAwODAy
+                MDQxODAwWjATMREwDwYDVQQDEwhodWItZXRjZDCCASIwDQYJKoZIhvcNAQEBBQAD
+                ggEPADCCAQoCggEBAK2Gadj6VTGSEcrBoJybWl4OSHHnmft0c/KC0CjBEKmUngXa
+                ZdeBp9MxCE95QbQVovt+hgpxWfvJLaUnwMA0jbdToaLIponLFQ5Zdm6fCudli2+X
+                Q8TkFVVfHy+JikCmRAJQkI8aDCJ/GzGp2ieP27OAW57j6SnsD7ucchsIzJ14b6eq
+                ygSDu59fvvDeT2CI4G3IzwGt6i0VB/+Aw5innOIHdY9JEwDYjlJ2WQzlBwydFIx8
+                7a6sDSlVJ3SjS1upKPrHJ67/5barLNe99G9Eafx6A93jg/Uti4cJtS0f6A5Ai+Yz
+                FCOzRhy/lGp8lkO0UsPAZEY+k9gdHkMnKoH9jkcCAwEAAaNCMEAwDgYDVR0PAQH/
+                BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFNi1ebn7M9ByN7muBYhb
+                u2RWrSBlMA0GCSqGSIb3DQEBCwUAA4IBAQCQiviolp5f0lgmoiG4IrWzSoK+0X5i
+                p98zSuuvjx/jXHzRKIh8npsAr7XemAFf/Dts6tMgRH3EKn1mxSwjTO3vtBz94phL
+                S0IFlk3gDGfjQggFLnJIPa+i8erdcrDQKZLA4u2lNfM08dimEXWhWmHi5WlmacKn
+                t2kO2hceUrl5hVFA+sGdLsZAicvFPRQxoKvVpM5naPEAsG3trzPwaTXCT3tbgMm1
+                jO2wLA+x5ySQ9vtrKg0ilW2QwczoEAWxG54AdPhgcdJIh8pFqVZUO/2YAdN3KoRY
+                I1Eo9qGzkj7Io3ZXpJrjIhgoZ64LRc7L1X/99/Bq/NzEbbqXakXflrEn
+                -----END CERTIFICATE-----
+        - path: /var/lib/etcd/peer.pem
+          contents:
+            inline: |
+                -----BEGIN CERTIFICATE-----
+                MIIDxzCCAq+gAwIBAgIUcRKcrnDpPuAAEdlIOvRISILWOCUwDQYJKoZIhvcNAQEL
+                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwIBcNMjUwODAzMDQyMDAwWhgPMjEyNTA3
+                MTAwNDIwMDBaMA8xDTALBgNVBAMTBHJvb3QwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+                DwAwggEKAoIBAQDGZkHhBBXYWWAWk3N+SXUQS6AFZ5K5POd8Jqy6mOKW60HzS6CP
+                nUrtOPqpn/UaRNgov4FqP1jV+pbN0KsFi1nZqJrnMPK7BDbDKa2SuXk7T3aUTsW9
+                P1BMj/HsVw6YQcKC/1cFAux+Tjw/kE0qVXCUfhroYkDutVDizeqjIUnhedUITZQw
+                s/TjJ9CQ1WYRdsVMciIMcyLo87qcXtsijXvs8uxLClZfnB3oUQiJ0i0/EfRop9qR
+                8VRjfoICVDHRky2sIvs3qcT7jF2U9lPqfJ92gnXXtCdwCHDsao0QFv0k9ks2oE43
+                /0z1kYthHozjjR5KS41K3BQTDB3ZkIq5O453AgMBAAGjggETMIIBDzAOBgNVHQ8B
+                Af8EBAMCBaAwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMAwGA1UdEwEB
+                /wQCMAAwHQYDVR0OBBYEFO03csgCx5HOLu0AfrXWlzGyCDUdMB8GA1UdIwQYMBaA
+                FNi1ebn7M9ByN7muBYhbu2RWrSBlMIGPBgNVHREEgYcwgYSCEWV0Y2QuaHViLmlu
+                dGVybmFsgglsb2NhbGhvc3SCGGh1Yi1hejEtY3AxLmh1Yi5pbnRlcm5hbIIYaHVi
+                LWF6MS1jcDIuaHViLmludGVybmFsghhodWItYXoxLWNwMy5odWIuaW50ZXJuYWyH
+                BH8AAAGHBAoAAQqHBAoAAQuHBAoAAQwwDQYJKoZIhvcNAQELBQADggEBAHyQGQz7
+                jmWTctpVHdVh8zdVQ/She3SEjHPzq6fiuCRtkA92xZcX3sWNNotwWmn2/6dn34jF
+                LrA/z3M484tqgQGkgST+mQIBkKv0NMI5+HWisdQTbmrZCYQJpyWLZENXbjUOCfC/
+                XUQ7He2NVLRui+MZvlV7CgNsLUNUDT0K6bmGeNBmwnMnVx4hIDF/XZJd2xJ12Rt+
+                Atm5+D7QTMfSZcR617Wh0r0NxSD9/Xqv+xjb+yiirGunyPk3BMjf0VSLPbbcWKyO
+                Nr9maGkA54J2TjgseffYNYRwwazxgjhtDvax2kUHNmqUVD7qo5CjRfnf52dn5+lI
+                UmFasAl+j4hdBjg=
+                -----END CERTIFICATE-----
+        - path: /var/lib/etcd/peer-key.pem
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:ziCNwUeN424xrTcPcR72DTyVFu4nEPJtux/I8VI83dg=,tag:VgM/Lw/VIneJA5NDeKXbLw==,type:str]
+systemd:
+    units:
+        - name: etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            ExecStartPre=-podman kill etcd
+            ExecStartPre=-podman rm etcd
+            ExecStart=podman run --name etcd --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
+                /usr/local/bin/etcd \
+                    --name %H.hub.internal \
+                    --discovery-srv etcd.hub.internal \
+                    --initial-cluster-token hub-etcd \
+                    --data-dir /var/lib/etcd \
+                    --initial-advertise-peer-urls https://%H.hub.internal:2380 \
+                    --listen-peer-urls https://0.0.0.0:2380 \
+                    --advertise-client-urls https://%H.hub.internal:2379 \
+                    --listen-client-urls https://0.0.0.0:2379 \
+                    --client-cert-auth=true \
+                    --peer-client-cert-auth=true \
+                    --cert-file=/var/lib/etcd/peer.pem \
+                    --key-file=/var/lib/etcd/peer-key.pem \
+                    --trusted-ca-file=/var/lib/etcd/ca.pem \
+                    --peer-cert-file=/var/lib/etcd/peer.pem \
+                    --peer-key-file=/var/lib/etcd/peer-key.pem \
+                    --peer-trusted-ca-file=/var/lib/etcd/ca.pem
+            ExecStop=/bin/podman stop etcd
+
+            [Install]
+            WantedBy=multi-user.target
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB0QnNERW5pK25TaEhiaVhk
+            dmNYU1pSQ2FjdUdGV01TWVBDM1czMjJUd3g4CnlIQUhxcGc1eTZYaUQ1cWxLeE5z
+            SU1qSTRxaXYxbDVNeU5oRnVzMTJsWmMKLS0tIGkvR0NGNzU2RWo4aHBGNGMwRXAr
+            bXZHWm84MmRDSUZNMUVFdmpXRlNtTDQKlvuTj7Q8cD9XNxwU0g4R04mZ9q2W18zC
+            NGSlPN7s+D0AsQ3GWNj7En3vqTH1tsHILUMY8LVTEDRo//UvkaA3lA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age1fy4cp7t9hmllws7e8e499uhvrgjnp26ys2msunlxzky7qsyrwu3qgvzq9a
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBXYUZyU1FrL3BadWJmUUJV
+            cmJqMURXY0NkNFdqMHlHekRua1BrRUZtOWpnCi8zNUxNL2oyQzNSSVFBMXNVaitr
+            Z1NsSUxTbG40VzlUYnJKMlZrdWpJcjQKLS0tICszcmpBRmVvQXpJa3N3NWlydkEz
+            Z1BrNWZudm5VV3R3SzdFSDB2VzdERHcK6iFxAbKL16w2H/lD12R5SKsQ82M8dESk
+            nn0/+f/sSy32vZX3W+8pSHVWRw9YnNOHRhD8tzipvE16DPhLRP4iZw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-03T04:55:17Z"
+    mac: ENC[AES256_GCM,data:3OTcx2Cb9S8+7XOWuqGVWK+k9RCFuwl2AzfAhlaJYej6OYdudZXhYByeqaYY+4M0DpWT4uOmX0+A98HiKtwvUN2KQ85EsQM1Ylx91JF14zmZHJUq+8YoYAQD7X6CO5V9VTh5kUizusrwIao+FHEmnxvysCyTnp7nD0D8pBEUCN4=,iv:NBmi5NamFxhvrjPOYq+xt40Jq4yw//p3D248rZCu1vw=,tag:dp92uDxpSBdgXIOt9LddWg==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4
