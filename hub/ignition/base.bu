@@ -24,10 +24,8 @@ passwd:
             - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
 storage:
     trees:
-        - local: etc
-          path: /etc
-        - local: usr
-          path: /usr
+        - local: base
+          path: /
 sops:
     kms: []
     gcp_kms: []
@@ -52,8 +50,8 @@ sops:
             UU1GayswdDhPZEJHVCtkSERrY3JxcUkKI1PQG8bWvIyrPIFbE1pyjuNis/a3wN8e
             Aul/+g0DFfKit2E+X/EB3HDwXbIIRibLIrrckDqA7+019JdwY894qQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-02T04:43:03Z"
-    mac: ENC[AES256_GCM,data:C4rnICrXi/NEkK/4//wGirEJgz9yqmlYWWIJMe17hZr/+mK7YkcWggNB27jz0jDZQao2EYoLzSG6E750Q46tZLOUtPZTLacG0bKldMiYWQYvyLGSCb0Yujw1oTGYn0poz++DRtMjlFSWuhQtKK5ERCCX/MIP2K8HfwqR92l915A=,iv:kCHlp/UCfuXtf33ucJdkLyh1jBinHK38ixbd0zli4BI=,tag:QK3UPLgKVbZ+Gw3NiQODjw==,type:str]
+    lastmodified: "2025-08-06T08:56:39Z"
+    mac: ENC[AES256_GCM,data:hOOrEqkA3rNtZl2hAV+bh6Z1G8PVc/27kWFWdu+oC6sp5hm2zVHZEL6cx/CHooX5NTEq9kb66jaDQEYB/hHKc4pYGYKs29EiwrK71xCi6lc0Dk349STJad3SIUd2Buzo2uSy09HKLV7VkoyBkpCklA8rqF0r3gfuXX7Ril6Bouo=,iv:yDAvAHXhuLgI4iJRHy59uln4vftoqyLSKGbBiRVqzi8=,tag:1+PmomOOwf9eGBKaQdjlJg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
