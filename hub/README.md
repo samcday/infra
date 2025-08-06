@@ -14,9 +14,6 @@ hub.
 SSH into a node, run:
 
 ```
-sudo rpm-ostree usroverlay
-sudo dnf install --repo=fedora -y etcd
-
 # create root + hub control-plane users
 etcdctl user add root --no-password
 etcdctl user add hub-cp --no-password
