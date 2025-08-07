@@ -1,7 +1,7 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: kustomizations
+  name: helm-repos
   namespace: flux-system
 spec:
   chart:
