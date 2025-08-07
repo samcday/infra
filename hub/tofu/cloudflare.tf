@@ -4,21 +4,6 @@ data "cloudflare_zone" "samcday" {
   name = "samcday.com"
 }
 
-resource "cloudflare_api_token" "hub-cluster" {
-  name = "hub-cluster"
-
-  policy {
-    permission_groups = [
-      data.cloudflare_api_token_permission_groups.all.account["Cloudflare Tunnel Write"],
-      data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
-    ]
-    resources = {
-      "com.cloudflare.api.account.*" = "*"
-      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
-    }
-  }
-}
-
 resource "random_password" "tunnel_secret" {
   length           = 32
 }
@@ -29,7 +14,7 @@ resource "cloudflare_tunnel" "tunnel" {
   account_id = "444c14b123bd021dcdf0400fbd847d63"
 }
 
-resource "kubernetes_secret" "cloudflared-tunnel-token" {
+resource "kubernetes_secret" "ingress-nginx-cloudflared-tunnel-token" {
   metadata {
     name      = "cloudflared-tunnel-token"
     namespace = "ingress-nginx"
@@ -38,5 +23,29 @@ resource "kubernetes_secret" "cloudflared-tunnel-token" {
   data = {
     "token" = cloudflare_tunnel.tunnel.tunnel_token
     "cname" = cloudflare_tunnel.tunnel.cname
+  }
+}
+
+resource "cloudflare_api_token" "external-dns" {
+  name = "hub-cluster-external-dns"
+
+  policy {
+    permission_groups = [
+      data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
+    ]
+    resources = {
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
+    }
+  }
+}
+
+resource "kubernetes_secret" "external-dns-token" {
+  metadata {
+    name      = "cloudflare"
+    namespace = "external-dns"
+  }
+
+  data = {
+    "token" = cloudflare_api_token.external-dns.value
   }
 }
