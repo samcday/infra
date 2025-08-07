@@ -1,0 +1,37 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  chart:
+    spec:
+      chart: cert-manager
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+      version: v1.17.1
+  interval: 1h
+  values:
+    # https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml
+    installCRDs: true
+    prometheus:
+      servicemonitor:
+        enabled: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: issuers
+  namespace: cert-manager
+spec:
+  interval: 1h
+  path: hub/cluster/cert-manager/issuers
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 2m0s

@@ -17,4 +17,5 @@ spec:
   values:
     _:
       kind: Namespace
+    cert-manager:
     ingress-nginx:

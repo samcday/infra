@@ -26,6 +26,9 @@ spec:
           name: infra
           namespace: flux-system
         timeout: 5m
+    cert-manager:
+      spec:
+        path: hub/cluster/cert-manager
     global:
       spec:
         path: hub/cluster/global
