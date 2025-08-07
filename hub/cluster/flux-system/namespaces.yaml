@@ -18,5 +18,6 @@ spec:
     _:
       kind: Namespace
     cert-manager:
+    external-dns:
     ingress-nginx:
     prometheus-operator:

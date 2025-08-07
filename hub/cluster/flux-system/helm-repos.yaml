@@ -20,12 +20,15 @@ spec:
       kind: HelmRepository
       spec:
         interval: 1h
-    jetstack:
+    external-dns:
       spec:
-        url: https://charts.jetstack.io
+        url: https://kubernetes-sigs.github.io/external-dns/
     ingress-nginx:
       spec:
         url: https://kubernetes.github.io/ingress-nginx
+    jetstack:
+      spec:
+        url: https://charts.jetstack.io
     prometheus-community:
       spec:
         url: https://prometheus-community.github.io/helm-charts
