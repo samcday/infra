@@ -81,13 +81,7 @@ systemd:
                 --name k3s \
                 --net=host \
                 docker.io/rancher/k3s:v1.33.3-k3s1 \
-                server \
-                  --datastore-endpoint=https://hub-az1-cp1.hub.internal:2379,https://hub-az1-cp2.hub.internal:2379,https://hub-az1-cp3.hub.internal:2379 \
-                  --datastore-cafile=/var/lib/rancher/k3s/server/etcd-ca.pem \
-                  --datastore-certfile=/var/lib/rancher/k3s/server/etcd-client.pem \
-                  --datastore-keyfile=/var/lib/rancher/k3s/server/etcd-client-key.pem \
-                  --kube-apiserver-arg=etcd-prefix=/hub-cp \
-                  --kube-apiserver-arg=etcd-compaction-interval=0
+                server
             ExecStop=/bin/podman stop k3s
 
             [Install]
@@ -116,8 +110,8 @@ sops:
             aHBndWpZU0V2QnFYVzVzZVZEcHhKNVEKE60SfJQleUMSRCKG+mXnQE7yz9e/VIpJ
             OqSHfdOakbV67vGKCKGm9lGnpNFBJ3hRcQMJCrILzqO+25ohIMWb+A==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-06T08:59:11Z"
-    mac: ENC[AES256_GCM,data:R6AE8f24syUrSUipycmm5hqJocbQsvvNAyw3h78wUFme8hFMREZ7xZsu7tUpYVNJ3H5W/bGYBk7EngZp/jd0I3CkW+95Cz4zOjyUU5XKJyAKRBldXOWemFZbbKjV6DfkXZNXpSwS4aIxe1frHCvI3HTekZjjxyZhJWhDqBqEma4=,iv:SAYSXe/CUNaoImG0t8AEhMZY04YuDXBGE0dBSP2ESS8=,tag:I9x6lAfkByVtGS1OHPb4wg==,type:str]
+    lastmodified: "2025-08-07T00:13:39Z"
+    mac: ENC[AES256_GCM,data:rbuvQW0qIfNyQk9CEWR/uddQFLeyzbxU4IXkudsxYsUSJLDsCWdc24e59+LbgAvsTaFOf/8U5CCv3hYneh/9fgN1ryKdOkWW+lDYWn/lSAzOgOoyviz1EWGO3QxgoIpaDDb2FKylmDmjqBgqudIqKvOKZxLlRiPy9YcFLf8bjtI=,iv:NrxOcNFnWE692WdRFq3JFG1XXx/nsEQfnc0AW2zh7Q4=,tag:9DR4fhoscPjs9IeTngv7fw==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4

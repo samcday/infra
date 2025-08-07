@@ -1,0 +1,8 @@
+
+datastore-endpoint: https://hub-az1-cp1.hub.internal:2379,https://hub-az1-cp2.hub.internal:2379,https://hub-az1-cp3.hub.internal:2379
+datastore-cafile: /var/lib/rancher/k3s/server/etcd-ca.pem
+datastore-certfile: /var/lib/rancher/k3s/server/etcd-client.pem
+datastore-keyfile: /var/lib/rancher/k3s/server/etcd-client-key.pem
+kube-apiserver-arg+:
+  - etcd-prefix=/hub-cp
+  - etcd-compaction-interval=0
