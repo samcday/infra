@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: webhook-token
+    namespace: flux-system
+stringData:
+    token: ENC[AES256_GCM,data:77pJtTtkDSlAJekASvfWpiXFmKRciT2mVs28MybEmC3t216vFk1MRPAAoZM9kWEVrGtlKVUGSwMpLFEZEZ8BSA==,iv:FADTgXdk01+WorQp7ZCtYpLX8Ppm5aaPyN9QnpxYg2U=,tag:zrg1tVBG2bkg+yJ0rWz28Q==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAwVjRycVRDcXlpVjNHMHRw
+            ZVdIa0piMnhKeSt3OHBiMXArYXVRMjlycUVnCldZU0RyNGdqSmRveG51cEhvbWpy
+            RUVvanNFbUhTM1VwMlZXV25OeHZqWkEKLS0tIG1HQ0RYYlNNYk1FWFZiQW4rbUdB
+            emtsaW5HbzRIK3ltYkRaWEZKaUZNT0EKT6TVPZbTGobq9UCAZUxcz+fanW+ynhc3
+            CvXHeuHxlx1/orzXrXAI+QmqA7CoGqIZFT45gDXIorpvRSCa3bv8tw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBTRm5MWHBsbzd1dkhhQUln
+            UHovRG5qbFl2ck1XNDhtdlQrclF3MThHWmhZClZsMVFxVVpJdzJzTUk2YmNzRTA2
+            ZkpZNHo0UVh1c3Z2ekljd1I2ZVd5Mm8KLS0tIGZjUThDMmFUNzBiNmY5VWxyc0Jh
+            VVg1MjA2ZWFhZlJzUmVpMHN3TU81MDAK6Eg0GeMWj1jYEz4XKexeyhqxIVArzbs6
+            TY/FrBJ62YEwk+hrZMrehTC7OjKs5jeHFSZLaWXKyvDtqkP/R6aEYg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-07T07:20:41Z"
+    mac: ENC[AES256_GCM,data:dKRDDTb0s13SJfQN6I8dB43ZIaYzVEZncORP3zzkaduTgOihDXm1hMAl+Nr9ATfLeGoVPD4VkLqxjlHDXUP+cnOxrPCUQ3qPqC+GfJGgJdz0/NoJYjKGtsgr+NepeBjkG3zwccg9CA3t8bYnOqVAS7fZeus3n/+7urF0qK5EhEs=,iv:r4fwXmbpSVTBMF75CNR0OH5pFnCQVgfNJyKdJJeyC9M=,tag:vwB3Rfo0cbIal7lj2zlP1A==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
