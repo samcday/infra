@@ -19,6 +19,10 @@ spec:
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
       spec:
+        decryption:
+          provider: sops
+          secretRef:
+            name: age-key
         interval: 1h
         prune: true
         sourceRef:
@@ -35,6 +39,9 @@ spec:
     ingress-nginx:
       spec:
         path: hub/cluster/ingress-nginx
+    kube-system:
+      spec:
+        path: hub/cluster/kube-system
     prometheus-operator:
       spec:
         path: hub/cluster/prometheus-operator

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: tofu-env
+    namespace: kube-system
+stringData:
+    CLOUDFLARE_API_KEY: ENC[AES256_GCM,data:qNCwOP1SgfiuVKctj5+A4O4r9jt2JLnPrjyYxG4rBwNC2f0c0w==,iv:ir/wH8fWkQxTownWVeL/fvZR18QBRG3qyuu+gIa+u1E=,tag:PTZWLFT4dglENo3nx21Fqg==,type:str]
+    CLOUDFLARE_EMAIL: ENC[AES256_GCM,data:4CtVyvsVHI9de5dw33k=,iv:IZQprEdgQ/Cr/WhjVshpX8+YDowH+QzsM4tHH7dlgd8=,tag:ba35jmCU1sIT8AR6+zYJZQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBSbnMrZmgwc3BxY09zQVJI
+            N0pNUkdqQjNRMFBBWEtoQnpGNjAyYys1TFFNCk14QmVzYXBPUVphdVJqc3pjOFNl
+            U0pINjFHY1hDcXdTMHp6c2R5Y3VOZVkKLS0tIE9wSU5vSjU5aDRudVZDS0NKWkNV
+            MXRJNVNuVHF4ZEFaSy9KeDNFR0E4aTQKb0Ah12jXleuCqdrT92M8qy8weksMshoK
+            I2nMqT+O56kggTc+snRiii2TxTt6Aoa4jnQrhsKcegOzh5ixv7NKZw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkeHlBUkFJcm5oWHdlVG8z
+            ME5DNDliZnN1YmFaUlhaYXpoOVE3MUZoMHhBCitrTjBaYWMrWnBBRmRhUExhQWFS
+            VGNrdXVHQkpBZW91M3g4NkZMZjdDNGMKLS0tIDNTNTlmUEU3cXpGNmR3cTdmTkZT
+            WENnT2NXV2t5NTJwUS94c2c1NTR6YzgKjSuu75uYGZHbTaZjeqskQkJU17VaH6Sv
+            b+m1mhgzjDelU7G2wh/1q8eJIX0lc548Tkwtpk+DEbVsQhwAXfY6SA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-07T05:14:45Z"
+    mac: ENC[AES256_GCM,data:6cg7ohue4jIL7TCTIAjWsc6UlF/iGcN4vmHQbdkeJwG8kwn9sDTb5ZDcrUI5xmc3T25GjPN18zrnsc46+7j7HSMh8ItpcMWEB6jHptLh/YGhS9YvTrMVri+HVJcZ02LefK7xKSSdBnLpVKZL0oZYPi4NOf7I0lcJGLM4lgSZyfc=,iv:C98iyv+Eor4FbuDqE1aSldhFBi9wLNK39kfYtlPjRzQ=,tag:fpWhtjhFBlKrd9q/gKgSLg==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
