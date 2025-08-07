@@ -26,6 +26,9 @@ spec:
           name: infra
           namespace: flux-system
         timeout: 5m
+    global:
+      spec:
+        path: hub/cluster/global
     ingress-nginx:
       spec:
         path: hub/cluster/ingress-nginx

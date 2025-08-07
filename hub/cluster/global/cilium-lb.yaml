@@ -1,0 +1,48 @@
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: lb
+spec:
+  loadBalancerIPs: true
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: local
+spec:
+  blocks:
+    - start: '10.0.1.20'
+      stop: '10.0.1.99'
+  serviceSelector:
+    matchLabels:
+      announce: l2
+---
+# TODO: update to stable v2 CiliumBGPClusterConfig
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPPeeringPolicy
+metadata:
+  name: lb
+spec:
+  virtualRouters:
+    - localASN: 64666
+      serviceSelector:
+        matchExpressions:
+          - {key: somekey, operator: NotIn, values: [never-used-value]}
+      neighbors:
+        - peerAddress: 10.0.1.1/24
+          peerASN: 64666
+          gracefulRestart:
+            enabled: true
+            restartTimeSeconds: 120
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: bgp-svc
+spec:
+  blocks:
+    - start: '10.0.2.1'
+      stop: '10.0.2.253'
+  serviceSelector:
+    matchExpressions:
+      - {key: announce, operator: NotIn, values: [l2]}
