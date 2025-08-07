@@ -10,51 +10,6 @@ storage:
           contents:
             # cryptme
             inline: ENC[AES256_GCM,data:NJ5C1dntpANbf3RdUxtbuxwO+9ExSUnHnC/rPbedYTKpfGl3rv6B4g==,iv:fKoz/qqzx2hRFk+RTsLsGtykVuhwJqjnheVzXR9OJn0=,tag:/ZUlO126GnkgzG1/4KWxCA==,type:str]
-        - path: /var/lib/rancher/k3s/server/etcd-ca.pem
-          overwrite: true
-          contents:
-            inline: |
-                -----BEGIN CERTIFICATE-----
-                MIIC9jCCAd6gAwIBAgIUURMTSE40fCjICgNFNkI/O5Dez2kwDQYJKoZIhvcNAQEL
-                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwHhcNMjUwODAzMDQxODAwWhcNMzAwODAy
-                MDQxODAwWjATMREwDwYDVQQDEwhodWItZXRjZDCCASIwDQYJKoZIhvcNAQEBBQAD
-                ggEPADCCAQoCggEBAK2Gadj6VTGSEcrBoJybWl4OSHHnmft0c/KC0CjBEKmUngXa
-                ZdeBp9MxCE95QbQVovt+hgpxWfvJLaUnwMA0jbdToaLIponLFQ5Zdm6fCudli2+X
-                Q8TkFVVfHy+JikCmRAJQkI8aDCJ/GzGp2ieP27OAW57j6SnsD7ucchsIzJ14b6eq
-                ygSDu59fvvDeT2CI4G3IzwGt6i0VB/+Aw5innOIHdY9JEwDYjlJ2WQzlBwydFIx8
-                7a6sDSlVJ3SjS1upKPrHJ67/5barLNe99G9Eafx6A93jg/Uti4cJtS0f6A5Ai+Yz
-                FCOzRhy/lGp8lkO0UsPAZEY+k9gdHkMnKoH9jkcCAwEAAaNCMEAwDgYDVR0PAQH/
-                BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFNi1ebn7M9ByN7muBYhb
-                u2RWrSBlMA0GCSqGSIb3DQEBCwUAA4IBAQCQiviolp5f0lgmoiG4IrWzSoK+0X5i
-                p98zSuuvjx/jXHzRKIh8npsAr7XemAFf/Dts6tMgRH3EKn1mxSwjTO3vtBz94phL
-                S0IFlk3gDGfjQggFLnJIPa+i8erdcrDQKZLA4u2lNfM08dimEXWhWmHi5WlmacKn
-                t2kO2hceUrl5hVFA+sGdLsZAicvFPRQxoKvVpM5naPEAsG3trzPwaTXCT3tbgMm1
-                jO2wLA+x5ySQ9vtrKg0ilW2QwczoEAWxG54AdPhgcdJIh8pFqVZUO/2YAdN3KoRY
-                I1Eo9qGzkj7Io3ZXpJrjIhgoZ64LRc7L1X/99/Bq/NzEbbqXakXflrEn
-                -----END CERTIFICATE-----
-        - path: /var/lib/rancher/k3s/server/etcd-client.pem
-          overwrite: true
-          contents:
-            inline: |
-                -----BEGIN CERTIFICATE-----
-                MIIDJzCCAg+gAwIBAgIUFuAG8JTWkI2pZCN5b6tHG3jQ4QkwDQYJKoZIhvcNAQEL
-                BQAwEzERMA8GA1UEAxMIaHViLWV0Y2QwHhcNMjUwODAzMDcyODAwWhcNMjYwODAz
-                MDcyODAwWjARMQ8wDQYDVQQDEwZodWItY3AwggEiMA0GCSqGSIb3DQEBAQUAA4IB
-                DwAwggEKAoIBAQC/ACgbKh6NzhEDtD8/3vJNRHneIoZhEabNy/2t4CFOqRgdHs9R
-                sbS4P8mMkZRAIOYyMqVv/XdGvCJj3LFKZykqHSzx178Ma7pRS1ANVkYTQBucwl8l
-                tjjAewenqI4EwQoNsswAEpRXW3CRzZj2cZadIT1xIMlaqelLzA7KSV5IY+Eeb9Yk
-                VnpuDMWVJNv96fDTyIFH89/hWxcQbXfsCWA5QJ7nwRD0Q8BJkNWvQ6iIPWXURrU+
-                UTemG4+uP1edbfuMAIayOovpnv2VtmhqIvR+5H0m9yeclpECzZQyvUKddo7EWy3P
-                H1KNZdXc/MlszofYcu/gale3ZE5Dkuj1is9FAgMBAAGjdTBzMA4GA1UdDwEB/wQE
-                AwIFoDATBgNVHSUEDDAKBggrBgEFBQcDAjAMBgNVHRMBAf8EAjAAMB0GA1UdDgQW
-                BBT/h9Akgu4H18XaxvPr59vDaeJSGTAfBgNVHSMEGDAWgBTYtXm5+zPQcje5rgWI
-                W7tkVq0gZTANBgkqhkiG9w0BAQsFAAOCAQEAqJIXy6YKJB0LQXyzQQz7OvJ1It5W
-                EkZJZkOOJl22Cu8UO6venY5bT15Rjs3UHvLgTC3kQeXdhu5fUnROiGGMUCozctQW
-                lNFPXtizF8GTIPPegICBGiIny/Lc+GYMRJsmzlkh+sGguQMSFRFTApYyZXACj8WX
-                tEnx5R9zIz4RN+YLPPT/uoIZUqyGvOFDS5VjXvPp90iy8bvyVc3LfWmnMB/B7SHb
-                jbwvGUlw7ZWx2r4qresK39Chq89FWu06bV3zaFZdi0Ld7wqDPEIOkBPd6PGLaOtv
-                eef+lmFpfqKggcILmoiMPjYiZOKOgQPFypRH3JyxW4TGrpwGdREUKJ6R1A==
-                -----END CERTIFICATE-----
         - path: /var/lib/rancher/k3s/server/etcd-client-key.pem
           overwrite: true
           contents:
@@ -115,8 +70,8 @@ sops:
             aHBndWpZU0V2QnFYVzVzZVZEcHhKNVEKE60SfJQleUMSRCKG+mXnQE7yz9e/VIpJ
             OqSHfdOakbV67vGKCKGm9lGnpNFBJ3hRcQMJCrILzqO+25ohIMWb+A==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-07T02:08:17Z"
-    mac: ENC[AES256_GCM,data:WbMB91aeQYATZ8lHooGtgGPvegP3sRUYkdz/zh0DEMIYu4W8jKujEABYzpdUqLxCKJM6XGuxdmWlEm9uwnv5gB0pIHIVdmAbv5EGUTQaNzDUOOsz+/wVn8DO30nZWyS8ZShg/uuItZG3rk0woizHS5AWY6yqsoPSHWxIv5HzTaA=,iv:RJz6xqZwrUauJSG3JnnAJh9OOa1rsDKbLMXk6JrY2mo=,tag:Sob/HMqlF+ld7ONDhavKfw==,type:str]
+    lastmodified: "2025-08-07T05:24:36Z"
+    mac: ENC[AES256_GCM,data:cCZ72d7CW5h+q39yTZugf0kgJ0qqLjkYlWbfZ1ehf18zImM5t09KHggnvEscQh0nTJ/W1ZSHMgGFzvaSjkYaTawh6F4yZFL73v/bTfkLFUVNkPX3FJtbl989a0q201h3Qbvb9rNA/pJ979J8bPQqk9XiAm+zUd/ozpZwHrhqWqw=,iv:Xqv9EHjvt3x/fq0mdurGZFxfIJsDmdfDmDmN9C53LKg=,tag:kv/VWnA0mZDYXB77uCT1JQ==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
