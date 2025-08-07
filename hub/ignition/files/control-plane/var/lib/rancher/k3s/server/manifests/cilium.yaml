@@ -1,0 +1,33 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: cilium
+  namespace: kube-system
+spec:
+  repo: https://helm.cilium.io/
+  chart: cilium
+  version: 1.18.0
+  bootstrap: true
+  targetNamespace: kube-system
+  # https://github.com/cilium/cilium/blob/v1.18.0/install/kubernetes/cilium/values.yaml
+  valuesContent: |-
+    autoDirectNodeRoutes: true
+    bgpControlPlane:
+      enabled: true
+    ipam:
+      mode: kubernetes
+    ipv4NativeRoutingCIDR: 172.30.0.0/16
+    k8sServiceHost: 10.0.1.254
+    k8sServicePort: 6443
+    kubeProxyReplacement: true
+    l2announcements:
+      enabled: true
+    loadBalancer:
+      algorithm: maglev
+      dsrDispatch: opt
+      mode: dsr
+      serviceTopology: true
+    operator:
+      rollOutPods: true
+      replicas: 2
+    routingMode: native
