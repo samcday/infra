@@ -1,4 +1,4 @@
-# Static DHCP leases for home-cluster nodes.
+# Static DHCP leases for hub control-plane/etcd nodes.
 
 set -uexo pipefail
 
@@ -7,19 +7,16 @@ set dhcp.az1_cp1=host
 set dhcp.az1_cp1.name='hub-az1-cp1'
 set dhcp.az1_cp1.mac='6c:4b:90:2d:cd:18'
 set dhcp.az1_cp1.ip='10.0.1.10'
-set dhcp.az1_cp1.tag='home-cluster'
 
 set dhcp.az1_cp2=host
 set dhcp.az1_cp2.name='hub-az1-cp2'
 set dhcp.az1_cp2.mac='00:23:24:b9:6d:75'
 set dhcp.az1_cp2.ip='10.0.1.11'
-set dhcp.az1_cp2.tag='home-cluster'
 
 set dhcp.az1_cp3=host
 set dhcp.az1_cp3.name='hub-az1-cp3'
 set dhcp.az1_cp3.mac='6c:4b:90:3d:02:ee'
 set dhcp.az1_cp3.ip='10.0.1.12'
-set dhcp.az1_cp3.tag='home-cluster'
 
 commit dhcp
 EOI
