@@ -1,8 +1,8 @@
 creation_rules:
-  - age: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4
+  - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
     encrypted_regex: ^(data|stringData)$
     path_regex: cluster/secrets/
-  - age: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4,age1fy4cp7t9hmllws7e8e499uhvrgjnp26ys2msunlxzky7qsyrwu3qgvzq9a
+  - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
     encrypted_comment_regex: "cryptme"
     path_regex: ignition/.*\.bu$
-  - age: age10c9vvuvfkflc7zypu6zm8dtw0gdn028nlr3gslt35df8vdqrap5q36xav4
+  - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
