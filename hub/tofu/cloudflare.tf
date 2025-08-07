@@ -49,3 +49,15 @@ resource "kubernetes_secret" "external-dns-token" {
     "token" = cloudflare_api_token.external-dns.value
   }
 }
+
+# cert-manager needs the DNS token for TXT verification challenges
+resource "kubernetes_secret" "cert-manager-token" {
+  metadata {
+    name      = "cloudflare"
+    namespace = "cert-manager"
+  }
+
+  data = {
+    "token" = cloudflare_api_token.external-dns.value
+  }
+}
