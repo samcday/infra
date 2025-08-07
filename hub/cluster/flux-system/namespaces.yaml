@@ -19,3 +19,4 @@ spec:
       kind: Namespace
     cert-manager:
     ingress-nginx:
+    prometheus-operator:

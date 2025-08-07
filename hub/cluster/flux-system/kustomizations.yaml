@@ -35,3 +35,6 @@ spec:
     ingress-nginx:
       spec:
         path: hub/cluster/ingress-nginx
+    prometheus-operator:
+      spec:
+        path: hub/cluster/prometheus-operator
