@@ -29,3 +29,6 @@ spec:
     prometheus-community:
       spec:
         url: https://prometheus-community.github.io/helm-charts
+    tofu-controller:
+      spec:
+        url: https://flux-iac.github.io/tofu-controller

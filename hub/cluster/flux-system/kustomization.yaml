@@ -5,3 +5,4 @@ resources:
   - helm-repos.yaml
   - kustomizations.yaml
   - namespaces.yaml
+  - tofu-controller.yaml
