@@ -15,6 +15,11 @@ storage:
           contents:
             # cryptme
             inline: ENC[AES256_GCM,data:BAajqtkuKGmaAat73Q0n8MZaidHmeOadx0Cr3jjbgdD31ifqfkx/c8RZB6NIue0ThEmZhpC6itiHPbmxxPqpBUNdDnm5UOIY6XuU9A41Dhq/Qznc8vKWC3y6ifi/3CVUmh6J9Yo2MAZnpi4pQ9Dox2+8jQXjz7M/7OX4mWRKiS8Xy/lmFvK6KPtznpXzsjofz5mXwWIVk2/bcgkfi2+Vgnbf9cq9m8JvUbAnkBq8ac00Sfyb7C7q+0lrQaZiqtLK8+seAwb7S+WWQOhiArqe3PhJq4suVlk4tcgSRdC78kioLCqTrltIiULfPuScjm23UXY3Ehx+39ChAwLQB3biI+IQQaqBU16pXD4SUSWu2oyitPh8i2Y4HLD2PDDWflTD/JQ5QXVw14Ytq6KJ07Mavu8iexNfMP3/wcKM9nxA8cLBdmm4GmAqecpgsDZtvWTixbe2o78Zv/nuMnAE/LHt20dbv2VLK+h9p5SVOo71eoj5R9Q+bRhELIw/WPnbnuDFG1BGmMcumlilePm9g1GPeDTeLMZiIC/6y400Olb2st8QaJ7C9T5oBbRp4G4swkF3EVJ1wTjmNqfR9zlQs6Q4Y6TrPtFD49qk421THBD240PPEk1FkN/0p6+3H2sUa5WFDcIlP1a3CKNCT2gwWuprYW+il9J5zhPbHf+mvqBC798Ui1FbuFGHO87LIwy7so+czON796xsmwDe0Xj1KpJ2OW+AX+PER+5kADgOjnbOqUyjEKw7dRIvXGPLlx70eDGud7xV//rwZ9n5KGcr1NeeCWJ77gyBNJxdzHH4iJYNjNfJP/y+YyMgtqUKTVy4DQejLqkHFflOsEPSPLh2CCx9sfYJ5WjY+jZdvQ3jMPUQ3CZyzI9GMRbutuUFhVWCUUUo/2wbKEqYxetv5e42sQ6lofWIo5hcr4IGIpfSDFSBwaEU1Kjhz4KXpoic4y6WqP18FY6mHu5Lj2EkOXnn+Q9I/vTkbcW6ZEySWgL0XHiB3D/VGBIUivG5fKR5wEFaIP52IbCdKXPVDUumcNkmDEruxQCogBFs/v3otJUBbw0pfttjgfnCH9H2DpWwZ+MQ9ab2ZTeAlVmGh/F7sbD7v+so4Q0kg0zmAY2cLZJA3OYOJnmPeWc/3rwTRcC9K+N0DupNCWEIeayQyc8W50PXgn3iBoLm9aL2kq4lLMYm3MfeYv/bIwXD3doEYrIaesbMke1dSJCWx2zV+HL/Sex2KzDE/6vyOBCHnS+ETBJSZXnrEtoyrvMAxflQItw3ZEFZDb8T20KOMhYyzYwedgBAZs6x8ofpYA3/B7PNnWfYNuH8huz1t3TQ3nwnn2x93XxjJ8FuEHWesKnvYhabvsLgjsN+ffbPND7rKzkqRxezVkbJNZx8Xlh8fD/hrpDX4MKfthRl8ev3S9VR/PNr+JGfwChtGbCM2Aa7aWy6nDqTWN/DeG6daucr1nzYgeYkwpZgfTaL8CylN3D2QPE9EA9gor7A9pcib7n1j77Kf46BFojtpqgviuhN5evmE0KSssGqvgpfayBy5vvVNWMQnpp53NUjFXCbcNZOHZip/G05TwphtS82d033Prffz3UDyb3F9Z6t4ztxv3SOkrruDpIe7v7BPp5Nu7s2BYKDrGeJ+pdwtPny49fPOjmjePQJC1WidzyaEBJDrKhPgIqTceJdYMS+QSIu7IDw6tdxjFRIyuJtWrX+9tPFl8UpglQ8UvQFEE92XQ5lUitOcfIdJARwjyKbrzZNesRwBg5bTe68E9lGBl1MGxT6ZoJu2EZu0AoL6+OqrDp1alrA+EKdJoVp4picBGoWRtrLQdHWKe04MRnQmclyUiXwIppAdHCfyrurDbhZ72fJj1jWavsV7Y84ois9vU3X56wwCfTSFYDKB+3szGTMOLPe/TDnDxFAnb69pK3bQzR4n623HhwT/EZyN91WbISoucImCqRZ9SAcKMFWbbkPYKMJLJ0k7HgUpmotNn3CPTqkWV1wN9DN0gf4hqBAaOh8aJwyGr4M5ghY8s1RnyxWdhlSLOI+2IKYrWVMwnQdQfXF/zVbOsv2pi9Cjz9es1X1omLsJG4u/JdOOh1dsvFCNj5a3EnS/b0OF2bBDVjn4RVgtjPCB+MKgdk+2S0Lz9YUhslLlLK/5q0twrivLiucIMZo+QGQN+gAnSiHk+RaqYsDzclU/p7oih1oYF8BtfvDHzeMOgwweSTgdPdh3l2Jbrv5BpssHTAzeA==,iv:hun7xUWrY1rsfgjLXFt6ybYFGVcHd+AJ81CFHumTCKU=,tag:YkSX7XvDLRgtY0kMmRDPXA==,type:str]
+        - path: /var/lib/rancher/k3s/server/manifests/flux-age-key.yaml
+          overwrite: true
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:VU9XAu8NKBt6RlZpA3sgXN/uBQHrPpWvvZ4/i92Prcc+Mzg2SdSKgPpEdXK3iyjTYjxgHJ2uP/peFnSdEAuK5fWxsLe1ulSgw7k+DJrcueP5acWV7bK97sP6H9o6iW2U4lefpRczNqeJOFJMD/em+oj5Au5GYkkzbKbLeNVOnzPSHHUgOtYfp5o+26mN/U9pXgYr5UdsoSO54l3TyIoqI5FH9JxIyDhX0v86ZnbeqVXSVvi6xY9Q/+lWpvv63A9y0QZQ/Ka6aFbPaMdFEM35T6Qd2OT02U7wO8vNEfr+DbvH51OH9mkhAKrXsI6IjH23M5VaByn31jdWBFryn/9q2OHYj/wG/CiQ+dXp/9aFfNfQppeR260a00jVjCUbi679qeUbXMkE+H3EW6yJFA7qgqTAKtJmVtGaQEek4sWhXb+L,iv:7uDdYPpwf92LWFMvDW747Vjd2NfFnEa6AHKxSjUTWyA=,tag:AmCh9oxElIdxzvg65koE4w==,type:str]
         - path: /var/lib/rancher/k3s/server/manifests/flux-ssh-key.yaml
           overwrite: true
           contents:
@@ -61,8 +66,8 @@ sops:
             cktrTWJHUjRxbENaUm5JcDJtSWVEcVkK6ylHOgiRGksT+rxl/iWy9zz5g6rsDcyX
             +FLHmwaZei0hEFrhZYpzVf60iIQNnQta4dZJDKvpXMFAVzJQJM0nqA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-07T05:37:15Z"
-    mac: ENC[AES256_GCM,data:JAEe3ti636+zzOVbxjaSd5ZWk/8ikJf0qv7bSqnFToYwBRiX01own8VixcdJVZ6zDb+hjUawY7O6wA6URieHSnSR71xBEeF5E8/4RwZkwj8Pw9k9MzLmazHg5Rfe6YAk62qSrylEEojCwsvsWNDlyyGOB0M8wslpGXE55tzkmCs=,iv:7ViL0QvjZtLOD5d4Y/vKo2cx/oUT//i9Abt4UKy5tIw=,tag:pBYSIAMNlPjq3+5a3ranxw==,type:str]
+    lastmodified: "2025-08-07T05:40:22Z"
+    mac: ENC[AES256_GCM,data:Gx3i+K7ZwhjRcJqlldZLYOKjovcHIOjUCNNeHSBNA+9PHQT6RGpzy+RTkc7Pe7FTG56bvqZfJDAvpWxTMYfvGKzkdfwUEPCM4FArmulSmaZBUry9V9ni05iRQzy4dFH+oVD9zGxqH6iuFriYqyiB7HpsLyshMFLnQRl71joC538=,iv:JFZ4wRbnd2pMu7rOFM8HBhAfkbxzXDoJCXVs059oSWI=,tag:qrrKiEbmUahN4XeLFy8Gig==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
