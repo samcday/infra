@@ -1,4 +1,4 @@
-# $ podman run --rm ghcr.io/kube-vip/kube-vip:v1.0.0 manifest daemonset --address 10.0.1.254 --controlplane --arp --leaderElection --inCluster
+# $ podman run --rm ghcr.io/kube-vip/kube-vip:v1.0.0 manifest daemonset --taint --address 10.0.1.254 --controlplane --arp --leaderElection --k8sConfigPath=/etc/rancher/k3s/k3s.yaml
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -19,6 +19,16 @@ spec:
         app.kubernetes.io/name: kube-vip-ds
         app.kubernetes.io/version: v1.0.0
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
       containers:
       - args:
         - manager
@@ -64,6 +74,21 @@ spec:
             - NET_RAW
             drop:
             - ALL
+        volumeMounts:
+        - mountPath: /etc/kubernetes/admin.conf
+          name: kubeconfig
+      hostAliases:
+      - hostnames:
+        - kubernetes
+        ip: 127.0.0.1
       hostNetwork: true
-      serviceAccountName: kube-vip
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      volumes:
+      - hostPath:
+          path: /etc/rancher/k3s/k3s.yaml
+        name: kubeconfig
   updateStrategy: {}
