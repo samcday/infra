@@ -18,6 +18,10 @@ metadata:
   name: infra
   namespace: flux-system
 spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
   interval: 1h
   path: hub/cluster/flux-system
   prune: false
