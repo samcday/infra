@@ -6,3 +6,4 @@ resources:
   - kustomizations.yaml
   - namespaces.yaml
   - tofu-controller.yaml
+  - webhook-ingress.yaml
