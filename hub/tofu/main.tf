@@ -8,8 +8,13 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "2.36.0"
     }
+    random = {
+      source = "hashicorp/random"
+      version = "3.7.1"
+    }
   }
 }
 
 provider "cloudflare" {}
 provider "kubernetes" {}
+provider "random" {}

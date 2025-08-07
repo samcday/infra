@@ -19,6 +19,16 @@ resource "cloudflare_api_token" "hub-cluster" {
   }
 }
 
+resource "random_password" "tunnel_secret" {
+  length           = 32
+}
+
+resource "cloudflare_tunnel" "tunnel" {
+  name       = "hub-cluster"
+  secret     = base64encode(random_password.tunnel_secret.result)
+  account_id = "444c14b123bd021dcdf0400fbd847d63"
+}
+
 resource "kubernetes_secret" "cloudflared-tunnel-token" {
   metadata {
     name      = "cloudflared-tunnel-token"
@@ -26,6 +36,7 @@ resource "kubernetes_secret" "cloudflared-tunnel-token" {
   }
 
   data = {
-    "token" = cloudflare_api_token.hub-cluster.value
+    "token" = cloudflare_tunnel.tunnel.tunnel_token
+    "cname" = cloudflare_tunnel.tunnel.cname
   }
 }
