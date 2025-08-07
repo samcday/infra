@@ -16,16 +16,12 @@ spec:
   interval: 1h
   values:
     _:
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: HelmRepository
+      metadata:
+        namespace: flux-system
       spec:
         interval: 1h
-        prune: true
-        sourceRef:
-          kind: GitRepository
-          name: infra
-          namespace: flux-system
-        timeout: 5m
     ingress-nginx:
       spec:
-        path: hub/cluster/ingress-nginx
+        url: https://kubernetes.github.io/ingress-nginx
