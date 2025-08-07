@@ -6,6 +6,7 @@ metadata:
 stringData:
     CLOUDFLARE_API_KEY: ENC[AES256_GCM,data:qNCwOP1SgfiuVKctj5+A4O4r9jt2JLnPrjyYxG4rBwNC2f0c0w==,iv:ir/wH8fWkQxTownWVeL/fvZR18QBRG3qyuu+gIa+u1E=,tag:PTZWLFT4dglENo3nx21Fqg==,type:str]
     CLOUDFLARE_EMAIL: ENC[AES256_GCM,data:4CtVyvsVHI9de5dw33k=,iv:IZQprEdgQ/Cr/WhjVshpX8+YDowH+QzsM4tHH7dlgd8=,tag:ba35jmCU1sIT8AR6+zYJZQ==,type:str]
+    GITHUB_TOKEN: ENC[AES256_GCM,data:Xlo2P3DwdFtCq9uSz+FLbT6b404PRROVnF5hVuA6NzID/+OpPX+2N8nCp6HvHDuDqLz3tiKYBQCb5CdQJcs+vG1y4nWJAeAyOOCxLMTNBSnU3qAqyrZTnPUgsb21,iv:fIJ7Br7Dx7XLrO/ZMiBU/ods4QyG6spoj+oeaZ508yw=,tag:ZnIiUWVlnakYEJuPtopsnQ==,type:str]
 sops:
     kms: []
     gcp_kms: []
@@ -30,8 +31,8 @@ sops:
             WENnT2NXV2t5NTJwUS94c2c1NTR6YzgKjSuu75uYGZHbTaZjeqskQkJU17VaH6Sv
             b+m1mhgzjDelU7G2wh/1q8eJIX0lc548Tkwtpk+DEbVsQhwAXfY6SA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-07T05:14:45Z"
-    mac: ENC[AES256_GCM,data:6cg7ohue4jIL7TCTIAjWsc6UlF/iGcN4vmHQbdkeJwG8kwn9sDTb5ZDcrUI5xmc3T25GjPN18zrnsc46+7j7HSMh8ItpcMWEB6jHptLh/YGhS9YvTrMVri+HVJcZ02LefK7xKSSdBnLpVKZL0oZYPi4NOf7I0lcJGLM4lgSZyfc=,iv:C98iyv+Eor4FbuDqE1aSldhFBi9wLNK39kfYtlPjRzQ=,tag:fpWhtjhFBlKrd9q/gKgSLg==,type:str]
+    lastmodified: "2025-08-07T07:30:42Z"
+    mac: ENC[AES256_GCM,data:hIn1T1HmVbzrJx8wp5R7Fh9ggGoHrjQ/77l3V7EZ4WxKSghLdasKheT8LRjZm+IF9klcu4Y2fOG1knLUDwtSZa0aD34Y32v/+sfLSLGWZgJ43Nd0wUAQsdcP/LD76mpqNCeN637b61MI/Xls2h4pqGODVe4xatmMELr6GKdHRuU=,iv:XfOXECmJH1kZGZadZT/m22V93/BLlSplCTOsGNZjL6k=,tag:mIQPMa7TlDxKeuQlmTszJQ==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4

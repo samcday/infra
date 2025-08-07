@@ -4,6 +4,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "4.52.0"
     }
+    github = {
+      source  = "integrations/github"
+      version = "6.6.0"
+    }
     kubernetes = {
       source  = "hashicorp/kubernetes"
       version = "2.36.0"
@@ -16,5 +20,6 @@ terraform {
 }
 
 provider "cloudflare" {}
+provider "github" {}
 provider "kubernetes" {}
 provider "random" {}
