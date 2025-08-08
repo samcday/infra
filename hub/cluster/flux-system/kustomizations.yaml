@@ -45,6 +45,9 @@ spec:
     kube-system:
       spec:
         path: hub/cluster/kube-system
+    matchbox:
+      spec:
+        path: hub/cluster/matchbox
     prometheus-operator:
       spec:
         path: hub/cluster/prometheus-operator

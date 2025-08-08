@@ -20,4 +20,5 @@ spec:
     cert-manager:
     external-dns:
     ingress-nginx:
+    matchbox:
     prometheus-operator:
