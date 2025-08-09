@@ -1,0 +1,75 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: pixiecore
+  namespace: kube-system
+spec:
+  chart:
+    spec:
+      chart: generic
+      sourceRef:
+        kind: HelmRepository
+        name: community-tooling-charts
+        namespace: flux-system
+      version: 8.1.1
+  interval: 1h
+  values:
+    # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
+    additionalContainers:
+      - name: api
+        image: alpine:3
+        command:
+          - ash
+          - -uexo
+          - pipefail
+          - -c
+          - |
+            cat <<HERE >> /etc/apk/repositories
+            @testing https://dl-cdn.alpinelinux.org/alpine/edge/testing
+            HERE
+
+            apk add bash butane@testing curl fcgiwrap jq kubectl nginx
+
+            install -m755 /scripts/boot-request.sh /usr/local/bin/boot-request
+            install -m755 /scripts/generate-ignition.sh /usr/local/bin/generate-ignition
+            install -m644 /scripts/nginx.conf /etc/nginx/http.d/default.conf
+
+            fcgiwrap -s 'tcp:0.0.0.0:9000' &
+            nginx -g "daemon off;"
+        volumeMounts:
+          - name: ignition
+            mountPath: /ignition
+          - name: scripts
+            mountPath: /scripts
+    additionalVolumes:
+      - name: ignition
+        secret:
+          secretName: ignition
+      - name: scripts
+        configMap:
+          name: api-scripts
+    annotations:
+      reloader.stakater.com/auto: "true"
+    args:
+      - api
+      - http://localhost:38122
+      - --port
+      - '38123'
+    deploymentStrategy:
+      type: Recreate
+    envValueFrom:
+    hostNetwork: true
+    image:
+      repository: pixiecore/pixiecore
+      tag: master
+    livenessProbe:
+      httpGet: ~
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    ports:
+    readinessProbe: ~
+    replicaCount: 1
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
