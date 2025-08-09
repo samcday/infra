@@ -45,6 +45,12 @@ spec:
 
             fcgiwrap -s 'tcp:0.0.0.0:9000' &
             nginx -g "daemon off;"
+        env:
+          - name: SOPS_AGE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: ignition-key
+                key: age.agekey
         volumeMounts:
           - name: butane
             mountPath: /butane

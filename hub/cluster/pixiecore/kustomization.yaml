@@ -10,5 +10,6 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - butane.yaml
+  - ignition-key.yaml
   - pixiecore.yaml
   - rbac.yaml
