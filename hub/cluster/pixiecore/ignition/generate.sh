@@ -12,5 +12,5 @@ for f in "$butane_dir"/*.bu; do
         | podman run --rm -i quay.io/coreos/butane:release \
         > "$ignition_file"
 
-    sops --encrypt  --in-place "$ignition_file"
+    sops --encrypt  --in-place --input-type=binary "$ignition_file"
 done
