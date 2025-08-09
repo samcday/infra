@@ -20,7 +20,7 @@ metadata:
   annotations:
     kustomize.toolkit.fluxcd.io/prune: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
-    samcday.com/boot-profiles: var,tpm
+    samcday.com/boot-profiles: var
   labels:
     node-role.kubernetes.io/control-plane: ""
     node-role.kubernetes.io/etcd: ""
