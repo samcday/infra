@@ -1,0 +1,18 @@
+{{- $spec := fromYaml (tpl (toYaml (default "" $.Values.apiServer.service.spec)) $) -}}
+{{- if (hasKey $spec "selector") -}}{{- fail "do not set apiServer.service.spec.selector" -}}{{- end -}}
+{{- $ports := (default (list) (get $spec "ports")) -}}
+{{- $ports := mustAppend $ports (dict "name" "https" "port" 6443 "protocol" "TCP" "targetPort" 6443) -}}
+{{- $ports := ternary (mustAppend $ports (dict "name" "konnectivity" "port" $.Values.konnectivity.port "protocol" "TCP" "targetPort" $.Values.konnectivity.port)) ($ports) $.Values.konnectivity.enabled -}}
+{{- $_ := set $spec "ports" $ports -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: apiserver
+  annotations:
+    {{- toYaml $.Values.apiServer.service.annotations | nindent 4 }}
+  labels:
+    {{- toYaml $.Values.apiServer.service.labels | nindent 4 }}
+spec:
+  selector:
+    app: apiserver
+  {{- toYaml $spec | nindent 2 }}

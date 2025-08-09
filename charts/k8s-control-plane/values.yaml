@@ -1,0 +1,98 @@
+apiServer:
+  image:
+    repository: registry.k8s.io/kube-apiserver
+    pullPolicy: IfNotPresent
+    tag: "v{{ $.Values.version }}"
+  replicas: 2
+  service:
+    annotations:
+    labels:
+    # Set everything allowed in ServiceSpec here
+    # Do not set a selector or add the apiserver 6443 port, that's handled by the chart.
+    spec:
+      type: ClusterIP
+
+bootstrapTokens:
+  # - id: abcdef
+  #   extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+  #   secret: 0123456789abcdef
+
+clusterDomain: cluster.local
+
+clusterName: ~ # required
+
+controllerManager:
+  image:
+    repository: registry.k8s.io/kube-controller-manager
+    pullPolicy: IfNotPresent
+    tag: "v{{ $.Values.version }}"
+  replicas: 2
+
+etcd:
+  # a cert-manager issuerRef that can provide a client certificate for the etcd endpoint
+  # https://cert-manager.io/docs/reference/api-docs/#meta.cert-manager.io/v1.ObjectReference
+  certIssuer: # required
+    # name: etcd
+    # kind: ClusterIssuer
+  endpoints: []
+  # It's assumed that this control plane is using a multi-tenanted etcd cluster with RBAC enabled,
+  # and thus the compaction API is not permitted.
+  compactionInterval: "0"
+  prefix: "/{{ $.Values.clusterName }}/"
+
+# the hostname used to externally access this apiserver
+externalHostname: ~ # required
+
+# if not explicitly provided, it's assumed the apiserver Service is a LoadBalancer, so a Job
+# will run during chart reconciliation to fetch the LB IP.
+externalIP: ~
+
+konnectivity:
+  enabled: true
+  agent:
+    image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.32.0
+    replicas: 2
+  port: 8091
+  server:
+    image: registry.k8s.io/kas-network-proxy/proxy-server:v0.32.0
+
+parentClusterDomain: cluster.local
+
+scheduler:
+  enabled: true
+  config:
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+  deployment:
+    annotations:
+    labels:
+    spec:
+      replicas: 2
+      # template:
+      #   metadata:
+      #     annotations:
+      #     labels:
+      #   spec:
+      #     # extra containers can be added, and the main container can be fully customized
+      #     containers:
+      #       - name: extra-sidecar
+      #       - name: kube-scheduler
+      #         # command, ports and volumeMounts are appended to base instead of overwriting:
+      #         command: [extra, args]
+      #         ports:
+      #           - name: extra
+      #         volumeMounts:
+      #           - name: extra
+      #     nodeSelector:
+      #       foo: bar
+      #     volumes:
+      #       - name: extra
+  image:
+    repository: registry.k8s.io/kube-scheduler
+    pullPolicy: IfNotPresent
+    tag: "v{{ $.Values.version }}"
+
+# Can be either an IPv4 subnet, an IPv6 subnet, or exactly one of each.
+serviceCIDRs: []
+
+version: 1.32.2

@@ -1,0 +1,14 @@
+{{- if $.Values.scheduler.enabled -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kube-scheduler
+spec:
+  commonName: system:kube-scheduler
+  duration: 336h # 2 weeks
+  issuerRef:
+    name: ca
+    kind: Issuer
+  secretName: kube-scheduler
+  usages: [client auth]
+{{- end -}}

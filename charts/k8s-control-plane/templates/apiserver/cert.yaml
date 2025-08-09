@@ -1,0 +1,29 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: apiserver
+spec:
+  commonName: kube-apiserver
+  dnsNames:
+    # standard names used in-cluster
+    - kubernetes
+    - kubernetes.default
+    - kubernetes.default.svc
+    - kubernetes.default.svc.{{ $.Values.clusterDomain }}
+
+    # parent cluster service name
+    - apiserver.{{ $.Release.Namespace }}.svc.{{ $.Values.parentClusterDomain }}
+
+    # external hostname
+    - {{ $.Values.externalHostname }}
+  ipAddresses:
+  {{- if $.Values.externalIP }}
+    - {{ required "missing serviceIP" $.Values.serviceIP }}
+    - {{ $.Values.externalIP }}
+  {{- end }}
+  duration: 336h # 2 weeks
+  issuerRef:
+    name: ca
+    kind: Issuer
+  secretName: apiserver-cert
+  usages: [server auth]
