@@ -25,17 +25,17 @@ echo
 
 if kubectl get "$node" -o jsonpath='{.metadata.labels}' | jq -e '. | keys | any(. == "node-role.kubernetes.io/control-plane")' >/dev/null 2>&1; then
   merge+="
-      - local: control-plane.json"
+      - local: control-plane.ign"
 fi
 
 if kubectl get "$node" -o jsonpath='{.metadata.labels}' | jq -e '. | keys | any(. == "node-role.kubernetes.io/etcd")' >/dev/null 2>&1; then
   merge+="
-      - local: etcd.json"
+      - local: etcd.ign"
 fi
 
 IFS=","; for n in $bootprofiles; do
   merge+="
-      - local: $n.json"
+      - local: $n.ign"
 done
 
 butane -d /ignition --strict <<HERE
@@ -44,6 +44,6 @@ version: 1.5.0
 ignition:
   config:
     merge:
-      - local: base.json
+      - local: base.ign
       $merge
 HERE
