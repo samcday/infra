@@ -174,7 +174,7 @@ storage:
                   targetNamespace: flux-system
                   # https://github.com/fluxcd-community/helm-charts/blob/main/charts/flux2/values.yaml
                   valuesContent: |-
-                    clusterDomain: home-cluster.local
+                    clusterDomain: cluster.hub.internal
                     policies:
                       create: false
         - path: /var/lib/rancher/k3s/server/manifests/flux-age-key.yaml
@@ -323,8 +323,8 @@ sops:
             cktrTWJHUjRxbENaUm5JcDJtSWVEcVkK6ylHOgiRGksT+rxl/iWy9zz5g6rsDcyX
             +FLHmwaZei0hEFrhZYpzVf60iIQNnQta4dZJDKvpXMFAVzJQJM0nqA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T05:20:23Z"
-    mac: ENC[AES256_GCM,data:wKkTM5Wi7y7ZsAIJsm00yx2tQLBScMcKe1vOY56Fc40oty3ajodf+GTnUkbq7cCq0EDir03vCkxPeUXmydpxtduK1POJzQyu+diT0x8Vsn6+p0kSk1xb3zlYI8McILXJLcjxm8bqxfm2wYO9DfkkEilaKpplAb5lX0AL1dQsb3U=,iv:Q73HxGafUlK9pOqygqLgm5F2Yb2jZKt0XDQ4mJVfkME=,tag:0WstJc9b8PLnBEI5mvbb6A==,type:str]
+    lastmodified: "2025-08-09T08:41:28Z"
+    mac: ENC[AES256_GCM,data:kcB1VdTE8zmCY3rgvS2E3OAJYZGKjm5U/tnV/k6nFCFCEsdjj7T2qw51q+hRQ63LSkSXmbS8dSNoAi12nQvjAO1Fz2b8MM400ovEEnoA/jE81hBpJUSwo6fN/xy8Aj/i+u5vIl1T0GiEMDWxMWJNBJMYWLhFdjW5RhTLHXkaZDs=,iv:br05ykbo5ieU8fDzwoKdJJSW+495n4rJZMJV3J+DdFk=,tag:hhmELECtdTYGB68TqYD6bA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
