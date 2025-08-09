@@ -20,6 +20,9 @@ spec:
       kind: HelmRepository
       spec:
         interval: 1h
+    community-tooling-charts:
+      spec:
+        url: https://community-tooling.github.io/charts/
     external-dns:
       spec:
         url: https://kubernetes-sigs.github.io/external-dns/
