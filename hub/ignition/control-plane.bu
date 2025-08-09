@@ -285,29 +285,6 @@ storage:
                           path: /etc/rancher/k3s/k3s.yaml
                         name: kubeconfig
                   updateStrategy: {}
-systemd:
-    units:
-        - name: k3s.service
-          enabled: true
-          contents: |
-            [Unit]
-            After=network-online.target
-            Wants=network-online.target
-
-            [Service]
-            ExecStartPre=-podman kill k3s
-            ExecStartPre=-podman rm k3s
-            ExecStart=podman run --rm -it --privileged \
-                --volume /etc/rancher:/etc/rancher:z \
-                --volume /var/lib/rancher/k3s/server:/var/lib/rancher/k3s/server:z \
-                --name k3s \
-                --net=host \
-                docker.io/rancher/k3s:v1.33.3-k3s1 \
-                server
-            ExecStop=/bin/podman stop k3s
-
-            [Install]
-            WantedBy=multi-user.target
 sops:
     kms: []
     gcp_kms: []
@@ -332,8 +309,8 @@ sops:
             TW9UbzZqWU5zTkdjZngrU2poNVptMFkKYwTalddAWl6ru32DSrkIZsQ64SVuGWCf
             G7oxxmu+FZd3pfw8S6Inw/M56hX5pv0890CUpiBVNUQWZuDe9Fvt8w==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T08:41:28Z"
-    mac: ENC[AES256_GCM,data:kcB1VdTE8zmCY3rgvS2E3OAJYZGKjm5U/tnV/k6nFCFCEsdjj7T2qw51q+hRQ63LSkSXmbS8dSNoAi12nQvjAO1Fz2b8MM400ovEEnoA/jE81hBpJUSwo6fN/xy8Aj/i+u5vIl1T0GiEMDWxMWJNBJMYWLhFdjW5RhTLHXkaZDs=,iv:br05ykbo5ieU8fDzwoKdJJSW+495n4rJZMJV3J+DdFk=,tag:hhmELECtdTYGB68TqYD6bA==,type:str]
+    lastmodified: "2025-08-09T09:38:41Z"
+    mac: ENC[AES256_GCM,data:mUQX1cXMSc3lCPtLSf/7rV+dNLbpheWVPPLIeVnolzv1vti0gER0HfWrq8LeQl9UqlwwAt2RMo5j8b0ug7LAiFmL/opCWGBVDsftUSoYH2bQ+egJskJHAMeR2GPW8lyD2IDX5PzpD0FA3kUAU0NqqKLt0SoKiJiD4oKjb6DQgNs=,iv:uHuyd7dzUZTbvl8v5eNmql1kXLeMzBUJmRWd7YOg1z4=,tag:k7srDmZih13QR3jeJceCxg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4

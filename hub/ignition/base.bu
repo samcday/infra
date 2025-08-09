@@ -40,10 +40,38 @@ storage:
                 [updates]
                 enabled = false
           overwrite: true
+        - path: /usr/local/bin/k3s
+          overwrite: true
+          contents:
+            source: https://github.com/k3s-io/k3s/releases/download/v1.33.3%2Bk3s1/k3s
+          mode: 493
+        - path: /usr/local/bin/install-k3s
+          overwrite: true
+          contents:
+            source: https://get.k3s.io
+          mode: 493
         - path: /var/lib/rancher/k3s/server/manifests/traefik.yaml.skip
           contents:
             inline: ""
           overwrite: true
+systemd:
+    units:
+        - name: install-k3s.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Run k3s install script
+            ConditionPathExists=!/etc/%N.stamp
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            Environment=INSTALL_K3S_SKIP_DOWNLOAD=true
+            ExecStart=/usr/local/bin/install-k3s
+            ExecStart=/bin/touch /etc/%N.stamp
+
+            [Install]
+            WantedBy=multi-user.target
 sops:
     kms: []
     gcp_kms: []
@@ -68,8 +96,8 @@ sops:
             cUhvOExManM0cnhKYi9vMXN0NDl6U1UKzR81/LgaLk4sTobLNgfFN+WhD8GQ3f3B
             7lbdujDQE3H0//t8KFkwgbUf4quE7IUp3NzeBcQmEnGsTubrpQFjsw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T05:24:09Z"
-    mac: ENC[AES256_GCM,data:Id9Yul3vN4VosvvKcPF9/zH3ZBZRermCfFzfRx9v6ttnGk1A3xfmoHPUGcYZyahkC/q/Az6ltocXBtqp9KW5zLq85t8vcACpgWNt5j4YcIsnQoiEcEx8cS0sNvAEY4yBgqUUtpxyog+W1+kvQOXaKXNI2sAi7xRPXvfOmuOBBUU=,iv:zmoHQLDVr6rHVFhCbJvyQO6+NckzSaZsZj0p5QRY5Xw=,tag:MjoTyy32NR2XGu/oZe2XNw==,type:str]
+    lastmodified: "2025-08-09T09:48:26Z"
+    mac: ENC[AES256_GCM,data:4B1M6Z4BowX5ynIsWmPOfNJ5zy/aF0VgCJ0zo1zVkDZkJ6S5Bi/LdQorwgv0y4/ZxEjis5hNUbn24vKmKdreQvOVUz61MlB/cWHrNB8cNgkDeP1E6pikglIGjEpL5HtYOKABGOOstF6dqP1bFbBgrZYChtuYhC8Y66SarsMSE7E=,iv:j31OxJYbNplnMQUyY5Q0wARKFQhvsSzaHk+87DdNwdE=,tag:TIGAJSk1Dq7nc5bHmxpb+g==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
