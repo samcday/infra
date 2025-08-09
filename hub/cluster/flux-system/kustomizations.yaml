@@ -48,6 +48,9 @@ spec:
     matchbox:
       spec:
         path: hub/cluster/matchbox
+    pixiecore:
+      spec:
+        path: hub/cluster/pixiecore
     prometheus-operator:
       spec:
         path: hub/cluster/prometheus-operator

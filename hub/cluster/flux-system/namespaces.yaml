@@ -21,4 +21,5 @@ spec:
     external-dns:
     ingress-nginx:
     matchbox:
+    pixiecore:
     prometheus-operator:
