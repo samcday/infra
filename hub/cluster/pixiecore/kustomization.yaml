@@ -7,14 +7,6 @@ configMapGenerator:
       - api/boot-request.sh
       - api/generate-ignition.sh
       - api/nginx.conf
-secretGenerator:
-  - name: ignition
-    files:
-      - ignition/base.json
-      - ignition/control-plane.json
-      - ignition/etcd.json
-      - ignition/tpm.json
-      - ignition/var.json
 resources:
   - ../../../.kustomize-config
   - pixiecore.yaml
