@@ -2,10 +2,6 @@ creation_rules:
   - age: >-
       age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
       age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
-    path_regex: hub/cluster/pixiecore/ignition/.*\.json$
-  - age: >-
-      age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
-      age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
     encrypted_regex: ^(data|stringData)$
     path_regex: hub/cluster
   - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
