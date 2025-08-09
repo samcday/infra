@@ -36,7 +36,7 @@ spec:
             for f in /butane/*.bu; do
               name=$(basename $f)
               cat $f
-              sops --input-type=yaml --output-type=yaml -d $f | chroot /host butane --strict > /ignition/${name/.bu}.ign
+              sops --input-type=yaml --output-type=yaml -d $f | butane --strict > /ignition/${name/.bu}.ign
             done
 
             install -m755 /scripts/boot-request.sh /usr/local/bin/boot-request
