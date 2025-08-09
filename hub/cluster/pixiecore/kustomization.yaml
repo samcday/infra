@@ -9,5 +9,6 @@ configMapGenerator:
       - api/nginx.conf
 resources:
   - ../../../.kustomize-config
+  - butane.yaml
   - pixiecore.yaml
   - rbac.yaml
