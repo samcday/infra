@@ -23,9 +23,27 @@ passwd:
           ssh_authorized_keys:
             - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
 storage:
-    trees:
-        - local: base
-          path: /
+    files:
+        - path: /etc/rancher/k3s/config.yaml.d/no-flannel.yaml
+          contents:
+            inline: |
+                flannel-backend: none
+          overwrite: true
+        - path: /etc/rancher/k3s/config.yaml.d/no-kube-proxy.yaml
+          contents:
+            inline: |
+                disable-kube-proxy: true
+          overwrite: true
+        - path: /etc/zincati/config.d/90-disable.toml
+          contents:
+            inline: |
+                [updates]
+                enabled = false
+          overwrite: true
+        - path: /var/lib/rancher/k3s/server/manifests/traefik.yaml.skip
+          contents:
+            inline: ""
+          overwrite: true
 sops:
     kms: []
     gcp_kms: []
@@ -41,8 +59,8 @@ sops:
             Y1lkUHpiaXdDblBsNE9qZVVja2JsQ1UKs1aoQuTrhHaj21mAUM9XD3ZAX9RxJ2zn
             NdTgWE9hPlFIjT2+Ujl+DpFR7b3Kh5LSfEqy/yl+e/HPTGWGSDimSQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-06T08:56:39Z"
-    mac: ENC[AES256_GCM,data:hOOrEqkA3rNtZl2hAV+bh6Z1G8PVc/27kWFWdu+oC6sp5hm2zVHZEL6cx/CHooX5NTEq9kb66jaDQEYB/hHKc4pYGYKs29EiwrK71xCi6lc0Dk349STJad3SIUd2Buzo2uSy09HKLV7VkoyBkpCklA8rqF0r3gfuXX7Ril6Bouo=,iv:yDAvAHXhuLgI4iJRHy59uln4vftoqyLSKGbBiRVqzi8=,tag:1+PmomOOwf9eGBKaQdjlJg==,type:str]
+    lastmodified: "2025-08-09T05:24:09Z"
+    mac: ENC[AES256_GCM,data:Id9Yul3vN4VosvvKcPF9/zH3ZBZRermCfFzfRx9v6ttnGk1A3xfmoHPUGcYZyahkC/q/Az6ltocXBtqp9KW5zLq85t8vcACpgWNt5j4YcIsnQoiEcEx8cS0sNvAEY4yBgqUUtpxyog+W1+kvQOXaKXNI2sAi7xRPXvfOmuOBBUU=,iv:zmoHQLDVr6rHVFhCbJvyQO6+NckzSaZsZj0p5QRY5Xw=,tag:MjoTyy32NR2XGu/oZe2XNw==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
