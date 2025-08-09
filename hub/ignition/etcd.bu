@@ -98,7 +98,9 @@ systemd:
                     --trusted-ca-file=/var/lib/etcd/ca.pem \
                     --peer-cert-file=/var/lib/etcd/peer.pem \
                     --peer-key-file=/var/lib/etcd/peer-key.pem \
-                    --peer-trusted-ca-file=/var/lib/etcd/ca.pem
+                    --peer-trusted-ca-file=/var/lib/etcd/ca.pem \
+                    --auto-compaction-retention=5m \
+                    --auto-compaction-mode=periodic
             ExecStop=/bin/podman stop etcd
 
             [Install]
@@ -127,8 +129,8 @@ sops:
             ODBSWmIySFkwY3l3dEJKRlFyakhKTUkKgKVO2jmDAGSEC9Yd20UY0GJyn1e108Oj
             ZQxR42CPC/QF8F7Eak3FlF2V0UubaR4QcOHe28K2LycKSTcULTy2Jw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T04:35:35Z"
-    mac: ENC[AES256_GCM,data:NaP+jAXV6PokUW2Cab1DvjwEaKJS1ucb7A1x5YQ/mEIZRPhKfR6p9pxti/De8mCQtdOl/mZYQVpCoYTdtTfLWUUSMZDOPg3W7x4uaL/f1B81XZxPMGVZdPsMFjCn9YV+zQeW7gdZv1qrssyRgiAEeoKN6IiHtBG1Ew6Eyn6fen0=,iv:fuAXZ1wAudRq7+ZsKq/0wMD9yhc+RBNHYNGI/kAIt0I=,tag:beDRm/dj0RRNm6fdPofm3w==,type:str]
+    lastmodified: "2025-08-09T23:25:14Z"
+    mac: ENC[AES256_GCM,data:rx9EQZwFcluaDA+cTuoM774QM1YJv4iH+2P89hj1HS1LyZo7pWMT66iHDUDzepFEypKMXr+3HFqWQf4N0knB4zOKA3fsGWz+R4YbOx14mSXY55voJ4SlQg78KGXKSAXbus7gRubV1ZTNlrD5PE+lWM7JXfNGksIAku/L7Fh7Rvo=,iv:3cvqoo/d2B7L41e7dFHET2snGTCFW/bZMsgY4WEA3L8=,tag:7W2E4bhon8GCNaRBdWPn2A==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
