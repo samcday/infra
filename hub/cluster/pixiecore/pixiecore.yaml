@@ -25,11 +25,19 @@ spec:
           - pipefail
           - -c
           - |
+            # (Temporarily) enable testing repo to install butane.
             cat <<HERE >> /etc/apk/repositories
             @testing https://dl-cdn.alpinelinux.org/alpine/edge/testing
             HERE
 
-            apk add bash butane@testing curl fcgiwrap jq kubectl nginx
+            apk add bash butane@testing curl fcgiwrap jq kubectl nginx sops
+
+            mkdir /ignition
+            for f in /butane/*.bu; do
+              name=$(basename $f)
+              cat $f
+              sops --input-type=yaml --output-type=yaml -d $f | chroot /host butane --strict > /ignition/${name/.bu}.ign
+            done
 
             install -m755 /scripts/boot-request.sh /usr/local/bin/boot-request
             install -m755 /scripts/generate-ignition.sh /usr/local/bin/generate-ignition
@@ -38,14 +46,14 @@ spec:
             fcgiwrap -s 'tcp:0.0.0.0:9000' &
             nginx -g "daemon off;"
         volumeMounts:
-          - name: ignition
-            mountPath: /ignition
+          - name: butane
+            mountPath: /butane
           - name: scripts
             mountPath: /scripts
     additionalVolumes:
-      - name: ignition
+      - name: butane
         secret:
-          secretName: ignition
+          secretName: butane
       - name: scripts
         configMap:
           name: api-scripts
