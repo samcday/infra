@@ -35,6 +35,9 @@ spec:
     prometheus-community:
       spec:
         url: https://prometheus-community.github.io/helm-charts
+    tailscale:
+      spec:
+        url: https://pkgs.tailscale.com/helmcharts
     tofu-controller:
       spec:
         url: https://flux-iac.github.io/tofu-controller

@@ -48,6 +48,9 @@ spec:
     matchbox:
       spec:
         path: hub/cluster/matchbox
+    tailscale:
+      spec:
+        path: hub/cluster/tailscale
     pixiecore:
       spec:
         path: hub/cluster/pixiecore
