@@ -8,6 +8,7 @@ set network.lan.ipaddr='10.0.1.1'
 commit network
 set dhcp.@dnsmasq[0].local='/hub.internal/'
 set dhcp.@dnsmasq[0].domain='hub.internal'
+add_list dhcp.@dnsmasq[0].rebind_domain='samcday.com'
 commit dhcp
 EOI
 
