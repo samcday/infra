@@ -6,6 +6,13 @@ resource "tailscale_acl" "policy" {
       {"src": ["*"], "dst": ["*"], "ip": ["*"]},
     ],
 
+    "nodeAttrs": [
+      {
+        "target": ["tag:k8s"],
+        "attr":   ["funnel"],
+      },
+    ],
+
     "tagOwners": {
       "tag:k8s-operator": [],
       "tag:k8s": ["tag:k8s-operator"],
