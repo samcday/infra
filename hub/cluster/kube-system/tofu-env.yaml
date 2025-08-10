@@ -7,8 +7,8 @@ stringData:
     CLOUDFLARE_API_KEY: ENC[AES256_GCM,data:qNCwOP1SgfiuVKctj5+A4O4r9jt2JLnPrjyYxG4rBwNC2f0c0w==,iv:ir/wH8fWkQxTownWVeL/fvZR18QBRG3qyuu+gIa+u1E=,tag:PTZWLFT4dglENo3nx21Fqg==,type:str]
     CLOUDFLARE_EMAIL: ENC[AES256_GCM,data:4CtVyvsVHI9de5dw33k=,iv:IZQprEdgQ/Cr/WhjVshpX8+YDowH+QzsM4tHH7dlgd8=,tag:ba35jmCU1sIT8AR6+zYJZQ==,type:str]
     GITHUB_TOKEN: ENC[AES256_GCM,data:00IYHz44mO/NF5duHTXuIaMXz0WFUhpDHne2rAjr1T3FYkND02LhoDHMRlIKheZWfoyCApvYbwTBWoz9OyQ0qAhbLiLkRf5bR3ylF/FFLd0xx2K6tbmdb99D+eVF,iv:wx/2rhdfKz4RO4Ksup9F0Z2XwSsikYea+JNFek/mYCg=,tag:6bKnLwm7+qDVhWAFcUyivw==,type:str]
-    TAILSCALE_OAUTH_CLIENT_ID: ENC[AES256_GCM,data:k75R3yX+sObQ8GD5yQHX4ME=,iv:KqXzINQbIPctAnxZoa4FEhPIMCEcfyD+p9lU3YZJPZ0=,tag:As0MAnmkKni8xaTXt/qd1g==,type:str]
-    TAILSCALE_OAUTH_CLIENT_SECRET: ENC[AES256_GCM,data:07JD9eNEcaI8FmPye4AVqTW4xAChCGeg41NXKDpWux5EsT4eqK9tXKelq7rHVkO7bXfz64HnH3R3UsrzD8YyaQ==,iv:a8xmEzoiWq0Ac3zRWSdZMzklkKKY/BRGq5AAfakRq7c=,tag:wpe+gzzdI/Dk3bKe8oibjA==,type:str]
+    TAILSCALE_OAUTH_CLIENT_ID: ENC[AES256_GCM,data:HfL9iQ+yq53cNfbBVNP5TQQ=,iv:scmYCIKFqryr4oYV+j05ya+PaVPEgz7SxjjRpDYTL/k=,tag:raALpLemtCyfmv0ZFDkuNg==,type:str]
+    TAILSCALE_OAUTH_CLIENT_SECRET: ENC[AES256_GCM,data:Lx0+++Od/NdeXEwQsrfjvj+NNuiZr2u7ZZj5rhGXJxLd494bLYP5h0AmmKm4VT/Ewk40pO0JvbKFA4wFJWSb,iv:l35p2YzCfGJ9NBYETXVCixbPJPFKpRwvjhU+sKVCdoI=,tag:dKJRA2iWb1EM6+0S74sn7w==,type:str]
 sops:
     kms: []
     gcp_kms: []
@@ -33,8 +33,8 @@ sops:
             WENnT2NXV2t5NTJwUS94c2c1NTR6YzgKjSuu75uYGZHbTaZjeqskQkJU17VaH6Sv
             b+m1mhgzjDelU7G2wh/1q8eJIX0lc548Tkwtpk+DEbVsQhwAXfY6SA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-10T01:28:25Z"
-    mac: ENC[AES256_GCM,data:ZlbptQXxJHZL5dkg/S5pUcbPlr82OJHr6ePeiei7UW5daC6IhnB1Xjy2go2C5PMUxFvLS9QlCUAcXh5aNiSv3dKJXFODc2NQ8uOZaFttQe+5R/dR4omckfDQ9mxUqu63XcHCTc+g0TshJl4QKiYKB894mThoBVmzoVSkQ8nAfjs=,iv:UqmbO7TZUqv3UvD558bqwoW52ivOZN5/ODwlDdDxAaA=,tag:oFbZwqHcEw25PpxuLQYUAg==,type:str]
+    lastmodified: "2025-08-10T01:37:54Z"
+    mac: ENC[AES256_GCM,data:mP5r9NJ3sHRRBeqawPxPW+dLpmvbMsH/mxPil80stOK+tJbGMjCI6xEXNC9q2ynLXdLtJQo309ZQ/r6q9GQYvNu5wc4LYbrUcU1AM0/DPbtvME29rJsVjb69SydRoj0M6zyfhmsZA0NmlY+2o+sC4bho0nwXQyoMic4Jbsaw684=,iv:tNJGEfiGRZsc+oJUuUKqrn+FJH933z8XHLBi4VGQbKw=,tag:c20Dptl/hKUYN/UFSXARew==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4
