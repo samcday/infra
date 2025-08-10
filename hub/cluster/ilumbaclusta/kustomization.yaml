@@ -8,3 +8,4 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - control-plane.yaml
+  - node-bootstrap-token.yaml
