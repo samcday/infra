@@ -181,7 +181,7 @@ storage:
           overwrite: true
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:VU9XAu8NKBt6RlZpA3sgXN/uBQHrPpWvvZ4/i92Prcc+Mzg2SdSKgPpEdXK3iyjTYjxgHJ2uP/peFnSdEAuK5fWxsLe1ulSgw7k+DJrcueP5acWV7bK97sP6H9o6iW2U4lefpRczNqeJOFJMD/em+oj5Au5GYkkzbKbLeNVOnzPSHHUgOtYfp5o+26mN/U9pXgYr5UdsoSO54l3TyIoqI5FH9JxIyDhX0v86ZnbeqVXSVvi6xY9Q/+lWpvv63A9y0QZQ/Ka6aFbPaMdFEM35T6Qd2OT02U7wO8vNEfr+DbvH51OH9mkhAKrXsI6IjH23M5VaByn31jdWBFryn/9q2OHYj/wG/CiQ+dXp/9aFfNfQppeR260a00jVjCUbi679qeUbXMkE+H3EW6yJFA7qgqTAKtJmVtGaQEek4sWhXb+L,iv:7uDdYPpwf92LWFMvDW747Vjd2NfFnEa6AHKxSjUTWyA=,tag:AmCh9oxElIdxzvg65koE4w==,type:str]
+            inline: ENC[AES256_GCM,data:ehM3/8pWK8IRKUPAnmW0+al7T/Eq4snGVRwZOIPuhTfCuLhs876qfaLpxeCCkNYB67QAYO/jfMsAjpqDblB/wupWKyp3O4m/K4HOOp2t6sM6rEtD+JRn0+txCafrXlRrMGxYhrO94kVnadY236kEhCYtZO1P/4McKqwhP60npu7fVPqpShIM+tPlFY2JtSDQT5G4pQ2S7WbU0hZeuWXPrA/VT7//n12ltl+ol0YWjwluRdrgphm8aOhlWKqXAMNuhYECxhOZi6PM0FIAlhvHIAeJZqrreK5/03VLDPWiPldUIMIsfThu1bFM6fzje00O5ZaP3XkYgQyZM+/z+VJzkj9ol4rn/eFeltGsWtTvdbW/CMCcbvzpt7ok0HBnJ+fXQAEYh4n/paJwXHkvIG1AG4Bh07EGVU/NMo3A3aOVwjOk,iv:+HZGbVYklu07y2rxKIQCsp/wmek32vrUjUu5XHb3A3I=,tag:kxJ5a+Q1SPnbuVgipTFyDg==,type:str]
         - path: /var/lib/rancher/k3s/server/manifests/flux-ssh-key.yaml
           overwrite: true
           contents:
@@ -309,8 +309,8 @@ sops:
             TW9UbzZqWU5zTkdjZngrU2poNVptMFkKYwTalddAWl6ru32DSrkIZsQ64SVuGWCf
             G7oxxmu+FZd3pfw8S6Inw/M56hX5pv0890CUpiBVNUQWZuDe9Fvt8w==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T09:38:41Z"
-    mac: ENC[AES256_GCM,data:mUQX1cXMSc3lCPtLSf/7rV+dNLbpheWVPPLIeVnolzv1vti0gER0HfWrq8LeQl9UqlwwAt2RMo5j8b0ug7LAiFmL/opCWGBVDsftUSoYH2bQ+egJskJHAMeR2GPW8lyD2IDX5PzpD0FA3kUAU0NqqKLt0SoKiJiD4oKjb6DQgNs=,iv:uHuyd7dzUZTbvl8v5eNmql1kXLeMzBUJmRWd7YOg1z4=,tag:k7srDmZih13QR3jeJceCxg==,type:str]
+    lastmodified: "2025-08-10T01:21:44Z"
+    mac: ENC[AES256_GCM,data:VIDoHL3IK/f8EspRujXG/woCxPDNAlsV5HteRrjCqMwZtwRT1Ifap3mJoV6nKVYXWFCEH6s1DgBSQ4KymP9DwEaWVtcONc/NoGwYM6H9EnwRZtZLcINlhRxHXs+4viBmwX2aBHYIIlGRvYLkgLf13xtUJ9R6TTvNH1nHvfzpRww=,iv:IntLqDE3KyuH3JhRg1A6OQozLginjGIh/uqHxYo2744=,tag:ps4MJkbwiJZfN2RCA4T5kg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
