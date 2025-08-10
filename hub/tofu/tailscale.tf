@@ -1,3 +1,19 @@
+resource "tailscale_acl" "as_hujson" {
+  acl = <<EOF
+  {
+    "grants": [
+      {"src": ["*"], "dst": ["*"], "ip": ["*"]},
+    ],
+
+    "tagOwners": {
+      "tag:k8s-operator": [],
+      "tag:k8s": ["tag:k8s-operator"],
+    }
+  }
+
+  EOF
+}
+
 resource "tailscale_oauth_client" "tailscale-operator" {
   description = "hub ts-operator"
   scopes      = ["devices:core", "auth_keys"]
