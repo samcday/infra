@@ -1,7 +1,36 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: node-bootstrap-token
-  namespace: ilumbaclusta
+    name: node-bootstrap-token
+    namespace: ilumbaclusta
 stringData:
-  secret: ywfg5qxtz7hqzv7k
+    secret: ENC[AES256_GCM,data:jMypezB4VLeFhXHoruF5dQ==,iv:GsZkmPyyZALQO4aSCuvVt8ZfbzkcUNa2ZfTokuUpT9A=,tag:XO2KcmFTiXufRwV1+7kXCw==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB1YzZVWlgyL3FZS3lWcENu
+            aGdaczduL085OGtZTnYrVEthSFFob3BLRkFvCkJHVysvaWNEdTMvSStHa3llSkI1
+            K3NPMVpLUmdPcFJyYzViS0RnWENGa0kKLS0tIGp2OS80K2xVNWZmNFQySXovQ2gv
+            RVRhbElHb2ozcVAyL3F1VUFveHpSUTQKXG51JIUDZhkZ6MavLSiJFdejkKYkhEfF
+            m/ars5sEjwkp5XfM2JfS9ar9K77Mbn3dniDGkJQbDBH5+4hPIC5Njw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB2UXR1dW0zTGhySTVpSnBz
+            NlgyL0NHT2NCd2dsWFhjcW5mVEJoM0hXUnpvClZTOXFpN0tMQnRzUUtPb1dia3Z4
+            eEVENEhVYTd1RHZNZnpveGtGRmFZTGMKLS0tIGEvcFQyT0JrSjdqdXZCVlM1UDBh
+            bFVRKzhQZjhJNi9yVEh2QVc2bEpoSDQKdSTQeXRI4q7wEeQrwxRbqWh7YcM6UaIW
+            KCrh7LiLCs9BeM6GEiF2o1J0bz1GEKnKHvA7eQGx0tp7eW2WQUsInA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-10T08:11:59Z"
+    mac: ENC[AES256_GCM,data:mb52Z31aAruPdylvuiXcHlYE13p1MMQonxDCQuU8XDTTwLQan9dPjcJbjfCiQb2teYd3I+DPkCW3v5RZa6WMQy29bipa6YIqTtrp2ouGjPV+4EvIPeQ/EoNEnGvHs9jdobOVXb1+tknpZaEc9Gnf1IZbnMw1ZN5r2SVQcdfNeCw=,iv:VIz6Hgu9Brric5tnsuhrdlO7I/tZZlLFE9M1gT7pVgE=,tag:H78kzqtwWeiDUhnmyaoxng==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
