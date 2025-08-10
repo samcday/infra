@@ -32,6 +32,9 @@ spec:
     jetstack:
       spec:
         url: https://charts.jetstack.io
+    piraeus:
+      spec:
+        url: https://piraeus.io/helm-charts/
     prometheus-community:
       spec:
         url: https://prometheus-community.github.io/helm-charts
