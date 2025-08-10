@@ -16,6 +16,10 @@ terraform {
       source = "hashicorp/random"
       version = "3.7.1"
     }
+    tailscale = {
+      source = "tailscale/tailscale"
+      version = "0.21.1"
+    }
   }
 }
 
@@ -23,3 +27,4 @@ provider "cloudflare" {}
 provider "github" {}
 provider "kubernetes" {}
 provider "random" {}
+provider "tailscale" {}
