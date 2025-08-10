@@ -23,4 +23,5 @@ spec:
     matchbox:
     pixiecore:
     prometheus-operator:
+    rook-ceph:
     tailscale:

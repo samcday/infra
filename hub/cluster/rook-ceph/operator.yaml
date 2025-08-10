@@ -1,0 +1,152 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: operator
+  namespace: rook-ceph
+spec:
+  chart:
+    spec:
+      chart: rook-ceph
+      sourceRef:
+        kind: HelmRepository
+        name: rook-release
+        namespace: flux-system
+      version: v1.17.7
+  interval: 1h
+  values:
+    # https://github.com/rook/rook/blob/release-1.17/deploy/charts/rook-ceph/values.yaml
+    csi:
+      csiCephFSProvisionerResource: |
+        - name : csi-provisioner
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-resizer
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-attacher
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-snapshotter
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-cephfsplugin
+          resource:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name : liveness-prometheus
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+      # -- CEPH CSI CephFS plugin resource requirement list
+      # @default -- see values.yaml
+      csiCephFSPluginResource: |
+        - name : driver-registrar
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-cephfsplugin
+          resource:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name : liveness-prometheus
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+      csiRBDProvisionerResource: |
+        - name : csi-provisioner
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-resizer
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-attacher
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-snapshotter
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-rbdplugin
+          resource:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name : csi-omap-generator
+          resource:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name : liveness-prometheus
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      csiRBDPluginResource: |
+        - name : driver-registrar
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        - name : csi-rbdplugin
+          resource:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+        - name : liveness-prometheus
+          resource:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      pluginTolerations: &cptoler
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+      provisionerTolerations: *cptoler
+    monitoring:
+      enabled: true
+    resources:
+      limits:
+        cpu: ~
+      requests:
+        cpu: ~
