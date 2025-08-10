@@ -21,6 +21,7 @@ spec:
     cnpg-system:
     external-dns:
     headscale:
+    ilumbaclusta:
     ingress-nginx:
     matchbox:
     openebs:

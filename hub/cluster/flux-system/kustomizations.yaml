@@ -45,6 +45,9 @@ spec:
     headscale:
       spec:
         path: hub/cluster/headscale
+    ilumbaclusta:
+      spec:
+        path: hub/cluster/ilumbaclusta
     ingress-nginx:
       spec:
         path: hub/cluster/ingress-nginx

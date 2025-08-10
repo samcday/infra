@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: node-bootstrap-token
+  namespace: ilumbaclusta
+stringData:
+  secret: ywfg5qxtz7hqzv7k

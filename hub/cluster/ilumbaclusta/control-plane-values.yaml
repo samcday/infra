@@ -1,0 +1,26 @@
+apiServer:
+  service:
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: ilumbaclusta.samcday.com
+    spec:
+      externalTrafficPolicy: Local
+      loadBalancerClass: io.cilium/bgp-control-plane
+      type: LoadBalancer
+bootstrapTokens:
+  - id: 87vpx1
+    extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+clusterCIDRs: [172.28.0.0/16]
+clusterDNS: [172.27.0.10]
+clusterName: ilumbaclusta
+etcd:
+  certIssuer:
+    name: etcd
+    kind: ClusterIssuer
+  endpoints:
+    - https://hub-az1-cp1.hub.internal:2379
+    - https://hub-az1-cp2.hub.internal:2379
+    - https://hub-az1-cp3.hub.internal:2379
+externalHostname: ilumbaclusta.samcday.com
+parentClusterDomain: cluster.hub.internal
+serviceCIDRs: [172.27.0.0/16]
+serviceIP: 172.27.0.1
