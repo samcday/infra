@@ -1,4 +1,5 @@
 resource "tailscale_acl" "policy" {
+  overwrite_existing_content = true
   acl = <<EOF
   {
     "grants": [
