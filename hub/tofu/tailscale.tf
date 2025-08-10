@@ -1,4 +1,4 @@
-resource "tailscale_acl" "as_hujson" {
+resource "tailscale_acl" "policy" {
   acl = <<EOF
   {
     "grants": [
@@ -15,6 +15,10 @@ resource "tailscale_acl" "as_hujson" {
 }
 
 resource "tailscale_oauth_client" "tailscale-operator" {
+  depends_on = [
+    tailscale_acl.policy
+  ]
+
   description = "hub ts-operator"
   scopes      = ["devices:core", "auth_keys"]
   tags        = ["tag:k8s-operator"]
