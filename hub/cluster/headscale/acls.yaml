@@ -1,0 +1,32 @@
+acls:
+  - action: accept
+    src: [sam]
+    dst:
+      - "*:*"
+      - tag:subnet-router:*
+  - action: accept
+    src: [tag:subnet-router]
+    dst:
+      - "10.0.1.0/24:*"
+      - "10.0.2.0/24:*"
+      - "172.30.0.0/16:*"
+      - "172.31.0.0/16:*"
+  - action: accept
+    src:
+      - tag:subnet-router
+    dst:
+      - tag:subnet-router:*
+  - action: accept
+    src:
+      - tag:cluster
+    dst:
+      - "*:*"
+autoApprovers:
+  routes:
+    10.0.1.0/24: [tag:subnet-router]
+    10.0.2.0/24: [tag:subnet-router]
+    172.30.0.0/16: [tag:subnet-router]
+    172.31.0.0/16: [tag:subnet-router]
+tagOwners:
+  tag:cluster: [sam]
+  tag:subnet-router: [sam]

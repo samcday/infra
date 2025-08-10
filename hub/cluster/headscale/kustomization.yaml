@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: headscale
+configMapGenerator:
+  - name: config
+    files:
+      - acls.yaml
+      - config.yaml
+resources:
+  - ../../../.kustomize-config
+  - helm-release.yaml
+  - noise-privkey.yaml
+  - postgres.yaml

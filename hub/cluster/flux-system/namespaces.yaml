@@ -20,6 +20,7 @@ spec:
     cert-manager:
     cnpg-system:
     external-dns:
+    headscale:
     ingress-nginx:
     matchbox:
     openebs:

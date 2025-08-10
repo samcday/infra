@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: noise-privkey
+    namespace: headscale
+stringData:
+    noise_private.key: ENC[AES256_GCM,data:vxN/jVMChmFJjb2UEHG3GardhFXcIrUkbdHUvrWdJgAvOB9nVsULna4tHhuiSOPlwwKd6W5m2tl3nhliYFX4BecuiVd88aTY,iv:CbdyNjwFdW+M3uBsFpGPJVuNW7O6b4si17zJ74PsL6U=,tag:1xV1yOTI4mZehpn+IZv5Aw==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBjRGpVUHJSY1RiUUJsRkVa
+            WDNMazY0RHJ3MmVaT1Y2NElNVnVZb2g1dVU0CmNRMmZhcG9Hd29TbUVDRnZyS0c3
+            TFB4NnZWSnRvS2ZjcDNONUIxUVVJbmMKLS0tIHdsUGc3UTRXaFBHOHR4blJnTTY4
+            NGlRK3ljZUxxT3J1NVFDeFBYVDlpTkEKdoT+0ASVAjVGO1ECCDIS32hWNxB2b7gs
+            Mctwng3TjqODp9iTbfDZZf5SmTbgIaoXeZ82UvViBtBU1KwqU30pAA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBIYjI3ckRGcXMrT09ZU0Z5
+            TFZoVDF4dmFMSldUYSs3VGxmMUNYSkxzZHpzCnJWSW1IWUJKS0tvNDkvbjlIcU5C
+            ZGFhLzdJWkhHZzNkTGFvYUxIV0dNbWcKLS0tIG1TMzZPb05ONFpYenArOWF0R1Q3
+            cXhyTWRBQXZDTkcrQ05GaHJrUU5yalEKLm8vmNVUPfLkEdPPWGKH8khrbV2JAAHX
+            wKvQD7VjFabETs0+jck43r1upFRmzRdN7i+/nGY8u7YGvVS2B8iLkQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-10T05:26:16Z"
+    mac: ENC[AES256_GCM,data:UuQWPpW3cxi8C3GGQXaBgWXc+mscdJiwacBOJplVzu+dRWGTF3gGOk1MTFPkdO5dkXcqXIC1Y1fd9Clsj9+98021rp1EsPqkGINjkvkmxR4i53iFoJw9yhHUz12Ccj+4dKN/DhVDI72Sna77JMs1rkQ3gLcidpwHUSoUSlRNi3U=,iv:tngM/IeQxgl/8/biQf2+DBoxXWcJIosbsHSWjlMhTVc=,tag:fjwVt7gOKwAQg6XyNfoUSw==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
