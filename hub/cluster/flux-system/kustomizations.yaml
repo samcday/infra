@@ -51,6 +51,9 @@ spec:
     matchbox:
       spec:
         path: hub/cluster/matchbox
+    openebs:
+      spec:
+        path: hub/cluster/openebs
     pixiecore:
       spec:
         path: hub/cluster/pixiecore

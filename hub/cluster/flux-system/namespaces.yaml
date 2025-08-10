@@ -22,6 +22,7 @@ spec:
     external-dns:
     ingress-nginx:
     matchbox:
+    openebs:
     pixiecore:
     prometheus-operator:
     rook-ceph:
