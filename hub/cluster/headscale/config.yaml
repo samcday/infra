@@ -10,7 +10,8 @@
 #
 # https://myheadscale.example.com:443
 #
-server_url: https://TODO.broken
+# This is manually kept in sync with status.loadBalancer.ingress[].hostname of the Ingress resource
+server_url: https://headscale.tail22d0a0.ts.net
 
 # Address to listen to / bind to on the server
 #
