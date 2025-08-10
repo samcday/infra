@@ -33,6 +33,9 @@ spec:
     cert-manager:
       spec:
         path: hub/cluster/cert-manager
+    cnpg-system:
+      spec:
+        path: hub/cluster/cnpg-system
     external-dns:
       spec:
         path: hub/cluster/external-dns

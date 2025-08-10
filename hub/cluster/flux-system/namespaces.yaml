@@ -18,6 +18,7 @@ spec:
     _:
       kind: Namespace
     cert-manager:
+    cnpg-system:
     external-dns:
     ingress-nginx:
     matchbox:
