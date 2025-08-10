@@ -9,5 +9,7 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - helm-release.yaml
+  - internal-net-router-auth.yaml
+  - internal-net-router.yaml
   - noise-privkey.yaml
   - postgres.yaml

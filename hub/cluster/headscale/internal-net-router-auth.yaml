@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: internal-net-router-auth
+    namespace: headscale
+stringData:
+    TS_AUTHKEY: ENC[AES256_GCM,data:Q92sjET0DOmlQw6P7PQJtyBqEWYK3HUr1FMDx8CE/4338DNPaoUJ2RM7Hz2UczQN,iv:yMWt0zDuo1YUG5j+KjIgFkCUMeZA/62u3E7Z+zQOuEk=,tag:m1bG0rnaOKYGTT1ZIwxngQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBWc09vS3NtaVFCS0pxQlRT
+            RzI1N1dvVVJzMHl0Q01jWnQ0RGtxRlBPbUJRCjQwbVl6MGkweEU2TjJvaDBUb3Ra
+            QTR1Z2piSFpKVVQvZ09HR0lDUHJjNlkKLS0tIEdwNzllUWRnd2R1d05aZ3ZTUiti
+            Q3Fhc2RqVTM1RFBYbDkxV3ltRnRaZlEKopAnEWjcRkl8NYouHSFbEKbkW7OZIQhs
+            Sij/vs3dVg+SvV0oJV3s6qY36AyYzIZ3Q1v9OMveJE9AAFR/f+SXEQ==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBZd09hUER3dmhOa1J6M1RO
+            UkZDVnQvM3NrdE1oZGJDK3BtWGxmemY3OFRrCk9Ca3FhdlpkQm9BQ1U0eTRNL2xm
+            YnlMcFhjTFVhVGhjK3dFNWwxUnliYjAKLS0tIFlBbUpFSWNXcFVxRTg1VTF6N2ZY
+            MEhnV1JwbU9Wd0FkSmtKTkl6M1lNemcKGk+sU/c068V3RaQf5rjreNpOoNowFvpS
+            yoGqsXZgtyrLmSVg7Oy1ltNhocGCETabpgDpoBT4SiCFbILQ+9NZ7w==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-10T07:06:40Z"
+    mac: ENC[AES256_GCM,data:fcVjdRSeXu+E2Kllz2n/RRbY8U7O+g7s/ambShK7PziPSrb7PC222qDSx0PiBrPvZQ/H9oZvOa5ZIcmTS1eSjycGrGAR4GIrzrVE2uYRE+Oll7VQyX+7/zBHMZfzEDmXm08UmQO+4t7tSYwnjpjdBedCMPCjUJC4c6FGQRav8vQ=,iv:xF6nYIxhqvkKqBwYQ/8BrtU/elLmhq0ALag8T31QMU0=,tag:Q9t+u5HxFBOvXqpoN9Utow==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
