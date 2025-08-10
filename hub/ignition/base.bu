@@ -24,15 +24,26 @@ passwd:
             - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
 storage:
     files:
+        - path: /etc/rancher/k3s/config.yaml.d/embedded-registry.yaml
+          contents:
+            inline: |
+              embedded-registry: true
+          overwrite: true
         - path: /etc/rancher/k3s/config.yaml.d/no-flannel.yaml
           contents:
             inline: |
-                flannel-backend: none
+              flannel-backend: none
           overwrite: true
         - path: /etc/rancher/k3s/config.yaml.d/no-kube-proxy.yaml
           contents:
             inline: |
-                disable-kube-proxy: true
+              disable-kube-proxy: true
+          overwrite: true
+        - path: /etc/rancher/k3s/registries.yaml
+          contents:
+            inline: |
+              mirrors:
+                "*":
           overwrite: true
         - path: /etc/zincati/config.d/90-disable.toml
           contents:
