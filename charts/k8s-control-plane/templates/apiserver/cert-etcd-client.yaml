@@ -6,6 +6,6 @@ spec:
   secretName: apiserver-etcd-client
   duration: 24h
   usages: [client auth]
-  commonName: cloud
+  commonName: {{ $.Values.clusterName }}
   issuerRef:
     {{- required "missing etcd.certIssuer" $.Values.etcd.certIssuer | toYaml | nindent 4 }}
