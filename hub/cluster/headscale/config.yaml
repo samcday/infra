@@ -237,6 +237,10 @@ dns_config:
   #   - 2a07:a8c0::ab:c123
   #   - 2a07:a8c1::ab:c123
 
+  restricted_nameservers:
+    # resolve hub cluster DNS through well-known CoreDNS ClusterIP
+    cluster.hub.internal: [172.31.0.10]
+
   # Split DNS (see https://tailscale.com/kb/1054/dns/),
   # list of search domains and the DNS to query for each one.
   #
