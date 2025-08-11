@@ -1,0 +1,20 @@
+set -uexo pipefail
+
+uci -q batch << EOI
+set system.@system[0].zonename='Australia/Brisbane'
+set system.@system[0].hostname='ilumbaclusta-router'
+commit system
+set network.lan.ipaddr='10.0.3.1'
+commit network
+set dhcp.@dnsmasq[0].local='/ilumbaclusta.internal/'
+set dhcp.@dnsmasq[0].domain='ilumbaclusta.internal'
+add_list dhcp.@dnsmasq[0].rebind_domain='samcday.com'
+commit dhcp
+EOI
+
+service log restart || true
+ntpd -q -p 0.openwrt.pool.ntp.org || true
+
+chsh -s /bin/bash || true
+
+service dnsmasq restart || true
