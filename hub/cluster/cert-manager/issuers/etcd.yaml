@@ -1,0 +1,8 @@
+# This is the etcd CA for the underlying etcd cluster.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: etcd
+spec:
+  ca:
+    secretName: etcd-ca
