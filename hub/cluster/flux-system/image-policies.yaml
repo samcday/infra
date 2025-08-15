@@ -1,0 +1,31 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: image-policies
+  namespace: flux-system
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  values:
+    _:
+      apiVersion: image.toolkit.fluxcd.io/v1beta2
+      kind: ImagePolicy
+      spec:
+        filterTags:
+          pattern: '^(?P<timestamp>[0-9+]{10}(\.[0-9]+)?)$'
+          extract: '$timestamp'
+        policy:
+          alphabetical:
+            order: asc
+    boot-infra:
+      spec:
+        imageRepositoryRef:
+          name: boot-infra

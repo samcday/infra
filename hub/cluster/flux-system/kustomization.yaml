@@ -3,6 +3,9 @@ kind: Kustomization
 namespace: flux-system
 resources:
   - helm-repos.yaml
+  - image-policies.yaml
+  - image-repositories.yaml
+  - image-update-automation.yaml
   - kustomizations.yaml
   - namespaces.yaml
   - tofu-controller.yaml

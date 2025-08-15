@@ -1,4 +1,3 @@
----
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -18,7 +17,7 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     additionalContainers:
       - name: api
-        image: ghcr.io/samcday/infra-boot-infra:2025081503
+        image: ghcr.io/samcday/infra-boot-infra:2025081503 # {"$imagepolicy": "flux-system:boot-infra"}
         command:
           - ash
           - -uexo
