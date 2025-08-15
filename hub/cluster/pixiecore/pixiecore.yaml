@@ -18,20 +18,13 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     additionalContainers:
       - name: api
-        image: alpine:3
+        image: ghcr.io/samcday/infra-boot-infra:2025081503
         command:
           - ash
           - -uexo
           - pipefail
           - -c
           - |
-            # (Temporarily) enable testing repo to install butane.
-            cat <<HERE >> /etc/apk/repositories
-            @testing https://dl-cdn.alpinelinux.org/alpine/edge/testing
-            HERE
-
-            apk add bash butane@testing curl fcgiwrap jq kubectl nginx sops
-
             mkdir /ignition
             for f in /butane/*.bu; do
               name=$(basename $f)
