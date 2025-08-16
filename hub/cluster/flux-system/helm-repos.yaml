@@ -47,6 +47,9 @@ spec:
     rook-release:
       spec:
         url: https://charts.rook.io/release
+    samcday-tailscale-node-controller:
+      spec:
+        url: https://samcday.github.io/tailscale-node-controller
     tailscale:
       spec:
         url: https://pkgs.tailscale.com/helmcharts
