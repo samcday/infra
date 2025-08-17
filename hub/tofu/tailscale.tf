@@ -2,6 +2,22 @@ resource "tailscale_acl" "policy" {
   overwrite_existing_content = true
   acl = <<EOF
   {
+    "autoApprovers": {
+      "routes": {
+        "10.0.2.0/24": [
+          "tag:hub-node"
+        ],
+        "10.0.1.0/24": [
+          "tag:hub-node"
+        ],
+        "172.30.0.0/16": [
+          "tag:hub-node"
+        ],
+        "172.31.0.0/16": [
+          "tag:hub-node"
+        ],
+      },
+    },
     "grants": [
       {"src": ["*"], "dst": ["*"], "ip": ["*"]},
     ],
@@ -14,6 +30,7 @@ resource "tailscale_acl" "policy" {
     ],
 
     "tagOwners": {
+      "tag:hub-node": [],
       "tag:k8s-operator": [],
       "tag:k8s": ["tag:k8s-operator"],
     }
