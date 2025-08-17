@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tailscale
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailscale
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tailscale
+    spec:
+      hostNetwork: true
+      containers:
+        - name: tailscale
+          image: tailscale/tailscale:latest
+          env:
+            - name: TS_AUTH_ONCE
+              value: 'true'
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: node-oauth
+                  key: client_secret
+            - name: TS_EXTRA_ARGS
+              value: --advertise-tags=tag:hub-node
+            - name: TS_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: TS_KUBE_SECRET
+              value: ''
+            - name: TS_ROUTES
+              value: 10.0.2.0/24,10.0.1.0/24,172.31.0.0/16
+            - name: TS_SOCKET
+              value: /var/run/tailscale/tailscaled.sock
+            - name: TS_STATE_DIR
+              value: /var/lib/tailscale
+            - name: TS_USERSPACE
+              value: "false"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: run-dir
+              mountPath: /var/run/tailscale
+            - name: state
+              mountPath: /var/lib/tailscale
+            - name: tun
+              mountPath: /dev/net/tun
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+      volumes:
+        - name: run-dir
+          hostPath:
+            path: /var/run/tailscale
+            type: DirectoryOrCreate
+        - name: state
+          hostPath:
+            path: /var/lib/tailscale
+            type: DirectoryOrCreate
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
