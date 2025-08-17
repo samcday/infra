@@ -60,3 +60,25 @@ resource "kubernetes_secret" "tailscale-operator-oauth" {
     "client_secret" = tailscale_oauth_client.tailscale-operator.key
   }
 }
+
+resource "tailscale_oauth_client" "node" {
+  depends_on = [
+    tailscale_acl.policy
+  ]
+
+  description = "hub ts-operator"
+  scopes      = ["auth_keys"]
+  tags        = ["tag:hub-node"]
+}
+
+resource "kubernetes_secret" "node-oauth" {
+  metadata {
+    name      = "node-oauth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    "client_id" = tailscale_oauth_client.node.id
+    "client_secret" = tailscale_oauth_client.node.key
+  }
+}
