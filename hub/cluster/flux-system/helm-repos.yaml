@@ -20,6 +20,9 @@ spec:
       kind: HelmRepository
       spec:
         interval: 1h
+    cilium:
+      spec:
+        url: https://helm.cilium.io/
     cloudnative-pg:
       spec:
         url: https://cloudnative-pg.github.io/charts
