@@ -29,6 +29,9 @@ spec:
     community-tooling-charts:
       spec:
         url: https://community-tooling.github.io/charts/
+    coredns:
+      spec:
+        url: https://coredns.github.io/helm
     external-dns:
       spec:
         url: https://kubernetes-sigs.github.io/external-dns/
