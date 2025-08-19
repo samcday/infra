@@ -14,9 +14,11 @@ spec:
             - pipefail
             - -c
             - |
-              kubectl apply -f- <<HERE
+              ca_hash=$(base64 -w0 < /cert/ca.crt)
+              cat <<HERE | sed "s/__CAHASH__/$ca_hash/" > /tmp/manifests
               {{- tpl ($.Files.Get "files/cluster-bootstrap.yaml") $ | nindent 14 -}}
               HERE
+              kubectl apply -f /tmp/manifests
           env:
             - name: KUBECONFIG
               value: /kubeconfig
