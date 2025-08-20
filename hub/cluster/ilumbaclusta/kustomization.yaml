@@ -9,4 +9,5 @@ resources:
   - ../../../.kustomize-config
   - cilium.yaml
   - control-plane.yaml
+  - coredns.yaml
   - node-bootstrap-token.yaml
