@@ -121,6 +121,8 @@ storage:
                       rollOutPods: true
                       replicas: 2
                     routingMode: native
+                    socketLB:
+                      hostNamespaceOnly: true
         - path: /var/lib/rancher/k3s/server/manifests/flux-bootstrap.yaml
           overwrite: true
           contents:
@@ -309,8 +311,8 @@ sops:
             TW9UbzZqWU5zTkdjZngrU2poNVptMFkKYwTalddAWl6ru32DSrkIZsQ64SVuGWCf
             G7oxxmu+FZd3pfw8S6Inw/M56hX5pv0890CUpiBVNUQWZuDe9Fvt8w==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-10T01:21:44Z"
-    mac: ENC[AES256_GCM,data:VIDoHL3IK/f8EspRujXG/woCxPDNAlsV5HteRrjCqMwZtwRT1Ifap3mJoV6nKVYXWFCEH6s1DgBSQ4KymP9DwEaWVtcONc/NoGwYM6H9EnwRZtZLcINlhRxHXs+4viBmwX2aBHYIIlGRvYLkgLf13xtUJ9R6TTvNH1nHvfzpRww=,iv:IntLqDE3KyuH3JhRg1A6OQozLginjGIh/uqHxYo2744=,tag:ps4MJkbwiJZfN2RCA4T5kg==,type:str]
+    lastmodified: "2025-08-20T09:15:31Z"
+    mac: ENC[AES256_GCM,data:O2tUYzjJs2/5Wf7Kv0v1XjG+8GCqLdt+w1YvvMulOMgj86dGLZ7o68xk23L3HZ9L8v7GLnNCH6czKxEitkRLWg/8fQ4JGjV6wfb88EXuJanXNLpCfY1MXj50mAyy9B1VPBzvtIWW5qCwv/FAE34Nyp1lbwZFPiueZ4QfqzupCAg=,iv:sIzu5xmes7sbrYAIApI/5Wk5WaoRqgicFbEQHyRpQvI=,tag:XuGi1LARUIryF5bGRHuRkg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
