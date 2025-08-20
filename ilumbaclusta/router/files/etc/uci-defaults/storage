@@ -1,0 +1,10 @@
+set -uexo pipefail
+
+uci -q batch << EOI
+set fstab.mount_storage=mount
+set fstab.mount_storage.target='/mnt/data'
+set fstab.mount_storage.label='data'
+set fstab.mount_storage.enabled='1'
+
+commit fstab
+EOI

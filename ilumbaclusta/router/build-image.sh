@@ -41,4 +41,7 @@ export DISABLED_SERVICES="dropbear" # using openssh-server instead
 export PACKAGES=$packages
 export PROFILE=$profile
 
+mkdir -p "$build_dir/files/www"
+ln -fs /mnt/data/www/ "$build_dir/files/www/static"
+
 make -C "$build_dir" image PACKAGES="$PACKAGES"
