@@ -51,6 +51,8 @@ kind: Service
 metadata:
   name: matchbox
   namespace: matchbox
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: matchbox-hub.samcday.com
 spec:
   loadBalancerClass: io.cilium/bgp-control-plane
   ports:
