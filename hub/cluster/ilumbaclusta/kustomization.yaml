@@ -7,5 +7,6 @@ configMapGenerator:
       - values.yaml=control-plane-values.yaml
 resources:
   - ../../../.kustomize-config
+  - cilium.yaml
   - control-plane.yaml
   - node-bootstrap-token.yaml
