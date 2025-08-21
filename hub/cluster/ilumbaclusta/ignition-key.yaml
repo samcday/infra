@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: ignition-key
+    namespace: ilumbaclusta
+stringData:
+    age.agekey: ENC[AES256_GCM,data:SQ+ly2VoCrwZhuvb4Ui07Bz6o1KfrxJJltxj6l10Q2rb5GrWB9+XhSCa6ebZRy5XbVa/vtQr5U6YrRNDk8/IsYrclgZ+cwYucDAjo4A774oGmgO32sAPbJ+pRS5+dBbM0QqWf07EJIZjxu5cgHhDwR3Sxv9+JEd6ui4U13fKakjVGWcSZHoj3nEMFrNKvlpdU7PuIb/FbjRm1ut2TuaeQ2FVhny+Fz7bxnmCepG23sG83hfExTftgHqb+rCO,iv:dNiIVZiFiXIIqyFzmQiZnl64xD7oyjyarfoTImkRNGo=,tag:4ZMm//lMUNG/10s8OKTLvQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAwVjRycVRDcXlpVjNHMHRw
+            ZVdIa0piMnhKeSt3OHBiMXArYXVRMjlycUVnCldZU0RyNGdqSmRveG51cEhvbWpy
+            RUVvanNFbUhTM1VwMlZXV25OeHZqWkEKLS0tIG1HQ0RYYlNNYk1FWFZiQW4rbUdB
+            emtsaW5HbzRIK3ltYkRaWEZKaUZNT0EKT6TVPZbTGobq9UCAZUxcz+fanW+ynhc3
+            CvXHeuHxlx1/orzXrXAI+QmqA7CoGqIZFT45gDXIorpvRSCa3bv8tw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBTRm5MWHBsbzd1dkhhQUln
+            UHovRG5qbFl2ck1XNDhtdlQrclF3MThHWmhZClZsMVFxVVpJdzJzTUk2YmNzRTA2
+            ZkpZNHo0UVh1c3Z2ekljd1I2ZVd5Mm8KLS0tIGZjUThDMmFUNzBiNmY5VWxyc0Jh
+            VVg1MjA2ZWFhZlJzUmVpMHN3TU81MDAK6Eg0GeMWj1jYEz4XKexeyhqxIVArzbs6
+            TY/FrBJ62YEwk+hrZMrehTC7OjKs5jeHFSZLaWXKyvDtqkP/R6aEYg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-21T10:51:20Z"
+    mac: ENC[AES256_GCM,data:DQ7jsfCyum5gxlQzsS6s1dTC1c04r7PeXw0a5IecldtkUoyLHLwiQRGfG5HhAgK0j4Bo/WSZxSQ0eKxjeh2j2Dy6pOvrt/2PNiNA0uFnFJWXqG6HL4BQdCHQLscEfGDvUqL3eUT+RsYqRBODM0BOLrKULZc3PAKXfdfbv63eHOo=,iv:8nK4++FaTUHImrzu7QaeOjlD6E/HHN6MX8nT//W4Imc=,tag:YAH7ggaWi7GVDuUvEXrqPw==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4

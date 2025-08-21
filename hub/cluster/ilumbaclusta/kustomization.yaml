@@ -7,7 +7,10 @@ configMapGenerator:
       - values.yaml=control-plane-values.yaml
 resources:
   - ../../../.kustomize-config
+  - butane.yaml
   - cilium.yaml
   - control-plane.yaml
   - coredns.yaml
+  - ignition-key.yaml
+  - matchbox.yaml
   - node-bootstrap-token.yaml

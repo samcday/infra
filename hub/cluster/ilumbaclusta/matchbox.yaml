@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matchbox
+  namespace: ilumbaclusta
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      name: matchbox
+  template:
+    metadata:
+      labels:
+        name: matchbox
+    spec:
+      initContainers:
+      - name: sops
+        image: ghcr.io/samcday/infra-boot-infra:2025081600 # {"$imagepolicy": "flux-system:boot-infra"}
+        command:
+          - ash
+          - -uexo
+          - pipefail
+          - -c
+          - |
+            for f in /butane/*.yaml; do
+              name=$(basename $f)
+              butane --strict < $f > /ignition/${name/.yaml}.ign
+            done
+            butane -d /ignition --strict <<HERE > /ignition/config.ign
+            variant: fcos
+            version: 1.5.0
+            ignition:
+              config:
+                merge:
+                  - local: base.ign
+                  - local: tpm.ign
+                  - local: var.ign
+            HERE
+        env:
+          - name: SOPS_AGE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: ignition-key
+                key: age.agekey
+        volumeMounts:
+            - name: butane
+              mountPath: /butane
+            - name: ignition
+              mountPath: /ignition
+      containers:
+        - name: matchbox
+          image: quay.io/poseidon/matchbox:v0.11.0
+          env:
+            - name: MATCHBOX_ADDRESS
+              value: "0.0.0.0:8080"
+            - name: MATCHBOX_LOG_LEVEL
+              value: "debug"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: https
+              containerPort: 8081
+          livenessProbe:
+            initialDelaySeconds: 5
+            httpGet:
+              path: /
+              port: 8080
+          resources:
+          volumeMounts:
+            - name: assets
+              mountPath: /var/lib/matchbox/assets
+            - name: ignition
+              mountPath: /var/lib/matchbox/ignition
+            - name: data
+              mountPath: /var/lib/matchbox
+      volumes:
+        - name: assets
+          emptyDir: {}
+        - name: butane
+          secret:
+            secretName: butane
+        - name: ignition
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matchbox
+  namespace: matchbox
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: ilumbaclusta-matchbox-hub.samcday.com
+spec:
+  loadBalancerClass: io.cilium/bgp-control-plane
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  selector:
+    name: matchbox
+  type: LoadBalancer

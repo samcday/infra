@@ -39,7 +39,7 @@ set dhcp.boot_efi.servername="$hostname"
 set dhcp.boot_ipxe.networkid=efi64
 
 set dhcp.boot_ipxe=boot
-set dhcp.boot_ipxe.filename='http://matchbox-hub.samcday.com:8080/boot.ipxe'
+set dhcp.boot_ipxe.filename='http://ilumbaclusta-matchbox-hub.samcday.com:8080/boot.ipxe'
 set dhcp.boot_ipxe.serveraddress="$ipaddr"
 set dhcp.boot_ipxe.servername="$hostname"
 set dhcp.boot_ipxe.networkid=ipxe
