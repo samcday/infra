@@ -9,4 +9,9 @@ creation_rules:
       age1hhc33eylx2rzma02acnc2ftgqa6a0nz6eh7ywcy272q5rht2tvssnd6zn8
     encrypted_comment_regex: "cryptme"
     path_regex: hub/ignition/.*\.bu$
+  - age: >-
+      age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
+      age1jy00gkc683vler899943gqau6n5etkvfzpvwqljdn9rslyrg856ss0ggxj
+    encrypted_comment_regex: "cryptme"
+    path_regex: ilumbaclusta/butane/.*\.bu$
   - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56

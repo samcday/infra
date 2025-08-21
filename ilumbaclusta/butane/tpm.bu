@@ -1,0 +1,35 @@
+variant: fcos
+version: 1.5.0
+boot_device:
+    luks:
+        threshold: 2
+        tpm2: true
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBBcnFmQmtQMDB1YVE4NVo2
+            ZVlxVlYvMFFIUTRXUnN5cnIwSzRiWjdabUFvCkRpUmFJSUdvSEo3ZXZEZ01aQ2Zz
+            NHFwMjV6OTAvUzkwRmlscnRqbDR4d0kKLS0tIDJYbHRMYVdvZGxDYlE3Y3lFUFNT
+            ZThTcVhSOWtVakdneFJwZVNhaDN0Q28KLsBzocWXupEJN2xfQpB8p9L4lGnhJrwE
+            VvrQGR7YaH7mEB9Uj9eoaCZzJKmYwGnQHriTVN7nt+ZOU8R9jW4pMg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age1jy00gkc683vler899943gqau6n5etkvfzpvwqljdn9rslyrg856ss0ggxj
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBJbm9xVDZwS3VKeEZ6cU05
+            TmZyamF6UWNUVzBwTjJHc1BwL0wyTWViSG5BCjBxdmpDdUpOTk9WWmRPenAxeExO
+            bS9JWm1NRmE1UWZSMGZUTmJkODlaOUkKLS0tIDhwNmlXcHpCbnFmRWQvTm5wc2RJ
+            ZjdTOUdQcHVzcEU2OHF3WTF4M0FySlEKaL2mPGM6WsExIHy7hA5pdVjufnWXrycY
+            TtxVVJh0qvnh7w4+RNy9o4I6blxfKFGU7QyFVgBiRBAQw7KI9z8KYg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2024-07-01T17:21:02Z"
+    mac: ENC[AES256_GCM,data:hVQpDLYauBi7ynBBjUkHt+opSj3sHXl49wujTBeWj2HnUuwC7Weuqpq1ohi2d2GagvYkyp2Z2MX+LPDo51OcYcihY5mF+M7HkQj0ttQAo7Hlok+bysujpEld2KIWrBjJbHI7bWCRpckpuspqjWo4VEXxCqzXHIitBYqvFDQQ9Ic=,iv:ostspYuLQVP8gGw+yGzC42uya3/+t3Su9oy/dQkGa5Q=,tag:Mh46iS+TzCJhf+wjj/CKsw==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.0

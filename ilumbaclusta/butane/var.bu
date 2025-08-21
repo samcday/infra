@@ -1,0 +1,55 @@
+variant: fcos
+version: 1.5.0
+storage:
+    disks:
+        - device: /dev/disk/by-id/coreos-boot-disk
+          wipe_table: false
+          partitions:
+            - number: 4
+              label: root
+              size_mib: 9216
+              resize: true
+            - number: 5
+              size_mib: 0
+              label: var
+    filesystems:
+        - path: /var
+          device: /dev/mapper/var
+          format: ext4
+          with_mount_unit: true
+    luks:
+        - name: var
+          device: /dev/disk/by-partlabel/var
+          discard: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:fNxzsRtmSKJm6wgC,iv:Of3TfHpMVC3Fkil7ho72IWyYJZluQn9gIvBghUB1r6I=,tag:6hOl4ZZIc2gcxy7n2BgUmg==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBBRG9HT00yRDhERTVCNVlo
+            RXZaNUNYOTRkRTR6REpNTS9tdmlBUUVpRkdFCjVacmNvb2RoR043ODZLSHB4RDNO
+            T2dqRFVzS2RJZjJjOXBpcHpEeS9pZjgKLS0tIFV4SnZ3QWlWQmhydU1JM1BleCti
+            d2dZcHBxR2FWRDJub2VBbFJkbUV5amMKu1MbAF15wtpBHReHYlaMXsHvP/e5EI6I
+            hTY2qo3BBDD5jlyacm8TMbH4+VHPCDML/dz8jLZFuBMVBkqkcy510g==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age1jy00gkc683vler899943gqau6n5etkvfzpvwqljdn9rslyrg856ss0ggxj
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBXc2FnSDIxQnAvVmhWRTYw
+            bVhSMmNiNjJsRGRNQlhUUEgvdW84bXFjUm1NCk03WGJiQitSaURYQVhuRkx0cHRo
+            bWZtN0E3MTlMSXZwWElNaFdaU0xsRkkKLS0tIEY4RmQwOTIzMS9hTTNxSmNOcXRl
+            WUpuNllKdG02djR0WUNTK1ljMEtjcDQKGHxG44w3VrOX5TTGFDAVNOPR8UGU0aV0
+            waNT/4N/Qi35V1aRU/AGezNUesPXHtIg/o5ZdwdERy9g1xMwFVUYvw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-08-21T10:53:22Z"
+    mac: ENC[AES256_GCM,data:9nqWGNAbIr6WowZNr7WdMcHX9v0VTH3LdmuUJOvJgMKjrAHpx7Z4oDq66EdJVofE+fwOz1n6MsmMecfWwvEvW1YVJaW8nzrOsg3IG4Ek7vt2NSELXBiPeMevie879Jyx3JQX7QsRwx7A8u9SBLat5e88zAYn14E9hWdiLe+5/WY=,iv:7i/S0UuTqM+4yTioIfVOstgNbO2S1cDY8sSSJfC5hc4=,tag:Rao8UaWtWg5sc1tEqyXo5g==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4
