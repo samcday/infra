@@ -9,7 +9,6 @@ boot_device:
 kernel_arguments:
     should_exist:
         - mitigations=auto,nosmt=off
-        - selinux=0
     should_not_exist:
         - mitigations=auto,nosmt
 passwd:
@@ -61,8 +60,8 @@ sops:
             K1pwY09NR0NWZElkejVlb3JlSDN4dG8KgHZPHnoQmhtAhWUFqUB+orXhrNFzOwrO
             DPf0bcu/uL6fuLNpl55KOSGfwDweuOAfb9ewfhNYkakK7241JSnxBQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-21T10:10:53Z"
-    mac: ENC[AES256_GCM,data:8fe73X7kzO+v3PCKnCCz81Tq01d1XMkgtnJv/zU6sAo48pISmWufwNoHFAUyhCaHLGCcpIXnQm7ivZse/pqFptHhWayptkKmaxNvu9LOL3leKnAfI/3BFDBakiP3HOVDTNJwEHdTYoxB4heADT5audknv8QzBabMdnyfCZhsWSM=,iv:IdazdwaBE1+oXoKHo/34k8m5kMw7+aLTyGxJhJ25FOI=,tag:13DWlfsIIyKbWfyKG93c/w==,type:str]
+    lastmodified: "2025-08-26T06:11:10Z"
+    mac: ENC[AES256_GCM,data:uyg88GFkBum0t1WMQtWkMFaBNhoE75ZdMGff7KM1NyKiVi4zHyqeRR9spi49oGR+2oBRNxpgzMhd7QwCFlJEzV0s3eAgGM6yH0T81KEas4tkgZT8uDaFQTbIrT2P4AtUjqro7q6vBcbt4VVHoZv6TXwcqPPF5Lewm1Cqlsbviis=,iv:zS27n59CZDbUAnMnKoSNhLtBYgN0Soi4Eg9y/3qFQe4=,tag:W+5ICjsq3MklJqd5lbuegQ==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
