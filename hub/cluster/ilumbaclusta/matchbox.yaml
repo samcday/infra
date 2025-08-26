@@ -36,8 +36,6 @@ spec:
               config:
                 merge:
                   - local: base.ign
-                  - local: tpm.ign
-                  - local: var.ign
             HERE
         env:
           - name: SOPS_AGE_KEY
