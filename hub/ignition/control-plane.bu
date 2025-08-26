@@ -117,6 +117,9 @@ storage:
                       dsrDispatch: opt
                       mode: dsr
                       serviceTopology: true
+                    # Cilium is autodetecting the incorrect 1280 MTU of tailscale0
+                    # https://github.com/cilium/cilium/issues/14339
+                    MTU: 1500
                     operator:
                       rollOutPods: true
                       replicas: 2
@@ -311,8 +314,8 @@ sops:
             TW9UbzZqWU5zTkdjZngrU2poNVptMFkKYwTalddAWl6ru32DSrkIZsQ64SVuGWCf
             G7oxxmu+FZd3pfw8S6Inw/M56hX5pv0890CUpiBVNUQWZuDe9Fvt8w==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-20T09:15:31Z"
-    mac: ENC[AES256_GCM,data:O2tUYzjJs2/5Wf7Kv0v1XjG+8GCqLdt+w1YvvMulOMgj86dGLZ7o68xk23L3HZ9L8v7GLnNCH6czKxEitkRLWg/8fQ4JGjV6wfb88EXuJanXNLpCfY1MXj50mAyy9B1VPBzvtIWW5qCwv/FAE34Nyp1lbwZFPiueZ4QfqzupCAg=,iv:sIzu5xmes7sbrYAIApI/5Wk5WaoRqgicFbEQHyRpQvI=,tag:XuGi1LARUIryF5bGRHuRkg==,type:str]
+    lastmodified: "2025-08-26T06:24:59Z"
+    mac: ENC[AES256_GCM,data:pbw0LpgDTpEEe0XuaTRWeBMb9zB56Rc5WMEQlVhWL8VwywABRRGHEDHVFRHT47Blc5VcYlNDPpoPtEbCCQ25UsVEUSb4uoh+TCdhk7fe9QvQ5n19qQ2Rpo1jh+/LBQnbpfOfwF6OEzhM8ey105BagUw0pJCg4FsqlDigZ3CAPsI=,iv:SOfUbzS+F/LDTxH3wXDmFU7WzIQVNAAc/Dl4qwRkzc4=,tag:Bdhsek91566ln4V+xuOq5g==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
