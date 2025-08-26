@@ -1,0 +1,18 @@
+{
+  "id": "default",
+  "name": "default",
+  "boot": {
+    "kernel": "http://10.0.3.1/static/fedora-coreos-42.20250721.3.0-live-kernel.x86_64",
+    "initrd": [
+      "--name main http://10.0.3.1/static/fedora-coreos-42.20250721.3.0-live-initramfs.x86_64.img"
+    ],
+    "args": [
+      "initrd=main",
+      "coreos.live.rootfs_url=http://10.0.3.1/static/fedora-coreos-42.20250721.3.0-live-rootfs.x86_64.img",
+      "ignition.firstboot",
+      "ignition.platform.id=metal",
+      "ignition.config.url=http://ilumbaclusta-matchbox-hub.samcday.com:8080/ignition?uuid=${uuid}&mac=${mac:hexhyp}"
+    ]
+  },
+  "ignition_id": "config.ign"
+}

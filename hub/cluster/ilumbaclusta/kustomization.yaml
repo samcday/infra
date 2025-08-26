@@ -5,6 +5,12 @@ configMapGenerator:
   - name: control-plane-values
     files:
       - values.yaml=control-plane-values.yaml
+  - name: matchbox-groups
+    files:
+      - default.json=matchbox-group.json
+  - name: matchbox-profiles
+    files:
+      - default.json=matchbox-profile.json
 resources:
   - ../../../.kustomize-config
   - butane.yaml

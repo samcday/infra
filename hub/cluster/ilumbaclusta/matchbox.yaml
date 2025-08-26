@@ -72,20 +72,30 @@ spec:
           volumeMounts:
             - name: assets
               mountPath: /var/lib/matchbox/assets
-            - name: ignition
-              mountPath: /var/lib/matchbox/ignition
             - name: data
               mountPath: /var/lib/matchbox
+            - name: groups
+              mountPath: /var/lib/matchbox/groups
+            - name: ignition
+              mountPath: /var/lib/matchbox/ignition
+            - name: profiles
+              mountPath: /var/lib/matchbox/profiles
       volumes:
         - name: assets
           emptyDir: {}
         - name: butane
           secret:
             secretName: butane
-        - name: ignition
-          emptyDir: {}
         - name: data
           emptyDir: {}
+        - name: groups
+          configMap:
+            name: matchbox-groups
+        - name: ignition
+          emptyDir: {}
+        - name: profiles
+          configMap:
+            name: matchbox-profiles
 ---
 apiVersion: v1
 kind: Service
