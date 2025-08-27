@@ -17,7 +17,7 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     additionalContainers:
       - name: api
-        image: ghcr.io/samcday/infra-boot-infra:2025081600 # {"$imagepolicy": "flux-system:boot-infra"}
+        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
         command:
           - ash
           - -uexo
