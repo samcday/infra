@@ -23,7 +23,6 @@ spec:
     headscale:
     ilumbaclusta:
     ingress-nginx:
-    matchbox:
     openebs:
     pixiecore:
     prometheus-operator:

@@ -54,9 +54,6 @@ spec:
     kube-system:
       spec:
         path: hub/cluster/kube-system
-    matchbox:
-      spec:
-        path: hub/cluster/matchbox
     openebs:
       spec:
         path: hub/cluster/openebs
