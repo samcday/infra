@@ -20,3 +20,4 @@ resources:
   - ignition-key.yaml
   - matchbox.yaml
   - node-bootstrap-token.yaml
+  - nodes.yaml

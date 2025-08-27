@@ -78,7 +78,50 @@ spec:
               mountPath: /var/lib/matchbox/ignition
             - name: profiles
               mountPath: /var/lib/matchbox/profiles
+        - name: generator
+          image: bitnami/kubectl:1.33
+          command:
+            - bash
+            - -uexo
+            - pipefail
+            - -c
+            - |
+              while true; do
+                for node in $(kubectl get nodes -o name); do
+                  name="${node/node\/}"
+                  mac=$(kubectl get $node -o jsonpath='{.metadata.labels.samcday\.com/mac}' | tr '-' ':')
+                  if [[ -z "$mac" ]]; then
+                    echo "WARN: $node has no samcday.com/mac label"
+                    continue
+                  fi
+
+                  cat <<HERE > /groups/$name.json
+              {
+                "id": "$name",
+                "name": "$name",
+                "profile": "default",
+                "selector": {
+                  "mac": "$mac"
+                },
+                "metadata": {}
+              }
+              HERE
+                done
+                sleep 60s
+              done
+          env:
+            - name: KUBECONFIG
+              value: /kubeconfig
+          volumeMounts:
+            - name: admin-kubeconfig
+              mountPath: /kubeconfig
+              subPath: value
+            - name: groups
+              mountPath: /groups
       volumes:
+        - name: admin-kubeconfig
+          secret:
+            secretName: admin-kubeconfig
         - name: assets
           emptyDir: {}
         - name: butane
@@ -87,8 +130,7 @@ spec:
         - name: data
           emptyDir: {}
         - name: groups
-          configMap:
-            name: matchbox-groups
+          emptyDir: {}
         - name: ignition
           emptyDir: {}
         - name: profiles
