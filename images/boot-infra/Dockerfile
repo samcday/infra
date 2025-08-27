@@ -30,3 +30,13 @@ RUN --mount=type=bind,from=builder,source=/home/user/packages/home,target=/pkg \
         kubectl \
         nginx \
         sops
+
+COPY nginx.conf /etc/nginx/conf.d/nginx.conf
+COPY nginx-http.conf /etc/nginx/http.d/default.conf
+
+COPY run.sh /bin/run
+COPY generate-ignition.sh /usr/local/bin/generate-ignition
+COPY boot-request.sh /usr/local/bin/boot-request
+
+RUN chmod +x /bin/run /usr/local/bin/generate-ignition /usr/local/bin/boot-request
+ENTRYPOINT /bin/run
