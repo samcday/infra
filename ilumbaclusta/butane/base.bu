@@ -29,9 +29,6 @@ storage:
                 [updates]
                 enabled = false
           overwrite: true
-        - path: /var/lib/extensions/kubernetes-1.33.raw
-          contents:
-            source: http://10.0.3.1/static/kubernetes-1.33-1.33.3-1.fc42-42-x86-64.raw
 systemd:
     units:
         - name: systemd-sysext.service
@@ -60,8 +57,8 @@ sops:
             K1pwY09NR0NWZElkejVlb3JlSDN4dG8KgHZPHnoQmhtAhWUFqUB+orXhrNFzOwrO
             DPf0bcu/uL6fuLNpl55KOSGfwDweuOAfb9ewfhNYkakK7241JSnxBQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-26T06:11:10Z"
-    mac: ENC[AES256_GCM,data:uyg88GFkBum0t1WMQtWkMFaBNhoE75ZdMGff7KM1NyKiVi4zHyqeRR9spi49oGR+2oBRNxpgzMhd7QwCFlJEzV0s3eAgGM6yH0T81KEas4tkgZT8uDaFQTbIrT2P4AtUjqro7q6vBcbt4VVHoZv6TXwcqPPF5Lewm1Cqlsbviis=,iv:zS27n59CZDbUAnMnKoSNhLtBYgN0Soi4Eg9y/3qFQe4=,tag:W+5ICjsq3MklJqd5lbuegQ==,type:str]
+    lastmodified: "2025-08-26T06:11:40Z"
+    mac: ENC[AES256_GCM,data:zEJM7UbGBH6AIN8ngiavIcJXEUdKfBBhD22u40t6aqDrigtLBBoIM3eEVF2l2/KFL5hhEkxZ4PJErT0W7kIWJrFEY7v/X7Ocd2FkNkczcyNTxZol2/w4WN+XNeY0/Yc4kb+LpSpdhAKG64Bb9A5MNt1M3cnslqGGuP+xQadIvYk=,iv:FgABULgUTv3wYLKgRDxgEaQn9dOSbeDfdX+Hbcp+2UY=,tag:D+lSbX6FxXprLpUdWsyi3Q==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
