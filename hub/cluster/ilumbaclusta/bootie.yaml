@@ -42,7 +42,7 @@ spec:
           mountPath: /ignition
       containers:
       - name: bootie
-        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
+        image: ghcr.io/samcday/infra-bootie:2025082711 # {"$imagepolicy": "flux-system:bootie"}
         env:
         - name: FCOS_VERSION
           value: 42.20250721.3.0

@@ -25,7 +25,7 @@ spec:
         policy:
           alphabetical:
             order: asc
-    boot-infra:
+    bootie:
       spec:
         imageRepositoryRef:
-          name: boot-infra
+          name: bootie

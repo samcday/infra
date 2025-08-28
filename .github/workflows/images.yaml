@@ -25,7 +25,7 @@ jobs:
     strategy:
       matrix:
         name:
-          - boot-infra
+          - bootie
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
