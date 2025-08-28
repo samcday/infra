@@ -18,7 +18,7 @@ spec:
     spec:
       initContainers:
       - name: butane
-        image: ghcr.io/samcday/infra-bootie:2025082711 # {"$imagepolicy": "flux-system:bootie"}
+        image: ghcr.io/samcday/infra-bootie:2025082805 # {"$imagepolicy": "flux-system:bootie"}
         command:
         - ash
         - -uexo
@@ -36,7 +36,7 @@ spec:
           mountPath: /ignition
       containers:
       - name: bootie
-        image: ghcr.io/samcday/infra-bootie:2025082711 # {"$imagepolicy": "flux-system:bootie"}
+        image: ghcr.io/samcday/infra-bootie:2025082805 # {"$imagepolicy": "flux-system:bootie"}
         env:
         - name: FCOS_VERSION
           value: 42.20250721.3.0
