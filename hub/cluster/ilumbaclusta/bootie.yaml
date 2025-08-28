@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: boot-api
+  name: bootie
   namespace: ilumbaclusta
 spec:
   replicas: 1
@@ -10,11 +10,11 @@ spec:
       maxUnavailable: 1
   selector:
     matchLabels:
-      name: boot-api
+      name: bootie
   template:
     metadata:
       labels:
-        name: boot-api
+        name: bootie
     spec:
       initContainers:
       - name: sops
@@ -41,7 +41,7 @@ spec:
         - name: ignition
           mountPath: /ignition
       containers:
-      - name: boot-api
+      - name: bootie
         image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
         env:
         - name: FCOS_VERSION
@@ -78,10 +78,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: boot-api
-  namespace: boot-api
+  name: bootie
+  namespace: bootie
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: ilumbaclusta-bootapi-hub.samcday.com
+    external-dns.alpha.kubernetes.io/hostname: ilumbaclusta-bootie-hub.samcday.com
 spec:
   loadBalancerClass: io.cilium/bgp-control-plane
   ports:
@@ -90,5 +90,5 @@ spec:
       port: 80
       targetPort: 80
   selector:
-    name: boot-api
+    name: bootie
   type: LoadBalancer

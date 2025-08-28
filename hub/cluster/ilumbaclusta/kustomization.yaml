@@ -7,7 +7,7 @@ configMapGenerator:
       - values.yaml=control-plane-values.yaml
 resources:
   - ../../../.kustomize-config
-  - boot-api.yaml
+  - bootie.yaml
   - butane.yaml
   - cilium.yaml
   - control-plane.yaml
