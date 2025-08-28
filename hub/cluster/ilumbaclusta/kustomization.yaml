@@ -5,19 +5,13 @@ configMapGenerator:
   - name: control-plane-values
     files:
       - values.yaml=control-plane-values.yaml
-  - name: matchbox-groups
-    files:
-      - default.json=matchbox-group.json
-  - name: matchbox-profiles
-    files:
-      - default.json=matchbox-profile.json
 resources:
   - ../../../.kustomize-config
+  - boot-api.yaml
   - butane.yaml
   - cilium.yaml
   - control-plane.yaml
   - coredns.yaml
   - ignition-key.yaml
-  - matchbox.yaml
   - node-bootstrap-token.yaml
   - nodes.yaml

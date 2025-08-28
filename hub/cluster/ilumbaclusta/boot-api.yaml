@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boot-api
+  namespace: ilumbaclusta
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      name: boot-api
+  template:
+    metadata:
+      labels:
+        name: boot-api
+    spec:
+      initContainers:
+      - name: sops
+        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
+        command:
+        - ash
+        - -uexo
+        - pipefail
+        - -c
+        - |
+          for f in /butane/*.yaml; do
+            name=$(basename $f)
+            butane --strict < $f > /ignition/${name/.yaml}.ign
+          done
+        env:
+        - name: SOPS_AGE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ignition-key
+              key: age.agekey
+        volumeMounts:
+        - name: butane
+          mountPath: /butane
+        - name: ignition
+          mountPath: /ignition
+      containers:
+      - name: boot-api
+        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
+        env:
+        - name: FCOS_VERSION
+          value: 42.20250721.3.0
+        - name: FCOS_BASE
+          value: http://10.0.3.1/static
+        - name: KUBECONFIG
+          value: /kubeconfig
+        ports:
+        - name: http
+          containerPort: 80
+        livenessProbe:
+          initialDelaySeconds: 5
+          httpGet:
+            path: /
+            port: 80
+        resources:
+        volumeMounts:
+        - name: admin-kubeconfig
+          mountPath: /kubeconfig
+          subPath: value
+        - name: ignition
+          mountPath: /ignition
+      volumes:
+      - name: admin-kubeconfig
+        secret:
+          secretName: admin-kubeconfig
+      - name: butane
+        secret:
+          secretName: butane
+      - name: ignition
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boot-api
+  namespace: boot-api
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: ilumbaclusta-bootapi-hub.samcday.com
+spec:
+  loadBalancerClass: io.cilium/bgp-control-plane
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+  selector:
+    name: boot-api
+  type: LoadBalancer
