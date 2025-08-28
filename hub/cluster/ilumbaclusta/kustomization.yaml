@@ -14,4 +14,3 @@ resources:
   - coredns.yaml
   - ignition-key.yaml
   - node-bootstrap-token.yaml
-  - nodes.yaml
