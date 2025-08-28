@@ -1,21 +1,21 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: pixiecore
+  name: bootie
 rules:
 - apiGroups: [""]
   resources: [nodes]
-  verbs: [get, list]
+  verbs: [create, get, list, patch, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: pixiecore
+  name: bootie
 subjects:
   - kind: ServiceAccount
-    name: pixiecore-generic
-    namespace: pixiecore
+    name: bootie-generic
+    namespace: bootie
 roleRef:
   kind: ClusterRole
-  name: pixiecore
+  name: bootie
   apiGroup: rbac.authorization.k8s.io

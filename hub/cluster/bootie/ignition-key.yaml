@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Secret
 metadata:
     name: ignition-key
-    namespace: kube-system
+    namespace: bootie
 stringData:
     age.agekey: ENC[AES256_GCM,data:2TQs2slCbloJ5CqhGWyrHWfWqd3KIl0EIW+0FIl5awq0lmnRdYvYB2nbk7YHBPXhOuPPdoWS+AjD5HZEMPgnMQgf3sMpRZ5fB4vCo3PdpIWkhISkMrFQEbWfIWuvEJ0UUCYuk0uwlTinHwLr2N0ucev2/KoFiTcMiBFjxWIeEx74TLgF/vUmagK8yV9WYcWtldyv8lzcFSMhv3CK0mer62WC4x0IxXr0qTx1tu0BkTdj5Mg3R8mIT/bSWxc=,iv:m/JmRUPcGrewgrrdBq3rbdq2KZH+MjpsFTryHdgHPCQ=,tag:wajp0l6f73NpGxsMJW0BiQ==,type:str]
 sops:
@@ -29,8 +29,8 @@ sops:
             cGlLb0lYRWFmcVFtOUQrRnp2U09NT0UKyBKIVgf/g+Qa4RaYAAqC6uYIxBmnfR/G
             N4tp1RGen3TOZPqU8ibHYSRqqI1fW3D5MFij6SdTcM6r1npYUussUQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-09T09:11:06Z"
-    mac: ENC[AES256_GCM,data:PQ8AQdJlSwoC/xd534w6kObba0ENIKP8GJIlh10UsXWbhtwGLSJlB1Ou/QFlrCGImSRUwmHd+4gLqRRq32ulI9r4zSbhtfKV7iWBjSCf9qyE4xdf9cftgFM1QRM2Lq2zC5Z2RvEqKF78kDEvIDddWFVveLUPIcrc+H/TpIhqI24=,iv:Zsnx3LY0HWu3ZirwDWCfWP63zxE6pgvddNRqjePgpks=,tag:cEPXZ/4Rpt7J2wibQAOOkw==,type:str]
+    lastmodified: "2025-08-28T04:26:57Z"
+    mac: ENC[AES256_GCM,data:+TwuSpmkC8v48z97sfTFxtJsiaxw8l90IBCUqa7LZJ4aohlQL92RqQ4pnzxDiKqa60/4QfgbtQ/YIw1hxcvl+CDlwQDFfW8sCGHiv3G66e2LWIZR/SsOspCGAfs5ufiBizxQjNReQ8lZeinp4ExJ5LBegjxNkaz0JvlHwv7HWfM=,iv:rwd3pl7N82Mzzjm3Tio+odoHc+UOeJV7uXgQJ94PQAM=,tag:frLiqnt7ZxxhBMUt9qjQjQ==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4

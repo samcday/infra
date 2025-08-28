@@ -1,0 +1,66 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: bootie
+  namespace: kube-system
+spec:
+  chart:
+    spec:
+      chart: generic
+      sourceRef:
+        kind: HelmRepository
+        name: community-tooling-charts
+        namespace: flux-system
+      version: 8.1.1
+  interval: 1h
+  values:
+    # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
+    initContainers:
+      - name: butane
+        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
+        command:
+        - ash
+        - -uexo
+        - pipefail
+        - -c
+        - |
+          for f in /butane/*.yaml; do
+            name=$(basename $f)
+            butane --strict < $f > /ignition/${name/.yaml}.ign
+          done
+        volumeMounts:
+        - name: butane
+          mountPath: /butane
+        - name: ignition
+          mountPath: /ignition
+    additionalVolumeMounts:
+      - name: ignition
+        mountPath: /ignition
+    additionalVolumes:
+      - name: butane
+        secret:
+          secretName: butane
+      - name: ignition
+        emptyDir: {}
+    deploymentStrategy:
+      type: Recreate
+    env:
+      FCOS_BASE: http://10.0.1.1/static
+      FCOS_VERSION: 42.20250721.3.0
+    image:
+      repository: ghcr.io/samcday/infra-boot-infra
+      tag: "2025082711" # {"$imagepolicy": "flux-system:boot-infra:tag"}
+    livenessProbe:
+      httpGet: ~
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+    readinessProbe: ~
+    replicaCount: 1
+    service:
+      type: LoadBalancer
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: bootie-hub.samcday.com
+      loadBalancerClass: io.cilium/bgp-control-plane
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists

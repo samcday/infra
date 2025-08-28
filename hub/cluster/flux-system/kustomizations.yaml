@@ -30,6 +30,9 @@ spec:
           name: infra
           namespace: flux-system
         timeout: 5m
+    bootie:
+      spec:
+        path: hub/cluster/bootie
     cert-manager:
       spec:
         path: hub/cluster/cert-manager
@@ -57,9 +60,6 @@ spec:
     openebs:
       spec:
         path: hub/cluster/openebs
-    pixiecore:
-      spec:
-        path: hub/cluster/pixiecore
     prometheus-operator:
       spec:
         path: hub/cluster/prometheus-operator

@@ -3,10 +3,10 @@ kind: Kustomization
 secretGenerator:
   - name: butane
     files:
-      - base.bu
-      - control-plane.bu
-      - etcd.bu
-      - tpm.bu
-      - var.bu
+      - base.yaml=base.bu
+      - control-plane.yaml=control-plane.bu
+      - etcd.yaml=etcd.bu
+      - tpm.yaml=tpm.bu
+      - var.yaml=var.bu
     options:
       disableNameSuffixHash: true
