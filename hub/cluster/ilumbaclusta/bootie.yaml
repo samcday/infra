@@ -17,8 +17,8 @@ spec:
         name: bootie
     spec:
       initContainers:
-      - name: sops
-        image: ghcr.io/samcday/infra-boot-infra:2025082711 # {"$imagepolicy": "flux-system:boot-infra"}
+      - name: butane
+        image: ghcr.io/samcday/infra-bootie:2025082711 # {"$imagepolicy": "flux-system:bootie"}
         command:
         - ash
         - -uexo
@@ -29,12 +29,6 @@ spec:
             name=$(basename $f)
             butane --strict < $f > /ignition/${name/.yaml}.ign
           done
-        env:
-        - name: SOPS_AGE_KEY
-          valueFrom:
-            secretKeyRef:
-              name: ignition-key
-              key: age.agekey
         volumeMounts:
         - name: butane
           mountPath: /butane
