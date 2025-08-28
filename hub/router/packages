@@ -1,4 +1,5 @@
 bash
+blockd
 curl
 frr-bgpd
 frr-pythontools
@@ -7,7 +8,9 @@ frr-watchfrr
 frr-zebra
 htop
 jq
+kmod-fs-ext4
 kmod-usb-net-cdc-ether
+kmod-usb-storage
 luci
 openssh-server
 openssh-sftp-server
