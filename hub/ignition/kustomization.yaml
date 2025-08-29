@@ -6,7 +6,9 @@ secretGenerator:
       - base.yaml=base.bu
       - control-plane.yaml=control-plane.bu
       - etcd.yaml=etcd.bu
+      - install.yaml=install.bu
       - tpm.yaml=tpm.bu
       - var.yaml=var.bu
+      - worker.yaml=worker.bu
     options:
       disableNameSuffixHash: true
