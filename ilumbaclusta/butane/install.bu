@@ -1,27 +1,16 @@
 variant: fcos
 version: 1.5.0
-passwd:
-    users:
-        - name: sam
-          groups:
-            - adm
-            - wheel
-            - sudo
-            - systemd-journal
-          ssh_authorized_keys:
-            - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
-storage:
-    files:
-        - path: /etc/zincati/config.d/90-disable.toml
-          contents:
-            inline: |
-                [updates]
-                enabled = false
-          overwrite: true
-systemd:
-    units:
-        - name: systemd-sysext.service
-          enabled: true
+boot_device:
+    luks:
+        tang:
+            - url: http://10.0.3.1:9090
+              thumbprint: DUFdADOc0Z3G6HqJPeVw-OtS9XTi-Io1jRPxZjXPh5s
+        discard: true
+kernel_arguments:
+    should_exist:
+        - mitigations=auto,nosmt=off
+    should_not_exist:
+        - mitigations=auto,nosmt
 sops:
     kms: []
     gcp_kms: []
@@ -46,8 +35,8 @@ sops:
             K1pwY09NR0NWZElkejVlb3JlSDN4dG8KgHZPHnoQmhtAhWUFqUB+orXhrNFzOwrO
             DPf0bcu/uL6fuLNpl55KOSGfwDweuOAfb9ewfhNYkakK7241JSnxBQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-29T02:47:39Z"
-    mac: ENC[AES256_GCM,data:AjphNVoKGWGgCb9oAPvx/RIPmWKDM8gvmeLiyct4tj76o0/0KAAznUODVdBCLYqS+W7OrmVkBhXluPOTnM0r6xgPnhkDVJK9WrwIZ3kHkzUlHp2g0J9I8Bzael8ve0mjuU4vBW1zj2Ea32oY6aaf4eFbLFQuKv51jnnOiiuDfT4=,iv:cy9DvT909Waq1rrBVpuJAmZ/lXfYI9kTXm9cE4Rm13w=,tag:VNXqp2GVA6/tyI4lyBmX3A==,type:str]
+    lastmodified: "2025-08-29T02:47:34Z"
+    mac: ENC[AES256_GCM,data:mU2K1/6UP5dakTi8EHw3bcyQ3O5AG89lIUfxg8JX44XTG+3VpOSZX2+qn8mLtN3tSnwf9WRRs4tm2CjlUAD3t39V6qm31jZ/jLeFhQaH92kzesjkBHPF2dL8yzAk0fZJ0r0+ul+xPXY3bovHFBUVYfwaH4m7MtyusQcTBSpEKPw=,iv:ow4Bbc4z+IxXQ3GHnlCcHdoyminGeATlIqn463o4FSw=,tag:YThEM0DAmmVr6Rt3dqEPgA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
