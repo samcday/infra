@@ -48,7 +48,7 @@ storage:
           mode: 384
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:NX8kol3PpIzftw1v51xKIyWr8yKgmmJBzaNIGy3SHUyCj2PPKABmBg==,iv:k1UqH4YmYDERyi2SpXL9gm07cxU4HAe2Ti3Ya+DZkxg=,tag:1CU5p1wCOl9xYpWOemDOuQ==,type:str]
+            inline: ENC[AES256_GCM,data:TzujgHAG6jUpfniSazIi+BKp9yxX2PV4+XDa+ryk1DsS,iv:b2ye0vHRrHrSyHuodRboP2USPEGjmfdI4wYkvqbZbqY=,tag:gJ6qU9ldIBIARgnPETK2Zw==,type:str]
         - path: /var/lib/rancher/k3s/server/etcd-ca.pem
           overwrite: true
           contents:
@@ -341,8 +341,8 @@ sops:
             TW9UbzZqWU5zTkdjZngrU2poNVptMFkKYwTalddAWl6ru32DSrkIZsQ64SVuGWCf
             G7oxxmu+FZd3pfw8S6Inw/M56hX5pv0890CUpiBVNUQWZuDe9Fvt8w==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-29T06:16:25Z"
-    mac: ENC[AES256_GCM,data:K8iLOiLto0p3+dlV3QZmS3wjY1/KevkZgJWHt55XMh17b5hkoCrKoj4Gl8W8Ut8aucdv03qNAQAtXrmK8M8zuy6rA7gFEIBvEi0LsvKUX0ptDJ4w8VQJUYHBp+sSFaCqzEDnrcF0/eelT2esZIjdE4X4EXqTOpeiBj7pz46CWps=,iv:ETvGo6mh3I0K2EZRyTVPUz8aOc6hG6ohNnNhei1O7ms=,tag:G8ynEHn1KYi70AH5xMS5rw==,type:str]
+    lastmodified: "2025-08-29T07:34:33Z"
+    mac: ENC[AES256_GCM,data:6+5yFLJ4wHkLwrle6IgRAQ1vsEJX8nIfiavfz0NpL88OwT/Rth5CYHpPAgSKNR9Ve6fZb+gu4nPDg3FwwBc/1MexE+A7maSKzUpDf3Hr3H/7evgRfxC79TZcgQ3Uhazj1avV9d5JvYRrK3UGS8KOUWC6I6Db3D/dLo44OnmqznI=,iv:/Kd9Auqkad8CZAY35OrLHay9DTeg2PPxdY3mZx/DxF0=,tag:4MEglMZItsP9kdYdf7h/yA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
