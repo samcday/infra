@@ -6,6 +6,7 @@ metadata:
   annotations:
     kustomize.toolkit.fluxcd.io/prune: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
+    samcday.com/boot-device: /dev/sda
     samcday.com/boot-profiles: var,tpm
   labels:
     node-role.kubernetes.io/control-plane: "true"
@@ -20,6 +21,7 @@ metadata:
   annotations:
     kustomize.toolkit.fluxcd.io/prune: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
+    samcday.com/boot-device: /dev/sda
     samcday.com/boot-profiles: var
   labels:
     node-role.kubernetes.io/control-plane: "true"
@@ -34,6 +36,7 @@ metadata:
   annotations:
     kustomize.toolkit.fluxcd.io/prune: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
+    samcday.com/boot-device: /dev/sda
     samcday.com/boot-profiles: var,tpm
   labels:
     node-role.kubernetes.io/control-plane: "true"
