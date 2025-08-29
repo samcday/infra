@@ -55,8 +55,18 @@ else
   boot_device=$(kubectl get "$node" -o jsonpath='{.metadata.annotations.samcday\.com/boot-device}')
 fi
 
-if [[ -z "${boot_device:-}" ]]; then
-  boot_device="/dev/nvme0n1"
+ignition_url="http://$HTTP_HOST/ignition/${node/node\/}"
+
+kernel="$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-kernel.x86_64 initrd=main "
+kernel+="coreos.live.rootfs_url=$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-rootfs.x86_64.img "
+
+if [[ -n "${boot_device:-}" ]]; then
+  # there's a boot device that is expected to stably exist for this machine.
+  # so, boot into FCOS installer
+  kernel+="coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=$ignition_url "
+else
+  # no specific boot device set, live boot
+  kernel+="ignition.firstboot ignition.platform.id=metal ignition.config.url=$ignition_url "
 fi
 
 echo content-type: text/plain
@@ -65,7 +75,7 @@ echo
 cat <<HERE
 #!ipxe
 
-kernel $FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-kernel.x86_64 initrd=main coreos.live.rootfs_url=$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-rootfs.x86_64.img coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=http://$HTTP_HOST/ignition/${node/node\/}
+kernel $kernel
 initrd --name main $FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-initramfs.x86_64.img
 
 boot

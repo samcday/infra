@@ -19,6 +19,9 @@ merge=""
 if kubectl get "$node" -o jsonpath='{.metadata.labels}' | jq -e '. | keys | any(. == "node-role.kubernetes.io/control-plane")' >/dev/null 2>&1; then
   merge+="
       - local: control-plane.ign"
+else
+  merge+="
+      - local: worker.ign"
 fi
 
 if kubectl get "$node" -o jsonpath='{.metadata.labels}' | jq -e '. | keys | any(. == "node-role.kubernetes.io/etcd")' >/dev/null 2>&1; then
@@ -31,6 +34,12 @@ IFS=","; for n in $bootprofiles; do
   merge+="
       - local: $n.ign"
 done
+
+if [[ -n "$(kubectl get "$node" -o jsonpath='{.metadata.annotations.samcday\.com/boot-device}')" ]]; then
+  # a boot device is specified, include `install.ign`
+  merge+="
+      - local: install.ign"
+fi
 
 butane -d /ignition --strict <<HERE
 variant: fcos
