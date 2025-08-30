@@ -44,6 +44,9 @@ spec:
         emptyDir: {}
     deploymentStrategy:
       type: Recreate
+    env:
+      FCOS_BASE: http://10.0.1.1/static
+      FCOS_VERSION: 42.20250721.3.0
     image:
       repository: ghcr.io/samcday/infra-bootie
       tag: "2025083005" # {"$imagepolicy": "flux-system:bootie:tag"}
