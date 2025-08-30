@@ -15,7 +15,7 @@ if [[ -z "${FCOS_VERSION:-}" ]]; then
   FCOS_VERSION=$(curl -s --fail https://builds.coreos.fedoraproject.org/streams/stable.json | jq -r .architectures.x86_64.artifacts.metal.release)
 fi
 
-if [[ -z "${FCOS_BASE}" ]]; then
+if [[ -z "${FCOS_BASE:-}" ]]; then
   FCOS_BASE="https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/$FCOS_VERSION/x86_64"
 fi
 
