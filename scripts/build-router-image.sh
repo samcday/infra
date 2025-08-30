@@ -67,3 +67,29 @@ mkdir -p "$build_dir/files/www"
 ln -fs /mnt/data/www/ "$build_dir/files/www/static"
 
 make -C "$build_dir" image PACKAGES="$PACKAGES"
+
+if [[ -f $root_dir/data-files.txt ]]; then
+  data_dir="$build_topdir/data"
+
+  mkdir -p "$data_dir"
+
+  echo > "$data_dir/SHASUMS.txt"
+
+  while read -r filename; do
+    read -r url
+    read -r sha256
+    read -r
+
+    echo "$sha256  $filename" >> "$data_dir/SHASUMS.txt"
+
+    if [[ ! -f "$data_dir/$filename" ]]; then
+      echo "downloading $url"
+      curl --fail --retry 2 -o "$data_dir/$filename" "$url"
+    fi
+  done <"$root_dir/data-files.txt"
+
+  (
+    cd "$data_dir"
+    sha256sum -c SHASUMS.txt
+  )
+fi
