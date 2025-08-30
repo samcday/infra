@@ -1,0 +1,69 @@
+#!/bin/bash
+set -uexo pipefail
+
+root_dir=$1
+platform=$2
+target=$3
+profile=$4
+
+openwrt_version="24.10.2"
+
+curl="curl --retry 2 --fail"
+
+if [[ ! -d $root_dir ]]; then
+  echo "ERROR: $root_dir does not exist"
+  exit 1
+fi
+
+build_topdir="$root_dir/_build"
+mkdir -p "$build_topdir"
+
+build_dir="$build_topdir/${platform}-${target}-${openwrt_version}"
+tarball=openwrt-imagebuilder-$openwrt_version-$platform-$target.Linux-x86_64.tar.zst
+
+if [[ ! -f "$build_topdir/$tarball" ]]; then
+  $curl -o "$build_topdir/$tarball.tmp" -L "https://downloads.openwrt.org/releases/$openwrt_version/targets/$platform/$target/$tarball"
+  mv "$build_topdir/$tarball.tmp" "$build_topdir/$tarball"
+fi
+
+mkdir -p "$build_dir"
+
+tar --strip-components=1 -C "${build_dir}" --zstd -xvf "$build_topdir/$tarball"
+
+while IFS= read -r -d '' f
+do
+  mkdir -p "$(dirname "$build_dir/$f")"
+  cp "$root_dir/$f" "$build_dir/$f"
+done < <(cd "$root_dir" && find files/ -type f -print0)
+
+while IFS= read -r -d '' f
+do
+  dst=${f/files.enc/files}
+  mkdir -p "$(dirname "$build_dir/$dst")"
+  sops -d "$root_dir/$f" > "$build_dir/$dst"
+done < <(cd "$root_dir" && find files.enc/ -type f -print0)
+
+mkdir -p "$build_dir/files/usr/share/tftp"
+dst="$build_dir/files/usr/share/tftp/undionly.kpxe"
+if [[ ! -f "$dst" ]]; then
+  $curl -s -o "$dst" http://boot.ipxe.org/undionly.kpxe
+fi
+cp "$dst" "$dst.0"
+dst="$build_dir/files/usr/share/tftp/ipxe.efi"
+if [[ ! -f "$dst" ]]; then
+  $curl -s -o "$dst" http://boot.ipxe.org/ipxe.efi
+fi
+
+packages=$(xargs < "$root_dir/packages")
+
+# imagebuilder settings
+export BIN_DIR="."
+export FILES="files"
+export DISABLED_SERVICES="dropbear" # using openssh-server instead
+export PACKAGES=$packages
+export PROFILE=$profile
+
+mkdir -p "$build_dir/files/www"
+ln -fs /mnt/data/www/ "$build_dir/files/www/static"
+
+make -C "$build_dir" image PACKAGES="$PACKAGES"
