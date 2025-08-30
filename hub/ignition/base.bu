@@ -33,12 +33,12 @@ storage:
         - path: /usr/local/bin/k3s
           overwrite: true
           contents:
-            source: https://github.com/k3s-io/k3s/releases/download/v1.33.3%2Bk3s1/k3s
+            source: http://10.0.1.1/static/k3s
           mode: 493
         - path: /usr/local/bin/install-k3s
           overwrite: true
           contents:
-            source: https://get.k3s.io
+            source: http://10.0.1.1/static/install-k3s
           mode: 493
         - path: /var/lib/rancher/k3s/server/manifests/traefik.yaml.skip
           contents:
@@ -86,8 +86,8 @@ sops:
             cUhvOExManM0cnhKYi9vMXN0NDl6U1UKzR81/LgaLk4sTobLNgfFN+WhD8GQ3f3B
             7lbdujDQE3H0//t8KFkwgbUf4quE7IUp3NzeBcQmEnGsTubrpQFjsw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-29T07:34:43Z"
-    mac: ENC[AES256_GCM,data:8NCK8GM8hHtIzKAvRBcCsErT/9YKx/ldBNb2PjipE0o1L2ML4lwYPTqE0nYtRM63TfH1a5Eh8gMTRj8nR7Xwg4SSmv1rUESCfo1SPri8viVd1Tj8iDau+G0ou4rP9BJZO+hcln7Y78drFOOHVoltheT20UOdwmMTqhH8r/Gig/c=,iv:AXi57p57EWNha1ztUkRQGlQxOHdbkRKppzRMusfLg6M=,tag:vA+0vaq1X5mbfGh/a8KYnQ==,type:str]
+    lastmodified: "2025-08-30T07:27:11Z"
+    mac: ENC[AES256_GCM,data:m+CLYFoha1pdzrOpxSVLnleI9MLbEaSEwiHS/UQ1ItAnzioaQWmaKSdGyT62qosChhh3uyPQqocSNs30yitfOaHMmpxdgOzZ2uDjtjxUi86+blZhgroiPjBIecI5dqYfIdzXSV5Wuo25X78iPedOJRNIFjuQyXWtdu5AaVhsGjM=,iv:vXIGFaP4jDlE1G61uhB5Ril/K3Pg+xr6ft5smDo0UJM=,tag:gBv3U/Ab65zV48H2T0pcCg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
