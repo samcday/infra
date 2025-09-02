@@ -35,7 +35,7 @@ spec:
         path: hub/cluster/bootie
     butane:
       spec:
-        path: hub/ignition
+        path: hub/butane
         targetNamespace: bootie
     cert-manager:
       spec:
