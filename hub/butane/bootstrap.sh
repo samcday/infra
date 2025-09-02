@@ -13,7 +13,7 @@ if [[ "${TPM2:-1}" -eq "1" ]]; then
 fi
 
 for f in $profiles; do
-  sops -d --input-type=yaml --output-type=yaml "$f.bu" | podman run --rm -i quay.io/coreos/butane:release > "$workdir/$f.ign"
+  sops -d "$f.yaml" | podman run --rm -i quay.io/coreos/butane:release > "$workdir/$f.ign"
   configmerge="$configmerge
     - local: $f.ign"
 done

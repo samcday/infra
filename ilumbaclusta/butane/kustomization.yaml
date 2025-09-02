@@ -3,10 +3,10 @@ kind: Kustomization
 secretGenerator:
   - name: butane
     files:
-      - base.yaml=base.bu
-      - install.yaml=install.bu
-      - tpm.yaml=tpm.bu
-      - var.yaml=var.bu
-      - worker.yaml=worker.bu
+      - base.yaml
+      - install.yaml
+      - tpm.yaml
+      - var.yaml
+      - worker.yaml
     options:
       disableNameSuffixHash: true
