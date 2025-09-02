@@ -9,7 +9,7 @@ spec:
     secretRef:
       name: ignition-key
   interval: 1h
-  path: hub/ignition
+  path: hub/butane
   prune: true
   sourceRef:
     kind: GitRepository
