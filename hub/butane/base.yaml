@@ -17,7 +17,7 @@ storage:
           mode: 384
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:ehcnvaWdDjwGnBlkOEp0JVO4AW2MmrBD/M/+qyLEFMhQbhL5L17Z0w2op9qaUUeb+M6IWqOGjp2I0mnktKrUpJk=,iv:8mdUAofyADJACawYFqrIPxSycUCkZPb3gR3h9fWKAoA=,tag:u31upwjCC9pve6Jg96krMA==,type:str]
+            inline: ENC[AES256_GCM,data:wrsMxxT/J8HoZiOPh+lVyeWZhjz3TEl8E3AJsIoEvgf7ZbjaG3w+g3XfKvFfV+XBr6xhHWP3MPdXd9foA9FuYPI=,iv:phS7C8FCBJ/9T6FO6JpohHdsAdNWVsWH4RQoYAGx+os=,tag:xQXH58nwjo6ezn0y1oZqWg==,type:str]
         - path: /etc/rancher/k3s/registries.yaml
           contents:
             inline: |
@@ -77,8 +77,8 @@ sops:
             WjA0WmFvL2hNZW94Nm53RjZ3RnhMbzgKhzbaplcswsxf8ZxulQ3+TE+evRF8lz0c
             gE8rv0g+pMZmPULxGYvCUK7hshx3GIea3Ir6WmScm6/zDnHVxqRaUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-30T07:27:11Z"
-    mac: ENC[AES256_GCM,data:m+CLYFoha1pdzrOpxSVLnleI9MLbEaSEwiHS/UQ1ItAnzioaQWmaKSdGyT62qosChhh3uyPQqocSNs30yitfOaHMmpxdgOzZ2uDjtjxUi86+blZhgroiPjBIecI5dqYfIdzXSV5Wuo25X78iPedOJRNIFjuQyXWtdu5AaVhsGjM=,iv:vXIGFaP4jDlE1G61uhB5Ril/K3Pg+xr6ft5smDo0UJM=,tag:gBv3U/Ab65zV48H2T0pcCg==,type:str]
+    lastmodified: "2025-09-02T04:41:29Z"
+    mac: ENC[AES256_GCM,data:GagSWPJCIrSk84mCUgdhJCzITfdJyw97PUR14fGwn3j/foUvhjErzUCvvODj0rcrtbR2TT+gbUR18REcUOs8JN5NAfeMqaGCO0f4TwmgmYIU9nULZ6WY61ezz6OpD2Dm21Y5pYkKIcm5PK2rA7l6E5G7VkjX/JM3Rgfck1sEC1Y=,iv:f+6KilYtsgoC4sTzQnGpzzNkQLlrLl1d5KcMs66mTRk=,tag:wb3M2WHA+e9wYbUP4jvbeA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
