@@ -8,9 +8,7 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - bootie.yaml
-  - butane.yaml
   - cilium.yaml
   - control-plane.yaml
   - coredns.yaml
-  - ignition-key.yaml
   - node-bootstrap-token.yaml
