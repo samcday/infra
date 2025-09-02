@@ -61,7 +61,12 @@ export BIN_DIR="."
 export FILES="files"
 export DISABLED_SERVICES="dropbear" # using openssh-server instead
 export PACKAGES=$packages
-export PROFILE=$profile
+if [[ "$profile" != "-" ]]; then
+  export PROFILE=$profile
+else
+  # x64/64 target has a default rootfs partsize that is much too shrimpy
+  sed -i "$build_dir/.config" -e "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=128/"
+fi
 
 mkdir -p "$build_dir/files/www"
 ln -fs /mnt/data/www/ "$build_dir/files/www/static"
