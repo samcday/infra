@@ -6,7 +6,7 @@ workdir=$(mktemp -d)
 
 configmerge=
 
-profiles="base var etcd control-plane"
+profiles="base control-plane etcd install var"
 
 if [[ "${TPM2:-1}" -eq "1" ]]; then
   profiles="$profiles tpm"
