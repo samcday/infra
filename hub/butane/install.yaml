@@ -4,7 +4,7 @@ boot_device:
     luks:
         tang:
             - url: http://10.0.1.1:9090
-              thumbprint: l9LDpXvDicxQZF-9DI1CsNPont8ktuU5oIean7gU8iw
+              thumbprint: 21RAeVLApxaMmROs1vexRvrZDVCwybf3dAd0W_AN-ds
         discard: true
 kernel_arguments:
     should_exist:
@@ -27,8 +27,8 @@ sops:
             bFlzVTRwc1pkWW1CdE01TTJ0bHB4RmsK0O5hp4SDefKxFsD3HXVgoGSUAyfMvwpR
             BTV7GV+j4PChlr04iGVuKYY2MmIqoFPexvduPUTDwNmFWUQGDQreFA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-29T02:46:45Z"
-    mac: ENC[AES256_GCM,data:79raxzqHb27oaE+JP3b5EoZW2c/NQfWQGa5f2VkxkI7hYsdvnrfEKB0lQBMwGeDLoXoZLsio9ChuNlB+HOWKjMreOUewkmdjcinSOZ81cuAYZcfBQs5+tEt/gxKu6TE2U30Dc/NidKqyw4DpjQVB5W51NAEkSL9wIGIjASVVnhQ=,iv:rcIOZc3hR0lqS+6/LYLnJ+5XOtqO7oUG6+hoFdTOZwI=,tag:Pdht/A97sghWrjTgoHUN/w==,type:str]
+    lastmodified: "2025-09-02T04:54:33Z"
+    mac: ENC[AES256_GCM,data:8WbHqR8TJo6SToUfwWZFxg9GjOGzGOqOSVoFa51c48wau2+VG1gn4WOkYtOW7XLB0smR6dNQOoedQLP4udiuMnQg9gpu+kgf24AVW85tmg3MGdDzzLP/tIVG1jl3jwlN1mC94U1kvEPyr7Dmo3MnvLH41uEpwu8i4BCCP8n+7qc=,iv:nnG3QvZo5FVxsnzdA614+GRmzJtby3OLrVtXAc6lFEg=,tag:kVjKQi2rt64Dxyzq4nAO2A==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
