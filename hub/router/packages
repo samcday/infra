@@ -7,9 +7,11 @@ frr-staticd
 frr-watchfrr
 frr-zebra
 htop
+iperf3
 jq
 kmod-fs-ext4
 kmod-usb-net-cdc-ether
+kmod-usb-net-cdc-ncm
 kmod-usb-storage
 luci
 openssh-server
