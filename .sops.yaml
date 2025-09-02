@@ -1,17 +1,24 @@
 creation_rules:
+  # encrypt files in hub/cluster to the hub age key
   - age: >-
-      age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
-      age127cqf4nc9f36nmsm25mm8lmjlxfh35s7w3hc33nl3ryzy7whp36qe6e2ca
+      age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs,
+      age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
     encrypted_regex: ^(data|stringData)$
     path_regex: hub/cluster
+
+  # encrypt hub Butane configs to the hub age key
   - age: >-
-      age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
-      age1hhc33eylx2rzma02acnc2ftgqa6a0nz6eh7ywcy272q5rht2tvssnd6zn8
+      age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs,
+      age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
     encrypted_comment_regex: "cryptme"
     path_regex: hub/ignition/.*\.yaml$
+
+  # encrypt ilumbaclusta Butane configs to the hub age key
   - age: >-
-      age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56,
-      age1jy00gkc683vler899943gqau6n5etkvfzpvwqljdn9rslyrg856ss0ggxj
+      age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs,
+      age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
     encrypted_comment_regex: "cryptme"
     path_regex: ilumbaclusta/butane/.*\.yaml$
-  - age: age1jl2wrpps4htmzkfuz2rhtuactm45c5ph3dyu8pxul9nt2scsh4aq36rv56
+
+  # encrypt everything else against Sam's personal key
+  - age: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
