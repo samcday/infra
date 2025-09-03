@@ -29,15 +29,14 @@ resource "kubernetes_secret" "ingress-nginx-cloudflared-tunnel-token" {
 resource "cloudflare_api_token" "external-dns" {
   name = "hub-cluster-external-dns"
 
-  policies = [ {
-    effect = "allow",
+  policy {
     permission_groups = [
       data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
     ]
     resources = {
       "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
     }
-  } ]
+  }
 }
 
 resource "kubernetes_secret" "external-dns-token" {
