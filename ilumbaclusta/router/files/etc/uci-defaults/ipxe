@@ -39,7 +39,7 @@ set dhcp.boot_efi.servername="$hostname"
 set dhcp.boot_ipxe.networkid=efi64
 
 set dhcp.boot_ipxe=boot
-set dhcp.boot_ipxe.filename='http://ilumbaclusta-bootie-hub.samcday.com/boot.ipxe?uuid=${uuid}&mac=${mac:hexhyp}&domain=${domain}&hostname=${hostname}&serial=${serial}&arch=${buildarch:uristring}'
+set dhcp.boot_ipxe.filename='http://ilumbaclusta-bootie-hub.samcday.com/boot.ipxe?uuid=\${uuid}&mac=\${mac:hexhyp}&domain=\${domain}&hostname=\${hostname}&serial=\${serial}&arch=\${buildarch:uristring}'
 set dhcp.boot_ipxe.serveraddress="$ipaddr"
 set dhcp.boot_ipxe.servername="$hostname"
 set dhcp.boot_ipxe.networkid=ipxe
