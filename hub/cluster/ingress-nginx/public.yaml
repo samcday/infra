@@ -21,7 +21,7 @@ spec:
     controller:
       allowSnippetAnnotations: true
       extraContainers:
-        - image: cloudflare/cloudflared:2025.7.0
+        - image: cloudflare/cloudflared:2025.8.1
           name: cloudflared
           args:
             - tunnel
