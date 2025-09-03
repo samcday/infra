@@ -1,0 +1,35 @@
+{
+  "extends": [
+    "config:recommended"
+  ],
+  "flux": {
+    "fileMatch": [
+      "hub/cluster/.*\\.yaml$",
+      "ilumbaclusta/cluster/.*\\.yaml$"
+    ]
+  },
+  "helm-values": {
+    "fileMatch": [
+      "hub/cluster/.*\\.yaml$",
+      "ilumbaclusta/cluster/.*\\.yaml$"
+    ]
+  },
+  "kubernetes": {
+    "fileMatch": [
+      "hub/cluster/.*\\.yaml$",
+      "ilumbaclusta/cluster/.*\\.yaml$"
+    ]
+  },
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["matrixdotorg\/synapse"],
+      "changelogUrl": "https://github.com/element-hq/synapse"
+    },
+    {
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["ingress-nginx"],
+      "changelogUrl": "https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/changelog/helm-chart-{{{newVersion}}}.md"
+    }
+  ]
+}
