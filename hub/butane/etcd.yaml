@@ -40,12 +40,14 @@ systemd:
             Wants=network-online.target
 
             [Service]
+            Environment=CLUSTER_STATE=existing
             ExecStartPre=-podman kill etcd
             ExecStartPre=-podman rm etcd
             ExecStart=podman run --name etcd --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
                 /usr/local/bin/etcd \
                     --name %H.hub.internal \
-                    --discovery-srv etcd.hub.internal \
+                    --initial-cluster-state=${CLUSTER_STATE} \
+                    --initial-cluster hub-az1-cp1.hub.internal=https://hub-az1-cp1.hub.internal:2380,hub-az1-cp2.hub.internal=https://hub-az1-cp2.hub.internal:2380,hub-az1-cp3.hub.internal=https://hub-az1-cp3.hub.internal:2380 \
                     --initial-cluster-token hub-etcd \
                     --data-dir /var/lib/etcd \
                     --initial-advertise-peer-urls https://%H.hub.internal:2380 \
@@ -90,8 +92,8 @@ sops:
             V0dwNTVwQzg1L0QwQys0TUsvUVoxRnMKTbpCjOfbsngE9XmSYsXZqonqX/PYjOOx
             sHAp1uZ8QeBdBtvBCMsaq5SyDtGnxsfyAVu23LsLy+lKMJX8nY3jZA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-02T04:50:25Z"
-    mac: ENC[AES256_GCM,data:51+fcQNnSr9Bf11V0c0m6dg59Xsj0Vj2KCQLpXMnlffXsGF+zyyYvQe4QhMiQAVGNy4QllfcWVThkh7Kj3Ws22lm52V+U5gHbtW7akorkNlc33xgOvD4kvAy9SrLv2LPe5tKMST0PQHIjoN6FMmJQSsvCrjZ4dhcjCJ6ke5g+Nk=,iv:nL9x54fTYYELg2fYI//MSS70InSOVg8ALTukJgLYb/s=,tag:wfSBWkmbuuJLcSZjBhfHVw==,type:str]
+    lastmodified: "2025-09-03T22:41:10Z"
+    mac: ENC[AES256_GCM,data:AwMPBJtY1w2O5uGu6v9Twydm+5D/tXydlHT+x1xJFpcOFCpw9FZDGq3bm0bkvhTYqAaYDD2CoW1B7NDFESH5tqVygXpr0qPxhYG7IAsX8YvF6xePcfg0eqvtLejUqOlHH3guTlM8yyxW1xjFERwa8W+/ILWVnFrRMWLT+kJENPo=,iv:ukxFg3nvqIeP995tKb+Lo3vJQq3wx6gnsV3Tj449+/g=,tag:t2YxBFkviqeaAIXk6rmbbw==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4

@@ -24,4 +24,12 @@ version: 1.5.0
 ignition:
   config:
     merge: $configmerge
+systemd:
+  units:
+    - name: etcd.service
+      dropins:
+        - name: newcluster.conf
+          contents: |
+            [Service]
+            Environment=CLUSTER_STATE=new
 HERE
