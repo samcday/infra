@@ -41,9 +41,9 @@ spec:
     cephBlockPools:
       - name: ceph-blockpool
         spec:
-          failureDomain: zone
+          failureDomain: host
           replicated:
-            size: 3
+            size: 2
         storageClass:
           enabled: true
           name: ceph-block
@@ -76,6 +76,7 @@ spec:
       mon:
         count: 3
       placement:
+        # schedule mgrs+mons on control-plane nodes
         mgr:
           nodeAffinity: &cpaff
             requiredDuringSchedulingIgnoredDuringExecution:
@@ -86,17 +87,17 @@ spec:
           tolerations: &cptol
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
-          topologySpreadConstraints:
-            - maxSkew: 1
-              topologyKey: topology.kubernetes.io/zone
-              whenUnsatisfiable: DoNotSchedule
-              labelSelector:
-                matchLabels:
-                  ceph_daemon_type: mgr
-                  rook_cluster: rook-ceph
         mon:
           nodeAffinity: *cpaff
           tolerations: *cptol
+        # schedule OSDs on everything *except* control-plane nodes
+        osd:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
       removeOSDsIfOutAndSafeToRemove: true
       resources:
         cleanup: &resources
@@ -124,29 +125,24 @@ spec:
             memory: 2Gi
         prepareosd: *resources
       storage:
-        useAllDevices: false
-        useAllNodes: false
+        useAllDevices: true
+        useAllNodes: true
         config:
           encryptedDevice: "true"
-        nodes: [] # TODO
-          # - name: az1-2
-          #   devices:
-          #     - name: nvme0n1
     cephFileSystems:
       - name: ceph-filesystem
         spec:
           metadataPool:
             replicated:
-              size: 3
+              size: 2
           dataPools:
-            - failureDomain: zone
+            - failureDomain: host
               replicated:
-                size: 3
+                size: 2
               name: data0
-            - failureDomain: zone
-              erasureCoded:
-                dataChunks: 2
-                codingChunks: 1
+            - failureDomain: host
+              replicated:
+                size: 2
               name: ec
           metadataServer:
             activeCount: 1
@@ -155,15 +151,6 @@ spec:
               tolerations:
                 - key: node-role.kubernetes.io/control-plane
                   operator: Exists
-              topologySpreadConstraints:
-                - maxSkew: 1
-                  topologyKey: topology.kubernetes.io/zone
-                  whenUnsatisfiable: DoNotSchedule
-                  labelSelector:
-                    matchLabels:
-                      ceph_daemon_type: mds
-                      rook_cluster: rook-ceph
-                      rook_file_system: ceph-filesystem
             resources:
               limits:
                 cpu: ~
@@ -210,14 +197,13 @@ spec:
               secretName: rgw-cert
         spec:
           metadataPool:
-            failureDomain: zone
+            failureDomain: host
             replicated:
-              size: 3
+              size: 2
           dataPool:
-            failureDomain: zone
-            erasureCoded:
-              dataChunks: 2
-              codingChunks: 1
+            failureDomain: host
+            replicated:
+              size: 2
           preservePoolsOnDelete: true
           gateway:
             port: 80
