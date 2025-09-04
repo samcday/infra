@@ -52,6 +52,8 @@ systemd:
             [Unit]
             Description=Run k3s install script
             ConditionPathExists=!/etc/%N.stamp
+            After=network-online.target
+            Wants=network-online.target
 
             [Service]
             Type=oneshot
@@ -86,8 +88,8 @@ sops:
             bzk3U2hOdVcyb0s0TkNmdjBaWlNTZFEKFHqxXjRa3EmZJCLAQxH4BQxVWW2q6SXV
             mo3DjP/VOoZVms/tw4bXdxHf0Jz9NJ3B+sOJ9Qzpccqr9j1NPaH7aA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-02T04:41:29Z"
-    mac: ENC[AES256_GCM,data:GagSWPJCIrSk84mCUgdhJCzITfdJyw97PUR14fGwn3j/foUvhjErzUCvvODj0rcrtbR2TT+gbUR18REcUOs8JN5NAfeMqaGCO0f4TwmgmYIU9nULZ6WY61ezz6OpD2Dm21Y5pYkKIcm5PK2rA7l6E5G7VkjX/JM3Rgfck1sEC1Y=,iv:f+6KilYtsgoC4sTzQnGpzzNkQLlrLl1d5KcMs66mTRk=,tag:wb3M2WHA+e9wYbUP4jvbeA==,type:str]
+    lastmodified: "2025-09-04T06:42:55Z"
+    mac: ENC[AES256_GCM,data:3Wckf+VPQuSOvKxePa0UasKydDo04Vhs7/tcgIVeehcJB4nF7fTJyY+Xq6mBqtrPJVOVBM3Uks1hdKMneU7fwIvY5PIff8E/2BBwK9nIA1+O/LyrsmXaBl4gpW/A26OS8Lbc9VKqyqih9NAxsFQ6iFnO2/9okyiS2uDqynaCLMg=,iv:yihnGaHAgLfnl9OZoJEPK5PRhTha/Cnja7AMEW4lHjI=,tag:JWYAWmafWPz12yiAiaxlmQ==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
