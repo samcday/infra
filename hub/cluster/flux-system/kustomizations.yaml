@@ -65,6 +65,10 @@ spec:
     kube-system:
       spec:
         path: hub/cluster/kube-system
+    monitoring:
+      spec:
+        dependsOn: [name: prometheus-operator]
+        path: hub/cluster/monitoring
     openebs:
       spec:
         path: hub/cluster/openebs

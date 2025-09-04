@@ -1,0 +1,109 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      version: 70.3.0
+  interval: 1h
+  values:
+    # https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/values.yaml
+    alertmanager:
+      alertmanagerSpec:
+        alertmanagerConfigMatcherStrategy:
+          type: None
+        externalUrl: https://alertmanager.hub.samcday.com:9093
+        replicas: 3
+      ingress:
+        enabled: true
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt
+        hosts: [alertmanager.hub.samcday.com]
+        ingressClassName: nginx
+        tls:
+          - hosts: [alertmanager.hub.samcday.com]
+            secretName: alertmanager-certificate
+    defaultRules:
+      disabled:
+        KubeClientCertificateExpiration: true
+    grafana:
+      enabled: false
+      forceDeployDatasources: true
+      sidecar:
+        datasources:
+          isDefaultDatasource: false
+    kubeApiServer:
+      serviceMonitor:
+        relabelings:
+          - replacement: hub
+            targetLabel: cluster
+    kubeControllerManager:
+      serviceMonitor:
+        relabelings:
+          - replacement: hub
+            targetLabel: cluster
+    # Using Cilium kube-proxy replacement
+    kubeProxy:
+      enabled: false
+    kubeScheduler:
+      serviceMonitor:
+        relabelings:
+          - replacement: hub
+            targetLabel: cluster
+    prometheus:
+      ingress:
+        enabled: true
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt
+        hosts: [prometheus.hub.samcday.com]
+        ingressClassName: nginx
+        tls:
+          - hosts: [prometheus.hub.samcday.com]
+            secretName: prometheus-certificate
+      prometheusSpec:
+        additionalScrapeConfigs:
+          - job_name: node-exporter
+            static_configs:
+              - targets:
+                  - 10.0.1.1:9100
+                labels:
+                  instance: home-cluster-router
+        enableAdminAPI: true
+        externalLabels:
+          cluster: home
+        externalUrl: https://prometheus.hub.samcday.com
+        podMonitorSelectorNilUsesHelmValues: false
+        probeSelectorNilUsesHelmValues: false
+        replicaExternalLabelName: __replica__
+        replicas: 2
+        resources:
+          requests:
+            memory: 4Gi
+        retention: 1d
+        retentionSize: 1GB
+        ruleSelectorNilUsesHelmValues: false
+        serviceMonitorSelectorNilUsesHelmValues: false
+    # https://github.com/prometheus-community/helm-charts/blob/main/charts/prometheus-node-exporter/values.yaml
+    prometheus-node-exporter:
+      extraArgs:
+        - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+        - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+      hostRootFsMount:
+        enabled: false
+      prometheus:
+        monitor:
+          relabelings:
+          - sourceLabels: [__meta_kubernetes_pod_node_name]
+            targetLabel: instance
+            replacement: $1
+            action: replace
+    prometheusOperator:
+      enabled: false

@@ -35,6 +35,9 @@ spec:
     external-dns:
       spec:
         url: https://kubernetes-sigs.github.io/external-dns/
+    grafana:
+      spec:
+        url: https://grafana.github.io/helm-charts
     ingress-nginx:
       spec:
         url: https://kubernetes.github.io/ingress-nginx

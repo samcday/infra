@@ -1,0 +1,65 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  chart:
+    spec:
+      chart: grafana
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      version: 8.10.4
+  install:
+    remediation:
+      retries: -1
+  interval: 1h
+  releaseName: grafana
+  upgrade:
+    remediation:
+      retries: -1
+  values:
+    # https://github.com/grafana/helm-charts/blob/main/charts/grafana/values.yaml
+    envValueFrom:
+      GF_DATABASE_USER:
+        secretKeyRef:
+          name: grafana-db-20250904-app
+          key: username
+      GF_DATABASE_PASSWORD:
+        secretKeyRef:
+          name: grafana-db-20250904-app
+          key: password
+    ingress:
+      enabled: true
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt
+      hosts: [grafana.hub.samcday.com]
+      ingressClassName: nginx
+      tls:
+        - hosts: [grafana.hub.samcday.com]
+          secretName: grafana-certificate
+    grafana.ini:
+      database:
+        type: postgres
+        host: grafana-db-20250904-rw
+        ssl_mode: require
+    persistence:
+      enabled: false
+    replicas: 2
+    serviceMonitor:
+      enabled: true
+    sidecar:
+      dashboards:
+        enabled: true
+        labelValue: "1"
+        folderAnnotation: grafana_folder
+        provider:
+          foldersFromFilesStructure: true
+        searchNamespace: ALL
+      datasources:
+        enabled: true
+        labelValue: "1"
+        searchNamespace: ALL

@@ -1,0 +1,45 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: grafana-db-20250904
+  namespace: monitoring
+spec:
+  affinity:
+    podAntiAffinityType: required
+  # backup:
+  #   barmanObjectStore: &objstore
+  #     data:
+  #       compression: bzip2
+  #     destinationPath: s3://samcday-home-cluster-backups/postgres/monitoring
+  #     endpointURL: https://s3.eu-central-003.backblazeb2.com
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: postgres-backups-bucket
+  #         key: ACCESS_KEY_ID
+  #       secretAccessKey:
+  #         name: postgres-backups-bucket
+  #         key: SECRET_ACCESS_KEY
+  #   retentionPolicy: 90d
+  bootstrap:
+    initdb:
+      database: grafana
+  imageCatalogRef:
+    apiGroup: postgresql.cnpg.io
+    kind: ClusterImageCatalog
+    name: postgresql
+    major: 15
+  instances: 2
+  storage:
+    size: 10Gi
+    storageClass: openebs-hostpath
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: grafana-db
+  namespace: monitoring
+spec:
+  schedule: "0 0 3 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: grafana-db-20250904
