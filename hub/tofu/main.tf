@@ -4,6 +4,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "4.52.1"
     }
+    dmsnitch = {
+      source  = "plukevdh/dmsnitch"
+      version = "0.1.5"
+    }
     github = {
       source  = "integrations/github"
       version = "6.6.0"

@@ -6,6 +6,7 @@ metadata:
 stringData:
     CLOUDFLARE_API_KEY: ENC[AES256_GCM,data:6X0QjV9xnHf6oDPd0hV4tZBYR6J60wgSBVnwEwK/BC8sZXDC8g==,iv:gniqSxtX5p6Fa0oGMZXRy18Xt9heSJGvOQNVzDtfwv8=,tag:0HFbbRshrSkxuMaEAggDIw==,type:str]
     CLOUDFLARE_EMAIL: ENC[AES256_GCM,data:4CtVyvsVHI9de5dw33k=,iv:IZQprEdgQ/Cr/WhjVshpX8+YDowH+QzsM4tHH7dlgd8=,tag:ba35jmCU1sIT8AR6+zYJZQ==,type:str]
+    DMS_TOKEN: ENC[AES256_GCM,data:UuKVJdQQrlliUozF6LEBEiA7hkkACw==,iv:GTc1o73B760PtPNCvjKSqLWqWIwx1cGl1EmQS5d7RMM=,tag:JIHtPE1gjWoLqqFL2Oh3bQ==,type:str]
     GITHUB_TOKEN: ENC[AES256_GCM,data:BXh1BDo2culxky3EaN+vkcqMjAUYvd7m5vI6JPbqMMKEP84gUfPlHsEn9D7J00qGZVsn2YsdPzvjPbPZ9He8M9Xq614lO4bmnESp5tnUr8TUaaiP+T/hpNiJAH7/,iv:vi4FettAEeYVlptXebyJKK6nut3SD9BZYNYF5TdiTEM=,tag:HEhTsys8QFzjb8Fmoxop0A==,type:str]
     TAILSCALE_OAUTH_CLIENT_ID: ENC[AES256_GCM,data:OtHWzozKpIwgGHjbl2Bfhos=,iv:SBXWOvNzu2Xcs4VvGZoHjKPp+wjKd6vfmAeyzf3kEFs=,tag:/OMS5hMjjOfBnfPEeMqTiw==,type:str]
     TAILSCALE_OAUTH_CLIENT_SECRET: ENC[AES256_GCM,data:h1VUE7UnryUQ39obPjZodjAdpDztn6qDqCI3DzFSWww+tl+WNP8nV+OfJ9bvMyGzUFdJd2flYHSedAN73KDr,iv:+nPcK7x/g/gfCNXG/0eY6SV4D5x9e0rCl7482mjKq4U=,tag:AknAgej+9xwVYdt6X4WKSw==,type:str]
@@ -33,8 +34,8 @@ sops:
             K2NGNTFZNHUyK3c4ZlE3L0N5M0YyTlUKLdhECxxgrYOwED7BInTRoNSrWXQctm6U
             lRGrFUgRr3ofEANmY6ElfpkzJpovBHMq/0tzJJfTHGcYNiaF4JShsQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-02T05:48:02Z"
-    mac: ENC[AES256_GCM,data:kL/PQaMURVTZXyhfPVKmPEKUV9ilEFUFrvcfo9b0UtCC+mKj2ScBseN95VHgjQFZXb0vXjE3rYVaH9Sme4e5lWJWatYA7T0TqwU0bK/YFL7fcT8wR2FZmT0wQgbkvwYTOH4XN6gLzLHzBZPxzofYCXvWDK+UshUiQxgbvVcZkbQ=,iv:9ehx3HDif1so+7rZIULwTyu/cMtoO77Yj5DalyKhLRM=,tag:IetqU1XNpsfq9SjWOraOhg==,type:str]
+    lastmodified: "2025-09-04T01:31:44Z"
+    mac: ENC[AES256_GCM,data:qXqHrhzg6WtQvsWnLd7dLL/LFPtMhNJ0OgmbLbJuGY6pXmj61QhnveRSDXaxxx4HAlGh1L25glr7r+VJoiTtNd0n93pTpgMWGe/TPMYK/iNqL2ZTfH10u9kM0P2WAl1xv1cfVTgIPlSzK6IMU2y1pzVBSdlDEL+Of0xY7VFQBHY=,iv:qcQgQjZDM1McL/nmy24SDcRDzB1AzBijC4pYi+t5Svg=,tag:z8fzfXBhSqYcz9dliZWuOg==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4
