@@ -9,7 +9,7 @@ metadata:
 spec:
   ingressClassName: public-nginx
   rules:
-  - host: flux-hub.samcday.com
+  - host: flux.hub.samcday.com
     http:
       paths:
       - pathType: Prefix
@@ -20,7 +20,7 @@ spec:
             port: 
               number: 80
   tls:
-  - hosts: [flux-hub.samcday.com]
+  - hosts: [flux.hub.samcday.com]
     secretName: webhook-cert
 ---
 apiVersion: notification.toolkit.fluxcd.io/v1

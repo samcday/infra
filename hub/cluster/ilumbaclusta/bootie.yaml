@@ -75,7 +75,7 @@ metadata:
   name: bootie
   namespace: bootie
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: ilumbaclusta-bootie-hub.samcday.com
+    external-dns.alpha.kubernetes.io/hostname: bootie.ilumbaclusta.hub.samcday.com
 spec:
   loadBalancerClass: io.cilium/bgp-control-plane
   ports:

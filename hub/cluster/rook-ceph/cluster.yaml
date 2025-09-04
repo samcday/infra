@@ -203,10 +203,10 @@ spec:
             nginx.ingress.kubernetes.io/proxy-send-timeout: "300s"
             nginx.ingress.kubernetes.io/proxy-read-timeout: "300s"
           host:
-            name: obj-hub.samcday.com
+            name: obj.hub.samcday.com
           ingressClassName: nginx
           tls:
-            - hosts: [obj-hub.samcday.com]
+            - hosts: [obj.hub.samcday.com]
               secretName: rgw-cert
         spec:
           metadataPool:
@@ -242,9 +242,9 @@ spec:
         annotations:
           cert-manager.io/cluster-issuer: letsencrypt
         host:
-          name: ceph-dashboard-hub.samcday.com
+          name: ceph-dashboard.hub.samcday.com
         tls:
-          - hosts: [ceph-dashboard-hub.samcday.com]
+          - hosts: [ceph-dashboard.hub.samcday.com]
             secretName: dashboard-certificate
         ingressClassName: nginx
     monitoring:

@@ -59,7 +59,7 @@ spec:
     service:
       type: LoadBalancer
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: bootie-hub.samcday.com
+        external-dns.alpha.kubernetes.io/hostname: bootie.hub.samcday.com
       loadBalancerClass: io.cilium/bgp-control-plane
     tolerations:
       - key: node-role.kubernetes.io/control-plane
