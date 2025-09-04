@@ -23,7 +23,7 @@ resource "github_repository_webhook" "push" {
     content_type = "form"
     insecure_ssl = false
     secret       = data.kubernetes_secret.webhook-token.data.token
-    url          = "https://flux.hub.samcday.com${data.kubernetes_resource.receiver.object.status.webhookPath}"
+    url          = "https://flux-hub.samcday.com${data.kubernetes_resource.receiver.object.status.webhookPath}"
   }
   events     = ["push"]
   repository = "infra"
