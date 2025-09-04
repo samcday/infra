@@ -24,6 +24,7 @@ spec:
     headscale:
     ilumbaclusta:
     ingress-nginx:
+    monitoring:
     openebs:
     prometheus-operator:
     rook-ceph:
