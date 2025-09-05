@@ -75,10 +75,10 @@ spec:
               - targets:
                   - 10.0.1.1:9100
                 labels:
-                  instance: home-cluster-router
+                  instance: hub-cluster-router
         enableAdminAPI: true
         externalLabels:
-          cluster: home
+          cluster: hub
         externalUrl: https://prometheus.hub.samcday.com
         podMonitorSelectorNilUsesHelmValues: false
         probeSelectorNilUsesHelmValues: false

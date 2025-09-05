@@ -44,7 +44,7 @@ spec:
           #     command:
           #     - tailscale
           #     - ping
-          #     - home-cluster-router
+          #     - hub-cluster-router
           #   initialDelaySeconds: 1
           #   periodSeconds: 5
           securityContext:
