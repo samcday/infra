@@ -82,3 +82,13 @@ resource "kubernetes_secret" "node-oauth" {
     "client_secret" = tailscale_oauth_client.node.key
   }
 }
+
+resource "tailscale_dns_split_nameservers" "cluster-dns" {
+  domain = "cluster.hub.internal"
+  nameservers = ["172.31.0.10"]
+}
+
+resource "tailscale_dns_split_nameservers" "lan-dns" {
+  domain = "hub.internal"
+  nameservers = ["10.0.1.1"]
+}
