@@ -19,6 +19,7 @@ spec:
       kind: Namespace
     bootie:
     cert-manager:
+    cloud-cluster:
     cnpg-system:
     external-dns:
     headscale:

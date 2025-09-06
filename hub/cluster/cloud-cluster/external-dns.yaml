@@ -1,0 +1,52 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-dns
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: external-dns
+      version: 1.16.0
+      sourceRef:
+        kind: HelmRepository
+        name: external-dns
+        namespace: flux-system
+  install:
+    crds: Skip
+  interval: 1h
+  values:
+    # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/values.yaml
+    env:
+      - name: CF_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: cloudflare
+            key: token
+    extraArgs:
+      - --cloudflare-proxied
+      - --kubeconfig=/kubeconfig
+    extraVolumeMounts:
+      - name: cert
+        mountPath: /cert
+      - name: kubeconfig
+        mountPath: /kubeconfig
+        subPath: kubeconfig
+    extraVolumes:
+      - name: cert
+        secret:
+          secretName: admin
+      - name: kubeconfig
+        configMap:
+          name: kubeconfig
+    logLevel: debug
+    policy: sync
+    provider: cloudflare
+    rbac:
+      create: false
+    serviceAccount:
+      create: false
+    serviceMonitor:
+      enabled: true
+    txtOwnerId: cloud-cluster-20240713

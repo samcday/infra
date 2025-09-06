@@ -20,6 +20,9 @@ spec:
       kind: HelmRepository
       spec:
         interval: 1h
+    autoscaler:
+      spec:
+        url: https://kubernetes.github.io/autoscaler
     cilium:
       spec:
         url: https://helm.cilium.io/

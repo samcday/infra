@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: hcloud-token
+    namespace: cloud-cluster
+stringData:
+    token: ENC[AES256_GCM,data:7BfsR8VJpt9WbbsWDheKXtZgblzrcjsf/WLieVTXfStxaKI3bpyCuJsQn8W6HfAn8OWDITsm4FA/1+maQg1Rcw==,iv:m0mizAKKi2RH/KgLy1cMoNGLfMFDKvYrP6631v5h5gk=,tag:X9WdnBwz4v4fcWLsVQoKPQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsQnVoSkRSMXQ4bkdGb2pZ
+            MWJ5QnkwN2wxbTFJdnl1S3UxMXdBMjZuZTBFCkFtUUlLcWdTZjlVYy9jMFg4Y0xI
+            cjRtRlRwcWZZRmQvUVpsY1ZWS2lzSGsKLS0tIDZaK2lVOEExS3MrMU8rLzExSGhv
+            a0xHSCtOKzJjV2VXQVd6aTVqM3VVUWcKez/x0KGd/JnEU+n9PDjLK1oFqVFFJ4EY
+            h/5FG12N5aYmy26+m7aKruZLcgVTwEiMWQZ1CLVSPpPyYcptldE3AA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBqNUt2a2JhR1RMclRtemp5
+            K3dIZkhuWmt1RTRQR0tCOTdIRm8vckQ3SzMwClR1dzZvS3BxZzd5TXZ3K01MUFkr
+            bEd5bkpNR0dFcjVzT2dacEx3R3dyYUUKLS0tIGNYd2p4SU51NUFKbUJyanFJT1hi
+            Y1QzVWNkOGxRZlJaRTJpOXYrMEQyMEUKQxYW//evPjzmDpeqsZ7C3vCXK/JczlaM
+            J+CHBm/ZvaLC+4eqJ9Y4DwVACsq1xm0qxbLMjnl2EBTSYkn7jfNuBw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-09-06T09:59:35Z"
+    mac: ENC[AES256_GCM,data:DnnWod8K3Z4XXvpErydnsuooOoF8G5EZKhPBX9LoIAKix2x+JqEW8MAFrrF8wqkelo9IuTmwbtCiNMyDog6GH7DvnXKAxIR6XtP3LBLSihllpx56Y2gF5PeFunw1GpDBlRr/3An8/Nl/CiWD79xuc6FdE9+tPq9capODGVNqQbs=,iv:wC7hgyCWQ2VVIeEh0do9Az3ZbAeSPdUL7ul3Y5mOos4=,tag:soj3Gy8rL9cWbkYzF517bA==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4

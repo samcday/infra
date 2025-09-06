@@ -1,0 +1,23 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: control-plane
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/k8s-control-plane
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  interval: 1h
+  valuesFrom:
+    - kind: ConfigMap
+      name: control-plane-values
+    - kind: Secret
+      name: node-bootstrap-token
+      valuesKey: secret
+      targetPath: bootstrapTokens[0].secret

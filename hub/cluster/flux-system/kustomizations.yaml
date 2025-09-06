@@ -40,6 +40,9 @@ spec:
     cert-manager:
       spec:
         path: hub/cluster/cert-manager
+    cloud-cluster:
+      spec:
+        path: hub/cluster/cloud-cluster
     cnpg-system:
       spec:
         path: hub/cluster/cnpg-system

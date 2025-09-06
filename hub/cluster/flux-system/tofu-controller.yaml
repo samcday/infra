@@ -43,6 +43,7 @@ spec:
         tag: v0.16.0-rc.5
       serviceAccount:
         allowedNamespaces:
+          - cloud-cluster
           - flux-system
           - kube-system
 ---
@@ -54,5 +55,6 @@ metadata:
 data:
   secretName: github-token
   resources: |-
+    - namespace: cloud-cluster
     - namespace: flux-system
     - namespace: kube-system
