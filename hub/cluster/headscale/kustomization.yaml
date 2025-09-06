@@ -13,3 +13,4 @@ resources:
   # - internal-net-router.yaml
   - noise-privkey.yaml
   - postgres.yaml
+  - tofu.yaml

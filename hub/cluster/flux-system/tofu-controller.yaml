@@ -45,6 +45,7 @@ spec:
         allowedNamespaces:
           - cloud-cluster
           - flux-system
+          - headscale
           - kube-system
 ---
 apiVersion: v1
@@ -57,4 +58,5 @@ data:
   resources: |-
     - namespace: cloud-cluster
     - namespace: flux-system
+    - namespace: headscale
     - namespace: kube-system

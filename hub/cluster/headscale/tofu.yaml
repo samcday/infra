@@ -1,0 +1,47 @@
+apiVersion: infra.contrib.fluxcd.io/v1alpha2
+kind: Terraform
+metadata:
+  name: tofu
+  namespace: headscale
+spec:
+  approvePlan: auto
+  disableDriftDetection: true
+  interval: 1h
+  path: ./hub/cluster/headscale
+  runnerPodTemplate:
+    spec:
+      env:
+        - name: HEADSCALE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: admin-apikey
+              key: key
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  storeReadablePlan: human
+  # suspend: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: headscale-tofu
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  resourceNames: [headscale-preauth-key]
+  verbs: [create, patch, update, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headscale-tofu
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: headscale-tofu
+subjects:
+  - kind: ServiceAccount
+    name: tf-runner
+    namespace: headscale
