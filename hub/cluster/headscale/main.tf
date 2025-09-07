@@ -93,6 +93,6 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
   }
 
   data = {
-    key = headscale_pre_auth_key.cloud-cluster-apiserver.key
+    authkey = headscale_pre_auth_key.cloud-cluster-apiserver.key
   }
 }

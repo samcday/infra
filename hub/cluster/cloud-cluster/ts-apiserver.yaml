@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-apiserver
+  namespace: cloud-cluster
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ts-apiserver
+  template:
+    metadata:
+      labels:
+        app: ts-apiserver
+    spec:
+      serviceAccountName: ts-apiserver
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5
+          env:
+            - name: TS_DEST_IP
+              value: '$(APISERVER_SERVICE_HOST)'
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net
+            - name: TS_HOSTNAME
+              value: cloud-cluster-apiserver
+            - name: TS_KUBE_SECRET
+              value: apiserver-ts-auth
+            - name: TS_USERSPACE
+              value: "false"
+          resources:
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ts-apiserver
+  namespace: cloud-cluster
+rules:
+- apiGroups: [""]
+  resourceNames: [apiserver-ts-auth]
+  resources: [secrets]
+  verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ts-apiserver
+  namespace: cloud-cluster
+subjects:
+- kind: ServiceAccount
+  name: ts-apiserver
+roleRef:
+  kind: Role
+  name: ts-apiserver
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ts-apiserver
+  namespace: cloud-cluster

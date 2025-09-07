@@ -16,3 +16,4 @@ resources:
   - hcloud-token.yaml
   - node-bootstrap-token.yaml
   - tofu.yaml
+  - ts-apiserver.yaml

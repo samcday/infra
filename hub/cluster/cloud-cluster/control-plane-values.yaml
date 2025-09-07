@@ -1,11 +1,7 @@
 apiServer:
   service:
-    annotations:
-      external-dns.alpha.kubernetes.io/hostname: cloud-cluster.hub.samcday.com
     spec:
-      externalTrafficPolicy: Local
-      loadBalancerClass: io.cilium/bgp-control-plane
-      type: LoadBalancer
+      type: ClusterIP
 bootstrapTokens:
   - id: ser34c
     extraGroups: [system:bootstrappers:kubeadm:default-node-token]
@@ -20,7 +16,8 @@ etcd:
     - https://hub-az1-cp1.hub.internal:2379
     - https://hub-az1-cp2.hub.internal:2379
     - https://hub-az1-cp3.hub.internal:2379
-externalHostname: cloud-cluster.hub.samcday.com
+# see the ts-apiserver resources
+externalHostname: cloud-cluster-apiserver.tailnet.hub.samcday.com
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:
