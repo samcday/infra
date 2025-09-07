@@ -42,7 +42,8 @@ spec:
           name: kubeconfig
     logLevel: debug
     policy: sync
-    provider: cloudflare
+    provider:
+      name: cloudflare
     rbac:
       create: false
     serviceAccount:
