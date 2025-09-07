@@ -55,7 +55,7 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   ephemeral      = true
 }
 
-resource "kubernetes_secret" "cloud-cluster-node-preauth-keys" {
+resource "kubernetes_secret" "cloud-cluster-node-preauth" {
   metadata {
     name      = "node-ts-auth"
     namespace = "cloud-cluster"
