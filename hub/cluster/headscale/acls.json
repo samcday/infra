@@ -47,5 +47,8 @@
                 "tag:hub-subnet-router"
             ]
         }
+    },
+    "tagOwners": {
+        "tag:hub-subnet-router": []
     }
 }
