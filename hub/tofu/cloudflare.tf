@@ -61,3 +61,16 @@ resource "kubernetes_secret" "cert-manager-token" {
     "token" = cloudflare_api_token.external-dns.value
   }
 }
+
+# cloud-cluster has its own external-dns instance that can reuse the main token
+# that hub's external-dns uses
+resource "kubernetes_secret" "cloud-cluster-external-dns" {
+  metadata {
+    name      = "cloudflare"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    "token" = cloudflare_api_token.external-dns.value
+  }
+}
