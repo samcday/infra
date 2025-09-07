@@ -5,7 +5,7 @@ data "cloudflare_zone" "samcday" {
 }
 
 resource "random_password" "tunnel_secret" {
-  length           = 32
+  length = 32
 }
 
 resource "cloudflare_tunnel" "tunnel" {

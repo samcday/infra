@@ -17,11 +17,11 @@ terraform {
       version = "2.38.0"
     }
     random = {
-      source = "hashicorp/random"
+      source  = "hashicorp/random"
       version = "3.7.2"
     }
     tailscale = {
-      source = "tailscale/tailscale"
+      source  = "tailscale/tailscale"
       version = "0.21.1"
     }
   }

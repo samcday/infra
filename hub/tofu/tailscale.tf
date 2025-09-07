@@ -1,6 +1,6 @@
 resource "tailscale_acl" "policy" {
   overwrite_existing_content = true
-  acl = <<EOF
+  acl                        = <<EOF
   {
     "autoApprovers": {
       "routes": {
@@ -56,7 +56,7 @@ resource "kubernetes_secret" "tailscale-operator-oauth" {
   }
 
   data = {
-    "client_id" = tailscale_oauth_client.tailscale-operator.id
+    "client_id"     = tailscale_oauth_client.tailscale-operator.id
     "client_secret" = tailscale_oauth_client.tailscale-operator.key
   }
 }
@@ -78,17 +78,17 @@ resource "kubernetes_secret" "node-oauth" {
   }
 
   data = {
-    "client_id" = tailscale_oauth_client.node.id
+    "client_id"     = tailscale_oauth_client.node.id
     "client_secret" = tailscale_oauth_client.node.key
   }
 }
 
 resource "tailscale_dns_split_nameservers" "cluster-dns" {
-  domain = "cluster.hub.internal"
+  domain      = "cluster.hub.internal"
   nameservers = ["172.31.0.10"]
 }
 
 resource "tailscale_dns_split_nameservers" "lan-dns" {
-  domain = "hub.internal"
+  domain      = "hub.internal"
   nameservers = ["10.0.1.1"]
 }
