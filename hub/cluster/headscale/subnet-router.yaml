@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: internal-net-router
+  name: subnet-router
   namespace: headscale
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: internal-net-router
+      app: subnet-router
   template:
     metadata:
       labels:
-        app: internal-net-router
+        app: subnet-router
     spec:
-      serviceAccountName: internal-net-router
+      serviceAccountName: subnet-router
       containers:
         - name: tailscale
           # NOTE: don't upgrade past 1.84.3 until https://github.com/tailscale/tailscale/issues/16804 is resolved
@@ -35,7 +35,7 @@ spec:
             - name: TS_AUTHKEY
               valueFrom:
                 secretKeyRef:
-                  name: internal-net-router-auth
+                  name: subnet-router-ts-auth
                   key: TS_AUTHKEY
             - name: TS_ROUTES
               value: 10.0.2.0/24,10.0.1.0/24,172.30.0.0/16,172.31.0.0/16
@@ -54,32 +54,32 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: internal-net-router
+  name: subnet-router
   namespace: headscale
 rules:
 - apiGroups: [""]
   resources: [secrets]
   verbs: [create]
 - apiGroups: [""]
-  resourceNames: [internal-net-router-0, internal-net-router-1]
+  resourceNames: [subnet-router-0, subnet-router-1]
   resources: [secrets]
   verbs: [get, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: internal-net-router
+  name: subnet-router
   namespace: headscale
 subjects:
 - kind: ServiceAccount
-  name: internal-net-router
+  name: subnet-router
 roleRef:
   kind: Role
-  name: internal-net-router
+  name: subnet-router
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: internal-net-router
+  name: subnet-router
   namespace: headscale

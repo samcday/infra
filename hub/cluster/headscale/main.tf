@@ -55,6 +55,17 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   ephemeral      = true
 }
 
+resource "kubernetes_secret" "subnet-router-preauth" {
+  metadata {
+    name      = "subnet-router-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.cloud-cluster-apiserver.key
+  }
+}
+
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
   metadata {
     name      = "node-ts-auth"
