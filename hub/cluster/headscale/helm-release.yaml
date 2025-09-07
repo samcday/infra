@@ -63,6 +63,8 @@ spec:
         path: /metrics
         port: metrics
     ports:
+      - name: grpc
+        containerPort: 50443
       - name: http
         containerPort: 8080
       - name: metrics
@@ -71,6 +73,17 @@ spec:
       httpGet:
         path: /metrics
         port: metrics
+    service:
+      ports:
+        - targetPort: grpc
+          protocol: TCP
+          name: grpc
+          port: 50443
+        - targetPort: http
+          protocol: TCP
+          name: http
+          port: 80
+
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
