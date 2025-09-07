@@ -32,23 +32,47 @@ resource "headscale_user" "simonet" {
   name = "simonet"
 }
 
-resource "headscale_pre_auth_key" "cloud" {
+resource "headscale_pre_auth_key" "cloud-cluster-apiserver" {
   user           = headscale_user.cloud.id
   time_to_expire = "520w"
   reusable       = true
+  ephemeral      = true
+  acl_tags       = ["tag:cloud-cluster-apiserver"]
 }
 
-resource "kubernetes_secret" "preauth-keys" {
-  for_each = {
-    "cloud-cluster" = headscale_pre_auth_key.cloud.key
-  }
+resource "headscale_pre_auth_key" "cloud-cluster-nodes" {
+  user           = headscale_user.cloud.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+  acl_tags       = ["tag:cloud-cluster-node"]
+}
 
+resource "headscale_pre_auth_key" "cloud-cluster" {
+  user           = headscale_user.cloud.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+}
+
+resource "kubernetes_secret" "cloud-cluster-node-preauth-keys" {
   metadata {
-    name      = "headscale-preauth-key"
-    namespace = each.key
+    name      = "node-ts-auth"
+    namespace = "cloud-cluster"
   }
 
   data = {
-    key = each.value
+    key = headscale_pre_auth_key.cloud-cluster-nodes.key
+  }
+}
+
+resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
+  metadata {
+    name      = "apiserver-ts-auth"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.cloud-cluster-apiserver.key
   }
 }

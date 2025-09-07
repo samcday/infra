@@ -86,7 +86,7 @@ spec:
       id: v4kos4
   valuesFrom:
     - kind: Secret
-      name: headscale-preauth-key
+      name: node-ts-auth
       valuesKey: key
       targetPath: tsAuthKey
     - kind: Secret

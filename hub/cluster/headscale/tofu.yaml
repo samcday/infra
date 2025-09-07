@@ -30,7 +30,9 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [secrets]
-  resourceNames: [headscale-preauth-key]
+  resourceNames:
+    - apiserver-ts-auth
+    - node-ts-auth
   verbs: [create, patch, update, get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
