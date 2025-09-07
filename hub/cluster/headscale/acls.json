@@ -3,7 +3,7 @@
         {
             "action": "accept",
             "src": [
-                "sam"
+                "@sam"
             ],
             "dst": [
                 "*:*",
@@ -59,10 +59,10 @@
     },
     "tagOwners": {
         "tag:cluster": [
-            "sam"
+            "@sam"
         ],
         "tag:subnet-router": [
-            "sam"
+            "@sam"
         ]
     }
 }
