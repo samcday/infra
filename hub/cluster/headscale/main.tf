@@ -55,6 +55,14 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   ephemeral      = true
 }
 
+resource "headscale_pre_auth_key" "subnet-router" {
+  user           = headscale_user.hub.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+}
+
+
 resource "kubernetes_secret" "subnet-router-preauth" {
   metadata {
     name      = "subnet-router-ts-auth"
@@ -62,7 +70,7 @@ resource "kubernetes_secret" "subnet-router-preauth" {
   }
 
   data = {
-    key = headscale_pre_auth_key.cloud-cluster-apiserver.key
+    key = headscale_pre_auth_key.subnet-router.key
   }
 }
 
