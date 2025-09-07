@@ -7,13 +7,13 @@
             ],
             "dst": [
                 "*:*",
-                "tag:subnet-router:*"
+                "tag:hub-subnet-router:*"
             ]
         },
         {
             "action": "accept",
             "src": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ],
             "dst": [
                 "10.0.1.0/24:*",
@@ -25,44 +25,27 @@
         {
             "action": "accept",
             "src": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ],
             "dst": [
-                "tag:subnet-router:*"
-            ]
-        },
-        {
-            "action": "accept",
-            "src": [
-                "tag:cluster"
-            ],
-            "dst": [
-                "*:*"
+                "tag:hub-subnet-router:*"
             ]
         }
     ],
     "autoApprovers": {
         "routes": {
             "10.0.1.0/24": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ],
             "10.0.2.0/24": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ],
             "172.30.0.0/16": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ],
             "172.31.0.0/16": [
-                "tag:subnet-router"
+                "tag:hub-subnet-router"
             ]
         }
-    },
-    "tagOwners": {
-        "tag:cluster": [
-            "sam@"
-        ],
-        "tag:subnet-router": [
-            "sam@"
-        ]
     }
 }
