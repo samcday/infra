@@ -35,12 +35,18 @@ spec:
     coredns:
       spec:
         url: https://coredns.github.io/helm
+    descheduler:
+      spec:
+        url: https://kubernetes-sigs.github.io/descheduler/
     external-dns:
       spec:
         url: https://kubernetes-sigs.github.io/external-dns/
     grafana:
       spec:
         url: https://grafana.github.io/helm-charts
+    hcloud:
+      spec:
+        url: https://charts.hetzner.cloud
     ingress-nginx:
       spec:
         url: https://kubernetes.github.io/ingress-nginx
