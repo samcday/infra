@@ -65,6 +65,9 @@ spec:
     rook-release:
       spec:
         url: https://charts.rook.io/release
+    samcday-hetznercloud-csi-driver:
+      spec:
+        url: https://github.com/samcday/hetznercloud-csi-driver.git
     samcday-tailscale-node-controller:
       spec:
         url: https://samcday.github.io/tailscale-node-controller
