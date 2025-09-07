@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Secret
 metadata:
-    name: hcloud-token
+    name: hcloud
     namespace: cloud-cluster
 stringData:
     token: ENC[AES256_GCM,data:7BfsR8VJpt9WbbsWDheKXtZgblzrcjsf/WLieVTXfStxaKI3bpyCuJsQn8W6HfAn8OWDITsm4FA/1+maQg1Rcw==,iv:m0mizAKKi2RH/KgLy1cMoNGLfMFDKvYrP6631v5h5gk=,tag:X9WdnBwz4v4fcWLsVQoKPQ==,type:str]
@@ -29,8 +29,8 @@ sops:
             Y1QzVWNkOGxRZlJaRTJpOXYrMEQyMEUKQxYW//evPjzmDpeqsZ7C3vCXK/JczlaM
             J+CHBm/ZvaLC+4eqJ9Y4DwVACsq1xm0qxbLMjnl2EBTSYkn7jfNuBw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-06T09:59:35Z"
-    mac: ENC[AES256_GCM,data:DnnWod8K3Z4XXvpErydnsuooOoF8G5EZKhPBX9LoIAKix2x+JqEW8MAFrrF8wqkelo9IuTmwbtCiNMyDog6GH7DvnXKAxIR6XtP3LBLSihllpx56Y2gF5PeFunw1GpDBlRr/3An8/Nl/CiWD79xuc6FdE9+tPq9capODGVNqQbs=,iv:wC7hgyCWQ2VVIeEh0do9Az3ZbAeSPdUL7ul3Y5mOos4=,tag:soj3Gy8rL9cWbkYzF517bA==,type:str]
+    lastmodified: "2025-09-07T04:04:41Z"
+    mac: ENC[AES256_GCM,data:D9exK3yePAJdc53k1TFC87Gwkg51ta7VdEWOCbEslHjU3sZkgEIwxAghVEo2/OKrdsm/0j+eYO2BpZhb3NdhLotijZ/jb7DCK6n32dbZPrUbVZcp0BlNdTyJFiQIBp1T38562hwvWSIknwS3BDqNyyJeKgTSAecQAFXWfa8DhdM=,iv:YlnfduzVRfVhCb4izAhKm/gXRkU29AgCVfyzSChfxUo=,tag:ByfpJTE7SQpf73vx8JWAFA==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4
