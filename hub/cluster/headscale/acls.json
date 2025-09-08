@@ -6,8 +6,7 @@
                 "sam@"
             ],
             "dst": [
-                "*:*",
-                "tag:hub-subnet-router:*"
+                "*:*"
             ]
         },
         {
@@ -19,17 +18,14 @@
                 "10.0.1.0/24:*",
                 "10.0.2.0/24:*",
                 "172.30.0.0/16:*",
-                "172.31.0.0/16:*"
+                "172.31.0.0/16:*",
+                "tag:hub-subnet-router:*"
             ]
         },
         {
             "action": "accept",
-            "src": [
-                "tag:hub-subnet-router"
-            ],
-            "dst": [
-                "tag:hub-subnet-router:*"
-            ]
+            "src": ["tag:cloud-cluster-node"],
+            "dst": ["tag:cloud-cluster-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -49,6 +45,8 @@
         }
     },
     "tagOwners": {
-        "tag:hub-subnet-router": []
+        "tag:hub-subnet-router": [],
+        "tag:cloud-cluster-apiserver": [],
+        "tag:cloud-cluster-node": []
     }
 }
