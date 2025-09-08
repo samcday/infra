@@ -19,5 +19,9 @@ spec:
       name: control-plane-values
     - kind: Secret
       name: node-bootstrap-token
+      valuesKey: id
+      targetPath: bootstrapTokens[0].id
+    - kind: Secret
+      name: node-bootstrap-token
       valuesKey: secret
       targetPath: bootstrapTokens[0].secret

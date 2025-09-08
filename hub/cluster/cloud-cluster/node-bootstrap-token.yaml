@@ -5,6 +5,7 @@ metadata:
     namespace: cloud-cluster
 stringData:
     secret: ENC[AES256_GCM,data:a+gk+a5q/DVqHNyPoe1b1A==,iv:kRWxQQLOAezUaOLEIGc+2PcdNcMI1gLH3b7a2UVaAQo=,tag:x4kzhFQPtr7QDhuiNisS0A==,type:str]
+    id: ENC[AES256_GCM,data:I0HGyvl4,iv:TChgGZN1CIiNcRtorW5UVvwq03ImqnF6Cia+ePPZ9AM=,tag:ytlifb2HyV1/uPeuDs8g3Q==,type:str]
 sops:
     kms: []
     gcp_kms: []
@@ -29,8 +30,8 @@ sops:
             Y1QzVWNkOGxRZlJaRTJpOXYrMEQyMEUKQxYW//evPjzmDpeqsZ7C3vCXK/JczlaM
             J+CHBm/ZvaLC+4eqJ9Y4DwVACsq1xm0qxbLMjnl2EBTSYkn7jfNuBw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-06T09:18:04Z"
-    mac: ENC[AES256_GCM,data:oak/MjOENa6Q6N8T6153bazbBqxwIOXfc48yMehtHghD15AYNDnVlSklLvkqdAUr5G4CbnlbsSZc7U8gtuYZ4yKz0qA8VKckUNcTSG09lN8fLaekjm7wZmW/CcB5aAROpl+2TAczoEG1WE6aDttclYRFq6LXqOZB+A39wv9hHgM=,iv:fmIwx8kLhqglUh2DN9+LexWNKF4jvWGvVA7vtKetbqw=,tag:a+p7YWcoVMOdi3HSzIECxA==,type:str]
+    lastmodified: "2025-09-08T07:25:36Z"
+    mac: ENC[AES256_GCM,data:EoNYXFUjV4D9CPX30xUHiff8b+yqPUTEpMn8EKGhqC0+n/BpRtcPfGQiDe0U00YRz2eNXsGWXTPZ2RxMVTlJxDXLIZrADg7C9hl+1WLnCOZgprIFJ4pY6x6dcRWGIgdr9Piz5PARo09jVMn0DFvwK0sPCLO9no7Ui/lDsnWdoIc=,iv:oVmEtO+JoSqx5yIlLYEXrsMdutrhWUl+3uMb/isUXLg=,tag:aZTD1m9rfs76/nqlBNo/RA==,type:str]
     pgp: []
     encrypted_regex: ^(data|stringData)$
     version: 3.9.4

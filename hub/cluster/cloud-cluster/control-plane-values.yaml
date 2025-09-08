@@ -3,8 +3,8 @@ apiServer:
     spec:
       type: ClusterIP
 bootstrapTokens:
-  - id: ser34c
-    extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+  - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+    # token ID+secret is set from HelmRelease spec.valuesFrom
 clusterCIDRs: [172.28.0.0/16]
 clusterDNS: [172.27.0.10]
 clusterName: cloud

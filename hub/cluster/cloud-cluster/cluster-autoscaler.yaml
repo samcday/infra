@@ -81,14 +81,15 @@ spec:
         name: infra
         namespace: flux-system
   interval: 1h
-  values:
-    token:
-      id: v4kos4
   valuesFrom:
     - kind: Secret
       name: node-ts-auth
       valuesKey: key
       targetPath: tsAuthKey
+    - kind: Secret
+      name: node-bootstrap-token
+      valuesKey: id
+      targetPath: token.id
     - kind: Secret
       name: node-bootstrap-token
       valuesKey: secret
