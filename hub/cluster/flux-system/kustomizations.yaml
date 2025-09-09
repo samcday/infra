@@ -81,6 +81,9 @@ spec:
     rook-ceph:
       spec:
         path: hub/cluster/rook-ceph
+    simonet:
+      spec:
+        path: hub/cluster/simonet
     tailscale:
       spec:
         path: hub/cluster/tailscale

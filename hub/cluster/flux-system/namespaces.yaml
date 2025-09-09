@@ -29,4 +29,5 @@ spec:
     openebs:
     prometheus-operator:
     rook-ceph:
+    simonet:
     tailscale:

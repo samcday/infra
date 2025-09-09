@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: node-bootstrap-token
+    namespace: simonet
+stringData:
+    id: ENC[AES256_GCM,data:kSwDZG2a,iv:hNZT9H/9tDAY4ECdStzSrVshtO2sw12xKZWLmyDQTMU=,tag:L7WxU03t2p6c0LyEEgi1og==,type:str]
+    secret: ENC[AES256_GCM,data:AU4horFB6JjY3/BKBLyThA==,iv:KhoPOj3V45qtomSrgPlHpErHsrbtlMNGo9om/3LzqRc=,tag:CvRm8e3Yj0BpJJSF4rH1AQ==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsQnVoSkRSMXQ4bkdGb2pZ
+            MWJ5QnkwN2wxbTFJdnl1S3UxMXdBMjZuZTBFCkFtUUlLcWdTZjlVYy9jMFg4Y0xI
+            cjRtRlRwcWZZRmQvUVpsY1ZWS2lzSGsKLS0tIDZaK2lVOEExS3MrMU8rLzExSGhv
+            a0xHSCtOKzJjV2VXQVd6aTVqM3VVUWcKez/x0KGd/JnEU+n9PDjLK1oFqVFFJ4EY
+            h/5FG12N5aYmy26+m7aKruZLcgVTwEiMWQZ1CLVSPpPyYcptldE3AA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBqNUt2a2JhR1RMclRtemp5
+            K3dIZkhuWmt1RTRQR0tCOTdIRm8vckQ3SzMwClR1dzZvS3BxZzd5TXZ3K01MUFkr
+            bEd5bkpNR0dFcjVzT2dacEx3R3dyYUUKLS0tIGNYd2p4SU51NUFKbUJyanFJT1hi
+            Y1QzVWNkOGxRZlJaRTJpOXYrMEQyMEUKQxYW//evPjzmDpeqsZ7C3vCXK/JczlaM
+            J+CHBm/ZvaLC+4eqJ9Y4DwVACsq1xm0qxbLMjnl2EBTSYkn7jfNuBw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-09-09T09:36:44Z"
+    mac: ENC[AES256_GCM,data:ZtM8F3LO7938RkzfRoUVl6HFh9g9Dh3pH9xcJpHfR8ltLXPJT4AVATtf/Fc/dqIO4yR7iGHvX9lbgPGSObHdtUdNmRlo6pffrtiJRcE5oyxERDDxZESfbgiqFyQwaMcTXlHiPYBUtJLKXpqfR5MNrf5Tq8fMVDthu1+uSk4A9vU=,iv:RKh9tce0DS/AT/U36l4BWVurki5yebylA+VsSWEfOaA=,tag:5ntmnSX8r5vnU4zQmRZMHw==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
