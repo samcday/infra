@@ -71,6 +71,9 @@ spec:
     samcday-tailscale-node-controller:
       spec:
         url: https://samcday.github.io/tailscale-node-controller
+    stakater:
+      spec:
+        url: https://stakater.github.io/stakater-charts
     tailscale:
       spec:
         url: https://pkgs.tailscale.com/helmcharts
