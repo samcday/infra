@@ -14,8 +14,10 @@ spec:
     # parent cluster service name
     - apiserver.{{ $.Release.Namespace }}.svc.{{ $.Values.parentClusterDomain }}
 
+  {{- if $.Values.externalHostname -}}
     # external hostname
     - {{ $.Values.externalHostname }}
+  {{- end -}}
   ipAddresses:
   {{- if $.Values.externalIP }}
     - {{ required "missing serviceIP" $.Values.serviceIP }}

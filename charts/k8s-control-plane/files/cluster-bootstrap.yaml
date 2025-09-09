@@ -9,7 +9,7 @@ data:
     clusters:
     - cluster:
         certificate-authority-data: __CAHASH__
-        server: https://{{ $.Values.externalHostname }}:6443
+        server: https://{{ default $.Values.externalIP $.Values.externalHostname }}:6443
       name: ""
     contexts: null
     current-context: ""
@@ -145,7 +145,7 @@ spec:
           args:
             - --logtostderr=true
             - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-            - --proxy-server-host={{ $.Values.externalHostname }}
+            - --proxy-server-host={{ default $.Values.externalIP $.Values.externalHostname }}
             - --proxy-server-port={{ $.Values.konnectivity.port }}
             - --sync-interval=5s
             - --sync-interval-cap=30s
