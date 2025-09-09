@@ -14,7 +14,7 @@ spec:
     # parent cluster service name
     - apiserver.{{ $.Release.Namespace }}.svc.{{ $.Values.parentClusterDomain }}
 
-  {{- if $.Values.externalHostname -}}
+  {{ if $.Values.externalHostname -}}
     # external hostname
     - {{ $.Values.externalHostname }}
   {{- end }}
