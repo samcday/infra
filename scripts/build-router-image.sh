@@ -1,24 +1,26 @@
 #!/bin/bash
 set -uexo pipefail
 
-root_dir=$1
+config_dir=$1
 platform=$2
 target=$3
 profile=$4
 
 openwrt_version="24.10.2"
 
+root_dir=$(cd "$(dirname "$0")"; dirname $(pwd))
+common_dir="$root_dir/common/router"
 curl="curl --retry 2 --fail"
 
-if [[ ! -d $root_dir ]]; then
-  echo "ERROR: $root_dir does not exist"
+if [[ ! -d $config_dir ]]; then
+  echo "ERROR: $config_dir does not exist"
   exit 1
 fi
 
 build_topdir="$root_dir/_build"
 mkdir -p "$build_topdir"
 
-build_dir="$build_topdir/${platform}-${target}-${openwrt_version}"
+build_dir="$build_topdir/${config_dir}"
 tarball=openwrt-imagebuilder-$openwrt_version-$platform-$target.Linux-x86_64.tar.zst
 
 if [[ ! -f "$build_topdir/$tarball" ]]; then
@@ -30,18 +32,20 @@ mkdir -p "$build_dir"
 
 tar --strip-components=1 -C "${build_dir}" --zstd -xvf "$build_topdir/$tarball"
 
+cp -a "$common_dir/files/." "$build_dir/files/"
+
 while IFS= read -r -d '' f
 do
   mkdir -p "$(dirname "$build_dir/$f")"
-  cp "$root_dir/$f" "$build_dir/$f"
-done < <(cd "$root_dir" && find files/ -type f -print0)
+  cp "$config_dir/$f" "$build_dir/$f"
+done < <(cd "$config_dir" && find files/ -type f -print0)
 
 while IFS= read -r -d '' f
 do
   dst=${f/files.enc/files}
   mkdir -p "$(dirname "$build_dir/$dst")"
-  sops -d "$root_dir/$f" > "$build_dir/$dst"
-done < <(cd "$root_dir" && find files.enc/ -type f -print0)
+  sops -d "$config_dir/$f" > "$build_dir/$dst"
+done < <(cd "$config_dir" && find files.enc/ -type f -print0)
 
 mkdir -p "$build_dir/files/usr/share/tftp"
 dst="$build_dir/files/usr/share/tftp/undionly.kpxe"
@@ -54,7 +58,7 @@ if [[ ! -f "$dst" ]]; then
   $curl -s -o "$dst" http://boot.ipxe.org/ipxe.efi
 fi
 
-packages=$(xargs < "$root_dir/packages")
+packages=$(xargs < "$config_dir/packages")
 
 # imagebuilder settings
 export BIN_DIR="."
@@ -73,7 +77,7 @@ ln -fs /mnt/data/www/ "$build_dir/files/www/static"
 
 make -C "$build_dir" image PACKAGES="$PACKAGES"
 
-if [[ -f $root_dir/data-files.txt ]]; then
+if [[ -f $config_dir/data-files.txt ]]; then
   data_dir="$build_topdir/data"
 
   mkdir -p "$data_dir"
@@ -91,7 +95,7 @@ if [[ -f $root_dir/data-files.txt ]]; then
       echo "downloading $url"
       curl --fail --retry 2 -o "$data_dir/$filename" "$url"
     fi
-  done <"$root_dir/data-files.txt"
+  done <"$config_dir/data-files.txt"
 
   (
     cd "$data_dir"
