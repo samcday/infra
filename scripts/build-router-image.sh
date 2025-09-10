@@ -58,7 +58,10 @@ if [[ ! -f "$dst" ]]; then
   $curl -s -o "$dst" http://boot.ipxe.org/ipxe.efi
 fi
 
-packages=$(xargs < "$config_dir/packages")
+packages="$(xargs < "$common_dir/packages")"
+if [[ -f "$config_dir/packages" ]]; then
+  packages+="$(xargs < "$config_dir/packages")"
+fi
 
 # imagebuilder settings
 export BIN_DIR="."
