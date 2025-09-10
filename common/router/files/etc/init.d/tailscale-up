@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+# 81 should be after Tailscale
+START=81
+ 
+start() {
+    set -x
+    if [[ ! -f /etc/ts-authkey ]]; then
+        echo "ERROR: /etc/ts-authkey not found"
+        exit 1
+    fi
+
+    if [[ "$(/sbin/service tailscale status)" != "running" ]]; then
+        echo "ERROR: tailscaled not running"
+        exit 1
+    fi
+
+    while [[ -z "$backend_state" ]]; do
+        backend_state="$(tailscale status --json | jq -r .BackendState)"
+    done
+
+    if [[ "$backend_state" != "Running" ]]; then
+        tailscale up --login-server=https://headscale.tail22d0a0.ts.net --auth-key=file:/etc/ts-authkey
+    fi
+}
