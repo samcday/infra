@@ -96,3 +96,15 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
     authkey = headscale_pre_auth_key.cloud-cluster-apiserver.key
   }
 }
+
+resource "headscale_pre_auth_key" "simonet-router" {
+  user           = headscale_user.simonet.id
+  time_to_expire = "520w"
+  reusable       = true
+  acl_tags       = ["tag:simonet-router"]
+}
+
+output "simonet-router-ts-auth" {
+  value     = headscale_pre_auth_key.simonet-router.key
+  sensitive = true
+}
