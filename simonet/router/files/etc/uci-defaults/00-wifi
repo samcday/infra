@@ -1,0 +1,12 @@
+set -uexo pipefail
+
+uci -q batch << EOI
+
+set wireless.@wifi-iface[0].ssid='simonet'
+set wireless.@wifi-iface[0].encryption=sae
+
+set wireless.@wifi-iface[1].ssid='simonet'
+set wireless.@wifi-iface[1].encryption=sae
+EOI
+
+# The commit + wifi reload happens in 99-wifi-password
