@@ -22,6 +22,16 @@
                 "tag:hub-subnet-router:*"
             ]
         },
+        // Allow simonet to access apiserver+bootie deployed for it in hub cluster.
+        {
+            "action": "accept",
+            "src": ["tag:simonet"],
+            "dst": [
+                "10.0.2.252/30:*",
+                "tag:hub-subnet-router:*"
+            ]
+        },
+        // Allow cloud-cluster nodes to access their apiserver
         {
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
@@ -47,6 +57,7 @@
     "tagOwners": {
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
-        "tag:cloud-cluster-node": []
+        "tag:cloud-cluster-node": [],
+        "tag:simonet": []
     }
 }
