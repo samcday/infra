@@ -5,8 +5,6 @@ secretGenerator:
     files:
       - base.yaml
       - install.yaml
-      - tpm.yaml
-      - var.yaml
       - worker.yaml
     options:
       disableNameSuffixHash: true

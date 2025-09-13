@@ -37,6 +37,10 @@ spec:
       spec:
         path: hub/butane
         targetNamespace: bootie
+    butane-common:
+      spec:
+        path: common/butane
+        targetNamespace: bootie
     cert-manager:
       spec:
         path: hub/cluster/cert-manager
@@ -61,6 +65,10 @@ spec:
     ilumbaclusta-butane:
       spec:
         path: ilumbaclusta/butane
+        targetNamespace: ilumbaclusta
+    ilumbaclusta-butane-common:
+      spec:
+        path: common/butane
         targetNamespace: ilumbaclusta
     ingress-nginx:
       spec:

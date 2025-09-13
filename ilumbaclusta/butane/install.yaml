@@ -1,16 +1,25 @@
 variant: fcos
 version: 1.5.0
+ignition:
+    config:
+        merge:
+            - local: common/install.ign
+            - local: common/fucksecurity.ign
 boot_device:
     luks:
         tang:
             - url: http://10.0.3.1:9090
               thumbprint: DUFdADOc0Z3G6HqJPeVw-OtS9XTi-Io1jRPxZjXPh5s
-        discard: true
-kernel_arguments:
-    should_exist:
-        - mitigations=auto,nosmt=off
-    should_not_exist:
-        - mitigations=auto,nosmt
+        threshold: 2
+        tpm2: true
+storage:
+    luks:
+        - name: var
+          device: /dev/disk/by-partlabel/var
+          discard: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:5BxMz8ZuQBkxtpvv,iv:EtfE6ADOksTUP5CeO8Gx4uloxv/dNSitWLPVotGgwc0=,tag:o8BX+nh6F7Mxg/DeTpoLpg==,type:str]
 sops:
     kms: []
     gcp_kms: []
@@ -35,8 +44,8 @@ sops:
             b2NZYmdBSFVCeFNzQ3NiMEtVZGUzcGcK12R1I2vButMmnkAz1SiBVDlo/RAlaMFo
             RozHvxgXCW0Q3lr6lvY3j4J6/oghZgI2OCr7dvUbTen7ip3exXzWpQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-08-29T02:47:34Z"
-    mac: ENC[AES256_GCM,data:mU2K1/6UP5dakTi8EHw3bcyQ3O5AG89lIUfxg8JX44XTG+3VpOSZX2+qn8mLtN3tSnwf9WRRs4tm2CjlUAD3t39V6qm31jZ/jLeFhQaH92kzesjkBHPF2dL8yzAk0fZJ0r0+ul+xPXY3bovHFBUVYfwaH4m7MtyusQcTBSpEKPw=,iv:ow4Bbc4z+IxXQ3GHnlCcHdoyminGeATlIqn463o4FSw=,tag:YThEM0DAmmVr6Rt3dqEPgA==,type:str]
+    lastmodified: "2025-09-12T06:27:41Z"
+    mac: ENC[AES256_GCM,data:caML2TgEIpICi/upMaX4AW/isHNPoMZ56WAOK8OQrDc5sylfy3pTFvM3HbG99AZoxb/aa8XzOLPyYhKEhVRwaCaPX/MXdCbwfCCp07tZjLB4ou5+UQwy8Rp/ghJ5M1Q2CBTrgcVGMLg9kT3vku3C2ALLhfc0v4BT+y6Pjb/P1qo=,iv:nH1dQttwKIJWyWWCtJrgj6SHWiyuHpzowi5r74GL9aM=,tag:RyuCJeyTDwBLlV4+imY1CQ==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4

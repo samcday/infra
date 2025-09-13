@@ -1,0 +1,22 @@
+variant: fcos
+version: 1.5.0
+boot_device:
+    luks:
+        discard: true
+storage:
+    disks:
+        - device: /dev/disk/by-id/coreos-boot-disk
+          wipe_table: false
+          partitions:
+            - number: 4
+              label: root
+              size_mib: 9216
+              resize: true
+            - number: 5
+              size_mib: 0
+              label: var
+    filesystems:
+        - path: /var
+          device: /dev/mapper/var
+          format: ext4
+          with_mount_unit: true

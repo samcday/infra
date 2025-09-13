@@ -1,12 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 secretGenerator:
-  - name: butane
+  - name: butane-common
     files:
-      - base.yaml
-      - control-plane.yaml
-      - etcd.yaml
+      - fucksecurity.yaml
       - install.yaml
-      - worker.yaml
     options:
       disableNameSuffixHash: true

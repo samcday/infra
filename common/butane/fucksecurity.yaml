@@ -1,0 +1,11 @@
+variant: fcos
+version: 1.5.0
+# nosmt mitigations on older (6th/7th) gen means turning off HT entirely, which is decidedly shite.
+# my understanding of this threat model is that side channel attacks are mostly scary when you're
+# doing webscale things and running untrusted workloads alongside each other.
+# any white/grey/black hats that read this and wanna "umactually" Cunningham's Law me on this, please do so!
+kernel_arguments:
+    should_exist:
+        - mitigations=auto,nosmt=off
+    should_not_exist:
+        - mitigations=auto,nosmt

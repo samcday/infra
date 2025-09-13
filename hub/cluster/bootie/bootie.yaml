@@ -24,13 +24,20 @@ spec:
           - pipefail
           - -c
           - |
+            mkdir /ignition/common
+            for f in /butane/common/*.yaml; do
+              name=$(basename $f)
+              butane --strict < $f > /ignition/common/${name/.yaml}.ign
+            done
             for f in /butane/*.yaml; do
               name=$(basename $f)
-              butane --strict < $f > /ignition/${name/.yaml}.ign
+              butane -d /ignition --strict < $f > /ignition/${name/.yaml}.ign
             done
         volumeMounts:
           - name: butane
             mountPath: /butane
+          - name: butane-common
+            mountPath: /butane/common
           - name: ignition
             mountPath: /ignition
     additionalVolumeMounts:
@@ -40,6 +47,9 @@ spec:
       - name: butane
         secret:
           secretName: butane
+      - name: butane-common
+        secret:
+          secretName: butane-common
       - name: ignition
         emptyDir: {}
     deploymentStrategy:
