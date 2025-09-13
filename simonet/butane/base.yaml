@@ -1,0 +1,49 @@
+variant: fcos
+version: 1.5.0
+passwd:
+    users:
+        - name: sam
+          groups:
+            - adm
+            - wheel
+            - sudo
+            - systemd-journal
+          ssh_authorized_keys:
+            - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+storage:
+    files:
+        - path: /etc/zincati/config.d/90-disable.toml
+          contents:
+            inline: |
+                [updates]
+                enabled = false
+          overwrite: true
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBMeFdiV2xQWFVvV2ZBNTJQ
+            QjVFT09uY29aZHA0d0tXSXhzdzhpNFhFdkNZCitjVUtCY3hQeFkrbUJ5Vkt2eUJK
+            KzMvNUdQZXgzS2Qycm5FaGYwM0FzWGsKLS0tIFRTNUJjdWErckRCNmRjR1lrRk8z
+            K3RNbGVRQ2FFcW5najdhTnROU1JKeXcKPzBYu5KDGCHIqaJddzZXg5bkkvbltCN4
+            fZrQtPZ3Tdm0vmIK4zIUZ7bYCj97Rk82jTiNNj3B4IAKs1rlG8Gdow==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkWTZ6eURqT3J4VDFibDU5
+            OWp5SjNaSWNVdCtsYmdiVzdrc25IMXBmZDA0CnNhN1BtRzBTaWJ2bjdtUkYzaUJ3
+            OGVNREl2YU1lVXc0SHZndXplckV0QWcKLS0tIEpERnJEcEI0N055YTBsWVJUc0c3
+            OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
+            1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-09-13T07:33:20Z"
+    mac: ENC[AES256_GCM,data:kD8CIJuC1TSvSQ5c35q2dS30I9SkRB0NLX0Z1g/dtuk8wkyAO6Ql+IImBecmCagJjQcm/kCTU3waokHtCedTzkNcGgd45qDh+eEinkmPboVrBYSNGKRzMMW4N0mzI6Lohbpviw0eAUwfkMmoTT0N9kR+6b9tvHNTAEeRNcM4iVw=,iv:9MARKQDJoZ5JOfnA79oosfLQYHssIQwmSBiC/6wMaOY=,tag:ShAyK2bEfGSIccCFKEJFmw==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4

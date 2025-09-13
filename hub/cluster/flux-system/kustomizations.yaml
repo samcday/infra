@@ -92,6 +92,14 @@ spec:
     simonet:
       spec:
         path: hub/cluster/simonet
+    simonet-butane:
+      spec:
+        path: simonet/butane
+        targetNamespace: simonet
+    simonet-butane-common:
+      spec:
+        path: common/butane
+        targetNamespace: simonet
     tailscale:
       spec:
         path: hub/cluster/tailscale

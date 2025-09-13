@@ -1,0 +1,51 @@
+variant: fcos
+version: 1.5.0
+ignition:
+    config:
+        merge:
+            - local: common/install.ign
+            - local: common/fucksecurity.ign
+boot_device:
+    luks:
+        tang:
+            - url: http://10.0.5.1:9090
+              thumbprint: OVtBkWq-QtK9t5fhkkdnNAJeYvXLLOGyqqMO4WztbcY
+        threshold: 2
+        tpm2: true
+storage:
+    luks:
+        - name: var
+          device: /dev/disk/by-partlabel/var
+          discard: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:EoTVln8KXDrk89r3RWnVhyQOifG5fUDWa5qwANWewe4=,iv:USdtmgEOSBMzAG1dMtH1hE0OPj/JXlawT5x/2mU1tAM=,tag:0XJubloV7WRP4kV56huB6g==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBtaU4wV2MxN1FQdGFHLzdG
+            Um1pc0NweUtiWHJWQjVLaktVaFRES24rdDNBCkw5Q3k2bXVOenBpMThFNGRXK3Mx
+            NTBKakgrS0lhUllXVWF4RHJIZnBKR3MKLS0tIFlDMU85NGlpbS96RG9WanJZaHNP
+            dG9hRTlocUhZelIrei9GaTg3U2VsZXMKHi2wl3G+rEAXzvAgHQOckW3XqV1zy02b
+            h/qdFsmx3qG+KkrXRl/Fb+qwrsjswYieA46AP6cCsSzaesTsap1z0A==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBmV3Yzbk9qYkYrS0xYelBj
+            cXRneEo1MjlzY1pvSkRyU08rZVpBNVVKVEYwClg5MytYdXpZRXlTM2Z2OWQwNnpO
+            bytJQi84RzZvSWZqZmN5cG1LTmxBd1kKLS0tIGlNWDFBSmVOY3Z3b2VKTnZGejlm
+            b2NZYmdBSFVCeFNzQ3NiMEtVZGUzcGcK12R1I2vButMmnkAz1SiBVDlo/RAlaMFo
+            RozHvxgXCW0Q3lr6lvY3j4J6/oghZgI2OCr7dvUbTen7ip3exXzWpQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-09-13T07:32:59Z"
+    mac: ENC[AES256_GCM,data:XZ+eQUWFyD2Be0aTcFKzPT2Zmi9JB9lwX2sHgLMrmAkS13ANLgtshepWBapYhDf9Es4KYeG8cXh/o/Lj1oHnU8xcwF2BdI5aoU4Xe6frr8YixHxpuIhWLU4hdy7Z9yt8uESXHgHlTwAUZNXKTr6bmxLDXdR+sw1yrPYxodKVXAE=,iv:4ZJYVplYNBtU4Ak90GIR10mvnRjMUheD1Z2pqxpKXe8=,tag:mhrqvhaYtwQWYIv1Sd4lIA==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4
