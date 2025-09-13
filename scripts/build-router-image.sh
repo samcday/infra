@@ -60,7 +60,7 @@ fi
 
 packages="$(xargs < "$common_dir/packages")"
 if [[ -f "$config_dir/packages" ]]; then
-  packages+="$(xargs < "$config_dir/packages")"
+  packages+=" $(xargs < "$config_dir/packages")"
 fi
 
 # imagebuilder settings
