@@ -2,6 +2,8 @@ apiServer:
   service:
     annotations:
       external-dns.alpha.kubernetes.io/hostname: simonet.hub.samcday.com
+    labels:
+      samcday.com/group: simonet
     spec:
       externalTrafficPolicy: Local
       loadBalancerClass: io.cilium/bgp-control-plane
