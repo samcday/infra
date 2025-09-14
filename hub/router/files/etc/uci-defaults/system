@@ -12,9 +12,6 @@ add_list dhcp.@dnsmasq[0].rebind_domain='samcday.com'
 commit dhcp
 EOI
 
-service log restart || true
-ntpd -q -p 0.openwrt.pool.ntp.org || true
-
 chsh -s /bin/bash || true
 
 service dnsmasq restart || true

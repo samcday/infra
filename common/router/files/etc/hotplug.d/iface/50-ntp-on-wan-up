@@ -1,0 +1,2 @@
+[ "wan" = "$INTERFACE" ] || exit 0
+[ ifup = "$ACTION" ] && ntpd -q -p 0.openwrt.pool.ntp.org
