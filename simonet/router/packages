@@ -1,0 +1,8 @@
+-ath10k-firmware-qca4019-ct
+ath10k-firmware-qca4019
+-kmod-ath10k-ct
+kmod-ath10k
+kmod-nft-bridge
+mesh11sd
+-wpad-basic-mbedtls
+wpad-openssl
