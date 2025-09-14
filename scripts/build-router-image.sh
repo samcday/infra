@@ -50,16 +50,15 @@ do
   sops -d "$config_dir/$f" > "$build_dir/$dst"
 done < <(cd "$config_dir" && find files.enc/ -type f -print0)
 
-mkdir -p "$build_dir/files/usr/share/tftp"
-dst="$build_dir/files/usr/share/tftp/undionly.kpxe"
-if [[ ! -f "$dst" ]]; then
-  $curl -s -o "$dst" http://boot.ipxe.org/undionly.kpxe
-fi
-cp "$dst" "$dst.0"
-dst="$build_dir/files/usr/share/tftp/ipxe.efi"
-if [[ ! -f "$dst" ]]; then
-  $curl -s -o "$dst" http://boot.ipxe.org/ipxe.efi
-fi
+mkdir -p "$build_dir/_ipxe" "$build_dir/files/usr/share/tftp"
+for name in undionly.kpxe ipxe.efi; do
+  dst="$build_dir/_ipxe/$name"
+  if [[ ! -f "$dst" ]]; then
+    $curl -s -o "$dst" "http://boot.ipxe.org/$name"
+  fi
+  cp "$dst" "$build_dir/files/usr/share/tftp/$name"
+done
+cp "$build_dir/files/usr/share/tftp/undionly.kpxe" "$build_dir/files/usr/share/tftp/undionly.kpxe.0"
 
 packages="$(xargs < "$common_dir/packages")"
 if [[ -f "$config_dir/packages" ]]; then
