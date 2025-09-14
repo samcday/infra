@@ -20,7 +20,7 @@ fi
 build_topdir="$root_dir/_build"
 mkdir -p "$build_topdir"
 
-build_dir="$build_topdir/${config_dir}"
+build_dir="$build_topdir/${config_dir}/$platform/$target/$profile"
 tarball=openwrt-imagebuilder-$openwrt_version-$platform-$target.Linux-x86_64.tar.zst
 
 if [[ ! -f "$build_topdir/$tarball" ]]; then
