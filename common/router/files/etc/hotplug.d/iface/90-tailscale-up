@@ -1,0 +1,25 @@
+alias log="logger -p CRIT -t tailscale-up"
+alias err="logger -p CRIT -t tailscale-up"
+
+[ "tailscale" = "$INTERFACE" ] || exit 0
+[ ifup = "$ACTION" ] || exit 0
+
+[ -f /etc/ts-authkey ] || {
+    err "ERROR: /etc/ts-authkey not found"
+    exit 1
+}
+
+log tailscale up, logging in...
+
+[ "$(/sbin/service tailscale status)" != "running" ] && {
+    echo "ERROR: tailscaled not running"
+    exit 1
+}
+
+while [ -z "$backend_state" ]; do
+    backend_state="$(tailscale status --json | jq -r .BackendState)"
+done
+
+[ "$backend_state" == "Running" ] || {
+    tailscale up --login-server=https://headscale.tail22d0a0.ts.net --auth-key=file:/etc/ts-authkey
+}
