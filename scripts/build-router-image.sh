@@ -75,6 +75,10 @@ else
   sed -i "$build_dir/.config" -e "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=128/"
 fi
 
+if [[ -f "$config_dir/disabled-services" ]]; then
+  export DISABLED_SERVICES="$DISABLED_SERVICES $(xargs < $config_dir/disabled-services)"
+fi
+
 mkdir -p "$build_dir/files/www"
 ln -fs /mnt/data/www/ "$build_dir/files/www/static"
 
