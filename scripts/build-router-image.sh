@@ -29,6 +29,9 @@ if [[ ! -f "$build_topdir/$tarball" ]]; then
 fi
 
 mkdir -p "$build_dir"
+# we try to preserve the build_dir as much as possible between rebuilds
+# but we do want to make sure the files dir is always pristine
+rm -rf "$build_dir/files"
 
 tar --strip-components=1 -C "${build_dir}" --zstd -xvf "$build_topdir/$tarball"
 
