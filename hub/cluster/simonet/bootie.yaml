@@ -46,9 +46,9 @@ spec:
         image: ghcr.io/samcday/infra-bootie:2025083005 # {"$imagepolicy": "flux-system:bootie"}
         env:
         - name: FCOS_VERSION
-          value: 42.20250803.3.0
+          value: "42.20250818.3.0"
         - name: FCOS_BASE
-          value: http://10.0.6.1/static
+          value: http://10.0.5.1/static
         - name: KUBECONFIG
           value: /kubeconfig
         ports:
