@@ -108,3 +108,21 @@ output "simonet-router-ts-auth" {
   value     = headscale_pre_auth_key.simonet-router.key
   sensitive = true
 }
+
+resource "headscale_pre_auth_key" "simonet-nodes" {
+  user           = headscale_user.simonet.id
+  time_to_expire = "520w"
+  reusable       = true
+  acl_tags       = ["tag:simonet", "tag:simonet-nodes"]
+}
+
+resource "kubernetes_secret" "simonet-node-preauth" {
+  metadata {
+    name      = "node-ts-auth"
+    namespace = "simonet"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.simonet-nodes.key
+  }
+}
