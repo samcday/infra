@@ -25,6 +25,16 @@ spec:
         - pipefail
         - -c
         - |
+          butane -d /secrets --strict <<HERE > /ignition/secrets.ign
+          variant: fcos
+          version: 1.5.0
+          storage:
+            files:
+              - path: /etc/ts-authkey
+                mode: 0600
+                contents:
+                  local: ts-authkey
+          HERE
           mkdir /ignition/common
           for f in /butane/common/*.yaml; do
             name=$(basename $f)
@@ -41,6 +51,9 @@ spec:
           mountPath: /butane/common
         - name: ignition
           mountPath: /ignition
+        - name: node-ts-auth
+          mountPath: /secrets/ts-authkey
+          subPath: key
       containers:
       - name: bootie
         image: ghcr.io/samcday/infra-bootie:2025083005 # {"$imagepolicy": "flux-system:bootie"}
@@ -78,6 +91,9 @@ spec:
           secretName: butane-common
       - name: ignition
         emptyDir: {}
+      - name: node-ts-auth
+        secret:
+          secretName: node-ts-auth
 ---
 apiVersion: v1
 kind: Service

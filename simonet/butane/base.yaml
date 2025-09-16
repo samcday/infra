@@ -1,5 +1,10 @@
 variant: fcos
 version: 1.5.0
+ignition:
+    config:
+        merge:
+            # generated at runtime in bootie initContainer
+            - local: secrets.ign
 passwd:
     users:
         - name: sam
@@ -12,12 +17,38 @@ passwd:
             - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
 storage:
     files:
+        - path: /var/lib/extensions/tailscale.raw
+          contents:
+            # https://extensions.fcos.fr/extensions/tailscale/tailscale-0-1.88.1-1-43-x86-64.raw
+            source: http://10.0.5.1/static/tailscale-0-1.88.1-1-43-x86-64.raw
         - path: /etc/zincati/config.d/90-disable.toml
           contents:
             inline: |
                 [updates]
                 enabled = false
           overwrite: true
+systemd:
+    units:
+        - name: systemd-sysext.service
+          enabled: true
+        - name: tailscaled.service
+          enabled: true
+        - name: tailscale-up.service
+          enabled: true
+          contents: |-
+            [Unit]
+            After=network-online.target tailscaled.service
+            Requires=network-online.target tailscaled.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=tailscale up --login-server=https://headscale.tail22d0a0.ts.net --accept-routes --auth-key=file:/etc/ts-authkey
+            Restart=on-failure
+            RestartSec=10s
+
+            [Install]
+            WantedBy=multi-user.target
 sops:
     kms: []
     gcp_kms: []
@@ -42,8 +73,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-13T07:33:20Z"
-    mac: ENC[AES256_GCM,data:kD8CIJuC1TSvSQ5c35q2dS30I9SkRB0NLX0Z1g/dtuk8wkyAO6Ql+IImBecmCagJjQcm/kCTU3waokHtCedTzkNcGgd45qDh+eEinkmPboVrBYSNGKRzMMW4N0mzI6Lohbpviw0eAUwfkMmoTT0N9kR+6b9tvHNTAEeRNcM4iVw=,iv:9MARKQDJoZ5JOfnA79oosfLQYHssIQwmSBiC/6wMaOY=,tag:ShAyK2bEfGSIccCFKEJFmw==,type:str]
+    lastmodified: "2025-09-16T10:26:15Z"
+    mac: ENC[AES256_GCM,data:7O575SKrgsvTQmxcVV4A+oxuWUvSYc6fbYneEW6/GGE+r2G7EBZO3xW/W3boLjo07BCDq5P9u4Y5TjWPZ678acEp2aLO+5N/x+muZ4SO6GmSdBUQhhVeVdmHIu/m6BrFArSLDcxMqxir7UObXa3PDbTjT856/oJJGoDgb5bLKHA=,iv:9LAzY4mJ8x4QT7MhsbhZuTwAZfKVKkO++MBeQXLagmI=,tag:kqYQ3ALPi2W8g/jCPr8bjA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
