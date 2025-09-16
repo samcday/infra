@@ -16,6 +16,11 @@ echo
 
 merge=""
 
+for config in ${EXTRA_BASE_CONFIGS:-}; do
+  merge+="
+      - local: $config.ign"
+done
+
 if kubectl get "$node" -o jsonpath='{.metadata.labels}' | jq -e '. | keys | any(. == "node-role.kubernetes.io/control-plane")' >/dev/null 2>&1; then
   merge+="
       - local: control-plane.ign"
@@ -47,8 +52,7 @@ version: 1.5.0
 ignition:
   config:
     merge:
-      - local: base.ign
-      $merge
+      - local: base.ign$merge
 storage:
   files:
     - path: /etc/hostname
