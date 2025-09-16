@@ -50,7 +50,7 @@ externalIP: ~
 konnectivity:
   enabled: true
   agent:
-    image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.32.0
+    image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.33.0
     replicas: 2
   port: 8091
   server:
