@@ -15,3 +15,4 @@ resources:
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
+  - rook-ceph.yaml
