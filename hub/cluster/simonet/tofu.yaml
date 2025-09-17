@@ -1,0 +1,26 @@
+apiVersion: infra.contrib.fluxcd.io/v1alpha2
+kind: Terraform
+metadata:
+  name: tofu
+  namespace: simonet
+spec:
+  approvePlan: auto
+  disableDriftDetection: true
+  interval: 1h
+  path: ./hub/cluster/simonet
+  runnerPodTemplate:
+    spec:
+      env:
+        - name: CLOUDFLARE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare
+              key: token
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  storeReadablePlan: human
+  # suspend: true
+  writeOutputsToSecret:
+    name: tofu-output

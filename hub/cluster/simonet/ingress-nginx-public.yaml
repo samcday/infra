@@ -2,8 +2,8 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: public
-  namespace: ingress-nginx
+  name: ingress-nginx-public
+  namespace: simonet
 spec:
   chart:
     spec:
@@ -16,6 +16,11 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: ingress-nginx
+  targetNamespace: ingress-nginx
   values:
     # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
     controller:
@@ -34,7 +39,7 @@ spec:
             - name: TUNNEL_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: cloudflared-tunnel-token
+                  name: cloudflare-tunnel
                   key: token
           resources:
             requests:
@@ -60,6 +65,6 @@ spec:
       terminationGracePeriodSeconds: 5
   valuesFrom:
     - kind: Secret
-      name: cloudflared-tunnel-token
-      valuesKey: cname
+      name: tofu-output
+      valuesKey: tunnel_cname
       targetPath: controller.extraArgs.publish-status-address

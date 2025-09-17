@@ -23,4 +23,5 @@ spec:
   values:
     _:
       kind: Namespace
+    ingress-nginx:
     rook-ceph:

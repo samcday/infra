@@ -1,0 +1,36 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cloudflare-token
+  namespace: simonet
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: ingress-nginx
+  targetNamespace: ingress-nginx
+  values:
+    cloudflare:
+      kind: Secret
+    cloudflare-tunnel:
+      kind: Secret
+  valuesFrom:
+    - kind: Secret
+      name: tofu-output
+      valuesKey: tunnel_token
+      targetPath: cloudflare-tunnel.stringData.token
+    - kind: Secret
+      name: cloudflare
+      valuesKey: token
+      targetPath: cloudflare.stringData.token

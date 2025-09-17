@@ -9,12 +9,16 @@ resources:
   - ../../../.kustomize-config
   - bootie.yaml
   - cilium.yaml
+  - cloudflare-token.yaml
   - control-plane.yaml
   - coredns.yaml
   - external-dns.yaml
+  - ingress-nginx-internal.yaml
+  - ingress-nginx-public.yaml
   - metrics-server.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
   - snapshot-controller.yaml
+  - tofu.yaml
