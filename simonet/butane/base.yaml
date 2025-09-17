@@ -50,6 +50,19 @@ systemd:
 
             [Install]
             WantedBy=multi-user.target
+        # Without this, tailscale-up.service will never activate, because it's loaded before systemd-sysext has merged
+        - name: tailscale-up.path
+          enabled: true
+          contents: |
+            [Unit]
+            After=systemd-sysext.service
+            Wants=systemd-sysext.service
+
+            [Path]
+            PathExists=/usr/lib/systemd/system/tailscaled.service
+
+            [Install]
+            WantedBy=multi-user.target
 sops:
     kms: []
     gcp_kms: []
@@ -74,8 +87,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T00:49:15Z"
-    mac: ENC[AES256_GCM,data:dxHh35BUgoYFVNx4NmQEEL0M9oWmyHLo/IqoFlgDVz7wCgHCJ/qIq/KsTJaRcawZpUT2DQnHCmeuAvKiwBVgZVt9TEEm6gXlp9h7wngoTrTIpGqgdXWL96rxfBmvQwNeK3wOfFosAPgTCC1oI51/B8k2wgNAZZ+vljIPj14dYwg=,iv:jnw8IjWlGkqNxsUhvuaRsusriV3wI6n1kX7Nox/EKC0=,tag:gfs564bCEHGcSo2L/3h8tA==,type:str]
+    lastmodified: "2025-09-17T01:45:34Z"
+    mac: ENC[AES256_GCM,data:VDf3+ub/LsrAKdLjaRj0RfPOiIEAXqz6n/SFjICaQBhhIycNdbxaGuGlvjpfMs0LUmIb611EMnnnQzlVP4K8JsvI07CZyttV5j0UotiYdv0Hjk8uzPk3DEilBrqv8DGv8UgMOVJ5J1eq6D911B3q6sZNJFossRmZugdWEPI//Y4=,iv:feQ4OJ0J9RKFwVQBliNLgu8PECpBeAWIV3rCkSdD5P8=,tag:lq48/kY3EAjAwBRIWZZ+Sg==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
