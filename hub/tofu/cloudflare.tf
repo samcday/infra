@@ -62,9 +62,9 @@ resource "kubernetes_secret" "cert-manager-token" {
   }
 }
 
-# cloud-cluster writes DNS records (external-dns) and manages cloudflared tunnels
-resource "cloudflare_api_token" "cloud-cluster" {
-  name = "hub-cloud-cluster"
+# sub clusters write DNS records (external-dns) and manage cloudflared tunnels
+resource "cloudflare_api_token" "sub-cluster" {
+  name = "sub-cluster"
 
   policy {
     permission_groups = [
@@ -78,14 +78,15 @@ resource "cloudflare_api_token" "cloud-cluster" {
   }
 }
 
+resource "kubernetes_secret" "sub-cluster-cloudflare-token" {
+  for_each = toset(["cloud-cluster", "simonet"])\
 
-resource "kubernetes_secret" "cloud-cluster-cloud-cluster" {
   metadata {
     name      = "cloudflare"
-    namespace = "cloud-cluster"
+    namespace = each.key
   }
 
   data = {
-    "token" = cloudflare_api_token.cloud-cluster.value
+    "token" = cloudflare_api_token.sub-cluster.value
   }
 }
