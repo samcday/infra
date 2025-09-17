@@ -14,6 +14,11 @@ spec:
         namespace: flux-system
       version: v1.17.7
   interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: rook-ceph
+  targetNamespace: rook-ceph
   values:
     # https://github.com/rook/rook/blob/release-1.17/deploy/charts/rook-ceph/values.yaml
     csi:
