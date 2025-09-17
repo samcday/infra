@@ -16,3 +16,4 @@ resources:
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
+  - snapshot-controller.yaml
