@@ -23,6 +23,9 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/master/install/kubernetes/cilium/values.yaml
+    autoDirectNodeRoutes: true
+    bgpControlPlane:
+      enabled: true
     bpf:
       masquerade: true
       tproxy: true
@@ -61,8 +64,16 @@ spec:
     k8sServiceHost: simonet.hub.samcday.com
     k8sServicePort: 6443
     kubeProxyReplacement: true
+    l2announcements:
+      enabled: true
     loadBalancer:
+      algorithm: maglev
+      dsrDispatch: opt
+      mode: dsr
       serviceTopology: true
+    # Cilium is autodetecting the incorrect 1280 MTU of tailscale0
+    # https://github.com/cilium/cilium/issues/14339
+    MTU: 1500
     operator:
       prometheus:
         serviceMonitor:
@@ -74,3 +85,5 @@ spec:
       serviceMonitor:
         enabled: true
     routingMode: native
+    socketLB:
+      hostNamespaceOnly: true
