@@ -54,6 +54,9 @@ spec:
     jetstack:
       spec:
         url: https://charts.jetstack.io
+    metrics-server:
+      spec:
+        url: https://kubernetes-sigs.github.io/metrics-server/
     openebs:
       spec:
         url: https://openebs.github.io/openebs

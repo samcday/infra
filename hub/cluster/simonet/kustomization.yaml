@@ -12,6 +12,7 @@ resources:
   - control-plane.yaml
   - coredns.yaml
   - external-dns.yaml
+  - metrics-server.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
