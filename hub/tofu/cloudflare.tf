@@ -72,14 +72,14 @@ resource "cloudflare_api_token" "sub-cluster" {
       data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
     ]
     resources = {
-      "com.cloudflare.api.account.*" = "*"
+      "com.cloudflare.api.account.*"                                       = "*"
       "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
     }
   }
 }
 
 resource "kubernetes_secret" "sub-cluster-cloudflare-token" {
-  for_each = toset(["cloud-cluster", "simonet"])\
+  for_each = toset(["cloud-cluster", "simonet"])
 
   metadata {
     name      = "cloudflare"
