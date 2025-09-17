@@ -16,6 +16,12 @@ storage:
           contents:
             # https://extensions.fcos.fr/extensions/tailscale/tailscale-0-1.88.1-1-43-x86-64.raw
             source: http://10.0.5.1/static/tailscale-0-1.88.1-1-43-x86-64.raw
+        # This file doesn't seem to end up in the right place when installing tailscale as a sysext.
+        - path: /etc/default/tailscaled
+          contents:
+            inline: |
+                PORT="41641"
+                FLAGS=""
         - path: /etc/zincati/config.d/90-disable.toml
           contents:
             inline: |
@@ -68,8 +74,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T00:03:35Z"
-    mac: ENC[AES256_GCM,data:qoJrS9sI4s34I6jrkgv5sbfQJHl+4Y3V/al0dOyRthQwO7uX62+9ur/5cK4++/WM8Gh5sOhGkto+KKhjdUqqQtSXjBg2u4Gcq4nnMYUzs0uBygYJY52bOeL/HcxlwIiN12zCMy+1i8tvs6NhDmFtDpetb5shVGcsZG7vk6jGm9s=,iv:v0BBgDmofdYtSmpxvivAtPIJ79J13Wrwqh/n2WaxObI=,tag:3iiuZQVr4zy0m+Z+MPyzQA==,type:str]
+    lastmodified: "2025-09-17T00:47:54Z"
+    mac: ENC[AES256_GCM,data:1DmGmASd4xMcBD+igUZUK/n6AUixYevci0dOpzzGw/Jn0j32f5sINlKey9ftln/06QeT7Zmb1fpabmqOmms5ppxUM1kMzzUCaq90OHEDWVGevqwHW39vtZxa/k7vAeL6Ux1SENzttEqjWSmtt4e6LLq0TpPiTPj0JBv7Rw8IIhI=,iv:tehDM/FHar/ZAaA3V9fT7r+2a6mre9ot4NrI089MlCg=,tag:ouyHnxMen7bn4GEzx2KH3w==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
