@@ -5,6 +5,7 @@ secretGenerator:
     files:
       - base.yaml
       - install.yaml
+      - ssh-hostkeys.yaml
       - worker.yaml
     options:
       disableNameSuffixHash: true
