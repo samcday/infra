@@ -11,5 +11,6 @@ resources:
   - cilium.yaml
   - control-plane.yaml
   - coredns.yaml
+  - external-dns.yaml
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
