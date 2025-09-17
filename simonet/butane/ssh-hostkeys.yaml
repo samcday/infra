@@ -1,0 +1,66 @@
+variant: fcos
+version: 1.5.0
+storage:
+    files:
+        - path: /etc/ssh/ssh_host_ecdsa_key
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:qPh9PFzK9hFmO5U++0UdF6ViduFOUqBZmSZ4fY6b2FObmqH3DVObqTX5WLJU6Cx6CkYE7P+MXLKRLLN2S8dXpNGrzsj9mN9rvoIg5y/oSBwrC6liddu971hZSQPlkaoDUKt5xOs+Yr1otDaBcxfaWde3ctnB/W7Ga657zmq0QyZDmczZ2xX3Q5FiOdGWzbdZils8JbLfc7mkoMRGCvtfOj5r6TvQrLUWkR+e9/LDK05B4nQgWu9fDM4y3vp4uAa5no52AVHhNYoPFWo4y6GwrNq6yzUSHo2WpLnzN3d+7i18fbIS4Y7Jz01+TQzQ9/HVKlFTRFKqcnQriuJp/aPGEsNCFSyODdAzge4yZdIzHkcA2MCe56gM170d2XDZqkHoAaupBwqK2aOX+pdRwZyqtt2wgViBZpCaiySvHTMQVmQSdrpu4skCg+2kLGqzQH1u+DjJVkdZ9ZVICc4mmOL5glJJzYXqgBV3+7WHbce1RUT3wV9ihZ0BTaq4K4Gnx+KA6H6UYSyZZCj1XlOHDWw5agcGldW6s6LbwgfxZf0d1tp8n1sbEwsQgLsIbs2xlHUNmHbsnSR+f++c8vktMuRp2bQV81nhPbWuPpcWZr+VBPjZxhaQRER8oN5EZGbp3FkelYUAXdEdQdMIBBdqNUGep8oy6LsjKJkmcq+y4t+DqtWxmBMOV6VdETEvGF3lCd6vXWXhuOYEPENyU2i36H7cgpZxwFlbfztkjvu/loX+PTTRxge11QM1aLZ+u8tynCeEFhze/aUtEIbF6uaYceW/J6KGCLCfUqWtnkMpZEZruDsaG8GTznzphomzlGEu7WK2Iv7ps2s/eCtE/kf+ThDzVtYJNU5GB5PbXmPnZ56E9vhjV/rltmOhz7bQC+g3wj+Od9WvTtfav6sMcjAQ8HdKyQtKiz+d0oK4lqG7xhTGkGxfFeKQr0WWqfWZwqI=,iv:8Q9YfKIZ8qA6Ru5a9UlxOE/WDPWz35IiAPTTSfXQ6rs=,tag:0m96IMzej5cAgV95FYFtUw==,type:str]
+        - path: /etc/ssh/ssh_host_ecdsa_key.pub
+          overwrite: true
+          mode: 384
+          contents:
+            inline: "ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBACGXOSiOJ0TgMx26Dq2GAk9VlbaEpRpbAaB93urNUwgqiUtj+/C05qPQWXjNCfyKs1nr/oucBUzJG15SPP8hiNDbwHRvU5grBt1OMG2GMhFtKhYaCg7mwfabjTfaAAE6feRpLAXp05beysjXDarRX36UkEF+9TXQlVTvF3PyDK0sW6n9g== \n"
+        - path: /etc/ssh/ssh_host_ed25519_key
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:onhjMADUCB0TgS8bvpGjfUYPjK/vTPgEVYFJnnWjR8ifBA06SC8nc7THpmLO7bDsD2VNlCyVSXi7atK+mn0XKRDbzL1WFTaOBKwitDBynhbjStVKR4GHz6fZyR+A2IaOkcKgybbGBD2hQQ5/rE7inXGSuEBEoUguPJJFwznAt3ePBC5SrxUXc96RuosIgUyd7ZRF93B3AvIOGMC5NyEtap6ZuWsTmNWjxjZyUfPxGQ6XhmZlpmwuLJv7L3VvT7PPM78Zfymi2DlSWZ0DYlnOBwTKmYTOmfEqD+wL4Id51tscHBHHjuaHpnHROvQNVVhXRQ0sgFgbJXlUkM0RZ33wSz/705oPeAtuyVuXSMex++PTWOW2RopLr/szY/ClI++X2YwWnyLg4OCf217FWESXycvY2djP+PYuzytZZCfz01O81dYGQGomVKWEtWnSzlq93o7ZLWEOXEmII8+bYkgLlO1nfrJLV1kHozEIRGvH8NE+iPyI66HHftiu6b/z5gcjI4bp,iv:CT3/8Do/Y+zm5ptXk58xD7uK4iJyKhKgWjllOpHU6rA=,tag:G3mikJO8MEmBwYHrEIKQrQ==,type:str]
+        - path: /etc/ssh/ssh_host_ed25519_key.pub
+          overwrite: true
+          mode: 384
+          contents:
+            inline: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtz/CoE/Aoz+c9YZa83elb9aVC6PFLIQy4N2Kf6HsLY \n"
+        - path: /etc/ssh/ssh_host_rsa_key
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:wCSdZFt/bTOjKjRQYjWTZaqntUzGseDvecFNSo0Q4+k=,tag:fbhuV/Fyl49svlh1bCPHqg==,type:str]
+        - path: /etc/ssh/ssh_host_rsa_key.pub
+          overwrite: true
+          mode: 384
+          contents:
+            inline: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCmBS+X9kPKXE4Q0O9NbyLYEfqPtC8T1M/+07qSCzmJCgObH6qFrO8FSqDwyygYtKw0gqwjvnHLTrjgAFb1eTSq7eGrC0+5JLhJN2tjq6aS1xhIX8+FpsN3Q5ejCe6jUW6Yn5uwh6oQN4AW2K+hDNeMyJk7EjYzgZbwsiHzWojnODIP6s2N5cU4/omm+72aOFbPf4x3bUCYK9Fqt4bsI6nBvZ/foGQYINC32Ka4zzaGTW2LpZ/fmjFSHeEcqyWmj6zwsMQ5fF3YzLxHaZ8Y35cDxWUHuwIyXaGxd7M92F7nOXBsAMMsiuBMF3tE7/ICEuqCegMunUuRbMUsaJmMhUJrP9/HQwtOZYr0wkB3uW+YUm4EDes1NKu6Ug761MXWGiM+gruwoW37I4I1tkRT4G06PZV48YgOqdyJspWgeLgx9QFxwxkqnoFKapphFKZh4D3LbqY3hRgJm3yKc9x6+kkupJtQFIutfV1LriN1k1R8toeVrQXOsNtplzRZ6XEXfQ0weS6zh5XbiudxeODL5ubI/OEurY6dVqeMj6d5JUpXu3Kfo3KOSjkpXf9BZ6bmrPSeKhNun/SIiU9YUE35XnlXH5ujd6BuvWL/UukYYNC5edKa5KLbQmrmK6LoyerLUbLzqSiPMFDRS/FPSwanDLfdPDXAANtmApX7zm2fpcae9Q== \n"
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBLbi9ldzFRT0dtRUs2WFQw
+            OXduWXJJWHBTNHEwazBZSVhYTitkZE9SK2hVCmllTGZnQ1JIdHZPQWVsc0hYUElp
+            RVBEQWZsRk0zUm93RW1oWWlyaE5YN1UKLS0tIHVBYi9SZFJkdzZOK0trQVFXVDlu
+            aGsyNm4zODdOZHhienZQeTdUNUNuQXMKQPhsqeJLoIr5LgTN7q3/zXHS6At8RtxO
+            J5ky7aEWm4YfT8CA/QphEqK0ih85ZrkZ6FRvo3o2BH3BZe0alok9DQ==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB5L3hWcXhsanRJU2ZMbncy
+            U2tCQWRBZkl2K2pETWFZV1dSWGVLRFpKamtvClh4bTc0WndCVmFNdlpQSDNhTkds
+            Qnd6SkgvN1VPSDNyYzRVRlpEZVNXZEUKLS0tIGVMbTA1VEJtRmNjdWlBY2dOWDEr
+            N0YyTEVjaFNjV3UyUkxTbUlsRitVNTgKY46dX4xf8WvTWX4iYRlLe+f3ahatWiTB
+            HD/HyAZCaPXgwrEmS65Veav+M/VA1I4Cby3AkV1DCz9J22iZUjhJlQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-09-16T23:53:40Z"
+    mac: ENC[AES256_GCM,data:hBr7xf5sjxnDHoIA8Zpd/JQpF3Fo9V21/shgkCJt5lT5V4af+UNefUvKLvuXFRu6bYUxwtLOBryP+kK45Ttqtps3sUoTc51aSdV5PW5Yyh1a2G3iibtoPQH93ScIjkHSDaZM4KBzySEU+VOkdq17YgZmejItQhu207GTZ5WNPaM=,iv:H/GoyV20GB8LkahuZWELybNW4z8uWjHmCVJZIX7s1MY=,tag:imEq5/GkCv8CrW+qCjisbw==,type:str]
+    pgp: []
+    encrypted_comment_regex: cryptme
+    version: 3.9.4

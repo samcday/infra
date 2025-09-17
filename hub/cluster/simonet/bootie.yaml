@@ -59,7 +59,7 @@ spec:
         image: ghcr.io/samcday/infra-bootie:2025083005 # {"$imagepolicy": "flux-system:bootie"}
         env:
         - name: EXTRA_BASE_CONFIGS
-          value: secrets
+          value: secrets ssh-hostkeys
         - name: FCOS_VERSION
           value: "42.20250818.3.0"
         - name: FCOS_BASE
