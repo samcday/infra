@@ -33,8 +33,8 @@ spec:
           discovery:
             bootstrapToken:
               token: $(cat /token/id).$(cat /token/secret)
-              apiServerEndpoint: simonet.hub.samcday.com
-              caCertHashes: [$(cat /ca-hash)]
+              apiServerEndpoint: simonet.hub.samcday.com:6443
+              caCertHashes: [sha256:$(cat /ca-hash)]
           HERE
           butane -d /secrets --strict <<HERE > /ignition/secrets.ign
           variant: fcos
