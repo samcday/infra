@@ -151,6 +151,7 @@ spec:
         cpu: ~
       requests:
         cpu: ~
+    scaleDownOperator: true
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
