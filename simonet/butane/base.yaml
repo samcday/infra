@@ -38,8 +38,8 @@ systemd:
           enabled: true
           contents: |-
             [Unit]
-            After=network-online.target tailscaled.service
-            Requires=network-online.target tailscaled.service
+            After=tailscaled.service
+            Requires=tailscaled.service
 
             [Service]
             Type=oneshot
@@ -74,8 +74,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T00:47:54Z"
-    mac: ENC[AES256_GCM,data:1DmGmASd4xMcBD+igUZUK/n6AUixYevci0dOpzzGw/Jn0j32f5sINlKey9ftln/06QeT7Zmb1fpabmqOmms5ppxUM1kMzzUCaq90OHEDWVGevqwHW39vtZxa/k7vAeL6Ux1SENzttEqjWSmtt4e6LLq0TpPiTPj0JBv7Rw8IIhI=,iv:tehDM/FHar/ZAaA3V9fT7r+2a6mre9ot4NrI089MlCg=,tag:ouyHnxMen7bn4GEzx2KH3w==,type:str]
+    lastmodified: "2025-09-17T00:49:15Z"
+    mac: ENC[AES256_GCM,data:dxHh35BUgoYFVNx4NmQEEL0M9oWmyHLo/IqoFlgDVz7wCgHCJ/qIq/KsTJaRcawZpUT2DQnHCmeuAvKiwBVgZVt9TEEm6gXlp9h7wngoTrTIpGqgdXWL96rxfBmvQwNeK3wOfFosAPgTCC1oI51/B8k2wgNAZZ+vljIPj14dYwg=,iv:jnw8IjWlGkqNxsUhvuaRsusriV3wI6n1kX7Nox/EKC0=,tag:gfs564bCEHGcSo2L/3h8tA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
