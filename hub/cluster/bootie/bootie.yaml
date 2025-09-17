@@ -64,6 +64,8 @@ spec:
       httpGet: ~
     nodeSelector:
       node-role.kubernetes.io/control-plane: "true"
+    podAnnotations:
+      reloader.stakater.com/auto: "true"
     readinessProbe: ~
     replicaCount: 1
     service:

@@ -13,6 +13,8 @@ spec:
       name: bootie
   template:
     metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
       labels:
         name: bootie
     spec:
