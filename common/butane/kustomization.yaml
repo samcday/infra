@@ -5,5 +5,7 @@ secretGenerator:
     files:
       - fucksecurity.yaml
       - install.yaml
+      - kubeadm-worker.yaml
+      - tailscale.yaml
     options:
       disableNameSuffixHash: true

@@ -1,5 +1,10 @@
 variant: fcos
 version: 1.5.0
+ignition:
+    config:
+        merge:
+            - local: common/tailscale.ign
+            - local: common/kubeadm-worker.ign
 passwd:
     users:
         - name: sam
@@ -20,12 +25,6 @@ storage:
           contents:
             # https://extensions.fcos.fr/extensions/kubernetes-1.33/kubernetes-1.33-1.33.4-1.fc42-42-x86-64.raw
             source: http://10.0.5.1/static/kubernetes-1.33-1.33.4-1.fc42-42-x86-64.raw
-        # This file doesn't seem to end up in the right place when installing tailscale as a sysext.
-        - path: /etc/default/tailscaled
-          contents:
-            inline: |
-                PORT="41641"
-                FLAGS=""
         - path: /etc/zincati/config.d/90-disable.toml
           contents:
             inline: |
@@ -36,70 +35,6 @@ systemd:
     units:
         - name: systemd-sysext.service
           enabled: true
-        - name: tailscaled.service
-          enabled: true
-        - name: tailscale-up.service
-          enabled: true
-          contents: |-
-            [Unit]
-            After=tailscaled.service
-            Requires=tailscaled.service
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=tailscale up --login-server=https://headscale.tail22d0a0.ts.net --accept-routes --auth-key=file:/etc/ts-authkey
-            Restart=on-failure
-            RestartSec=10s
-
-            [Install]
-            WantedBy=multi-user.target
-        # Without this, tailscale-up.service will never activate, because it's loaded before systemd-sysext has merged
-        - name: tailscale-up.path
-          enabled: true
-          contents: |
-            [Unit]
-            After=systemd-sysext.service
-            Wants=systemd-sysext.service
-
-            [Path]
-            PathExists=/usr/lib/systemd/system/tailscaled.service
-
-            [Install]
-            WantedBy=multi-user.target
-        - name: kubelet.service
-          enabled: true
-        - name: kubeadm-join.service
-          enabled: true
-          contents: |
-            [Unit]
-            After=tailscale-up.service
-            Requires=tailscale-up.service
-            ConditionPathExists=!/etc/kubernetes/kubelet.conf
-            ConditionPathExists=/etc/kubeadm.join
-
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            ExecStart=kubeadm join --config /etc/kubeadm.join
-            Restart=on-failure
-            RestartSec=30s
-
-            [Install]
-            WantedBy=multi-user.target
-        # Same deal as tailscale-up.path. sysexts be wild, yo
-        - name: kubeadm-join.path
-          enabled: true
-          contents: |
-            [Unit]
-            After=systemd-sysext.service
-            Wants=systemd-sysext.service
-
-            [Path]
-            PathExists=/usr/bin/kubeadm
-
-            [Install]
-            WantedBy=multi-user.target
 sops:
     kms: []
     gcp_kms: []
@@ -124,8 +59,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T02:37:32Z"
-    mac: ENC[AES256_GCM,data:s3lKrEddb7dDayKunMtJ3gMzNSksYX0jktbbj7TuujJ3RvJRgeYQZTzopsuam3GAhzv0WfxaO5G0iMpDTh0E7cfdcSg0t04RmyOkJPVV2P801jRIwjA00/0NzHBO8M7aPJoAm4VBgo9E4OMRRmZgn7PpSCw0f5yK37+X5dviqY0=,iv:Kwx6X5vQQ+QZzbY7JyPAFiXdWkQEG4Oct/nLtjziD4g=,tag:QzQjg+9yMdeDWaN/gNSNbw==,type:str]
+    lastmodified: "2025-09-17T05:04:17Z"
+    mac: ENC[AES256_GCM,data:6Yu09LyV4SQJKrAMsayEf5tDaNHzuJd/lCOI7bnDPY+1UQjnrqjSC4qhP7dYm1XXnhhf1GzVgEk4Oxf7bMw4kHB3oTmsp6GXHz1n8+mPsE7a9POssuaFim3lUHSxgty9sMP7AUEJdUs7wNR5ZcBQe+KGxJiJ0k8gYfI8Byo0ppg=,iv:gHs8DU9Tbcg5jyi/k77cSs7VrWWXwx9G4rdMxE2/2Y0=,tag:IjuprWzPY4BJsBLK8ZP3Kw==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
