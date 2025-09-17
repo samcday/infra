@@ -1,10 +1,5 @@
 variant: fcos
 version: 1.5.0
-ignition:
-    config:
-        merge:
-            # generated at runtime in bootie initContainer
-            - local: secrets.ign
 passwd:
     users:
         - name: sam
@@ -73,8 +68,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-16T10:26:15Z"
-    mac: ENC[AES256_GCM,data:7O575SKrgsvTQmxcVV4A+oxuWUvSYc6fbYneEW6/GGE+r2G7EBZO3xW/W3boLjo07BCDq5P9u4Y5TjWPZ678acEp2aLO+5N/x+muZ4SO6GmSdBUQhhVeVdmHIu/m6BrFArSLDcxMqxir7UObXa3PDbTjT856/oJJGoDgb5bLKHA=,iv:9LAzY4mJ8x4QT7MhsbhZuTwAZfKVKkO++MBeQXLagmI=,tag:kqYQ3ALPi2W8g/jCPr8bjA==,type:str]
+    lastmodified: "2025-09-17T00:03:35Z"
+    mac: ENC[AES256_GCM,data:qoJrS9sI4s34I6jrkgv5sbfQJHl+4Y3V/al0dOyRthQwO7uX62+9ur/5cK4++/WM8Gh5sOhGkto+KKhjdUqqQtSXjBg2u4Gcq4nnMYUzs0uBygYJY52bOeL/HcxlwIiN12zCMy+1i8tvs6NhDmFtDpetb5shVGcsZG7vk6jGm9s=,iv:v0BBgDmofdYtSmpxvivAtPIJ79J13Wrwqh/n2WaxObI=,tag:3iiuZQVr4zy0m+Z+MPyzQA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
