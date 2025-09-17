@@ -16,6 +16,10 @@ storage:
           contents:
             # https://extensions.fcos.fr/extensions/tailscale/tailscale-0-1.88.1-1-43-x86-64.raw
             source: http://10.0.5.1/static/tailscale-0-1.88.1-1-43-x86-64.raw
+        - path: /var/lib/extensions/kubernetes-1.33.raw
+          contents:
+            # https://extensions.fcos.fr/extensions/kubernetes-1.33/kubernetes-1.33-1.33.4-1.fc42-42-x86-64.raw
+            source: http://10.0.5.1/static/kubernetes-1.33-1.33.4-1.fc42-42-x86-64.raw
         # This file doesn't seem to end up in the right place when installing tailscale as a sysext.
         - path: /etc/default/tailscaled
           contents:
@@ -87,8 +91,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T01:45:34Z"
-    mac: ENC[AES256_GCM,data:VDf3+ub/LsrAKdLjaRj0RfPOiIEAXqz6n/SFjICaQBhhIycNdbxaGuGlvjpfMs0LUmIb611EMnnnQzlVP4K8JsvI07CZyttV5j0UotiYdv0Hjk8uzPk3DEilBrqv8DGv8UgMOVJ5J1eq6D911B3q6sZNJFossRmZugdWEPI//Y4=,iv:feQ4OJ0J9RKFwVQBliNLgu8PECpBeAWIV3rCkSdD5P8=,tag:lq48/kY3EAjAwBRIWZZ+Sg==,type:str]
+    lastmodified: "2025-09-17T02:28:40Z"
+    mac: ENC[AES256_GCM,data:QCj6vyVt4VFIQBEm6bW81VbbXae387XMJkaGechbA4yWMW1xdzwENQeprUqtQRPbSJ6UzQ3WkcaJHeXVY6Q9ne/CMhrIyKaDaS7IsSs2x8MNrHpKme9T0onRNdk5oA3gBvl6nCVPJk2v6jZw9O3DoDWAznOofwPPtzjYJiOcpqM=,iv:WEegDUKFl3Lh2lfjHZxmI3Fj4ASSPwPJ8oCNHpyTlm4=,tag:w3ensps9mCCp+rxuOFp1Ug==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
