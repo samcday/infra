@@ -27,6 +27,15 @@ spec:
         - pipefail
         - -c
         - |
+          cat > /secrets/kubeadm.join <<HERE
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              token: $(cat /token/id).$(cat /token/secret)
+              apiServerEndpoint: simonet.hub.samcday.com
+              caCertHashes: [$(cat /ca-hash)]
+          HERE
           butane -d /secrets --strict <<HERE > /ignition/secrets.ign
           variant: fcos
           version: 1.5.0
@@ -36,6 +45,10 @@ spec:
                 mode: 0600
                 contents:
                   local: ts-authkey
+              - path: /etc/kubeadm.join
+                mode: 0600
+                contents:
+                  local: kubeadm.join
           HERE
           mkdir /ignition/common
           for f in /butane/common/*.yaml; do
@@ -51,11 +64,16 @@ spec:
           mountPath: /butane
         - name: butane-common
           mountPath: /butane/common
+        - name: ca-hash
+          mountPath: /ca-hash
+          subPath: hash
         - name: ignition
           mountPath: /ignition
         - name: node-ts-auth
           mountPath: /secrets/ts-authkey
           subPath: key
+        - name: node-bootstrap-token
+          mountPath: /token
       containers:
       - name: bootie
         image: ghcr.io/samcday/infra-bootie:2025091700 # {"$imagepolicy": "flux-system:bootie"}
@@ -93,8 +111,14 @@ spec:
       - name: butane-common
         secret:
           secretName: butane-common
+      - name: ca-hash
+        configMap:
+          name: ca-hash
       - name: ignition
         emptyDir: {}
+      - name: node-bootstrap-token
+        secret:
+          secretName: node-bootstrap-token
       - name: node-ts-auth
         secret:
           secretName: node-ts-auth
