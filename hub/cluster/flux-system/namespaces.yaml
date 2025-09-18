@@ -31,4 +31,5 @@ spec:
     prometheus-operator:
     rook-ceph:
     simonet:
+    syncthing:
     tailscale:
