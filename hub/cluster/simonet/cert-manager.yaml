@@ -51,9 +51,10 @@ spec:
   storageNamespace: kube-system
   targetNamespace: kube-system
   values:
-    letsencrypt:
+    _:
       apiVersion: cert-manager.io/v1
       kind: ClusterIssuer
+    letsencrypt:
       spec:
         acme:
           email: me@samcday.com
@@ -66,3 +67,6 @@ spec:
                 apiTokenSecretRef:
                   name: cloudflare
                   key: token
+    selfsigned:
+      spec:
+        selfSigned: {}
