@@ -8,6 +8,7 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - bootie.yaml
+  - cert-manager.yaml
   - cilium.yaml
   - cloudflare-token.yaml
   - control-plane.yaml
