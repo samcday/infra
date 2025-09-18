@@ -59,7 +59,6 @@ resource "headscale_pre_auth_key" "subnet-router" {
   user           = headscale_user.hub.id
   time_to_expire = "520w"
   reusable       = true
-  ephemeral      = true
   acl_tags       = ["tag:hub-subnet-router"]
 }
 
