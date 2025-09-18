@@ -19,8 +19,8 @@ spec:
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
-  storageNamespace: ingress-nginx
-  targetNamespace: ingress-nginx
+  storageNamespace: kube-system
+  targetNamespace: kube-system
   values:
     # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
     controller:
