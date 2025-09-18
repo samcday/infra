@@ -23,10 +23,14 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml
-    installCRDs: true
-    prometheus:
-      servicemonitor:
-        enabled: true
+    cainjector:
+      replicaCount: 0
+    crds:
+      enabled: true
+      keep: true
+    replicaCount: 0
+    webhook:
+      replicaCount: 0
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
