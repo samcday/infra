@@ -23,4 +23,5 @@ resources:
   - rook-ceph.yaml
   - snapshot-controller.yaml
   - syncthing.yaml
+  - tailscale-node-controller.yaml
   - tofu.yaml
