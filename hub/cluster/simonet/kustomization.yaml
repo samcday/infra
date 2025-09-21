@@ -22,4 +22,5 @@ resources:
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
   - snapshot-controller.yaml
+  - syncthing.yaml
   - tofu.yaml
