@@ -136,7 +136,8 @@ spec:
             replicated:
               size: 3
           dataPools:
-            - failureDomain: host
+            - name: data0
+              failureDomain: host
               replicated:
                 size: 3
           metadataServer:
@@ -159,6 +160,52 @@ spec:
           isDefault: false
           name: ceph-filesystem
           pool: data0
+          reclaimPolicy: Delete
+          allowVolumeExpansion: true
+          volumeBindingMode: Immediate
+          mountOptions: []
+          parameters:
+            csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+            csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+            csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+            csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+            csi.storage.k8s.io/fstype: ext4
+      - name: ceph-filesystem-ec
+        spec:
+          metadataPool:
+            replicated:
+              size: 3
+          dataPools:
+            - failureDomain: host
+              replicated:
+                size: 3
+            - name: ec
+              failureDomain: host
+              erasureCoded:
+                dataChunks: 2
+                codingChunks: 1
+          metadataServer:
+            activeCount: 1
+            activeStandby: true
+            placement:
+              tolerations:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: Exists
+            resources:
+              limits:
+                cpu: ~
+                memory: 4Gi
+              requests:
+                cpu: ~
+                memory: 1Gi
+            priorityClassName: system-cluster-critical
+        storageClass:
+          enabled: true
+          isDefault: false
+          name: ceph-filesystem-ec
+          pool: ec
           reclaimPolicy: Delete
           allowVolumeExpansion: true
           volumeBindingMode: Immediate
