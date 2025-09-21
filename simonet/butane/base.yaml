@@ -33,6 +33,13 @@ storage:
           overwrite: true
 systemd:
     units:
+        - name: tailscale-up.service
+          enabled: true
+          dropins:
+            - name: advertise-routes.conf
+              contents: |
+                [Service]
+                Environment=ADVERTISE_ROUTES=10.0.6.0/24
         - name: systemd-sysext.service
           enabled: true
 sops:
@@ -59,8 +66,8 @@ sops:
             OHlmUDFjakpLTFRqcmxrOS91ZzhPRmcK3617v1czLyoJypQ42RP7+BGc51K5s/4r
             1emqJ32ptvOf3qKdOr/wzP44U6SaMv1U2lafLO3E/Atv0fBzBoWhUw==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-17T05:04:17Z"
-    mac: ENC[AES256_GCM,data:6Yu09LyV4SQJKrAMsayEf5tDaNHzuJd/lCOI7bnDPY+1UQjnrqjSC4qhP7dYm1XXnhhf1GzVgEk4Oxf7bMw4kHB3oTmsp6GXHz1n8+mPsE7a9POssuaFim3lUHSxgty9sMP7AUEJdUs7wNR5ZcBQe+KGxJiJ0k8gYfI8Byo0ppg=,iv:gHs8DU9Tbcg5jyi/k77cSs7VrWWXwx9G4rdMxE2/2Y0=,tag:IjuprWzPY4BJsBLK8ZP3Kw==,type:str]
+    lastmodified: "2025-09-21T07:20:24Z"
+    mac: ENC[AES256_GCM,data:WLutCi4UX991Z2cZ+idjbqJq5XjxoKSmUZDfop8lVSfpKnXjJspZE6Y2Mctz7cCXVEZp6Lqw9mqYGdCCqDbzXcHs7IzaZ0FTzlv6moNrBJ0e2oUMWaopiVMEp6KqShdlx8zypaNWxYRp469PFowJD6lIquNnVc7TDEtubbkmNmU=,iv:dq8IUFjj4CksxFp01Xn16XFHxMpNslgLhqrqWejjMLc=,tag:cI15Z02rsMbr3P2JNsphKA==,type:str]
     pgp: []
     encrypted_comment_regex: cryptme
     version: 3.9.4
