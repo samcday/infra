@@ -22,6 +22,7 @@ resources:
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
   - snapshot-controller.yaml
+  - subnet-router.yaml
   - syncthing.yaml
   - tailscale-node-controller.yaml
   - tofu.yaml
