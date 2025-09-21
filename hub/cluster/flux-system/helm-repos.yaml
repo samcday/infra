@@ -57,9 +57,6 @@ spec:
     metrics-server:
       spec:
         url: https://kubernetes-sigs.github.io/metrics-server/
-    nfd:
-      spec:
-        url: https://kubernetes-sigs.github.io/node-feature-discovery/charts
     openebs:
       spec:
         url: https://openebs.github.io/openebs
