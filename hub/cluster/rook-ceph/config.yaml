@@ -7,9 +7,7 @@ data:
   # mon_osd_crush_smoke_test = false fixes the issue of mon 100% CPU usage when creating OSD pools
   # seems to happen specifically under CoreOS + derivatives. Insanity.
   # https://tracker.ceph.com/issues/57782
-  # osd_pool_default_size = 2 because this cluster currently only has 2 OSDs
   config: |
     [global]
     mon_osd_crush_smoke_test = false
     mon_data_avail_warn = 15
-    osd_pool_default_size = 2
