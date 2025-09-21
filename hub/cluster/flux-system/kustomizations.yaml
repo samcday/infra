@@ -101,6 +101,9 @@ spec:
       spec:
         path: common/butane
         targetNamespace: simonet
+    syncthing:
+      spec:
+        path: hub/cluster/syncthing
     tailscale:
       spec:
         path: hub/cluster/tailscale
