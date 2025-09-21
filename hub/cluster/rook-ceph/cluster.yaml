@@ -20,7 +20,7 @@ spec:
   #   - kustomize:
   #       patches:
   #         # Some of the rules shipped by Rook aren't suitable, but can only be removed with patches like so
-  #         # https://github.com/rook/rook/blob/release-1.15/deploy/charts/rook-ceph-cluster/prometheus/localrules.yaml
+  #         # https://github.com/rook/rook/blob/release-1.17/deploy/charts/rook-ceph-cluster/prometheus/localrules.yaml
   #         - target:
   #             group: monitoring.coreos.com
   #             version: v1
@@ -43,7 +43,7 @@ spec:
         spec:
           failureDomain: host
           replicated:
-            size: 2
+            size: 3
         storageClass:
           enabled: true
           name: ceph-block
@@ -134,16 +134,11 @@ spec:
         spec:
           metadataPool:
             replicated:
-              size: 2
+              size: 3
           dataPools:
             - failureDomain: host
               replicated:
-                size: 2
-              name: data0
-            - failureDomain: host
-              replicated:
-                size: 2
-              name: ec
+                size: 3
           metadataServer:
             activeCount: 1
             activeStandby: true
@@ -199,11 +194,11 @@ spec:
           metadataPool:
             failureDomain: host
             replicated:
-              size: 2
+              size: 3
           dataPool:
             failureDomain: host
             replicated:
-              size: 2
+              size: 3
           preservePoolsOnDelete: true
           gateway:
             port: 80
