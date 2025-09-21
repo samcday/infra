@@ -18,6 +18,7 @@ resources:
   - ingress-nginx-public.yaml
   - metrics-server.yaml
   - namespaces.yaml
+  - nfd.yaml
   - node-bootstrap-token.yaml
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
