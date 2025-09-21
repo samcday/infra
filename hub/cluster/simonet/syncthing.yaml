@@ -94,5 +94,5 @@ spec:
         accessModes: [ReadWriteMany]
         resources:
           requests:
-            storage: 500Gi
+            storage: 1000Gi
         storageClassName: ceph-filesystem-ec
