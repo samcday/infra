@@ -5,3 +5,4 @@ resources:
   - ../../../.kustomize-config
   - bootie.yaml
   - rbac.yaml
+  - vpa.yaml
