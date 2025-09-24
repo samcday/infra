@@ -11,6 +11,8 @@ apiServer:
     # Do not set a selector or add the apiserver 6443 port, that's handled by the chart.
     spec:
       type: ClusterIP
+  vpa:
+    enabled: true
 
 bootstrapTokens:
   # - id: abcdef
@@ -27,6 +29,8 @@ controllerManager:
     pullPolicy: IfNotPresent
     tag: "v{{ $.Values.version }}"
   replicas: 2
+  vpa:
+    enabled: true
 
 etcd:
   # a cert-manager issuerRef that can provide a client certificate for the etcd endpoint
@@ -91,6 +95,8 @@ scheduler:
     repository: registry.k8s.io/kube-scheduler
     pullPolicy: IfNotPresent
     tag: "v{{ $.Values.version }}"
+  vpa:
+    enabled: true
 
 # Can be either an IPv4 subnet, an IPv6 subnet, or exactly one of each.
 serviceCIDRs: []

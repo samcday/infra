@@ -1,0 +1,13 @@
+{{- if $.Values.apiServer.vpa.enabled -}}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: apiserver
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: apiserver
+  updatePolicy:
+    updateMode: Auto
+{{- end -}}
