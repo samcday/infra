@@ -36,6 +36,9 @@ spec:
     coredns:
       spec:
         url: https://coredns.github.io/helm
+    cowboysysop:
+      spec:
+        url: https://cowboysysop.github.io/charts/
     descheduler:
       spec:
         url: https://kubernetes-sigs.github.io/descheduler/
