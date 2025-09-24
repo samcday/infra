@@ -12,3 +12,4 @@ resources:
   - control-plane.yaml
   - coredns.yaml
   - node-bootstrap-token.yaml
+  - vpas.yaml
