@@ -8,3 +8,4 @@ resources:
   - grafana-postgres.yaml
   - kube-prometheus-stack.yaml
   - rules/flux.yaml
+  - vpas.yaml
