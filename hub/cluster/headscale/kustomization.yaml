@@ -13,3 +13,4 @@ resources:
   - postgres.yaml
   - subnet-router.yaml
   - tofu.yaml
+  - vpas.yaml
