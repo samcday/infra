@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
   - cloudnative-pg-operator.yaml
   - catalogs.yaml
+  - vpa.yaml
