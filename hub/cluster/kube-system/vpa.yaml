@@ -11,12 +11,12 @@ spec:
         kind: HelmRepository
         name: cowboysysop
         namespace: flux-system
-      version: 10.0.0
+      version: 11.0.1
   driftDetection:
     mode: enabled
   interval: 1h
   values:
-    # https://github.com/cowboysysop/charts/blob/main/charts/vertical-pod-autoscaler/values.yaml
+    # https://github.com/cowboysysop/charts/blob/master/charts/vertical-pod-autoscaler/values.yaml
     admissionController:
       metrics: &mon
         serviceMonitor:
