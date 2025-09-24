@@ -26,3 +26,4 @@ resources:
   - syncthing.yaml
   - tailscale-node-controller.yaml
   - tofu.yaml
+  - vpas.yaml
