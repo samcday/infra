@@ -1,0 +1,148 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vpas
+  namespace: kube-system
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  values:
+    cilium:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: cilium
+        updatePolicy:
+          updateMode: Auto
+    cilium-envoy:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: cilium-envoy
+        updatePolicy:
+          updateMode: Auto
+    cilium-operator:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: cilium-operator
+        updatePolicy:
+          updateMode: Auto
+    coredns:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: coredns
+        updatePolicy:
+          updateMode: Auto
+    kube-vip-ds:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: kube-vip-ds
+        updatePolicy:
+          updateMode: Auto
+    local-path-provisioner:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: local-path-provisioner
+        updatePolicy:
+          updateMode: Auto
+    metrics-server:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: metrics-server
+        updatePolicy:
+          updateMode: Auto
+    snapshot-controller:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: snapshot-controller
+        updatePolicy:
+          updateMode: Auto
+    tailscale:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: tailscale
+        updatePolicy:
+          updateMode: Auto
+    tailscale-node-controller:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: tailscale-node-controller
+        updatePolicy:
+          updateMode: Auto
+    vpa-vertical-pod-autoscaler-admission-controller:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: vpa-vertical-pod-autoscaler-admission-controller
+        updatePolicy:
+          updateMode: Auto
+    vpa-vertical-pod-autoscaler-recommender:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: vpa-vertical-pod-autoscaler-recommender
+        updatePolicy:
+          updateMode: Auto
+    vpa-vertical-pod-autoscaler-updater:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: vpa-vertical-pod-autoscaler-updater
+        updatePolicy:
+          updateMode: Auto
