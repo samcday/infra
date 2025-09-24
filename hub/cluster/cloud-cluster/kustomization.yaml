@@ -18,3 +18,4 @@ resources:
   - node-bootstrap-token.yaml
   - tofu.yaml
   - ts-apiserver.yaml
+  - vpas.yaml
