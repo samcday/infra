@@ -3,7 +3,9 @@ set -uexo pipefail
 uci -q batch << EOI
 
 set wireless.@wifi-device[0].disabled='0'
+set wireless.@wifi-device[0].country='AU'
 set wireless.@wifi-device[1].disabled='0'
+set wireless.@wifi-device[1].country='AU'
 
 set wireless.@wifi-iface[0].ssid='samnet'
 set wireless.@wifi-iface[0].encryption=sae
