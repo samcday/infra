@@ -50,7 +50,7 @@ spec:
                 contents:
                   local: kubeadm.join
           HERE
-          mkdir /ignition/common
+          mkdir -p /ignition/common
           for f in /butane/common/*.yaml; do
             name=$(basename $f)
             butane --strict < $f > /ignition/common/${name/.yaml}.ign
