@@ -43,6 +43,7 @@ spec:
         tag: v0.16.0-rc.5
       serviceAccount:
         allowedNamespaces:
+          - fedora-mobility-ci
           - cloud-cluster
           - flux-system
           - headscale
@@ -57,6 +58,7 @@ metadata:
 data:
   secretName: github-token
   resources: |-
+    - namespace: fedora-mobility-ci
     - namespace: cloud-cluster
     - namespace: flux-system
     - namespace: headscale

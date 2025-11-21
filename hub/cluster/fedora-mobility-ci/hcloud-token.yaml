@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hcloud
+  namespace: fedora-mobility-ci
+stringData:
+  token: REPLACE_ME_HCLOUD_TOKEN

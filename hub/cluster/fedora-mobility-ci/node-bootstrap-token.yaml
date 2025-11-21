@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: node-bootstrap-token
+  namespace: fedora-mobility-ci
+stringData:
+  id: REPLACE_ME_TOKEN_ID
+  secret: REPLACE_ME_TOKEN_SECRET

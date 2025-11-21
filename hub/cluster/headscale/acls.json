@@ -36,6 +36,11 @@
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
+        },
+        {
+            "action": "accept",
+            "src": ["tag:fedora-mobility-ci-node"],
+            "dst": ["tag:fedora-mobility-ci-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -61,6 +66,8 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
+        "tag:fedora-mobility-ci-apiserver": [],
+        "tag:fedora-mobility-ci-node": [],
         "tag:simonet": []
     }
 }

@@ -1,0 +1,49 @@
+apiServer:
+  service:
+    spec:
+      type: ClusterIP
+bootstrapTokens:
+  - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+    # token ID+secret is set from HelmRelease spec.valuesFrom
+clusterCIDRs: [172.26.0.0/16]
+clusterDNS: [172.25.0.10]
+clusterName: fedora-mobility-ci
+etcd:
+  certIssuer:
+    name: etcd
+    kind: ClusterIssuer
+  endpoints:
+    - https://hub-az1-cp1.hub.internal:2379
+    - https://hub-az1-cp2.hub.internal:2379
+    - https://hub-az1-cp3.hub.internal:2379
+# see the ts-apiserver resources
+# externalHostname: fedora-mobility-ci-apiserver.tailnet.hub.samcday.com
+# TODO: update externalIP with the tailscale IP of the ts-apiserver pod once it registers
+externalIP: 100.64.0.250
+parentClusterDomain: cluster.hub.internal
+scheduler:
+  config:
+    profiles:
+      - pluginConfig:
+          - name: NodeResourcesFit
+            args:
+              scoringStrategy:
+                type: MostAllocated
+                resources:
+                  - name: cpu
+                    weight: 1
+                  - name: memory
+                    weight: 100
+  deployment:
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+      template:
+        spec:
+          containers:
+            - name: kube-scheduler
+              # command:
+              #   - -v=6
+serviceCIDRs: [172.25.0.0/16]
+serviceIP: 172.25.0.1

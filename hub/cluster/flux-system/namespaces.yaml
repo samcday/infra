@@ -21,6 +21,7 @@ spec:
     bootie:
     cert-manager:
     cloud-cluster:
+    fedora-mobility-ci:
     cnpg-system:
     external-dns:
     headscale:
