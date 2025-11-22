@@ -18,7 +18,7 @@ etcd:
     - https://hub-az1-cp3.hub.internal:2379
 # see the ts-apiserver resources
 # externalHostname: fedora-mobility-ci-apiserver.tailnet.hub.samcday.com
-externalIP: 100.64.0.11
+externalIP: 100.64.0.21
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:
