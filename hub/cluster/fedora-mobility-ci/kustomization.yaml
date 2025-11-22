@@ -7,6 +7,7 @@ configMapGenerator:
 namespace: fedora-mobility-ci
 resources:
   - ../../../.kustomize-config
+  - age-key.yaml
   - cluster-autoscaler.yaml
   - control-plane.yaml
   - csi-driver.yaml

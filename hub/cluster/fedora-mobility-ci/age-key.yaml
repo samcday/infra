@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: age-key
+    namespace: fedora-mobility-ci
+stringData:
+    age.agekey: ENC[AES256_GCM,data:t9MRKOdhLrX/hoX/wUC4IMSphPmx1oC0YkxFmu6A93aRoXgXlmcr7KytnYHVDVMgGk8MKGpzB9tzgScd5MDGo1zuAH7xlCo5hWW3yBQVAS8zvz/+l/97eODGPFJmVojahuyQq7vzk7bMJJIN72zjBaPG5wpvQam8m7nVwwZEG5DQqfxPZbc9KgB6J7VfnjZubgMcvuRY3dBDYkZk2VI9LR1MY8Zsvw24hKYSagdOmat1eXotp0j90a2xHRY=,iv:4LBcCYv0HrHt11HOi40+KzVl+Es+qO0R+VwSTLfnEgY=,tag:2QQnMIuRtR9h6gi5Gdj0fA==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA3RzUyNlR4c3Jzc1BBMG9E
+            dCt3RUd0MzRSaHBGa2s4S1ZuYmZYWE5FYVNrCm1xbnhkTTl3TVpXTDE5SW1VU2hz
+            SVRRNU9manRnMVorUE9oZS82Qy9hOW8KLS0tIFdaYVR0OGdJaXo2YWU3dUM0R2Fr
+            ZWlWUGNZekJOY1JUSmlqRHhlMEF0NzgKDL1iMjKYcBT5k5L63uw6UI6XiDhsu6E/
+            SyJrsBMTQSzxOSHlz2Kyc3c4D6rwWC/OCzgALIGd9O3CcanDSa6Myw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBmcmFBYzR1cyswa1g4N1BK
+            OUlHN1dVeVh3bU54YU5kczZFOGd0L1ljem5NCkxCL3BaVmZRWjd2L1JIWjRzeHl1
+            MHJ2WU40b1g4NksxNXo0b2N5ODAvQlUKLS0tIEw2V2cxM2d2dnFpdlcrVGh5UXk2
+            Y3M4TVRVUHhCbFVvMU5MOUJXL0tQWTAK4UK/2MPXzZc7JBYLO29XweU3LZqw36pr
+            wOECyZQEYDhUdqz3VJ4/HznazAYrD8K8yd/PHddxrHe5UV4SVXzZ+A==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-11-22T03:54:12Z"
+    mac: ENC[AES256_GCM,data:qb8YH1heEUQc8CpGciJ8Sg0qHnpm3U4fKY3qDl0vZ37/7kM99aFh1kxWLaaLYKFq2PhpYNP6hhjVIvEkCtgVeWuanLL6oMJU5NjIUqsUPcCBzVIJPygHDYotX1WYGPFuZBkAc6ARZPycYGnsU9v+B/YwsJDWqJbbMTd9GJI5/c8=,iv:aNe/q/lEsyCiSfNunoxEEMCPyfTAsmJSJsM/Bt1iqrY=,tag:7x4a8dVqS5UlDcCPijNpww==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
