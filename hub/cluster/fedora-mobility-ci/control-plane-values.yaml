@@ -18,8 +18,7 @@ etcd:
     - https://hub-az1-cp3.hub.internal:2379
 # see the ts-apiserver resources
 # externalHostname: fedora-mobility-ci-apiserver.tailnet.hub.samcday.com
-# TODO: update externalIP with the tailscale IP of the ts-apiserver pod once it registers
-externalIP: 100.64.0.250
+externalIP: 100.64.0.11
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:

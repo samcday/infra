@@ -1,7 +1,31 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: hcloud
-  namespace: fedora-mobility-ci
+    name: hcloud
+    namespace: fedora-mobility-ci
 stringData:
-  token: REPLACE_ME_HCLOUD_TOKEN
+    token: ENC[AES256_GCM,data:KzVy2gs8wCAebMBxuvOfJ9CuITJop+zNPNv2YGm/8kS6L4UHjwXcmtgM/atStOuxQ8K5Xrg2SJu+1Mu6jW/w9Q==,iv:f6Hs0yAnxLnOF8otLsbe6FIQwSl0IxjGRj1bFs1SXKU=,tag:VC44Wt5zOd83H86pfaHgsw==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBJeGp6Yy81YkNOS0c3c2xV
+            S0trcFIwdDdWQ2EybS9aVVZYSkJWOTZhNkFvCjlvR3lyVnBuMFA0bDJoS1hRMnZs
+            d3ZSNHRIRitjeWVwOHBvclJxWWlFYjAKLS0tIDM5VS9LZkUwVzB4RERqaFVvWjFz
+            RUxBckMwRk5sN3FyUm1EQ3psaWo3WVEKdFQQ4BLFIbLhecngA4DJXqOk9f5MagBN
+            oM5TrfXGuh4KSjbcj3cbxyF7qkBhQeilpqMFRYl7eMG523JqaZCAyg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBWWkZRWlFCbnZuUGtVd2or
+            eERUTGJ6azlGemEveEgwYWduNm8zdmloMDNrCmk4WElFNUtvWUJPQUNkWnQ4cDRX
+            Q3A3R1hLVWt0OWdTTWtMU2I5c3YxVE0KLS0tIEp6M2crcU9INjdLeHVqNjRNM1FH
+            TnY4aWpTakJzN3BTd01nSGhLejZ4UHMK4zdnxPWGY0BIxPdwhUZkW7Nqkm/mq+uz
+            hQsFUdt7cKeeEBgKlhospN95/CF0RTYnZWllu33moo3qqhIkN84lIA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-11-22T02:03:20Z"
+    mac: ENC[AES256_GCM,data:Tep/tiPxS4w8+l3fOFWTnEk7pglKuAm/qDrVV1YfGVZvuXwIs8EBSyDRMFoyPlwguVk5DWM38gzBaoTAfEltAqNCnxBR+b7Gyv8SxobW9TY+ymoo930xOtHMCENjL+z+HXnO8KqLCDAY1lB6fz8LK5sNWcL/mppNBr+IUIjPNY4=,iv:IDWra0ZEPwtBOqrWrxfLDOkIksIpT6XPXQEgK2+lhGE=,tag:KB+ryW3UPTIJvdDMGR97FQ==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
