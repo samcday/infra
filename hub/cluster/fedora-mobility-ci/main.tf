@@ -44,14 +44,14 @@ resource "hcloud_firewall" "fedora_mobility_ci" {
 
 resource "hcloud_network" "fedora_mobility_ci" {
   name     = "fedora-mobility-ci-network"
-  ip_range = "172.23.0.0/15"
+  ip_range = "172.22.0.0/15"
 }
 
 resource "hcloud_network_subnet" "subnet" {
   network_id   = hcloud_network.fedora_mobility_ci.id
   type         = "cloud"
   network_zone = "eu-central"
-  ip_range     = "172.24.0.0/16"
+  ip_range     = "172.23.0.0/16"
 }
 
 resource "random_password" "tunnel_secret" {
