@@ -11,7 +11,7 @@ resources:
   - cluster-autoscaler.yaml
   - control-plane.yaml
   - csi-driver.yaml
-  - descheduler.yaml
+  # - descheduler.yaml
   - external-dns.yaml
   - hccm.yaml
   - hcloud-token.yaml
