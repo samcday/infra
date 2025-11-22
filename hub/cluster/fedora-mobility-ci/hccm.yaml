@@ -56,7 +56,7 @@ spec:
         enabled: true
     networking:
       enabled: true
-      clusterCIDR: 172.26.0.0/16
+      clusterCIDR: 172.22.0.0/16
       network:
         value: fedora-mobility-ci-network
         valueFrom: ~

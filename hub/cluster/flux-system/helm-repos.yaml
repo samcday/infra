@@ -45,6 +45,9 @@ spec:
     external-dns:
       spec:
         url: https://kubernetes-sigs.github.io/external-dns/
+    fluxcd-community:
+      spec:
+        url: https://fluxcd-community.github.io/helm-charts
     grafana:
       spec:
         url: https://grafana.github.io/helm-charts
