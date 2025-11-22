@@ -5,8 +5,8 @@ apiServer:
 bootstrapTokens:
   - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
     # token ID+secret is set from HelmRelease spec.valuesFrom
-clusterCIDRs: [172.26.0.0/16]
-clusterDNS: [172.25.0.10]
+clusterCIDRs: [172.22.0.0/16]
+clusterDNS: [172.21.0.10]
 clusterName: fedora-mobility-ci
 etcd:
   certIssuer:
@@ -44,5 +44,5 @@ scheduler:
             - name: kube-scheduler
               # command:
               #   - -v=6
-serviceCIDRs: [172.25.0.0/16]
-serviceIP: 172.25.0.1
+serviceCIDRs: [172.21.0.0/16]
+serviceIP: 172.21.0.1
