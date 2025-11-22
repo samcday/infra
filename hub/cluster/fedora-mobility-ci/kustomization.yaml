@@ -15,6 +15,7 @@ resources:
   - external-dns.yaml
   - hccm.yaml
   - hcloud-token.yaml
+  - infra-config.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
   - tofu.yaml
