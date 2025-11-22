@@ -44,7 +44,7 @@ resource "hcloud_firewall" "fedora_mobility_ci" {
 
 resource "hcloud_network" "fedora_mobility_ci" {
   name     = "fedora-mobility-ci-network"
-  ip_range = "172.32.0.0/15"
+  ip_range = "172.32.0.0/16"
 }
 
 resource "hcloud_network_subnet" "subnet" {
