@@ -13,7 +13,6 @@ resources:
   - descheduler.yaml
   - external-dns.yaml
   - hccm.yaml
-  - cloudflare-token.yaml
   - hcloud-token.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
