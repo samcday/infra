@@ -9,7 +9,7 @@ terraform {
       version = "1.52.0"
     }
     random = {
-      source = "hashicorp/random"
+      source  = "hashicorp/random"
       version = "3.7.2"
     }
   }
@@ -31,6 +31,27 @@ resource "hcloud_placement_group" "placement-group" {
 
 resource "hcloud_firewall" "firewall" {
   name = "firewall"
+
+  rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "80"
+    source_ips = [
+      "0.0.0.0/0",
+      "::/0"
+    ]
+  }
+
+  rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "443"
+    source_ips = [
+      "0.0.0.0/0",
+      "::/0"
+    ]
+  }
+
   rule {
     direction = "in"
     protocol  = "udp"
@@ -55,7 +76,7 @@ resource "hcloud_network_subnet" "subnet" {
 }
 
 resource "random_password" "tunnel_secret" {
-  length           = 32
+  length = 32
 }
 
 resource "cloudflare_tunnel" "tunnel" {

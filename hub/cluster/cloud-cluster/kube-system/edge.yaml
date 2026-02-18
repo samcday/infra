@@ -1,0 +1,186 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: edge-resources
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: kube-system
+  targetNamespace: kube-system
+  valuesFrom:
+    - kind: Secret
+      name: cloudflare
+      valuesKey: token
+      targetPath: edge-cf-token.stringData.CF_API_TOKEN
+  values:
+    edge-namespace:
+      kind: Namespace
+      metadata:
+        name: edge
+    edge-cf-token:
+      kind: Secret
+      metadata:
+        name: edge-cf-token
+        namespace: edge
+      stringData:
+        CF_API_TOKEN: ''
+    edge-web-config:
+      kind: ConfigMap
+      metadata:
+        namespace: edge
+      data:
+        Caddyfile: |
+          {
+            admin off
+            email me@samcday.com
+          }
+
+          samcday.com, www.samcday.com {
+            tls {
+              dns cloudflare {env.CF_API_TOKEN}
+              resolvers 1.1.1.1
+            }
+
+            @matrix_server path /.well-known/matrix/server
+            handle @matrix_server {
+              header Access-Control-Allow-Origin "*"
+              header Content-Type application/json
+              respond "{\"m.server\":\"matrix.samcday.com:443\"}" 200
+            }
+
+            @matrix_client path /.well-known/matrix/client
+            handle @matrix_client {
+              header Access-Control-Allow-Origin "*"
+              header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+              header Access-Control-Allow-Headers "X-Requested-With, Content-Type, Authorization"
+              header Content-Type application/json
+              respond "{\"m.homeserver\":{\"base_url\":\"https://matrix.samcday.com\"}}" 200
+            }
+
+            respond "" 200
+          }
+    edge-web:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        namespace: edge
+      spec:
+        selector:
+          matchLabels:
+            app: edge-web
+        template:
+          metadata:
+            labels:
+              app: edge-web
+          spec:
+            hostNetwork: true
+            dnsPolicy: ClusterFirstWithHostNet
+            initContainers:
+              - name: caddy-builder
+                image: docker.io/caddy:2.10.2-builder
+                command: ["/bin/sh", "-ec"]
+                args:
+                  - >-
+                    xcaddy build
+                    --output /caddy-bin/caddy
+                    --with github.com/caddy-dns/cloudflare
+                volumeMounts:
+                  - name: caddy-bin
+                    mountPath: /caddy-bin
+            containers:
+              - name: caddy
+                image: docker.io/caddy:2.10.2
+                securityContext:
+                  runAsUser: 0
+                  runAsGroup: 0
+                  allowPrivilegeEscalation: false
+                ports:
+                  - name: http
+                    containerPort: 80
+                    hostPort: 80
+                    protocol: TCP
+                  - name: https
+                    containerPort: 443
+                    hostPort: 443
+                    protocol: TCP
+                envFrom:
+                  - secretRef:
+                      name: edge-cf-token
+                command: ["/usr/bin/caddy"]
+                args:
+                  - run
+                  - --config
+                  - /etc/caddy/Caddyfile
+                  - --adapter
+                  - caddyfile
+                livenessProbe:
+                  tcpSocket:
+                    port: http
+                readinessProbe:
+                  tcpSocket:
+                    port: http
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                volumeMounts:
+                  - name: caddy-bin
+                    mountPath: /usr/bin/caddy
+                    subPath: caddy
+                  - name: config
+                    mountPath: /etc/caddy/Caddyfile
+                    subPath: Caddyfile
+                  - name: caddy-data
+                    mountPath: /data
+                  - name: caddy-config
+                    mountPath: /config
+            volumes:
+              - name: caddy-bin
+                emptyDir: {}
+              - name: config
+                configMap:
+                  name: edge-web-config
+              - name: caddy-data
+                hostPath:
+                  path: /var/lib/edge-caddy/data
+                  type: DirectoryOrCreate
+              - name: caddy-config
+                hostPath:
+                  path: /var/lib/edge-caddy/config
+                  type: DirectoryOrCreate
+    edge-web-service:
+      kind: Service
+      metadata:
+        namespace: edge
+        annotations:
+          external-dns.alpha.kubernetes.io/cloudflare-proxied: 'false'
+          external-dns.alpha.kubernetes.io/endpoints-type: NodeExternalIP
+          external-dns.alpha.kubernetes.io/hostname: samcday.com,www.samcday.com
+          external-dns.alpha.kubernetes.io/ttl: '60'
+      spec:
+        clusterIP: None
+        selector:
+          app: edge-web
+        ports:
+          - name: http
+            port: 80
+            protocol: TCP
+            targetPort: http
+          - name: https
+            port: 443
+            protocol: TCP
+            targetPort: https
