@@ -1,0 +1,9 @@
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: cilium
+  namespace: kube-system
+spec:
+  service:
+    loadBalancerClass: io.cilium/bgp-control-plane
+    allocateLoadBalancerNodePorts: false
