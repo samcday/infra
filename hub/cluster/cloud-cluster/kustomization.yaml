@@ -15,7 +15,6 @@ resources:
   - hccm.yaml
   - hcloud-token.yaml
   - kustomizations.yaml
-  - matrix-discovery.yaml
   - node-bootstrap-token.yaml
   - tofu.yaml
   - ts-apiserver.yaml
