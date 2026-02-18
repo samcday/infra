@@ -60,6 +60,9 @@ spec:
         path: hub/cluster/cnpg-system
     conduit:
       spec:
+        dependsOn:
+          - name: gateway-api
+          - name: ingress-nginx
         path: hub/cluster/conduit
     external-dns:
       spec:
@@ -84,6 +87,7 @@ spec:
         targetNamespace: ilumbaclusta
     ingress-nginx:
       spec:
+        dependsOn: [name: gateway-api]
         path: hub/cluster/ingress-nginx
     kube-system:
       spec:

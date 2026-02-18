@@ -78,19 +78,7 @@ spec:
       repository: docker.io/matrixconduit/matrix-conduit
       tag: latest
     ingress:
-      enabled: true
-      annotations:
-        cert-manager.io/cluster-issuer: letsencrypt
-        external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-      className: public-nginx
-      hosts:
-        - host: matrix.samcday.com
-          paths:
-            - path: /
-              servicePortName: http
-      tls:
-        - hosts: [matrix.samcday.com]
-          secretName: certificate
+      enabled: false
     initContainers:
       - name: litestream-restore
         image: docker.io/litestream/litestream:latest
@@ -138,4 +126,27 @@ spec:
         - targetPort: http
           protocol: TCP
           name: http
+          port: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: conduit
+  namespace: conduit
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  hostnames:
+    - matrix.samcday.com
+  parentRefs:
+    - name: public
+      namespace: ingress-nginx
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: conduit-generic
           port: 80

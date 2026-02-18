@@ -1,35 +1,46 @@
 ---
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
 metadata:
   name: public
   namespace: ingress-nginx
+  annotations:
+    external-dns.alpha.kubernetes.io/target: ecf6ad56-c878-453d-8eb1-8ea0bff08da7.cfargotunnel.com
 spec:
-  chart:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: public-cloudflared
+  namespace: ingress-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: public-cloudflared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: public-cloudflared
     spec:
-      chart: ingress-nginx
-      sourceRef:
-        kind: HelmRepository
-        name: ingress-nginx
-        namespace: flux-system
-      version: 4.13.0
-  driftDetection:
-    mode: enabled
-  interval: 1h
-  values:
-    # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
-    controller:
-      allowSnippetAnnotations: true
-      extraContainers:
-        - image: cloudflare/cloudflared:2025.8.1
-          name: cloudflared
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2025.8.1
           args:
             - tunnel
             - --no-autoupdate
             - run
-            - --no-tls-verify
             - --url
-            - https://localhost:443
+            - http://cilium-gateway-public.ingress-nginx.svc.cluster.local:80
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
@@ -41,25 +52,5 @@ spec:
               cpu: 100m
               memory: 64Mi
             limits:
-              cpu: '2'
+              cpu: "2"
               memory: 1Gi
-      ingressClass: public-nginx
-      ingressClassResource:
-        controllerValue: k8s.io/public-ingress-nginx
-        name: public-nginx
-      kind: Deployment
-      metrics:
-        enabled: true
-      publishService:
-        enabled: false
-      replicaCount: 2
-      service:
-        enabled: false
-      serviceMonitor:
-        enabled: true
-      terminationGracePeriodSeconds: 5
-  valuesFrom:
-    - kind: Secret
-      name: cloudflared-tunnel-token
-      valuesKey: cname
-      targetPath: controller.extraArgs.publish-status-address
