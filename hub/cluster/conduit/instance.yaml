@@ -59,6 +59,10 @@ spec:
           allow_federation = true
           allow_registration = false
           trusted_servers = ["matrix.org"]
+
+          [global.well_known]
+          client = "https://matrix.samcday.com"
+          server = "matrix.samcday.com:443"
         litestream.yml: |-
           dbs:
             - path: /var/lib/matrix-conduit/conduit.db
