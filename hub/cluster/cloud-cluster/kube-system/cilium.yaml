@@ -52,6 +52,8 @@ spec:
         #   tls:
         #     - hosts: [hubble.samcday.com]
         #       secretName: hubble-cert
+    gatewayAPI:
+      enabled: true
     ipam:
       mode: kubernetes
     ipv4NativeRoutingCIDR: 172.28.0.0/16
