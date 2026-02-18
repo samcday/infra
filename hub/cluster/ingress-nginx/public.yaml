@@ -40,7 +40,7 @@ spec:
             - --no-autoupdate
             - run
             - --url
-            - http://cilium-gateway-public.ingress-nginx.svc.cluster.local:80
+            - http://cilium-gateway-public:80
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
