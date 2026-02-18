@@ -1,0 +1,103 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: matrix-discovery-nginx
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+
+      add_header Cache-Control "public, max-age=300";
+
+      location = /.well-known/matrix/server {
+        add_header Content-Type application/json always;
+        return 200 '{"m.server":"matrix.samcday.com:443"}';
+      }
+
+      location = /.well-known/matrix/client {
+        add_header Content-Type application/json always;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.homeserver":{"base_url":"https://matrix.samcday.com"}}';
+      }
+
+      location / {
+        return 404;
+      }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matrix-discovery
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: matrix-discovery
+  template:
+    metadata:
+      labels:
+        app: matrix-discovery
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/library/nginx:1.27.5-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+      volumes:
+        - name: config
+          configMap:
+            name: matrix-discovery-nginx
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matrix-discovery
+spec:
+  selector:
+    app: matrix-discovery
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: matrix-discovery
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  ingressClassName: public-nginx
+  rules:
+    - host: samcday.com
+      http:
+        paths:
+          - path: /.well-known/matrix
+            pathType: Prefix
+            backend:
+              service:
+                name: matrix-discovery
+                port:
+                  name: http
+  tls:
+    - hosts: [samcday.com]
+      secretName: samcday-com-certificate

@@ -29,6 +29,11 @@ spec:
   values:
     # https://github.com/kubernetes/autoscaler/blob/master/charts/cluster-autoscaler/values.yaml
     autoscalingGroups:
+      - name: cx33
+        maxSize: 10
+        minSize: 2
+        instanceType: cx33
+        region: nbg1
       - name: cax21
         maxSize: 10
         minSize: 1
