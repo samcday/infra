@@ -49,6 +49,21 @@ spec:
           port: 80
 
 ---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grafana-certificate
+  namespace: monitoring
+spec:
+  secretName: grafana-certificate
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  dnsNames:
+    - grafana.hub.samcday.com
+
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -99,6 +114,21 @@ spec:
           port: 9093
 
 ---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: alertmanager-certificate
+  namespace: monitoring
+spec:
+  secretName: alertmanager-certificate
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  dnsNames:
+    - alertmanager.hub.samcday.com
+
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -147,3 +177,18 @@ spec:
       backendRefs:
         - name: kube-prometheus-stack-prometheus
           port: 9090
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: prometheus-certificate
+  namespace: monitoring
+spec:
+  secretName: prometheus-certificate
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  dnsNames:
+    - prometheus.hub.samcday.com

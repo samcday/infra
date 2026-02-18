@@ -49,6 +49,21 @@ spec:
           port: 7000
 
 ---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dashboard-certificate
+  namespace: rook-ceph
+spec:
+  secretName: dashboard-certificate
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  dnsNames:
+    - ceph-dashboard.hub.samcday.com
+
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -97,3 +112,18 @@ spec:
       backendRefs:
         - name: rook-ceph-rgw-ceph-objectstore
           port: 80
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rgw-cert
+  namespace: rook-ceph
+spec:
+  secretName: rgw-cert
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  dnsNames:
+    - obj.hub.samcday.com
