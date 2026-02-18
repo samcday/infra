@@ -29,6 +29,10 @@ spec:
     policy: sync
     provider:
       name: cloudflare
+    sources:
+      - service
+      - ingress
+      - gateway-httproute
     serviceMonitor:
       enabled: true
     txtOwnerId: hub-cluster-20250807

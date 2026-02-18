@@ -16,6 +16,10 @@ spec:
   interval: 1h
   values:
     # https://github.com/cert-manager/cert-manager/blob/master/deploy/charts/cert-manager/values.yaml
+    config:
+      apiVersion: controller.config.cert-manager.io/v1alpha1
+      kind: ControllerConfiguration
+      enableGatewayAPI: true
     installCRDs: true
     prometheus:
       servicemonitor:
