@@ -33,7 +33,7 @@ spec:
           name: grafana-db-20250904-app
           key: password
     ingress:
-      enabled: true
+      enabled: false
       annotations:
         cert-manager.io/cluster-issuer: letsencrypt
       hosts: [grafana.hub.samcday.com]

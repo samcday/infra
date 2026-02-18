@@ -223,7 +223,7 @@ spec:
     cephObjectStores:
       - name: ceph-objectstore
         ingress:
-          enabled: true
+          enabled: false
           annotations:
             cert-manager.io/cluster-issuer: letsencrypt
             nginx.ingress.kubernetes.io/proxy-body-size: "0"
@@ -266,15 +266,7 @@ spec:
           parameters:
             region: us-east-1
     ingress:
-      dashboard:
-        annotations:
-          cert-manager.io/cluster-issuer: letsencrypt
-        host:
-          name: ceph-dashboard.hub.samcday.com
-        tls:
-          - hosts: [ceph-dashboard.hub.samcday.com]
-            secretName: dashboard-certificate
-        ingressClassName: nginx
+      dashboard: {}
     monitoring:
       enabled: true
       createPrometheusRules: true

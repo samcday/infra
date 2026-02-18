@@ -23,7 +23,7 @@ spec:
         externalUrl: https://alertmanager.hub.samcday.com:9093
         replicas: 3
       ingress:
-        enabled: true
+        enabled: false
         annotations:
           cert-manager.io/cluster-issuer: letsencrypt
         hosts: [alertmanager.hub.samcday.com]
@@ -60,7 +60,7 @@ spec:
             targetLabel: cluster
     prometheus:
       ingress:
-        enabled: true
+        enabled: false
         annotations:
           cert-manager.io/cluster-issuer: letsencrypt
         hosts: [prometheus.hub.samcday.com]

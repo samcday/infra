@@ -4,6 +4,7 @@ namespace: monitoring
 resources:
   - ../../../.kustomize-config
   - dms.yaml
+  - gateway-api.yaml
   - grafana.yaml
   - grafana-postgres.yaml
   - kube-prometheus-stack.yaml

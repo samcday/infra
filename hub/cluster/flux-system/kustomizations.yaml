@@ -91,7 +91,9 @@ spec:
         path: hub/cluster/kube-system
     monitoring:
       spec:
-        dependsOn: [name: prometheus-operator]
+        dependsOn:
+          - name: gateway-api
+          - name: prometheus-operator
         path: hub/cluster/monitoring
     openebs:
       spec:
@@ -101,6 +103,7 @@ spec:
         path: hub/cluster/prometheus-operator
     rook-ceph:
       spec:
+        dependsOn: [name: gateway-api]
         path: hub/cluster/rook-ceph
     simonet:
       spec:
