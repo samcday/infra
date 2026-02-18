@@ -19,7 +19,7 @@ etcd:
 # see the ts-apiserver resources
 # externalHostname: cloud-cluster-apiserver.tailnet.hub.samcday.com
 # very temporary, this was manually obtained from the connected cloud-cluster-apiserver ts pod
-externalIP: 100.64.0.45
+externalIP: 100.64.0.12
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:
