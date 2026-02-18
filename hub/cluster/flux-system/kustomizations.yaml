@@ -54,6 +54,9 @@ spec:
     cnpg-system:
       spec:
         path: hub/cluster/cnpg-system
+    conduit:
+      spec:
+        path: hub/cluster/conduit
     external-dns:
       spec:
         path: hub/cluster/external-dns
