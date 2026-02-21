@@ -74,6 +74,11 @@ spec:
     headscale:
       spec:
         path: hub/cluster/headscale
+    heisenbridge:
+      spec:
+        dependsOn:
+          - name: conduit
+        path: hub/cluster/heisenbridge
     ilumbaclusta:
       spec:
         path: hub/cluster/ilumbaclusta

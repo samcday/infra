@@ -25,6 +25,7 @@ spec:
     fedora-mobility-ci:
     cnpg-system:
     external-dns:
+    heisenbridge:
     headscale:
     ilumbaclusta:
     ingress-nginx:
