@@ -3,15 +3,15 @@ config:
     arm64: ubuntu-22.04
     amd64: ubuntu-22.04
   nodeConfigs:
-    fastboop-cax21: &cloudInit
+    fastboop-cx22: &cloudInit
       cloudInit: |
         #!/bin/bash
         set -uexo pipefail
         cat > /etc/apt/sources.list <<HERE
-        deb http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+        deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
         curl -fsSL https://tailscale.com/install.sh | sh
@@ -29,7 +29,7 @@ config:
         mkdir -p /etc/containerd
         containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
         systemctl restart containerd.service
-        kubeadm join $(tailscale ip -4 fastboop-apiserver):6443 --token {{ $.Values.token.id }}.{{ $.Values.token.secret }} --discovery-token-ca-cert-hash sha256:{{ $.Values.hash }}
+        kubeadm join 100.64.0.3:6443 --token {{ $.Values.token.id }}.{{ $.Values.token.secret }} --discovery-token-ca-cert-hash sha256:{{ $.Values.hash }}
 token:
   id: ~
   secret: ~
