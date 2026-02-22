@@ -1,7 +1,11 @@
 apiServer:
+  replicas: 1
   service:
     spec:
       type: ClusterIP
+konnectivity:
+  agent:
+    replicas: 1
 bootstrapTokens:
   - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
     # token ID+secret is set from HelmRelease spec.valuesFrom
