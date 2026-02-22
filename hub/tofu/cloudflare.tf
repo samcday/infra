@@ -79,7 +79,7 @@ resource "cloudflare_api_token" "sub-cluster" {
 }
 
 resource "kubernetes_secret" "sub-cluster-cloudflare-token" {
-  for_each = toset(["cloud-cluster", "fedora-mobility-ci", "simonet"])
+  for_each = toset(["cloud-cluster", "fedora-mobility-ci", "fastboop", "simonet"])
 
   metadata {
     name      = "cloudflare"

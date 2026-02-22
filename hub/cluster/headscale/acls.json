@@ -41,6 +41,11 @@
             "action": "accept",
             "src": ["tag:fedora-mobility-ci-node"],
             "dst": ["tag:fedora-mobility-ci-apiserver:*"]
+        },
+        {
+            "action": "accept",
+            "src": ["tag:fastboop-node"],
+            "dst": ["tag:fastboop-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -68,6 +73,8 @@
         "tag:cloud-cluster-node": [],
         "tag:fedora-mobility-ci-apiserver": [],
         "tag:fedora-mobility-ci-node": [],
+        "tag:fastboop-apiserver": [],
+        "tag:fastboop-node": [],
         "tag:simonet": []
     }
 }

@@ -44,6 +44,7 @@ spec:
       serviceAccount:
         allowedNamespaces:
           - fedora-mobility-ci
+          - fastboop
           - cloud-cluster
           - flux-system
           - headscale
@@ -60,6 +61,7 @@ data:
   resources: |-
     - namespace: fedora-mobility-ci
     - namespace: cloud-cluster
+    - namespace: fastboop
     - namespace: flux-system
     - namespace: headscale
     - namespace: kube-system

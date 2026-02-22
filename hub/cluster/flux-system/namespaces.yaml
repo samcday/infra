@@ -23,6 +23,7 @@ spec:
     cloud-cluster:
     conduit:
     fedora-mobility-ci:
+    fastboop:
     cnpg-system:
     external-dns:
     heisenbridge:

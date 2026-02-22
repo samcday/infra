@@ -55,6 +55,9 @@ spec:
     fedora-mobility-ci:
       spec:
         path: hub/cluster/fedora-mobility-ci
+    fastboop:
+      spec:
+        path: hub/cluster/fastboop
     cnpg-system:
       spec:
         path: hub/cluster/cnpg-system

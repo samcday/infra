@@ -24,6 +24,10 @@ resource "headscale_user" "fedora_mobility_ci" {
   name = "fedora-mobility-ci"
 }
 
+resource "headscale_user" "fastboop" {
+  name = "fastboop"
+}
+
 resource "headscale_user" "hub" {
   name = "hub"
 }
@@ -73,6 +77,22 @@ resource "headscale_pre_auth_key" "fedora_mobility_ci_nodes" {
   reusable       = true
   ephemeral      = true
   acl_tags       = ["tag:fedora-mobility-ci-node"]
+}
+
+resource "headscale_pre_auth_key" "fastboop_apiserver" {
+  user           = headscale_user.fastboop.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+  acl_tags       = ["tag:fastboop-apiserver"]
+}
+
+resource "headscale_pre_auth_key" "fastboop_nodes" {
+  user           = headscale_user.fastboop.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+  acl_tags       = ["tag:fastboop-node"]
 }
 
 resource "headscale_pre_auth_key" "subnet-router" {
@@ -135,6 +155,28 @@ resource "kubernetes_secret" "fedora_mobility_ci_apiserver_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.fedora_mobility_ci_apiserver.key
+  }
+}
+
+resource "kubernetes_secret" "fastboop_node_preauth" {
+  metadata {
+    name      = "node-ts-auth"
+    namespace = "fastboop"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.fastboop_nodes.key
+  }
+}
+
+resource "kubernetes_secret" "fastboop_apiserver_preauth" {
+  metadata {
+    name      = "apiserver-ts-auth"
+    namespace = "fastboop"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.fastboop_apiserver.key
   }
 }
 

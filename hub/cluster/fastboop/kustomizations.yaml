@@ -1,0 +1,32 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kustomizations
+  namespace: fastboop
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  values:
+    _:
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      spec:
+        interval: 1h
+        prune: true
+        sourceRef:
+          kind: GitRepository
+          name: infra
+          namespace: flux-system
+        timeout: 5m
+    kube-system:
+      spec:
+        path: hub/cluster/fastboop/kube-system
