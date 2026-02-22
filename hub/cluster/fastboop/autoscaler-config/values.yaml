@@ -14,6 +14,9 @@ config:
         deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y ca-certificates curl gnupg
+        install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://tailscale.com/install.sh | sh
         tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key={{ $.Values.tsAuthKey }}
         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
