@@ -3,7 +3,7 @@ config:
     arm64: ubuntu-22.04
     amd64: ubuntu-22.04
   nodeConfigs:
-    fastboop-cx22: &cloudInit
+    fastboop-cx33: &cloudInit
       cloudInit: |
         #!/bin/bash
         set -uexo pipefail

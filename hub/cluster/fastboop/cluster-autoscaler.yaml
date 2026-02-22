@@ -29,10 +29,10 @@ spec:
   values:
     # https://github.com/kubernetes/autoscaler/blob/master/charts/cluster-autoscaler/values.yaml
     autoscalingGroups:
-      - name: fastboop-cx22
+      - name: fastboop-cx33
         maxSize: 10
         minSize: 1
-        instanceType: cx22
+        instanceType: cx33
         region: nbg1
     cloudProvider: hetzner
     deployment:
