@@ -29,7 +29,7 @@ config:
         mkdir -p /etc/containerd
         containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
         systemctl restart containerd.service
-        kubeadm join 100.64.0.3:6443 --token {{ $.Values.token.id }}.{{ $.Values.token.secret }} --discovery-token-ca-cert-hash sha256:{{ $.Values.hash }}
+        kubeadm join $(tailscale ip -4 fastboop-apiserver):6443 --token {{ $.Values.token.id }}.{{ $.Values.token.secret }} --discovery-token-ca-cert-hash sha256:{{ $.Values.hash }}
 token:
   id: ~
   secret: ~

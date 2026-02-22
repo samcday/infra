@@ -18,7 +18,7 @@ etcd:
     - https://hub-az1-cp3.hub.internal:2379
 # see the ts-apiserver resources
 externalHostname: fastboop-apiserver.tailnet.hub.samcday.com
-externalIP: 100.64.0.3
+externalIP: 100.64.0.5
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:
