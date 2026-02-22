@@ -16,6 +16,10 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
