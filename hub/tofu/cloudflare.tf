@@ -4,6 +4,10 @@ data "cloudflare_zone" "samcday" {
   name = "samcday.com"
 }
 
+data "cloudflare_zone" "fastboop" {
+  name = "fastboop.win"
+}
+
 resource "random_password" "tunnel_secret" {
   length = 32
 }
@@ -34,7 +38,8 @@ resource "cloudflare_api_token" "external-dns" {
       data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
     ]
     resources = {
-      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}"  = "*"
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.fastboop.id}" = "*"
     }
   }
 }
@@ -72,8 +77,9 @@ resource "cloudflare_api_token" "sub-cluster" {
       data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
     ]
     resources = {
-      "com.cloudflare.api.account.*"                                       = "*"
-      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
+      "com.cloudflare.api.account.*"                                        = "*"
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}"  = "*"
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.fastboop.id}" = "*"
     }
   }
 }
