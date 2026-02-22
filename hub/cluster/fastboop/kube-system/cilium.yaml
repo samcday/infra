@@ -55,7 +55,7 @@ spec:
     ipam:
       mode: kubernetes
     ipv4NativeRoutingCIDR: 172.18.0.0/16
-    k8sServiceHost: fastboop-apiserver.tailnet.hub.samcday.com
+    k8sServiceHost: 100.64.0.3
     k8sServicePort: 6443
     kubeProxyReplacement: true
     loadBalancer:
