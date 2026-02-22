@@ -23,6 +23,7 @@ spec:
     cloud-cluster:
     conduit-fastboop:
     conduit:
+    dex:
     fedora-mobility-ci:
     fastboop:
     cnpg-system:

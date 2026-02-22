@@ -61,6 +61,10 @@ spec:
     cnpg-system:
       spec:
         path: hub/cluster/cnpg-system
+    dex:
+      spec:
+        dependsOn: [name: ingress-nginx]
+        path: hub/cluster/dex
     conduit:
       spec:
         dependsOn:
