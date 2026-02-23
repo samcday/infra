@@ -22,7 +22,6 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "hcloud-cloud-controller-manager.name" . }}
-      dnsPolicy: Default
       tolerations:
         # Allow HCCM itself to schedule on nodes that have not yet been initialized by HCCM.
         - key: "node.cloudprovider.kubernetes.io/uninitialized"
@@ -51,8 +50,11 @@ spec:
         {{ toYaml .Values.nodeSelector | nindent 8 }}
       {{- end }}
 
-      {{- if $.Values.networking.enabled }}
+      {{- if and $.Values.networking.enabled $.Values.networking.hostNetwork }}
       hostNetwork: true
+      {{- end }}
+      {{- if not (eq .Values.dnsPolicy nil) }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
       {{- end }}
       containers:
         - name: hcloud-cloud-controller-manager

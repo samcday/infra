@@ -16,6 +16,9 @@ args:
   # https://github.com/hetznercloud/hcloud-cloud-controller-manager/issues/492
   webhook-secure-port: "0"
 
+# Optional pod dnsPolicy override. Set to null to omit.
+dnsPolicy: Default
+
 # Change deployment kind from "Deployment" to "DaemonSet"
 kind: Deployment
 
@@ -85,6 +88,8 @@ nameOverride: ~
 networking:
   # If enabled, hcloud-ccm will be deployed with networking support.
   enabled: false
+  # Whether the pod should run in hostNetwork mode when networking is enabled.
+  hostNetwork: true
   # If networking is enabled, clusterCIDR must match the PodCIDR subnet your cluster has been configured with.
   # The default "10.244.0.0/16" assumes you're using Flannel with default configuration.
   clusterCIDR: 10.244.0.0/16
