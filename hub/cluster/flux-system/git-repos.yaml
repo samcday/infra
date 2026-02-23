@@ -26,3 +26,6 @@ spec:
     samcday-hetznercloud-csi-driver:
       spec:
         url: https://github.com/samcday/hetznercloud-csi-driver.git
+    forgejo-helm:
+      spec:
+        url: https://codeberg.org/forgejo-contrib/forgejo-helm.git

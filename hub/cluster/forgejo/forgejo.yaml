@@ -1,0 +1,92 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: forgejo
+  namespace: forgejo
+spec:
+  chart:
+    spec:
+      chart: .
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: forgejo-helm
+        namespace: flux-system
+  interval: 1h
+  values:
+    # https://codeberg.org/forgejo-contrib/forgejo-helm/src/branch/main/values.yaml
+    httpRoute:
+      enabled: true
+      annotations:
+        external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+      parentRefs:
+        - name: public
+          namespace: ingress-nginx
+      hostnames:
+        - code.samcday.com
+      matches:
+        path:
+          type: PathPrefix
+          value: /
+    ingress:
+      enabled: false
+    gitea:
+      admin:
+        email: me@samcday.com
+        username: me
+      config:
+        actions:
+          ENABLED: true
+        database:
+          DB_TYPE: postgres
+          HOST: db-rw:5432
+          NAME: forgejo
+          SSL_MODE: require
+        git.timeout:
+          MIGRATE: 3600
+          MIRROR: 3600
+        metrics:
+          ENABLED: true
+          ENABLED_ISSUE_BY_LABEL: true
+          ENABLED_ISSUE_BY_REPOSITORY: true
+        server:
+          DISABLE_SSH: true
+          ROOT_URL: https://code.samcday.com/
+        service:
+          DISABLE_REGISTRATION: true
+        session:
+          PROVIDER: db
+        storage:
+          STORAGE_TYPE: minio
+          MINIO_ENDPOINT: rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80
+          MINIO_USE_SSL: false
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+    persistence:
+      create: true
+      claimName: data
+      size: 20Gi
+      storageClass: ceph-block
+  valuesFrom:
+    - kind: Secret
+      name: db-app
+      valuesKey: username
+      targetPath: gitea.config.database.USER
+    - kind: Secret
+      name: db-app
+      valuesKey: password
+      targetPath: gitea.config.database.PASSWD
+    - kind: Secret
+      name: bucket
+      valuesKey: AWS_ACCESS_KEY_ID
+      targetPath: gitea.config.storage.MINIO_ACCESS_KEY_ID
+    - kind: Secret
+      name: bucket
+      valuesKey: AWS_SECRET_ACCESS_KEY
+      targetPath: gitea.config.storage.MINIO_SECRET_ACCESS_KEY
+    - kind: ConfigMap
+      name: bucket
+      valuesKey: BUCKET_NAME
+      targetPath: gitea.config.storage.MINIO_BUCKET

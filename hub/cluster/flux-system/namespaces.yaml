@@ -26,6 +26,7 @@ spec:
     fastboop:
     cnpg-system:
     external-dns:
+    forgejo:
     heisenbridge:
     headscale:
     ilumbaclusta:
