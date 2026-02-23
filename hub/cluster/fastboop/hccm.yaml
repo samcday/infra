@@ -25,10 +25,15 @@ spec:
       HCLOUD_NETWORK_DISABLE_ATTACHED_CHECK:
         value: 'true'
     extraVolumeMounts:
+      - name: cert
+        mountPath: /cert
       - name: kubeconfig
         mountPath: /kubeconfig
         subPath: kubeconfig
     extraVolumes:
+      - name: cert
+        secret:
+          secretName: admin
       - name: kubeconfig
         configMap:
           name: kubeconfig
