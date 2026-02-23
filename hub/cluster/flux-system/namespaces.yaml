@@ -21,7 +21,6 @@ spec:
     bootie:
     cert-manager:
     cloud-cluster:
-    conduit-fastboop:
     conduit:
     dex:
     fastboop:

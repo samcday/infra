@@ -68,12 +68,6 @@ spec:
           - name: gateway-api
           - name: ingress-nginx
         path: hub/cluster/conduit
-    conduit-fastboop:
-      spec:
-        dependsOn:
-          - name: gateway-api
-          - name: ingress-nginx
-        path: hub/cluster/conduit-fastboop
     external-dns:
       spec:
         dependsOn: [name: gateway-api]
