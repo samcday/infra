@@ -8,6 +8,16 @@ data "cloudflare_zone" "fastboop" {
   name = "fastboop.win"
 }
 
+resource "cloudflare_record" "samcday_apex" {
+  zone_id         = data.cloudflare_zone.samcday.id
+  name            = "samcday.com"
+  type            = "CNAME"
+  content         = "matrix.samcday.com"
+  ttl             = 1
+  proxied         = true
+  allow_overwrite = true
+}
+
 resource "random_password" "tunnel_secret" {
   length = 32
 }
