@@ -63,6 +63,7 @@ spec:
           ALLOW_ONLY_EXTERNAL_REGISTRATION: true
           DISABLE_REGISTRATION: true
           ENABLE_BASIC_AUTHENTICATION: false
+          ENABLE_INTERNAL_SIGNIN: false
         session:
           PROVIDER: db
         storage:
