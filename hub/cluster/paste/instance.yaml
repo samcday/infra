@@ -74,26 +74,11 @@ spec:
       backendRefs:
         - name: memos-generic
           port: 80
-
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: paste-internal
-  namespace: paste
-spec:
-  ingressClassName: tailscale
-  rules:
-    - host: paste-internal
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: memos-generic
-                port:
-                  name: http
-  tls:
-    - hosts:
-        - paste-internal
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /api/v1/auth/status
+      backendRefs:
+        - name: memos-generic
+          port: 80

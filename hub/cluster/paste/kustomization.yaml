@@ -4,3 +4,4 @@ namespace: paste
 resources:
   - ../../../.kustomize-config
   - instance.yaml
+  - headscale-internal.yaml

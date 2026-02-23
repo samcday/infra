@@ -122,7 +122,7 @@ spec:
         dependsOn:
           - name: gateway-api
           - name: ingress-nginx
-          - name: tailscale
+          - name: headscale
         path: hub/cluster/paste
     prometheus-operator:
       spec:

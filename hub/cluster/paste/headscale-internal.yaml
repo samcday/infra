@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headscale-internal
+  namespace: paste
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: headscale-internal
+  template:
+    metadata:
+      labels:
+        app: headscale-internal
+    spec:
+      serviceAccountName: headscale-internal
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5
+          env:
+            - name: TS_DEST_IP
+              value: '$(MEMOS_GENERIC_SERVICE_HOST)'
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net
+            - name: TS_HOSTNAME
+              value: paste-internal
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: paste-ts-auth
+                  key: authkey
+            - name: TS_KUBE_SECRET
+              value: paste-ts-state
+            - name: TS_USERSPACE
+              value: "false"
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: headscale-internal
+  namespace: paste
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resourceNames: [paste-ts-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: headscale-internal
+  namespace: paste
+subjects:
+  - kind: ServiceAccount
+    name: headscale-internal
+roleRef:
+  kind: Role
+  name: headscale-internal
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headscale-internal
+  namespace: paste
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: paste-ts-state
+  namespace: paste
+type: Opaque

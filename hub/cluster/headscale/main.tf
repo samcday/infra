@@ -28,6 +28,10 @@ resource "headscale_user" "hub" {
   name = "hub"
 }
 
+resource "headscale_user" "paste" {
+  name = "paste"
+}
+
 resource "headscale_user" "sam" {
   name = "sam"
 }
@@ -73,6 +77,13 @@ resource "headscale_pre_auth_key" "fastboop_nodes" {
   reusable       = true
   ephemeral      = true
   acl_tags       = ["tag:fastboop-node"]
+}
+
+resource "headscale_pre_auth_key" "paste_internal_stable" {
+  user           = headscale_user.paste.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
 }
 
 resource "headscale_pre_auth_key" "subnet-router" {
@@ -135,6 +146,17 @@ resource "kubernetes_secret" "fastboop_apiserver_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.fastboop_apiserver_stable.key
+  }
+}
+
+resource "kubernetes_secret" "paste_internal_preauth" {
+  metadata {
+    name      = "paste-ts-auth"
+    namespace = "paste"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.paste_internal_stable.key
   }
 }
 
