@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: dex-forgejo
+    namespace: dex
+stringData:
+    FORGEJO_SECRET: ENC[AES256_GCM,data:mFX1Wq8yEBi1fnSICJnHcZRGJw+zP7WsT3WDwPy/yK1WGpkBr6EJgK4bJDrfmkIGn8h/5xG9IuMeCgjwhkqKWQ==,iv:iU2EJ1OsIbpXX8LWr/WKWSGkGyiz0H+NE+cfuqqqC7c=,tag:J0txX81MdQIwWHNIsbPxPQ==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB0ZTQ4NmJKbFUxWUcwSXRS
+            SFJvSFRRM3lJMkliV1VyOExkZHZnSFRlUkFrCk5rU0JsU2s1aVZhelZJTU1KR0gy
+            VDdsSTdDWVpGdjZicUN4YThOSE9vOWMKLS0tIEFkelladDdYLzhNUjZjVWxXTlBP
+            YzZha1pEN0lXeEI2WGErK0VRTXlOeFUKMn1f2jHWhlwOK2EDK9cFu7RtZ8ku0R8n
+            Yy/rgmSclnZ9jAsiKkRXRM8mHaaEj1ir0iCt6uXcrDPWwl2ryL+yVg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAvMkh1cUlPRFNaSWRzWDlR
+            RDNQbFROQkxkeCtoUjg3VnZPcDNpdFA5NVRNClc2M0R3WDFKMjRMdU9Wa2tMemxO
+            MXU0V3VwVHROTTlmNUtGbWhvT2tZMk0KLS0tIElScDA4aStoMkVWTlBmclFwSzdq
+            c201Mml0ZC9SZnovbDRxS3dodXNXOEUKCzb18Bti9rT5B5Z+JhZxljmtE4ytAU2w
+            jtdgpPpyiRR2fDusRRKQaFN25k+xLwMaFiA1HEEoReIicn+d9olWDg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-02-23T10:30:45Z"
+    mac: ENC[AES256_GCM,data:M+MjaVPx1MoUI1FmFpSKe9T+VF6/skOEWW5kvjJZ1hwt8qWfTRHrp3qRkNqmse8vUy4swEokCt3JlAZleD0d7H/hN+t+cAAWUSaBAXzZwIEKY7lOKojE4XTh3iSPiDfayCrXRXmRifD411tMwZnxJzlGeR5SgWV0XifFMUQwhrQ=,iv:8vUDUtJPJVhiyjNZ34JAOTFCd1ifPJuKYdtJt8IJ1kA=,tag:jLHOUGsblcAiCiQc4W8hug==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

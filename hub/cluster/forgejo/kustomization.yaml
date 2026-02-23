@@ -4,4 +4,5 @@ namespace: forgejo
 resources:
   - ../../../.kustomize-config
   - bucket.yaml
+  - dex-oauth-secret.yaml
   - forgejo.yaml

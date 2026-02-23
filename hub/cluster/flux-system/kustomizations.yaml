@@ -75,6 +75,7 @@ spec:
     forgejo:
       spec:
         dependsOn:
+          - name: dex
           - name: ingress-nginx
           - name: rook-ceph
         path: hub/cluster/forgejo

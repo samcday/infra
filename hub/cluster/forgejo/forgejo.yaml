@@ -34,6 +34,15 @@ spec:
       admin:
         email: me@samcday.com
         username: me
+      oauth:
+        - name: dex
+          provider: openidConnect
+          existingSecret: dex-oauth
+          autoDiscoverUrl: https://dex.samcday.com/.well-known/openid-configuration
+          scopes:
+            - openid
+            - profile
+            - email
       config:
         actions:
           ENABLED: true
@@ -51,7 +60,9 @@ spec:
           DISABLE_SSH: true
           ROOT_URL: https://code.samcday.com/
         service:
+          ALLOW_ONLY_EXTERNAL_REGISTRATION: true
           DISABLE_REGISTRATION: true
+          ENABLE_PASSWORD_SIGNIN_FORM: false
         session:
           PROVIDER: db
         storage:

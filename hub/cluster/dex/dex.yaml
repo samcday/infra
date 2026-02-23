@@ -32,6 +32,10 @@ spec:
           redirectURIs: [http://localhost:8000]
           name: fastboop kubectl
           public: true
+        - id: forgejo
+          redirectURIs: [https://code.samcday.com/user/oauth2/dex/callback]
+          name: Forgejo
+          secretEnv: FORGEJO_SECRET
       staticPasswords:
         - email: me@samcday.com
           hashFromEnv: PASS_HASH
@@ -39,6 +43,8 @@ spec:
     envFrom:
       - secretRef:
           name: dex-secrets
+      - secretRef:
+          name: dex-forgejo
     ingress:
       enabled: false
     replicaCount: 2
