@@ -59,7 +59,7 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   ephemeral      = true
 }
 
-resource "headscale_pre_auth_key" "fastboop_apiserver" {
+resource "headscale_pre_auth_key" "fastboop_apiserver_stable" {
   user           = headscale_user.fastboop.id
   time_to_expire = "520w"
   reusable       = true
@@ -134,7 +134,7 @@ resource "kubernetes_secret" "fastboop_apiserver_preauth" {
   }
 
   data = {
-    authkey = headscale_pre_auth_key.fastboop_apiserver.key
+    authkey = headscale_pre_auth_key.fastboop_apiserver_stable.key
   }
 }
 
