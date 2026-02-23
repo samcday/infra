@@ -63,7 +63,7 @@ resource "headscale_pre_auth_key" "fastboop_apiserver" {
   user           = headscale_user.fastboop.id
   time_to_expire = "520w"
   reusable       = true
-  ephemeral      = true
+  ephemeral      = false
   acl_tags       = ["tag:fastboop-apiserver"]
 }
 
