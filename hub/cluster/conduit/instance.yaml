@@ -142,6 +142,7 @@ metadata:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
 spec:
   hostnames:
+    - samcday.com
     - matrix.samcday.com
   parentRefs:
     - name: public

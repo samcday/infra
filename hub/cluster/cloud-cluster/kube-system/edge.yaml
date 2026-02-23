@@ -184,7 +184,7 @@ spec:
         annotations:
           external-dns.alpha.kubernetes.io/cloudflare-proxied: 'false'
           external-dns.alpha.kubernetes.io/endpoints-type: NodeExternalIP
-          external-dns.alpha.kubernetes.io/hostname: samcday.com,www.samcday.com,paste.samcday.com
+          external-dns.alpha.kubernetes.io/hostname: www.samcday.com,paste.samcday.com
           external-dns.alpha.kubernetes.io/ttl: '60'
       spec:
         clusterIP: None
