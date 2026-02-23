@@ -75,7 +75,6 @@ spec:
     forgejo:
       spec:
         dependsOn:
-          - name: cnpg-system
           - name: ingress-nginx
           - name: rook-ceph
         path: hub/cluster/forgejo

@@ -38,10 +38,8 @@ spec:
         actions:
           ENABLED: true
         database:
-          DB_TYPE: postgres
-          HOST: db-rw:5432
-          NAME: forgejo
-          SSL_MODE: require
+          DB_TYPE: sqlite3
+          PATH: /data/gitea/forgejo.db
         git.timeout:
           MIGRATE: 3600
           MIRROR: 3600
@@ -70,14 +68,6 @@ spec:
       size: 20Gi
       storageClass: ceph-block
   valuesFrom:
-    - kind: Secret
-      name: db-app
-      valuesKey: username
-      targetPath: gitea.config.database.USER
-    - kind: Secret
-      name: db-app
-      valuesKey: password
-      targetPath: gitea.config.database.PASSWD
     - kind: Secret
       name: bucket
       valuesKey: AWS_ACCESS_KEY_ID
