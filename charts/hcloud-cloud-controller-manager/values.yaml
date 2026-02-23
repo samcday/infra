@@ -63,7 +63,7 @@ env:
 
 image:
   repository: docker.io/hetznercloud/hcloud-cloud-controller-manager
-  tag: "v{{ $.Chart.Version }}"
+  tag: "v1.23.0"
 
 monitoring:
   # When enabled, the hccm Pod will serve metrics on port :8233
