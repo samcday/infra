@@ -150,6 +150,14 @@ spec:
       ttlSecondsAfterFinished: 3600
       template:
         spec:
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/instance: conduit
+                      app.kubernetes.io/name: generic
+                  topologyKey: kubernetes.io/hostname
           restartPolicy: Never
           containers:
             - name: check
