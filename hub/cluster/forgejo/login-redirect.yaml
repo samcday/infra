@@ -17,6 +17,8 @@ spec:
       filters:
         - type: RequestRedirect
           requestRedirect:
+            scheme: https
+            port: 443
             path:
               type: ReplaceFullPath
               replaceFullPath: /user/oauth2/dex
