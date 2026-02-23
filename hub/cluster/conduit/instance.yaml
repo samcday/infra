@@ -28,7 +28,7 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     additionalContainers:
       - name: litestream
-        image: docker.io/litestream/litestream:latest
+        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
         args:
           - replicate
           - -config
@@ -78,14 +78,15 @@ spec:
       type: Recreate
     env:
       CONDUIT_CONFIG: /etc/conduit/conduit.toml
+      CONDUIT_ALLOW_REGISTRATION: "false"
     image:
       repository: docker.io/matrixconduit/matrix-conduit
-      tag: latest
+      tag: latest@sha256:4078e80577ccaaf05290a7bb08badc321a5c44a8c8f5f3dce0fb1ae5a0825e64
     ingress:
       enabled: false
     initContainers:
       - name: litestream-restore
-        image: docker.io/litestream/litestream:latest
+        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
         command:
           - /bin/sh
           - -ec
@@ -93,7 +94,6 @@ spec:
           - >-
             litestream restore
             -if-db-not-exists
-            -if-replica-exists
             -config /etc/litestream.yml
             /var/lib/matrix-conduit/conduit.db
         envFrom:
@@ -131,6 +131,93 @@ spec:
           protocol: TCP
           name: http
           port: 80
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: conduit-identity-check
+  namespace: conduit
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: check
+              image: docker.io/python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  python - <<'PY'
+                  import base64
+                  import json
+                  import sqlite3
+                  import sys
+                  import urllib.request
+
+                  db_path = "/var/lib/matrix-conduit/conduit.db"
+                  key_url = "https://matrix.samcday.com/_matrix/key/v2/server"
+                  expected_server_name = "samcday.com"
+
+                  conn = sqlite3.connect(db_path)
+                  row = conn.execute("SELECT value FROM global WHERE key = ?", (b"keypair",)).fetchone()
+                  if row is None:
+                    print("identity-check: missing global.keypair row")
+                    sys.exit(1)
+
+                  blob = row[0]
+                  if not isinstance(blob, (bytes, bytearray)):
+                    print("identity-check: unexpected keypair value type")
+                    sys.exit(1)
+                  if b"\xff" not in blob or len(blob) < 33:
+                    print("identity-check: malformed keypair blob")
+                    sys.exit(1)
+
+                  local_key_id = blob.split(b"\xff", 1)[0].decode("ascii")
+                  local_pubkey = base64.b64encode(blob[-32:]).decode("ascii")
+
+                  with urllib.request.urlopen(key_url, timeout=15) as response:
+                    remote = json.load(response)
+
+                  remote_server_name = remote.get("server_name")
+                  if remote_server_name != expected_server_name:
+                    print(
+                      "identity-check: server_name mismatch:",
+                      remote_server_name,
+                      "!=",
+                      expected_server_name,
+                    )
+                    sys.exit(1)
+
+                  remote_keys = remote.get("verify_keys", {})
+                  remote_key = remote_keys.get(f"ed25519:{local_key_id}", {}).get("key")
+                  if remote_key != local_pubkey:
+                    print("identity-check: signing key mismatch")
+                    print(f"local:  ed25519:{local_key_id} {local_pubkey}")
+                    print(f"remote: ed25519:{local_key_id} {remote_key}")
+                    sys.exit(1)
+
+                  print(f"identity-check: ok ed25519:{local_key_id}")
+                  PY
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/matrix-conduit
+                  readOnly: true
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: conduit-generic
 
 ---
 apiVersion: gateway.networking.k8s.io/v1

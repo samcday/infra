@@ -9,5 +9,6 @@ resources:
   - grafana-postgres.yaml
   - karma.yaml
   - kube-prometheus-stack.yaml
+  - rules/conduit.yaml
   - rules/flux.yaml
   - vpas.yaml
