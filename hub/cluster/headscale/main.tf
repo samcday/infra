@@ -20,10 +20,6 @@ resource "headscale_user" "cloud" {
   name = "cloud"
 }
 
-resource "headscale_user" "fedora_mobility_ci" {
-  name = "fedora-mobility-ci"
-}
-
 resource "headscale_user" "fastboop" {
   name = "fastboop"
 }
@@ -61,22 +57,6 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = true
-}
-
-resource "headscale_pre_auth_key" "fedora_mobility_ci_apiserver" {
-  user           = headscale_user.fedora_mobility_ci.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = true
-  acl_tags       = ["tag:fedora-mobility-ci-apiserver"]
-}
-
-resource "headscale_pre_auth_key" "fedora_mobility_ci_nodes" {
-  user           = headscale_user.fedora_mobility_ci.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = true
-  acl_tags       = ["tag:fedora-mobility-ci-node"]
 }
 
 resource "headscale_pre_auth_key" "fastboop_apiserver" {
@@ -133,28 +113,6 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.cloud-cluster-apiserver.key
-  }
-}
-
-resource "kubernetes_secret" "fedora_mobility_ci_node_preauth" {
-  metadata {
-    name      = "node-ts-auth"
-    namespace = "fedora-mobility-ci"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.fedora_mobility_ci_nodes.key
-  }
-}
-
-resource "kubernetes_secret" "fedora_mobility_ci_apiserver_preauth" {
-  metadata {
-    name      = "apiserver-ts-auth"
-    namespace = "fedora-mobility-ci"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.fedora_mobility_ci_apiserver.key
   }
 }
 

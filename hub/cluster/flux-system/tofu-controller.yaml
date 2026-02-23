@@ -43,7 +43,6 @@ spec:
         tag: v0.16.0-rc.5
       serviceAccount:
         allowedNamespaces:
-          - fedora-mobility-ci
           - fastboop
           - cloud-cluster
           - flux-system
@@ -59,7 +58,6 @@ metadata:
 data:
   secretName: github-token
   resources: |-
-    - namespace: fedora-mobility-ci
     - namespace: cloud-cluster
     - namespace: fastboop
     - namespace: flux-system
