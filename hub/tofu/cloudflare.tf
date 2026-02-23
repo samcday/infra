@@ -8,6 +8,40 @@ data "cloudflare_zone" "fastboop" {
   name = "fastboop.win"
 }
 
+resource "cloudflare_record" "samcday_matrix_fed_srv" {
+  zone_id = data.cloudflare_zone.samcday.id
+  name    = "_matrix-fed._tcp"
+  type    = "SRV"
+  ttl     = 300
+
+  data {
+    service  = "_matrix-fed"
+    proto    = "_tcp"
+    name     = "samcday.com"
+    priority = 10
+    weight   = 10
+    port     = 443
+    target   = "matrix.samcday.com"
+  }
+}
+
+resource "cloudflare_record" "samcday_matrix_srv" {
+  zone_id = data.cloudflare_zone.samcday.id
+  name    = "_matrix._tcp"
+  type    = "SRV"
+  ttl     = 300
+
+  data {
+    service  = "_matrix"
+    proto    = "_tcp"
+    name     = "samcday.com"
+    priority = 10
+    weight   = 10
+    port     = 443
+    target   = "matrix.samcday.com"
+  }
+}
+
 resource "random_password" "tunnel_secret" {
   length = 32
 }
