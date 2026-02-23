@@ -36,11 +36,11 @@ resource "headscale_user" "simonet" {
   name = "simonet"
 }
 
-resource "headscale_pre_auth_key" "cloud-cluster-apiserver" {
+resource "headscale_pre_auth_key" "cloud_cluster_apiserver_stable" {
   user           = headscale_user.cloud.id
   time_to_expire = "520w"
   reusable       = true
-  ephemeral      = true
+  ephemeral      = false
   acl_tags       = ["tag:cloud-cluster-apiserver"]
 }
 
@@ -112,7 +112,7 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
   }
 
   data = {
-    authkey = headscale_pre_auth_key.cloud-cluster-apiserver.key
+    authkey = headscale_pre_auth_key.cloud_cluster_apiserver_stable.key
   }
 }
 
