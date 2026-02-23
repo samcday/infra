@@ -27,9 +27,6 @@ spec:
       tag: latest
     ingress:
       enabled: false
-    livenessProbe:
-      tcpSocket:
-        port: http
     persistence:
       accessMode: ReadWriteOnce
       enabled: true
@@ -39,9 +36,6 @@ spec:
     ports:
       - name: http
         containerPort: 5230
-    readinessProbe:
-      tcpSocket:
-        port: http
     service:
       ports:
         - targetPort: http
