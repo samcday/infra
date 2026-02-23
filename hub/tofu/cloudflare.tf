@@ -12,7 +12,7 @@ resource "cloudflare_record" "samcday_apex" {
   zone_id         = data.cloudflare_zone.samcday.id
   name            = "samcday.com"
   type            = "CNAME"
-  content         = "matrix.samcday.com"
+  content         = cloudflare_tunnel.tunnel.cname
   ttl             = 1
   proxied         = true
   allow_overwrite = true
