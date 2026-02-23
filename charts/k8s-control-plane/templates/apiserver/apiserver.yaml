@@ -58,7 +58,7 @@ spec:
             - --secure-port=6443
             {{- with $.Values.apiServer.extraArgs }}
             {{- range . }}
-            - {{ tpl . $ }}
+            - {{ tpl . $ | quote }}
             {{- end }}
             {{- end }}
             - --service-account-issuer=https://kubernetes.default.svc.{{ required "missing clusterDomain" $.Values.clusterDomain }}
