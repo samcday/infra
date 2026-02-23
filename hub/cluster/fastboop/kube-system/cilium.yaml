@@ -62,6 +62,8 @@ spec:
             - NET_BIND_SERVICE
     gatewayAPI:
       enabled: true
+      gatewayClass:
+        create: "true"
       hostNetwork:
         enabled: true
     ipam:
