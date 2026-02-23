@@ -79,6 +79,7 @@ spec:
     env:
       CONDUIT_CONFIG: /etc/conduit/conduit.toml
       CONDUIT_ALLOW_REGISTRATION: "false"
+      CONDUIT_REGISTRATION_TOKEN: ""
     image:
       repository: docker.io/matrixconduit/matrix-conduit
       tag: latest@sha256:4078e80577ccaaf05290a7bb08badc321a5c44a8c8f5f3dce0fb1ae5a0825e64
