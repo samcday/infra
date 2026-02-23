@@ -79,7 +79,7 @@ spec:
     env:
       CONDUIT_CONFIG: /etc/conduit/conduit.toml
       CONDUIT_ALLOW_REGISTRATION: "false"
-      CONDUIT_REGISTRATION_TOKEN: ""
+      CONDUIT_REGISTRATION_TOKEN: "disabled-registration-token"
     image:
       repository: docker.io/matrixconduit/matrix-conduit
       tag: latest@sha256:4078e80577ccaaf05290a7bb08badc321a5c44a8c8f5f3dce0fb1ae5a0825e64
@@ -176,7 +176,7 @@ spec:
                   import urllib.request
 
                   db_path = "/var/lib/matrix-conduit/conduit.db"
-                  key_url = "https://matrix.samcday.com/_matrix/key/v2/server"
+                  key_url = "http://conduit-generic.conduit.svc/_matrix/key/v2/server"
                   expected_server_name = "samcday.com"
 
                   conn = sqlite3.connect(db_path)
