@@ -6,3 +6,4 @@ resources:
   - bucket.yaml
   - dex-oauth-secret.yaml
   - forgejo.yaml
+  - login-redirect.yaml
