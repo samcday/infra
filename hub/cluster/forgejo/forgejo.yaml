@@ -39,6 +39,7 @@ spec:
           provider: openidConnect
           existingSecret: dex-oauth
           autoDiscoverUrl: https://dex.samcday.com/.well-known/openid-configuration
+          scopes: openid
       config:
         actions:
           ENABLED: true
