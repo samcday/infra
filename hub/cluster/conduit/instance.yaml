@@ -179,6 +179,11 @@ spec:
                   key_url = "http://conduit-generic.conduit.svc/_matrix/key/v2/server"
                   expected_server_name = "samcday.com"
 
+                  def normalize_b64(value):
+                    if not isinstance(value, str):
+                      return None
+                    return value + ("=" * (-len(value) % 4))
+
                   conn = sqlite3.connect(db_path)
                   row = conn.execute("SELECT value FROM global WHERE key = ?", (b"keypair",)).fetchone()
                   if row is None:
@@ -194,7 +199,8 @@ spec:
                     sys.exit(1)
 
                   local_key_id = blob.split(b"\xff", 1)[0].decode("ascii")
-                  local_pubkey = base64.b64encode(blob[-32:]).decode("ascii")
+                  local_pubkey_bytes = blob[-32:]
+                  local_pubkey = base64.b64encode(local_pubkey_bytes).decode("ascii")
 
                   with urllib.request.urlopen(key_url, timeout=15) as response:
                     remote = json.load(response)
@@ -211,7 +217,14 @@ spec:
 
                   remote_keys = remote.get("verify_keys", {})
                   remote_key = remote_keys.get(f"ed25519:{local_key_id}", {}).get("key")
-                  if remote_key != local_pubkey:
+                  try:
+                    remote_pubkey_bytes = base64.b64decode(normalize_b64(remote_key), validate=True)
+                  except Exception:
+                    print("identity-check: remote key is not valid base64")
+                    print(f"remote: ed25519:{local_key_id} {remote_key}")
+                    sys.exit(1)
+
+                  if remote_pubkey_bytes != local_pubkey_bytes:
                     print("identity-check: signing key mismatch")
                     print(f"local:  ed25519:{local_key_id} {local_pubkey}")
                     print(f"remote: ed25519:{local_key_id} {remote_key}")
