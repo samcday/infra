@@ -33,6 +33,7 @@ spec:
     ingress-nginx:
     monitoring:
     openebs:
+    paste:
     prometheus-operator:
     rook-ceph:
     simonet:
