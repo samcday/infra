@@ -28,6 +28,10 @@ spec:
           redirectURIs: [https://login.tailscale.com/a/oauth_response]
           name: Tailscale
           secretEnv: TS_SECRET
+        - id: fastboop-kubectl
+          redirectURIs: [http://localhost:8000]
+          name: fastboop kubectl
+          public: true
       staticPasswords:
         - email: me@samcday.com
           hashFromEnv: PASS_HASH

@@ -1,5 +1,10 @@
 apiServer:
   replicas: 1
+  extraArgs:
+    - --oidc-issuer-url=https://dex.samcday.com
+    - --oidc-client-id=fastboop-kubectl
+    - --oidc-username-claim=email
+    - '--oidc-username-prefix=oidc:'
   service:
     spec:
       type: ClusterIP

@@ -56,6 +56,11 @@ spec:
             - --requestheader-group-headers=X-Remote-Group
             - --requestheader-username-headers=X-Remote-User
             - --secure-port=6443
+            {{- with $.Values.apiServer.extraArgs }}
+            {{- range . }}
+            - {{ tpl . $ }}
+            {{- end }}
+            {{- end }}
             - --service-account-issuer=https://kubernetes.default.svc.{{ required "missing clusterDomain" $.Values.clusterDomain }}
             - --service-account-key-file=/sa/tls.crt
             - --service-account-signing-key-file=/sa/tls.key
