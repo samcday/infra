@@ -152,7 +152,7 @@ resource "kubernetes_secret" "fastboop_apiserver_preauth" {
 resource "kubernetes_secret" "paste_internal_preauth" {
   metadata {
     name      = "paste-ts-auth"
-    namespace = "paste"
+    namespace = "cloud-cluster"
   }
 
   data = {

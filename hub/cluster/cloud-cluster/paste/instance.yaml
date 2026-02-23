@@ -1,0 +1,265 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: memos
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: generic
+      sourceRef:
+        kind: HelmRepository
+        name: community-tooling-charts
+        namespace: flux-system
+      version: 8.1.1
+  install:
+    createNamespace: true
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: paste
+  targetNamespace: paste
+  values:
+    # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
+    deploymentStrategy:
+      type: Recreate
+    env:
+      MEMOS_DATA: /var/opt/memos
+      MEMOS_INSTANCE_URL: https://paste.samcday.com
+      MEMOS_PORT: "5230"
+    image:
+      repository: ghcr.io/usememos/memos
+      tag: v0.24.0
+    ingress:
+      enabled: false
+    persistence:
+      accessMode: ReadWriteOnce
+      enabled: true
+      mountPath: /var/opt/memos
+      storage: 100Gi
+      storageClassName: hcloud-volumes
+    ports:
+      - name: http
+        containerPort: 5230
+    service:
+      ports:
+        - targetPort: http
+          protocol: TCP
+          name: http
+          port: 80
+
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: paste-resources
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  install:
+    createNamespace: true
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: paste
+  targetNamespace: paste
+  valuesFrom:
+    - kind: Secret
+      name: paste-ts-auth
+      valuesKey: authkey
+      targetPath: paste-ts-auth.stringData.authkey
+    - kind: Secret
+      name: paste-storage
+      valuesKey: ACCESS_KEY_ID
+      targetPath: paste-backblaze.stringData.ACCESS_KEY_ID
+    - kind: Secret
+      name: paste-storage
+      valuesKey: SECRET_ACCESS_KEY
+      targetPath: paste-backblaze.stringData.SECRET_ACCESS_KEY
+    - kind: Secret
+      name: paste-storage
+      valuesKey: ENDPOINT
+      targetPath: paste-backblaze.stringData.ENDPOINT
+    - kind: Secret
+      name: paste-storage
+      valuesKey: REGION
+      targetPath: paste-backblaze.stringData.REGION
+    - kind: Secret
+      name: paste-storage
+      valuesKey: BUCKET
+      targetPath: paste-backblaze.stringData.BUCKET
+  values:
+    _:
+      metadata:
+        namespace: paste
+    paste-ts-auth:
+      kind: Secret
+      type: Opaque
+      stringData:
+        authkey: ''
+    paste-ts-state:
+      kind: Secret
+      type: Opaque
+    paste-backblaze:
+      kind: Secret
+      type: Opaque
+      stringData:
+        ACCESS_KEY_ID: ''
+        SECRET_ACCESS_KEY: ''
+        ENDPOINT: ''
+        REGION: ''
+        BUCKET: ''
+    headscale-internal-sa:
+      kind: ServiceAccount
+      metadata:
+        name: headscale-internal
+    headscale-internal-role:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: headscale-internal
+      rules:
+        - apiGroups: [""]
+          resourceNames: [paste-ts-state]
+          resources: [secrets]
+          verbs: [get, update, patch]
+    headscale-internal-rolebinding:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: headscale-internal
+      subjects:
+        - kind: ServiceAccount
+          name: headscale-internal
+      roleRef:
+        kind: Role
+        name: headscale-internal
+        apiGroup: rbac.authorization.k8s.io
+    headscale-internal:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: headscale-internal
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app: headscale-internal
+        template:
+          metadata:
+            labels:
+              app: headscale-internal
+          spec:
+            serviceAccountName: headscale-internal
+            containers:
+              - name: tailscale
+                image: ghcr.io/tailscale/tailscale:v1.86.5
+                env:
+                  - name: TS_DEST_IP
+                    value: '$(MEMOS_GENERIC_SERVICE_HOST)'
+                  - name: TS_EXTRA_ARGS
+                    value: --login-server=https://headscale.tail22d0a0.ts.net
+                  - name: TS_HOSTNAME
+                    value: paste-internal
+                  - name: TS_AUTHKEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: paste-ts-auth
+                        key: authkey
+                  - name: TS_KUBE_SECRET
+                    value: paste-ts-state
+                  - name: TS_USERSPACE
+                    value: "false"
+                securityContext:
+                  capabilities:
+                    add: [NET_ADMIN]
+    memos-maintenance:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: memos-maintenance
+      spec:
+        schedule: "17 * * * *"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 2
+        failedJobsHistoryLimit: 5
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: maint
+                    image: docker.io/alpine:3.21
+                    command: ["/bin/sh", "-ec"]
+                    args:
+                      - |
+                        apk add --no-cache sqlite >/dev/null
+                        DB=/var/opt/memos/memos_prod.db
+                        if [ ! -f "$DB" ]; then
+                          exit 0
+                        fi
+
+                        CUTOFF="$(( $(date +%s) - 30*24*60*60 ))"
+                        STORAGE_VALUE="$(printf '{\"storageType\":\"S3\",\"filepathTemplate\":\"assets/{timestamp}_{filename}\",\"uploadSizeLimitMb\":\"1024\",\"s3Config\":{\"accessKeyId\":\"%s\",\"accessKeySecret\":\"%s\",\"endpoint\":\"https://%s\",\"region\":\"%s\",\"bucket\":\"%s\",\"usePathStyle\":true}}' "$ACCESS_KEY_ID" "$SECRET_ACCESS_KEY" "$ENDPOINT" "$REGION" "$BUCKET")"
+
+                        sqlite3 "$DB" <<SQL
+                        INSERT INTO system_setting(name, value, description)
+                        VALUES ('MEMO_RELATED', json_object('defaultVisibility', 'PUBLIC'), '')
+                        ON CONFLICT(name) DO UPDATE
+                        SET value = json_set(system_setting.value, '$.defaultVisibility', 'PUBLIC');
+
+                        INSERT INTO system_setting(name, value, description)
+                        VALUES ('STORAGE', '$STORAGE_VALUE', '')
+                        ON CONFLICT(name) DO UPDATE
+                        SET value = '$STORAGE_VALUE';
+
+                        INSERT INTO user_setting(user_id, key, value)
+                        SELECT id, 'MEMO_VISIBILITY', 'PUBLIC' FROM user
+                        ON CONFLICT(user_id, key) DO UPDATE
+                        SET value = 'PUBLIC';
+
+                        CREATE TEMP TABLE old_memos AS
+                        SELECT id, uid FROM memo WHERE created_ts < $CUTOFF;
+
+                        DELETE FROM reaction
+                        WHERE content_id IN (SELECT 'memos/' || uid FROM old_memos);
+
+                        DELETE FROM memo_relation
+                        WHERE memo_id IN (SELECT id FROM old_memos)
+                           OR related_memo_id IN (SELECT id FROM old_memos);
+
+                        DELETE FROM resource
+                        WHERE memo_id IN (SELECT id FROM old_memos);
+
+                        DELETE FROM memo
+                        WHERE id IN (SELECT id FROM old_memos);
+
+                        DROP TABLE old_memos;
+
+                        DELETE FROM resource
+                        WHERE memo_id IS NULL
+                          AND created_ts < $CUTOFF;
+                        SQL
+                    envFrom:
+                      - secretRef:
+                          name: paste-backblaze
+                    volumeMounts:
+                      - name: memos-data
+                        mountPath: /var/opt/memos
+                volumes:
+                  - name: memos-data
+                    persistentVolumeClaim:
+                      claimName: memos-generic

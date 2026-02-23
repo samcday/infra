@@ -111,13 +111,6 @@ spec:
     openebs:
       spec:
         path: hub/cluster/openebs
-    paste:
-      spec:
-        dependsOn:
-          - name: gateway-api
-          - name: ingress-nginx
-          - name: headscale
-        path: hub/cluster/paste
     prometheus-operator:
       spec:
         path: hub/cluster/prometheus-operator
