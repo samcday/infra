@@ -104,14 +104,20 @@ spec:
         namespace: paste
     paste-ts-auth:
       kind: Secret
+      metadata:
+        name: paste-ts-auth
       type: Opaque
       stringData:
         authkey: ''
     paste-ts-state:
       kind: Secret
+      metadata:
+        name: paste-ts-state
       type: Opaque
     paste-backblaze:
       kind: Secret
+      metadata:
+        name: paste-backblaze
       type: Opaque
       stringData:
         ACCESS_KEY_ID: ''
