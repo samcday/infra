@@ -1,4 +1,9 @@
 apiServer:
+  extraArgs:
+    - --oidc-issuer-url=https://dex.samcday.com
+    - --oidc-client-id=fastboop-kubectl
+    - --oidc-username-claim=email
+    - '--oidc-username-prefix=oidc:'
   service:
     annotations:
       external-dns.alpha.kubernetes.io/hostname: simonet.hub.samcday.com

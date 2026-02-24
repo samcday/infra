@@ -19,6 +19,7 @@ resources:
   - metrics-server.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
+  - oidc-rbac.yaml
   - prometheus-operator-crds.yaml
   - rook-ceph.yaml
   - snapshot-controller.yaml

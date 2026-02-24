@@ -12,4 +12,5 @@ resources:
   - control-plane.yaml
   - coredns.yaml
   - node-bootstrap-token.yaml
+  - oidc-rbac.yaml
   - vpas.yaml
