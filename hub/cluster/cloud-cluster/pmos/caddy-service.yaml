@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pmos-caddy
+spec:
+  selector:
+    app: pmos-caddy
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
