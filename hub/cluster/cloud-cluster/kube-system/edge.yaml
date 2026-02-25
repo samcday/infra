@@ -85,6 +85,15 @@ spec:
 
             respond "" 404
           }
+
+          pmos.samcday.com {
+            tls {
+              dns cloudflare {env.CF_API_TOKEN}
+              resolvers 1.1.1.1
+            }
+
+            reverse_proxy http://pmos-caddy.pmos.svc.cluster.local:80
+          }
     edge-web:
       apiVersion: apps/v1
       kind: DaemonSet
@@ -184,7 +193,7 @@ spec:
         annotations:
           external-dns.alpha.kubernetes.io/cloudflare-proxied: 'false'
           external-dns.alpha.kubernetes.io/endpoints-type: NodeExternalIP
-          external-dns.alpha.kubernetes.io/hostname: www.samcday.com,paste.samcday.com
+          external-dns.alpha.kubernetes.io/hostname: www.samcday.com,paste.samcday.com,pmos.samcday.com
           external-dns.alpha.kubernetes.io/ttl: '60'
       spec:
         clusterIP: None
