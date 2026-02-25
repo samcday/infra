@@ -34,3 +34,15 @@ spec:
       spec:
         dependsOn: [name: kube-system]
         path: hub/cluster/cloud-cluster/paste
+    pmos:
+      spec:
+        dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: k8s/cloud-cluster/pmos
+        sourceRef:
+          kind: GitRepository
+          name: build-postmarketos-org
+          namespace: flux-system
+        targetNamespace: pmos

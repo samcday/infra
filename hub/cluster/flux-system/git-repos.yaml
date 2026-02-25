@@ -29,3 +29,6 @@ spec:
     forgejo-helm:
       spec:
         url: https://codeberg.org/forgejo-contrib/forgejo-helm.git
+    build-postmarketos-org:
+      spec:
+        url: https://github.com/samcday/build.postmarketos.org.git
