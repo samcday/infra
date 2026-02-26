@@ -1,0 +1,46 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gibblox
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: flux-system
+  values:
+    gibblox-git:
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: GitRepository
+      metadata:
+        name: gibblox
+      spec:
+        interval: 5m
+        ref:
+          branch: main
+        url: https://github.com/samcday/gibblox
+    gibblox-kustomization:
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: gibblox
+      spec:
+        interval: 5m
+        path: ./infra/k8s
+        prune: true
+        sourceRef:
+          kind: GitRepository
+          name: gibblox
+        timeout: 2m

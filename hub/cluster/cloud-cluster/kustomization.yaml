@@ -12,6 +12,7 @@ resources:
   - csi-driver.yaml
   - descheduler.yaml
   - external-dns.yaml
+  - gibblox.yaml
   - hccm.yaml
   - hcloud-token.yaml
   - kustomizations.yaml
