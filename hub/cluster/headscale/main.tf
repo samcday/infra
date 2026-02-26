@@ -20,6 +20,10 @@ resource "headscale_user" "cloud" {
   name = "cloud"
 }
 
+resource "headscale_user" "conduit" {
+  name = "conduit"
+}
+
 resource "headscale_user" "fastboop" {
   name = "fastboop"
 }
@@ -81,6 +85,13 @@ resource "headscale_pre_auth_key" "fastboop_nodes" {
 
 resource "headscale_pre_auth_key" "paste_internal_stable" {
   user           = headscale_user.paste.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+}
+
+resource "headscale_pre_auth_key" "conduit_client_stable" {
+  user           = headscale_user.conduit.id
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = false
@@ -157,6 +168,17 @@ resource "kubernetes_secret" "paste_internal_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.paste_internal_stable.key
+  }
+}
+
+resource "kubernetes_secret" "conduit_client_preauth" {
+  metadata {
+    name      = "conduit-ts-auth"
+    namespace = "conduit"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.conduit_client_stable.key
   }
 }
 

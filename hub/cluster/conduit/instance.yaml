@@ -266,23 +266,84 @@ spec:
           port: 80
 
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conduit-tailnet
+  namespace: conduit
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: conduit-tailnet
+  namespace: conduit
+rules:
+  - apiGroups: [""]
+    resourceNames: [conduit-ts-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: conduit-tailnet
+  namespace: conduit
+subjects:
+  - kind: ServiceAccount
+    name: conduit-tailnet
+roleRef:
+  kind: Role
+  name: conduit-tailnet
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: conduit-tailnet
   namespace: conduit
 spec:
-  ingressClassName: tailscale
-  rules:
-    - host: matrix-client
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: conduit-generic
-                port:
-                  number: 80
-  tls:
-    - hosts: [matrix-client]
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: conduit-tailnet
+  template:
+    metadata:
+      labels:
+        app: conduit-tailnet
+    spec:
+      serviceAccountName: conduit-tailnet
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5
+          env:
+            - name: TS_DEST_IP
+              value: '$(CONDUIT_GENERIC_SERVICE_HOST)'
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net
+            - name: TS_HOSTNAME
+              value: matrix-client
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: conduit-ts-auth
+                  key: authkey
+            - name: TS_KUBE_SECRET
+              value: conduit-ts-state
+            - name: TS_USERSPACE
+              value: "false"
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: conduit-ts-state
+  namespace: conduit
+type: Opaque
