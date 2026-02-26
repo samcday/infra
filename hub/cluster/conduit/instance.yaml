@@ -324,7 +324,7 @@ spec:
             - name: TS_DEST_IP
               value: '$(CONDUIT_GENERIC_SERVICE_HOST)'
             - name: TS_EXTRA_ARGS
-              value: --login-server=https://headscale.tail22d0a0.ts.net
+              value: --login-server=http://headscale-generic.headscale.svc.cluster.hub.internal
             - name: TS_HOSTNAME
               value: matrix-client
             - name: TS_AUTHKEY
