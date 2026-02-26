@@ -61,7 +61,7 @@ spec:
           trusted_servers = ["matrix.org"]
 
           [global.well_known]
-          client = "https://matrix.samcday.com"
+          client = "https://matrix-client.tailnet.hub.samcday.com"
           server = "matrix.samcday.com:443"
         litestream.yml: |-
           dbs:
@@ -264,3 +264,25 @@ spec:
       backendRefs:
         - name: conduit-generic
           port: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: conduit-tailnet
+  namespace: conduit
+spec:
+  ingressClassName: tailscale
+  rules:
+    - host: matrix-client
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: conduit-generic
+                port:
+                  number: 80
+  tls:
+    - hosts: [matrix-client]
