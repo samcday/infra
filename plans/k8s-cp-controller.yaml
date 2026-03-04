@@ -1,0 +1,169 @@
+title: Kubernetes Control-Plane Endpoint Propagation Controller
+status: draft
+owner: platform
+updated: 2026-03-04
+
+problem:
+  statement: >-
+    Control-plane endpoint IPs for tailnet-backed clusters churn over time.
+    We currently hardcode these IPs across multiple manifests and manually
+    repoint them when they drift. Drift causes node bootstrap failures,
+    certificate SAN mismatches, stale kubeconfig/cluster-info endpoints,
+    and CNI control-plane connectivity breakage.
+  current-pain:
+    - Manual repointing in multiple files is error-prone and slow.
+    - New nodes fail kubeadm join when endpoint IP is not in apiserver cert SAN.
+    - Consumers of API endpoint drift independently (cilium, cluster-info, kubeconfigs).
+    - Flux-managed resources can fight runtime patches without clear ownership.
+
+goals:
+  - Reconcile a value from a source object field to one or more target object fields.
+  - First-class support for control-plane endpoint IP threading.
+  - Trigger downstream reconciliations/jobs when endpoint value changes.
+  - Keep behavior generic enough for non-control-plane use cases.
+  - Remain GitOps-compatible with Flux field ownership.
+
+non_goals:
+  - Replacing Flux or Helm controllers.
+  - Building a full workflow engine.
+  - Solving all dynamic configuration propagation in v1.
+
+design:
+  api:
+    group: platform.samcday.com
+    version: v1alpha1
+    kind: FieldPropagation
+  crd_shape:
+    spec:
+      source:
+        ref:
+          apiVersion: string
+          kind: string
+          namespace: string
+          name: string
+        fieldPath: string
+        required: true
+      transform:
+        template: string
+      targets:
+        - ref:
+            apiVersion: string
+            kind: string
+            namespace: string
+            name: string
+          patchType: json6902
+          operations:
+            - op: replace
+              path: /spec/values/externalIP
+              valueFrom: source
+      onChange:
+        reconcile:
+          - ref:
+              apiVersion: helm.toolkit.fluxcd.io/v2
+              kind: HelmRelease
+              namespace: cloud-cluster
+              name: control-plane
+        rerunJob:
+          - ref:
+              apiVersion: batch/v1
+              kind: Job
+              namespace: cloud-cluster
+              name: admin-kubeconfig-generator
+    status:
+      observedValue: string
+      lastAppliedValue: string
+      conditions: []
+      targets:
+        - ref: {}
+          applied: bool
+          lastError: string
+
+implementation_notes:
+  controller_runtime:
+    - Use controller-runtime with dynamic client support for unstructured objects.
+    - Watch FieldPropagation objects and source refs.
+    - Requeue with backoff on transient failures.
+  field_extraction:
+    - Evaluate source field via JSONPath expression.
+    - Reject empty source values when source.required=true.
+  patching:
+    - Render operation values from source or template.
+    - Apply idempotent JSON6902 patches only when effective diff exists.
+    - Emit Kubernetes Events per target success/failure.
+  gitops_ownership:
+    recommended_runtime_sink:
+      - Write dynamic endpoint to dedicated ConfigMap/Secret.
+      - Consume from HelmRelease valuesFrom + targetPath.
+      - Avoid patching Git-owned static values directly unless explicitly chosen.
+  change_triggers:
+    - Annotate affected HelmReleases with reconcileAt timestamp on value change.
+    - Optionally recreate or trigger named Jobs for one-shot regeneration.
+
+bootstrap_use_case:
+  source:
+    apiVersion: v1
+    kind: Secret
+    namespace: cloud-cluster
+    name: apiserver-ts-state
+    fieldPath: .data.device_ips
+  transform:
+    template: firstIPv4FromJsonArray(base64Decode(source))
+  targets:
+    - ref:
+        apiVersion: v1
+        kind: ConfigMap
+        namespace: cloud-cluster
+        name: control-plane-runtime-endpoint
+      patchType: json6902
+      operations:
+        - op: replace
+          path: /data/externalIP
+          valueFrom: source
+  onChange:
+    reconcile:
+      - ref:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: cloud-cluster
+          name: control-plane
+      - ref:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: cloud-cluster
+          name: cilium
+      - ref:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: cloud-cluster
+          name: cluster-autoscaler-config
+
+rollout_plan:
+  - Implement controller + CRD.
+  - Deploy controller in hub cluster.
+  - Add runtime endpoint ConfigMaps for cloud and fastboop.
+  - Wire HelmReleases to valuesFrom runtime endpoint with targetPath for:
+    - control-plane externalIP
+    - cilium k8sServiceHost
+    - autoscaler join endpoint input
+  - Add on-change reconcile hooks for control-plane, cilium, autoscaler-config.
+  - Validate churn by simulating endpoint change.
+
+acceptance_criteria:
+  - Endpoint source value change is detected and propagated automatically.
+  - apiserver Certificate includes new IP SAN after reconcile.
+  - kube-public/cluster-info advertises updated endpoint.
+  - cilium endpoint input is updated.
+  - New nodes join successfully with no manual endpoint edits.
+  - Controller status and events clearly report success/failure per target.
+
+validation_commands:
+  - kustomize build --load-restrictor=LoadRestrictionsNone hub/cluster/cloud-cluster >/dev/null
+  - kustomize build --load-restrictor=LoadRestrictionsNone hub/cluster/fastboop >/dev/null
+
+risk_and_mitigation:
+  - risk: Runtime patching conflicts with Flux ownership.
+    mitigation: Prefer runtime sink ConfigMap/Secret consumed via valuesFrom.
+  - risk: Empty/invalid source values could poison targets.
+    mitigation: required source + strict value validation + no-op on invalid values.
+  - risk: Frequent endpoint flaps cause reconcile storms.
+    mitigation: debounce + only act on effective value change.
