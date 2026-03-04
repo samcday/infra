@@ -30,10 +30,6 @@ spec:
     kube-system:
       spec:
         path: hub/cluster/cloud-cluster/kube-system
-    paste:
-      spec:
-        dependsOn: [name: kube-system]
-        path: hub/cluster/cloud-cluster/paste
     pmos:
       spec:
         dependsOn: [name: kube-system]

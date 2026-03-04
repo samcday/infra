@@ -35,7 +35,6 @@ rules:
   resourceNames:
     - apiserver-ts-auth
     - node-ts-auth
-    - paste-ts-auth
     - conduit-ts-auth
   verbs: [create, patch, update, get]
 ---

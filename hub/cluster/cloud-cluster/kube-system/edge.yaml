@@ -62,30 +62,6 @@ spec:
             respond "" 200
           }
 
-          paste.samcday.com {
-            tls {
-              dns cloudflare {env.CF_API_TOKEN}
-              resolvers 1.1.1.1
-            }
-
-            @auth_status {
-              method POST
-              path /api/v1/auth/status
-            }
-            handle @auth_status {
-              reverse_proxy http://memos-generic.paste.svc.cluster.local:80
-            }
-
-            @read_only {
-              method GET HEAD OPTIONS
-            }
-            handle @read_only {
-              reverse_proxy http://memos-generic.paste.svc.cluster.local:80
-            }
-
-            respond "" 404
-          }
-
           pmos.samcday.com {
             tls {
               dns cloudflare {env.CF_API_TOKEN}
@@ -193,7 +169,7 @@ spec:
         annotations:
           external-dns.alpha.kubernetes.io/cloudflare-proxied: 'false'
           external-dns.alpha.kubernetes.io/endpoints-type: NodeExternalIP
-          external-dns.alpha.kubernetes.io/hostname: www.samcday.com,paste.samcday.com,pmos.samcday.com
+          external-dns.alpha.kubernetes.io/hostname: www.samcday.com,pmos.samcday.com
           external-dns.alpha.kubernetes.io/ttl: '60'
       spec:
         clusterIP: None
