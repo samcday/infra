@@ -52,7 +52,7 @@ resource "headscale_pre_auth_key" "cloud-cluster-nodes" {
   user           = headscale_user.cloud.id
   time_to_expire = "520w"
   reusable       = true
-  ephemeral      = true
+  ephemeral      = false
   acl_tags       = ["tag:cloud-cluster-node"]
 }
 
@@ -75,7 +75,7 @@ resource "headscale_pre_auth_key" "fastboop_nodes" {
   user           = headscale_user.fastboop.id
   time_to_expire = "520w"
   reusable       = true
-  ephemeral      = true
+  ephemeral      = false
   acl_tags       = ["tag:fastboop-node"]
 }
 
