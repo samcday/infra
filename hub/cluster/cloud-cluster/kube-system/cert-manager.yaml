@@ -82,6 +82,7 @@ spec:
       spec:
         selfSigned: {}
     cloudflare:
+      apiVersion: v1
       kind: Secret
       metadata:
         name: cloudflare
