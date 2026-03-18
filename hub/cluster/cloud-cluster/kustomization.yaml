@@ -17,6 +17,7 @@ resources:
   - hcloud-token.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
+  - rokkitpokkit.yaml
   - tofu.yaml
   - ts-apiserver.yaml
   - vpas.yaml
