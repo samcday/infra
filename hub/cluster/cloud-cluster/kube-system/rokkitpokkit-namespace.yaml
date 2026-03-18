@@ -24,11 +24,6 @@ spec:
     _:
       kind: Namespace
     rokkitpokkit:
-    rokkitpokkit-reconciler-sa:
-      kind: ServiceAccount
-      metadata:
-        name: rokkitpokkit-reconciler
-        namespace: rokkitpokkit
     rokkitpokkit-reconciler-role:
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
@@ -52,4 +47,4 @@ spec:
       subjects:
         - kind: ServiceAccount
           name: rokkitpokkit-reconciler
-          namespace: rokkitpokkit
+          namespace: cloud-cluster
