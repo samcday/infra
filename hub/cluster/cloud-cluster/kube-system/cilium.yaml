@@ -23,6 +23,14 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/v1.17.2/install/kubernetes/cilium/values.yaml
+    envoy:
+      securityContext:
+        capabilities:
+          keepCapNetBindService: true
+          envoy:
+            - NET_ADMIN
+            - SYS_ADMIN
+            - NET_BIND_SERVICE
     hubble:
       metrics:
         enabled:
@@ -54,6 +62,10 @@ spec:
         #       secretName: hubble-cert
     gatewayAPI:
       enabled: true
+      gatewayClass:
+        create: "true"
+      hostNetwork:
+        enabled: true
     ipam:
       mode: kubernetes
     ipv4NativeRoutingCIDR: 172.28.0.0/16

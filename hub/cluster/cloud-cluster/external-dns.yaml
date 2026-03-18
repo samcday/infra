@@ -25,7 +25,7 @@ spec:
             name: cloudflare
             key: token
     extraArgs:
-      - --cloudflare-proxied
+      - --cloudflare-proxied=false
       - --kubeconfig=/kubeconfig
     extraVolumeMounts:
       - name: cert
@@ -44,6 +44,8 @@ spec:
     policy: sync
     provider:
       name: cloudflare
+    sources:
+      - gateway-httproute
     rbac:
       create: false
     serviceAccount:

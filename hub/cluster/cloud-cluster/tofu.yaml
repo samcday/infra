@@ -16,11 +16,6 @@ spec:
             secretKeyRef:
               name: hcloud
               key: token
-        - name: CLOUDFLARE_API_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: cloudflare
-              key: token
   sourceRef:
     kind: GitRepository
     name: infra
