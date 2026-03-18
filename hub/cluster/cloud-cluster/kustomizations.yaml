@@ -30,6 +30,13 @@ spec:
     kube-system:
       spec:
         path: hub/cluster/cloud-cluster/kube-system
+    gateway-api:
+      spec:
+        dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: hub/cluster/cloud-cluster/gateway-api
     pmos:
       spec:
         dependsOn: [name: kube-system]
