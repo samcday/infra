@@ -25,7 +25,6 @@ spec:
             name: cloudflare
             key: token
     extraArgs:
-      - --cloudflare-proxied=false
       - --kubeconfig=/kubeconfig
     extraVolumeMounts:
       - name: cert
