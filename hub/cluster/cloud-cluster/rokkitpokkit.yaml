@@ -24,6 +24,12 @@ spec:
       metadata:
         name: rokkitpokkit
       spec:
+        ignore: |
+          /*
+          !/infra/
+          /infra/*
+          !/infra/k8s/
+          !/infra/k8s/**
         interval: 5m
         ref:
           branch: main
