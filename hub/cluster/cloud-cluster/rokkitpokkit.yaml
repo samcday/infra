@@ -15,11 +15,8 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
-  kubeConfig:
-    secretRef:
-      name: admin-kubeconfig
-  storageNamespace: flux-system
-  targetNamespace: flux-system
+  storageNamespace: cloud-cluster
+  targetNamespace: cloud-cluster
   values:
     rokkitpokkit-git:
       apiVersion: source.toolkit.fluxcd.io/v1
@@ -36,20 +33,6 @@ spec:
       kind: ServiceAccount
       metadata:
         name: rokkitpokkit-reconciler
-    rokkitpokkit-reconciler-rb:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: RoleBinding
-      metadata:
-        name: rokkitpokkit-reconciler
-        namespace: rokkitpokkit
-      roleRef:
-        apiGroup: rbac.authorization.k8s.io
-        kind: ClusterRole
-        name: admin
-      subjects:
-        - kind: ServiceAccount
-          name: rokkitpokkit-reconciler
-          namespace: flux-system
     rokkitpokkit-kustomization:
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
@@ -57,6 +40,9 @@ spec:
         name: rokkitpokkit
       spec:
         interval: 5m
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
         path: ./infra/k8s
         prune: true
         serviceAccountName: rokkitpokkit-reconciler
