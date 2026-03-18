@@ -40,6 +40,9 @@ spec:
         - email: me@samcday.com
           hashFromEnv: PASS_HASH
           username: samcday
+        - email: insane.prawny@gmail.com
+          hashFromEnv: FRIEND_PASS_HASH
+          username: insane-prawny
     envFrom:
       - secretRef:
           name: dex-secrets
