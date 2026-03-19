@@ -33,9 +33,15 @@ spec:
               - /bin/sh
               - -ec
               - |
-                sleep 5
                 cp /runner/.runner /data/.runner
-                exec forgejo-runner --config /config/config.yaml one-job
+                for i in $(seq 1 60); do
+                  if forgejo-runner --config /config/config.yaml one-job; then
+                    exit 0
+                  fi
+                  sleep 2
+                done
+                echo "forgejo-runner failed after retries"
+                exit 1
             env:
               - name: DOCKER_HOST
                 value: tcp://127.0.0.1:2375
