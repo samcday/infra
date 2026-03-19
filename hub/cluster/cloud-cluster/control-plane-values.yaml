@@ -24,6 +24,11 @@ etcd:
 # see the ts-apiserver resources
 externalHostname: cloud-cluster-apiserver.tailnet.hub.samcday.com
 externalIP: 100.64.0.3
+konnectivity:
+  agent:
+    image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.32.0
+  server:
+    image: registry.k8s.io/kas-network-proxy/proxy-server:v0.32.0
 parentClusterDomain: cluster.hub.internal
 scheduler:
   config:
