@@ -55,5 +55,4 @@ spec:
         sourceRef:
           kind: GitRepository
           name: fastboop
-        targetNamespace: fastboop
         timeout: 2m

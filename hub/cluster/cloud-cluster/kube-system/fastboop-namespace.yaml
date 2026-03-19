@@ -24,26 +24,15 @@ spec:
     _:
       kind: Namespace
     fastboop:
-    fastboop-reconciler-role:
+    fastboop-reconciler-crb:
       apiVersion: rbac.authorization.k8s.io/v1
-      kind: Role
+      kind: ClusterRoleBinding
       metadata:
         name: fastboop-reconciler
-        namespace: fastboop
-      rules:
-        - apiGroups: ["*"]
-          resources: ["*"]
-          verbs: ["*"]
-    fastboop-reconciler-rb:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: RoleBinding
-      metadata:
-        name: fastboop-reconciler
-        namespace: fastboop
       roleRef:
         apiGroup: rbac.authorization.k8s.io
-        kind: Role
-        name: fastboop-reconciler
+        kind: ClusterRole
+        name: cluster-admin
       subjects:
         - kind: ServiceAccount
           name: fastboop-reconciler
