@@ -56,3 +56,17 @@ scheduler:
               #   - -v=6
 serviceCIDRs: [172.27.0.0/16]
 serviceIP: 172.27.0.1
+users:
+  - name: forgejo-runner-sync
+    commonName: forgejo-runner-sync
+    exportKubeconfigs:
+      - name: cloud-cluster-forgejo-runner-sync-kubeconfig
+        namespace: forgejo
+        external: true
+    rbac:
+      - namespace: forgejo-runners
+        rules:
+          - apiGroups: [""]
+            resources: ["secrets"]
+            resourceNames: ["forgejo-runner-secrets"]
+            verbs: ["get", "create", "update", "patch"]

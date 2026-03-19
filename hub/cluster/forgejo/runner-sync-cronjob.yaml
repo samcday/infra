@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: forgejo-runner-reconciler
+  name: forgejo-runner-sync
 spec:
   schedule: "*/15 * * * *"
   concurrencyPolicy: Forbid
@@ -12,15 +12,21 @@ spec:
       backoffLimit: 2
       template:
         spec:
-          serviceAccountName: forgejo-runner-reconciler
+          serviceAccountName: forgejo-runner-sync
           restartPolicy: Never
           volumes:
             - name: script
               configMap:
-                name: forgejo-runner-reconciler
+                name: forgejo-runner-sync
                 defaultMode: 0755
             - name: tools
               emptyDir: {}
+            - name: cloud-cluster-kubeconfig
+              secret:
+                secretName: cloud-cluster-forgejo-runner-sync-kubeconfig
+                items:
+                  - key: value
+                    path: cloud-cluster
           initContainers:
             - name: forgejo-runner-bin
               image: data.forgejo.org/forgejo/runner:12
@@ -32,18 +38,19 @@ spec:
                 - name: tools
                   mountPath: /tools
           containers:
-            - name: reconcile
-              image: alpine:3.21
+            - name: sync
+              image: bitnami/kubectl:1.30.14
               command:
                 - /bin/sh
                 - -ec
-                - |
-                  apk add --no-cache curl jq kubectl
-                  /script/reconcile.sh
+                - /script/sync.sh
               volumeMounts:
                 - name: script
                   mountPath: /script
                   readOnly: true
                 - name: tools
                   mountPath: /tools
+                  readOnly: true
+                - name: cloud-cluster-kubeconfig
+                  mountPath: /kubeconfigs
                   readOnly: true
