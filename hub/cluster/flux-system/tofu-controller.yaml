@@ -43,7 +43,6 @@ spec:
         tag: v0.16.0-rc.5
       serviceAccount:
         allowedNamespaces:
-          - fastboop
           - cloud-cluster
           - flux-system
           - headscale
@@ -59,7 +58,6 @@ data:
   secretName: github-token
   resources: |-
     - namespace: cloud-cluster
-    - namespace: fastboop
     - namespace: flux-system
     - namespace: headscale
     - namespace: kube-system

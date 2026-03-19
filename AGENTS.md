@@ -1,6 +1,6 @@
 # AGENTS.md
 ## Purpose
-- This repo is infra-as-code for multiple clusters/sites (`hub`, `cloud`, `fastboop`, etc) and supporting images/charts/scripts.
+- This repo is infra-as-code for multiple clusters/sites (`hub`, `cloud`, `simonet`, etc) and supporting images/charts/scripts.
 - There is no traditional unit-test suite; validation is primarily render/lint/validate commands.
 - Keep changes narrow, reversible, and validated only for touched subsystems.
 ## Repo Map
@@ -73,7 +73,7 @@ tofu -chdir=hub/tofu init -backend=false -input=false
 tofu -chdir=hub/tofu validate
 tofu -chdir=hub/tofu fmt -check
 ```
-- Current module roots: `hub/tofu`, `hub/cluster/cloud-cluster`, `hub/cluster/fastboop`, `hub/cluster/headscale`, `hub/cluster/simonet`.
+- Current module roots: `hub/tofu`, `hub/cluster/cloud-cluster`, `hub/cluster/headscale`, `hub/cluster/simonet`.
 ### Shell Validation
 - Single Bash script syntax + lint:
 ```bash

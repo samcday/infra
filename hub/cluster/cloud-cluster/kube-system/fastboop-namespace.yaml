@@ -1,0 +1,50 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fastboop-namespace
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: kube-system
+  targetNamespace: kube-system
+  values:
+    _:
+      kind: Namespace
+    fastboop:
+    fastboop-reconciler-role:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: fastboop-reconciler
+        namespace: fastboop
+      rules:
+        - apiGroups: ["*"]
+          resources: ["*"]
+          verbs: ["*"]
+    fastboop-reconciler-rb:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: fastboop-reconciler
+        namespace: fastboop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: fastboop-reconciler
+      subjects:
+        - kind: ServiceAccount
+          name: fastboop-reconciler
+          namespace: cloud-cluster

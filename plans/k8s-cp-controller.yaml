@@ -140,7 +140,7 @@ bootstrap_use_case:
 rollout_plan:
   - Implement controller + CRD.
   - Deploy controller in hub cluster.
-  - Add runtime endpoint ConfigMaps for cloud and fastboop.
+  - Add runtime endpoint ConfigMaps for cloud-cluster and simonet.
   - Wire HelmReleases to valuesFrom runtime endpoint with targetPath for:
     - control-plane externalIP
     - cilium k8sServiceHost
@@ -158,7 +158,7 @@ acceptance_criteria:
 
 validation_commands:
   - kustomize build --load-restrictor=LoadRestrictionsNone hub/cluster/cloud-cluster >/dev/null
-  - kustomize build --load-restrictor=LoadRestrictionsNone hub/cluster/fastboop >/dev/null
+  - kustomize build --load-restrictor=LoadRestrictionsNone hub/cluster/simonet >/dev/null
 
 risk_and_mitigation:
   - risk: Runtime patching conflicts with Flux ownership.

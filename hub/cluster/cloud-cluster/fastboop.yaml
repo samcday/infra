@@ -1,0 +1,59 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fastboop
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  storageNamespace: cloud-cluster
+  targetNamespace: cloud-cluster
+  values:
+    fastboop-git:
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: GitRepository
+      metadata:
+        name: fastboop
+      spec:
+        ignore: |
+          /*
+          !/infra/
+          /infra/*
+          !/infra/k8s/
+          !/infra/k8s/**
+        interval: 5m
+        ref:
+          branch: main
+        url: https://github.com/samcday/fastboop.git
+    fastboop-reconciler:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: fastboop-reconciler
+    fastboop-kustomization:
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: fastboop
+      spec:
+        interval: 5m
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: ./infra/k8s
+        prune: true
+        serviceAccountName: fastboop-reconciler
+        sourceRef:
+          kind: GitRepository
+          name: fastboop
+        targetNamespace: fastboop
+        timeout: 2m

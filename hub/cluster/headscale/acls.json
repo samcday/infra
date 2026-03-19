@@ -36,11 +36,6 @@
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
-        },
-        {
-            "action": "accept",
-            "src": ["tag:fastboop-node"],
-            "dst": ["tag:fastboop-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -66,8 +61,6 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
-        "tag:fastboop-apiserver": [],
-        "tag:fastboop-node": [],
         "tag:simonet": []
     }
 }

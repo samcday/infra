@@ -23,7 +23,6 @@ spec:
     cloud-cluster:
     conduit:
     dex:
-    fastboop:
     cnpg-system:
     external-dns:
     forgejo:

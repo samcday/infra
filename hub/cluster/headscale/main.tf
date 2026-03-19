@@ -24,10 +24,6 @@ resource "headscale_user" "conduit" {
   name = "conduit"
 }
 
-resource "headscale_user" "fastboop" {
-  name = "fastboop"
-}
-
 resource "headscale_user" "hub" {
   name = "hub"
 }
@@ -61,22 +57,6 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = true
-}
-
-resource "headscale_pre_auth_key" "fastboop_apiserver_stable" {
-  user           = headscale_user.fastboop.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:fastboop-apiserver"]
-}
-
-resource "headscale_pre_auth_key" "fastboop_nodes" {
-  user           = headscale_user.fastboop.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:fastboop-node"]
 }
 
 resource "headscale_pre_auth_key" "conduit_client_stable" {
@@ -124,28 +104,6 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.cloud_cluster_apiserver_stable.key
-  }
-}
-
-resource "kubernetes_secret" "fastboop_node_preauth" {
-  metadata {
-    name      = "node-ts-auth"
-    namespace = "fastboop"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.fastboop_nodes.key
-  }
-}
-
-resource "kubernetes_secret" "fastboop_apiserver_preauth" {
-  metadata {
-    name      = "apiserver-ts-auth"
-    namespace = "fastboop"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.fastboop_apiserver_stable.key
   }
 }
 

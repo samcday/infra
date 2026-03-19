@@ -13,7 +13,7 @@ This plan is for a follow-up session to implement end-to-end infra and publishin
 ## Context observed in this repo
 
 - Cluster state is Flux-managed under `hub/cluster/*`.
-- `hub/cluster/fastboop/` already includes `external-dns` and cert-manager-adjacent wiring patterns.
+- `hub/cluster/cloud-cluster/` already includes `external-dns` and cert-manager-adjacent wiring patterns.
 - DNS/TLS patterns already exist for other `*.samcday.com` services via Ingress + `cert-manager` + `external-dns`.
 - We can follow the existing model rather than inventing a separate provisioning path.
 
@@ -35,8 +35,8 @@ Optional:
 
 1. Choose hosting primitive in-cluster
    - Deploy a small static file service (nginx/caddy) with persistent storage.
-   - Put manifests under a dedicated path (for example `hub/cluster/fastboop/pmos-repo/`).
-   - Add it to fastboop Flux reconciliation via existing kustomization patterns.
+   - Put manifests under a dedicated path (for example `hub/cluster/cloud-cluster/pmos-repo/`).
+   - Add it to cloud-cluster Flux reconciliation via existing kustomization patterns.
 
 2. Wire DNS and TLS
    - Add Ingress for `pmos.samcday.com`.
