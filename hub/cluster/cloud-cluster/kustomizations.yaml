@@ -45,3 +45,11 @@ spec:
             name: admin-kubeconfig
         path: hub/cluster/cloud-cluster/pmos
         targetNamespace: pmos
+    forgejo-runners:
+      spec:
+        dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: hub/cluster/cloud-cluster/forgejo-runners
+        targetNamespace: forgejo-runners

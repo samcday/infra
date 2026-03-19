@@ -63,6 +63,9 @@ spec:
     jetstack:
       spec:
         url: https://charts.jetstack.io
+    keda:
+      spec:
+        url: https://kedacore.github.io/charts
     metrics-server:
       spec:
         url: https://kubernetes-sigs.github.io/metrics-server/

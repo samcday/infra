@@ -15,6 +15,7 @@ resources:
   - gibblox.yaml
   - hccm.yaml
   - hcloud-token.yaml
+  - keda.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
   - rokkitpokkit.yaml

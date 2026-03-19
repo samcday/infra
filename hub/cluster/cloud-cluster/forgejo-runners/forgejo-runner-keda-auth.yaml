@@ -1,0 +1,9 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: forgejo-runner-auth
+spec:
+  secretTargetRef:
+    - parameter: token
+      name: forgejo-runner-secrets
+      key: forgejoToken

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forgejo-runner-bootstrap
+type: Opaque
+stringData:
+  # Site-admin API token used to request registration tokens.
+  adminToken: REPLACE_WITH_FORGEJO_SITE_ADMIN_API_TOKEN
+  # Optional token used by KEDA for polling; defaults to adminToken if empty.
+  scalerToken: ""

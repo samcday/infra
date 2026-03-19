@@ -1,0 +1,69 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: forgejo-runner-amd64
+spec:
+  pollingInterval: 15
+  maxReplicaCount: 20
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      spec:
+        restartPolicy: Never
+        nodeSelector:
+          kubernetes.io/arch: amd64
+        volumes:
+          - name: runner-data
+            emptyDir: {}
+          - name: runner-config
+            configMap:
+              name: forgejo-runner-config
+          - name: runner-state
+            secret:
+              secretName: forgejo-runner-secrets
+              items:
+                - key: amd64.runner
+                  path: .runner
+        containers:
+          - name: runner
+            image: data.forgejo.org/forgejo/runner:12
+            command:
+              - /bin/sh
+              - -ec
+              - |
+                sleep 5
+                cp /runner/.runner /data/.runner
+                exec forgejo-runner --config /config/config.yaml one-job
+            env:
+              - name: DOCKER_HOST
+                value: tcp://127.0.0.1:2375
+            volumeMounts:
+              - name: runner-data
+                mountPath: /data
+              - name: runner-config
+                mountPath: /config
+              - name: runner-state
+                mountPath: /runner
+                readOnly: true
+          - name: dind
+            image: docker:27.5-dind
+            securityContext:
+              privileged: true
+            env:
+              - name: DOCKER_TLS_CERTDIR
+                value: ""
+            command:
+              - /bin/sh
+              - -ec
+              - exec dockerd-entrypoint.sh --host=tcp://0.0.0.0:2375 --tls=false
+  triggers:
+    - type: forgejo-runner
+      metadata:
+        name: forgejo-amd64
+        address: https://code.samcday.com
+        global: "true"
+        labels: linux-amd64
+      authenticationRef:
+        name: forgejo-runner-auth

@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-runner-reconciler
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: forgejo-runner-reconciler
+          restartPolicy: Never
+          volumes:
+            - name: script
+              configMap:
+                name: forgejo-runner-reconciler
+                defaultMode: 0755
+            - name: tools
+              emptyDir: {}
+          initContainers:
+            - name: forgejo-runner-bin
+              image: data.forgejo.org/forgejo/runner:12
+              command:
+                - /bin/sh
+                - -ec
+                - cp "$(command -v forgejo-runner)" /tools/forgejo-runner
+              volumeMounts:
+                - name: tools
+                  mountPath: /tools
+          containers:
+            - name: reconcile
+              image: alpine:3.21
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  apk add --no-cache curl jq kubectl
+                  /script/reconcile.sh
+              volumeMounts:
+                - name: script
+                  mountPath: /script
+                  readOnly: true
+                - name: tools
+                  mountPath: /tools
+                  readOnly: true

@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-runner-reconciler
+data:
+  reconcile.sh: |
+    #!/bin/sh
+    set -eu
+
+    export PATH="/tools:${PATH}"
+
+    FORGEJO_URL="https://code.samcday.com"
+    FORGEJO_API="${FORGEJO_URL}/api/v1"
+    TARGET_SECRET="forgejo-runner-secrets"
+    BOOTSTRAP_SECRET="forgejo-runner-bootstrap"
+
+    AMD64_NAME="forgejo-amd64"
+    ARM64_NAME="forgejo-arm64"
+    AMD64_LABELS="linux-amd64:docker://node:20-bookworm"
+    ARM64_LABELS="linux-arm64:docker://node:20-bookworm"
+
+    ADMIN_TOKEN="$(kubectl get secret "${BOOTSTRAP_SECRET}" -o jsonpath='{.data.adminToken}' | base64 -d)"
+    SCALER_TOKEN="$(kubectl get secret "${BOOTSTRAP_SECRET}" -o jsonpath='{.data.scalerToken}' 2>/dev/null | base64 -d || true)"
+
+    if [ -z "${ADMIN_TOKEN}" ]; then
+      echo "forgejo-runner-bootstrap.adminToken is required"
+      exit 1
+    fi
+
+    if [ -z "${SCALER_TOKEN}" ]; then
+      SCALER_TOKEN="${ADMIN_TOKEN}"
+    fi
+
+    get_existing_runner() {
+      key="$1"
+      kubectl get secret "${TARGET_SECRET}" -o jsonpath="{.data.${key}}" 2>/dev/null | base64 -d || true
+    }
+
+    ensure_runner() {
+      name="$1"
+      labels="$2"
+      existing="$3"
+
+      if [ -n "${existing}" ]; then
+        printf '%s' "${existing}"
+        return 0
+      fi
+
+      token="$(curl -fsSL -H "Authorization: token ${ADMIN_TOKEN}" "${FORGEJO_API}/admin/runners/registration-token" | jq -r .token)"
+
+      if [ -z "${token}" ] || [ "${token}" = "null" ]; then
+        echo "failed to fetch Forgejo registration token"
+        exit 1
+      fi
+
+      workdir="$(mktemp -d)"
+      (
+        cd "${workdir}"
+        forgejo-runner register \
+          --no-interactive \
+          --instance "${FORGEJO_URL}" \
+          --token "${token}" \
+          --name "${name}" \
+          --labels "${labels}"
+        cat .runner
+      )
+      rm -rf "${workdir}"
+    }
+
+    AMD64_EXISTING="$(get_existing_runner 'amd64\.runner')"
+    ARM64_EXISTING="$(get_existing_runner 'arm64\.runner')"
+
+    AMD64_RUNNER="$(ensure_runner "${AMD64_NAME}" "${AMD64_LABELS}" "${AMD64_EXISTING}")"
+    ARM64_RUNNER="$(ensure_runner "${ARM64_NAME}" "${ARM64_LABELS}" "${ARM64_EXISTING}")"
+
+    mkdir -p /tmp/runner-secret
+    printf '%s' "${AMD64_RUNNER}" > /tmp/runner-secret/amd64.runner
+    printf '%s' "${ARM64_RUNNER}" > /tmp/runner-secret/arm64.runner
+
+    kubectl create secret generic "${TARGET_SECRET}" \
+      --from-literal=forgejoToken="${SCALER_TOKEN}" \
+      --from-file=amd64.runner=/tmp/runner-secret/amd64.runner \
+      --from-file=arm64.runner=/tmp/runner-secret/arm64.runner \
+      --dry-run=client \
+      -o yaml | kubectl apply -f -

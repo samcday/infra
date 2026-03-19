@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-runner-config
+data:
+  config.yaml: |
+    log:
+      level: info
+      job_level: info
+
+    runner:
+      file: /data/.runner
+      capacity: 1
+      fetch_interval: 2s
+      fetch_timeout: 5s
+      report_interval: 1s
+      timeout: 3h
+
+    cache:
+      enabled: false
+
+    container:
+      docker_host: tcp://127.0.0.1:2375
+      privileged: false

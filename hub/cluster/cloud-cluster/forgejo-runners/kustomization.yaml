@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: forgejo-runners
+resources:
+  - namespace.yaml
+  - forgejo-runner-bootstrap.yaml
+  - forgejo-runner-reconciler-rbac.yaml
+  - forgejo-runner-reconciler-config.yaml
+  - forgejo-runner-reconciler-cronjob.yaml
+  - forgejo-runner-keda-auth.yaml
+  - forgejo-runner-config.yaml
+  - forgejo-runner-amd64.yaml
+  - forgejo-runner-arm64.yaml
