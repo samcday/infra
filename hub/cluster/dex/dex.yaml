@@ -40,7 +40,6 @@ spec:
         - email: me@samcday.com
           hashFromEnv: PASS_HASH
           username: samcday
-          userID: c760f317-52c8-49d0-900c-c01ec853a1cf
         - email: insane.prawny@gmail.com
           hashFromEnv: FRIEND_PASS_HASH
           username: insane-prawny
