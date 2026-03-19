@@ -1,23 +1,13 @@
 terraform {
   required_providers {
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "4.52.4"
-    }
     hcloud = {
       source  = "hetznercloud/hcloud"
       version = "1.52.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "3.7.2"
-    }
   }
 }
 
-provider "cloudflare" {}
 provider "hcloud" {}
-provider "random" {}
 
 resource "hcloud_ssh_key" "samcday" {
   name       = "samcday"
