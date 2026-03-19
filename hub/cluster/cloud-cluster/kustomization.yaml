@@ -13,6 +13,7 @@ resources:
   - descheduler.yaml
   - external-dns.yaml
   - fastboop.yaml
+  - fastboopmos.yaml
   - gibblox.yaml
   - hccm.yaml
   - hcloud-token.yaml
