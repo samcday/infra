@@ -130,6 +130,8 @@ metadata:
   name: konnectivity-agent
 spec:
   replicas: {{ required "missing konnectivity.agent.replicas" $.Values.konnectivity.agent.replicas }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: konnectivity-agent
@@ -145,7 +147,7 @@ spec:
           args:
             - --logtostderr=true
             - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-            - --proxy-server-host={{ default $.Values.externalIP $.Values.externalHostname }}
+            - --proxy-server-host={{ default $.Values.externalHostname $.Values.externalIP }}
             - --proxy-server-port={{ $.Values.konnectivity.port }}
             - --sync-interval=5s
             - --sync-interval-cap=30s
