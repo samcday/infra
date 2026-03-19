@@ -3,6 +3,8 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: pmos-smoketest
+  annotations:
+    infra.samcday.com/reconcile: "2"
 spec:
   gatewayClassName: cilium
   listeners:
