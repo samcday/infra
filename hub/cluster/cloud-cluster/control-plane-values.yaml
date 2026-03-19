@@ -62,7 +62,7 @@ users:
     exportKubeconfigs:
       - name: cloud-cluster-forgejo-runner-sync-kubeconfig
         namespace: forgejo
-        external: true
+        external: false
     rbac:
       - namespace: forgejo-runners
         rules:
