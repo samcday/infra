@@ -13,6 +13,8 @@ spec:
         namespace: flux-system
       version: 2.18.1
   interval: 1h
+  install:
+    createNamespace: true
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
