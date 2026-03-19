@@ -11,6 +11,11 @@ spec:
   runnerPodTemplate:
     spec:
       env:
+        - name: CLOUDFLARE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare
+              key: token
         - name: HCLOUD_TOKEN
           valueFrom:
             secretKeyRef:
