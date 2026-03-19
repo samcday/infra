@@ -65,7 +65,7 @@ spec:
       gatewayClass:
         create: "true"
       hostNetwork:
-        enabled: true
+        enabled: false
     ipam:
       mode: kubernetes
     ipv4NativeRoutingCIDR: 172.28.0.0/16
@@ -74,6 +74,9 @@ spec:
     kubeProxyReplacement: true
     loadBalancer:
       serviceTopology: true
+    nodeIPAM:
+      enabled: true
+    defaultLBServiceIPAM: nodeipam
     operator:
       prometheus:
         serviceMonitor:
