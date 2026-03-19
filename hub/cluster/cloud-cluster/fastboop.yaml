@@ -48,7 +48,7 @@ spec:
         decryption:
           provider: sops
           secretRef:
-            name: age-key
+            name: fastboop-age-key
         interval: 5m
         kubeConfig:
           secretRef:
