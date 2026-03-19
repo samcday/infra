@@ -59,4 +59,5 @@ spec:
         sourceRef:
           kind: GitRepository
           name: fastboop
+        suspend: true
         timeout: 2m
