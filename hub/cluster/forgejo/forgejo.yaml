@@ -61,6 +61,9 @@ spec:
           DISABLE_REGISTRATION: true
           ENABLE_BASIC_AUTHENTICATION: false
           ENABLE_INTERNAL_SIGNIN: false
+        oauth2_client:
+          ACCOUNT_LINKING: login
+          ENABLE_AUTO_REGISTRATION: true
         session:
           PROVIDER: db
         storage:
