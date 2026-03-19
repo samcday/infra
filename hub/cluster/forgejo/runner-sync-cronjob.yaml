@@ -39,7 +39,7 @@ spec:
                   mountPath: /tools
           containers:
             - name: sync
-              image: bitnami/kubectl:1.30.14
+              image: bitnami/kubectl:1.30
               command:
                 - /bin/sh
                 - -ec
