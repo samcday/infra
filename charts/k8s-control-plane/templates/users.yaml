@@ -1,0 +1,77 @@
+{{- range $user := $.Values.users }}
+{{- $userName := required "users[].name is required" $user.name }}
+{{- $commonName := default $userName $user.commonName }}
+{{- $certSecretName := printf "user-%s" $userName }}
+{{- $kubeconfigName := printf "user-%s-kubeconfig" $userName }}
+{{- $kubeconfigExternalName := printf "user-%s-kubeconfig-external" $userName }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $certSecretName }}
+spec:
+  commonName: {{ $commonName }}
+  duration: {{ default "336h" $user.duration }}
+  issuerRef:
+    name: ca
+    kind: Issuer
+  secretName: {{ $certSecretName }}
+  {{- with $user.organizations }}
+  subject:
+    organizations:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  usages: [client auth]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $kubeconfigName }}
+data:
+  kubeconfig: |
+    apiVersion: v1
+    clusters:
+      - cluster:
+          certificate-authority: /{{ $certSecretName }}/ca.crt
+          server: https://apiserver.{{ $.Release.Namespace }}.svc.{{ $.Values.parentClusterDomain }}:6443
+        name: {{ $.Values.clusterName }}
+    contexts:
+      - context:
+          cluster: {{ $.Values.clusterName }}
+          user: {{ $commonName }}
+        name: {{ $commonName }}@{{ $.Values.clusterName }}
+    current-context: {{ $commonName }}@{{ $.Values.clusterName }}
+    kind: Config
+    preferences: {}
+    users:
+      - name: {{ $commonName }}
+        user:
+          client-certificate: /{{ $certSecretName }}/tls.crt
+          client-key: /{{ $certSecretName }}/tls.key
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $kubeconfigExternalName }}
+data:
+  kubeconfig: |
+    apiVersion: v1
+    clusters:
+      - cluster:
+          certificate-authority: /{{ $certSecretName }}/ca.crt
+          server: https://{{ default $.Values.externalIP $.Values.externalHostname }}:6443
+        name: {{ $.Values.clusterName }}
+    contexts:
+      - context:
+          cluster: {{ $.Values.clusterName }}
+          user: {{ $commonName }}
+        name: {{ $commonName }}@{{ $.Values.clusterName }}
+    current-context: {{ $commonName }}@{{ $.Values.clusterName }}
+    kind: Config
+    preferences: {}
+    users:
+      - name: {{ $commonName }}
+        user:
+          client-certificate: /{{ $certSecretName }}/tls.crt
+          client-key: /{{ $certSecretName }}/tls.key
+---
+{{- end }}

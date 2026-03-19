@@ -342,3 +342,36 @@ subjects:
 - apiGroup: rbac.authorization.k8s.io
   kind: Group
   name: system:nodes
+{{- range $user := $.Values.users }}
+{{- $userName := required "users[].name is required" $user.name }}
+{{- $commonName := default $userName $user.commonName }}
+{{- range $idx, $binding := $user.rbac }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ required (printf "users[%s].rbac[].namespace is required" $userName) $binding.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: user-{{ $userName }}-{{ $idx }}
+  namespace: {{ required (printf "users[%s].rbac[].namespace is required" $userName) $binding.namespace }}
+rules:
+  {{- toYaml (required (printf "users[%s].rbac[].rules is required" $userName) $binding.rules) | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: user-{{ $userName }}-{{ $idx }}
+  namespace: {{ required (printf "users[%s].rbac[].namespace is required" $userName) $binding.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: user-{{ $userName }}-{{ $idx }}
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: {{ $commonName }}
+{{- end }}
+{{- end }}

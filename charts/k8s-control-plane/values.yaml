@@ -99,6 +99,26 @@ scheduler:
   vpa:
     enabled: true
 
+# Additional client-certificate identities for child-cluster access.
+#
+# Example:
+# users:
+#   - name: forgejo-runner-sync
+#     commonName: forgejo-runner-sync
+#     organizations: []
+#     exportKubeconfigs:
+#       - name: cloud-cluster-forgejo-runner-sync-kubeconfig
+#         namespace: forgejo
+#         external: true
+#     rbac:
+#       - namespace: forgejo-runners
+#         rules:
+#           - apiGroups: [""]
+#             resources: ["secrets"]
+#             resourceNames: ["forgejo-runner-secrets"]
+#             verbs: ["get", "create", "update", "patch"]
+users: []
+
 # Can be either an IPv4 subnet, an IPv6 subnet, or exactly one of each.
 serviceCIDRs: []
 
