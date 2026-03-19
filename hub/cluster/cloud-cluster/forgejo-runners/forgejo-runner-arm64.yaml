@@ -12,6 +12,7 @@ spec:
     template:
       spec:
         restartPolicy: Never
+        shareProcessNamespace: true
         nodeSelector:
           kubernetes.io/arch: arm64
         volumes:
@@ -63,7 +64,17 @@ spec:
             command:
               - /bin/sh
               - -ec
-              - exec dockerd-entrypoint.sh --host=tcp://0.0.0.0:2375 --tls=false
+              - |
+                dockerd-entrypoint.sh --host=tcp://0.0.0.0:2375 --tls=false &
+                dockerd_pid="$!"
+                while ! ps -eo args | grep -q '[f]orgejo-runner --config /config/config.yaml one-job'; do
+                  sleep 1
+                done
+                while ps -eo args | grep -q '[f]orgejo-runner --config /config/config.yaml one-job'; do
+                  sleep 2
+                done
+                kill "$dockerd_pid" || true
+                wait "$dockerd_pid" || true
   triggers:
     - type: forgejo-runner
       metadata:
