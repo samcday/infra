@@ -12,6 +12,8 @@ spec:
         kind: GitRepository
         name: infra
         namespace: flux-system
+  dependsOn:
+    - name: flux
   driftDetection:
     mode: enabled
   interval: 1h
