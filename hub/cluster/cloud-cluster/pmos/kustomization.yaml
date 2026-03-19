@@ -5,4 +5,3 @@ resources:
   - caddy-configmap.yaml
   - caddy-deployment.yaml
   - caddy-service.yaml
-  - gateway-smoketest.yaml
