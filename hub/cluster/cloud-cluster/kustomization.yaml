@@ -22,6 +22,8 @@ resources:
   - kustomizations.yaml
   - node-bootstrap-token.yaml
   - rokkitpokkit.yaml
+  - rokkitpokkit-tofu-state-passphrase.yaml
+  - rokkitpokkit-tofu.yaml
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml
