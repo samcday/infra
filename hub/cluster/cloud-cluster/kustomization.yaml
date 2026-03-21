@@ -24,4 +24,5 @@ resources:
   - rokkitpokkit.yaml
   - tofu.yaml
   - ts-apiserver.yaml
+  - tofu-controller.yaml
   - vpas.yaml

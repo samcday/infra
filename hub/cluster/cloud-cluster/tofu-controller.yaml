@@ -1,0 +1,32 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tofu-controller
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: tofu-controller
+      sourceRef:
+        kind: HelmRepository
+        name: tofu-controller
+        namespace: flux-system
+      version: 0.16.0-rc.5
+  interval: 1h
+  install:
+    crds: Create
+  upgrade:
+    crds: CreateReplace
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: flux-system
+  values:
+    allowBreakTheGlass: true
+    allowCrossNamespaceRefs: true
+    image:
+      tag: v0.16.0-rc.5
+    runner:
+      image:
+        tag: v0.16.0-rc.5
