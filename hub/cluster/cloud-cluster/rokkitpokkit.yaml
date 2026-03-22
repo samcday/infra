@@ -5,6 +5,12 @@ metadata:
   name: rokkitpokkit
   namespace: cloud-cluster
 spec:
+  ignore: |
+    /*
+    !/infra/
+    /infra/*
+    !/infra/k8s/
+    !/infra/k8s/**
   interval: 5m
   ref:
     branch: main
