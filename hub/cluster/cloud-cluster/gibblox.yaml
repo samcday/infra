@@ -45,4 +45,5 @@ spec:
         sourceRef:
           kind: GitRepository
           name: gibblox
+        targetNamespace: gibblox
         timeout: 2m

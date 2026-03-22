@@ -45,4 +45,5 @@ spec:
         sourceRef:
           kind: GitRepository
           name: rokkitpokkit
+        targetNamespace: rokkitpokkit
         timeout: 2m
