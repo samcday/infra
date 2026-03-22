@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: flux-webhook-token
+    namespace: cloud-cluster
+stringData:
+    token: ENC[AES256_GCM,data:pug7ujSxbYHuUauC1P63qHF7I63VVX0V63/hNa0l/UQ=,iv:zfrlLaXjojAagbKNl5x3ULU4oYOmBnT77MaHKLc5+x4=,tag:WA3niVKFdS6vcuw99rDPQA==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsTDVNL2lVVmlkQ0tnWnVy
+            VS8xY3pla0JEQTk4cVNiRC9LeWNjdE1VYWowClIzcCs3azdudHRLa2RPRlpRd0ZW
+            NStOQXA4YUx0Z1BQbXhoUUJUQ1llTWcKLS0tIEV3ZS96WHNGb3FpOXpmR0RSRUps
+            cU1VYXVLYi81ZEtRYmoxY0RicTQ3djgK+E0pZ/WJs0ajPKccUIejUczHQlKasIWa
+            63AyReMX5tUE6ydADRif8qjS1gSdipDk+c76Tl5DZaO97y+iNmlZjg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBuZStkK3pVOXFRM281SkZ2
+            OVRXc2dscDZLdzlLaHc2eTZHejlxbDVaNkFvCjdjeVcwVi8yYlpwUkFoSno4dmF1
+            Qkd0V21LdFg5NHhCT3FVbFBjK2YwMU0KLS0tIFozazdkSVhCUE5TZHJVY1dhaXhF
+            UHdQRzQ3SUh0S3J3VzQ4bE1tZ3lsTjQK/6xRNosdtF4SobgvmUEdAk9urFSH98Ei
+            VLeP4HGHtYZ9laGomEX1cJsd6++4hgotSZkEsQrfy1vG1F866tMc+Q==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-03-22T02:29:44Z"
+    mac: ENC[AES256_GCM,data:phefboWxJpFITJN5/qdKFjzx0CQeYdgPiPOJQZqcG0RqL6nIMxY9befTkdV1L+fR28ki9X6wbiqZ7Ag1XbW+CASGCskZqckmM3Q2nIp7lOtUVgkUiYlbxYAoDaZXuUOXIap8U1+oHE0IqPTujIwK9fTwTJjTTW5s3xw2rBfjVV0=,iv:15k7hwMYQdhWdsN/lsHg7FBNC1qtRyGCzG8VmsD9E0I=,tag:ByIHu1ijRdipWLPbw+r6qA==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

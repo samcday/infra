@@ -1,0 +1,70 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flux-webhook
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: flux
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: flux-system
+  values:
+    webhook-token:
+      kind: Secret
+    webhook:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: webhook
+        namespace: flux-system
+        annotations:
+          external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+      spec:
+        hostnames:
+          - flux.cloud.samcday.com
+        parentRefs:
+          - name: shared
+            namespace: kube-system
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: webhook-receiver
+                port: 80
+    infra:
+      apiVersion: notification.toolkit.fluxcd.io/v1
+      kind: Receiver
+      metadata:
+        name: infra
+        namespace: flux-system
+      spec:
+        type: github
+        events:
+          - ping
+          - push
+        secretRef:
+          name: webhook-token
+        resources:
+          - kind: GitRepository
+            name: infra
+  valuesFrom:
+    - kind: Secret
+      name: flux-webhook-token
+      valuesKey: token
+      targetPath: webhook-token.stringData.token
