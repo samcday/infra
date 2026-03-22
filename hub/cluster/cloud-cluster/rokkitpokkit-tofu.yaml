@@ -44,10 +44,6 @@ spec:
   valuesFrom:
     - kind: Secret
       name: rokkitpokkit-tofu-generated
-      valuesKey: GITHUB_TOKEN
-      targetPath: rokkitpokkit-tofu-auth.stringData.GITHUB_TOKEN
-    - kind: Secret
-      name: rokkitpokkit-tofu-generated
       valuesKey: TF_VAR_b2_application_key_id
       targetPath: rokkitpokkit-tofu-auth.stringData.TF_VAR_b2_application_key_id
     - kind: Secret
