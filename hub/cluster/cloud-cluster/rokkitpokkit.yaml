@@ -1,53 +1,33 @@
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
+
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
 metadata:
   name: rokkitpokkit
   namespace: cloud-cluster
 spec:
-  chart:
-    spec:
-      chart: charts/resources
-      reconcileStrategy: Revision
-      sourceRef:
-        kind: GitRepository
-        name: infra
-        namespace: flux-system
-  dependsOn:
-    - name: flux
-  driftDetection:
-    mode: enabled
-  interval: 1h
+  interval: 5m
+  ref:
+    branch: main
+  url: https://github.com/samcday/rokkitpokkit.git
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rokkitpokkit
+  namespace: cloud-cluster
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: rokkitpokkit-age-key
+  interval: 5m
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
-  storageNamespace: flux-system
-  targetNamespace: flux-system
-  values:
-    rokkitpokkit-git:
-      apiVersion: source.toolkit.fluxcd.io/v1
-      kind: GitRepository
-      metadata:
-        name: rokkitpokkit
-      spec:
-        interval: 5m
-        ref:
-          branch: main
-        url: https://github.com/samcday/rokkitpokkit.git
-    rokkitpokkit-kustomization:
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
-      metadata:
-        name: rokkitpokkit
-      spec:
-        decryption:
-          provider: sops
-          secretRef:
-            name: rokkitpokkit-age-key
-        interval: 5m
-        path: ./infra/k8s
-        prune: true
-        sourceRef:
-          kind: GitRepository
-          name: rokkitpokkit
-        targetNamespace: rokkitpokkit
-        timeout: 2m
+  path: ./infra/k8s
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: rokkitpokkit
+  targetNamespace: rokkitpokkit
+  timeout: 2m
