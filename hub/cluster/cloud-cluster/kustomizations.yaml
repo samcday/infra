@@ -37,14 +37,6 @@ spec:
           secretRef:
             name: admin-kubeconfig
         path: hub/cluster/cloud-cluster/gateway-api
-    pmos:
-      spec:
-        dependsOn: [name: kube-system]
-        kubeConfig:
-          secretRef:
-            name: admin-kubeconfig
-        path: hub/cluster/cloud-cluster/pmos
-        targetNamespace: pmos
     forgejo-runners:
       spec:
         dependsOn: [name: kube-system]
