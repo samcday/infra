@@ -39,6 +39,10 @@ spec:
       metadata:
         name: rokkitpokkit
       spec:
+        decryption:
+          provider: sops
+          secretRef:
+            name: rokkitpokkit-age-key
         interval: 5m
         path: ./infra/k8s
         prune: true

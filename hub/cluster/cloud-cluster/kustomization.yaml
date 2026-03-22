@@ -23,6 +23,7 @@ resources:
   - keda.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
+  - rokkitpokkit-age-key.yaml
   - rokkitpokkit.yaml
   - rokkitpokkit-tofu-state-passphrase.yaml
   - rokkitpokkit-tofu.yaml

@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: rokkitpokkit-age-key
+    namespace: cloud-cluster
+stringData:
+    age.agekey: ENC[AES256_GCM,data:Os021kP3Q2bzm78iTN2w3/0/xjsW1cHrHLJxR63MloFJd8fwG6P68+TiRCT/4JflUkhDBPFrHWriAu1ju4rnkTofzEeSxIkzuioU05yiQZDioFktOCXTxzeficL9tjerBD1f6lwtXkNgKurTybwzpbSS0Zrdv2o4cte5HFl4eITpvJpI9Jz75fN3Rvc1L/W8u6bUVy3t1iLY5TXVVFHQ1+zKCHSOd2L5RUDoDYlhCvi30uV7yOtNokt1StXD,iv:Tmxsa/PFnJ6CmkLJLx/kZFDT7p+8asVCxRht0tykosI=,tag:rC7WwKdbIhYFQe41s0if0A==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBpRFdqNDFxc0pKcFBYZHE2
+            VVROQVBTZkN1ZGh6M0Q5VkMrQ1ZXdytUaTNBCmdjYk9DTkloRkdwTDlsdjRoeXU4
+            d3VEeFI1UE0vcWg4bUl2RHpic0RabzAKLS0tIEl3eE1tVnIzaWt2Y0txR1FocGkr
+            WmlFcTR0OWxuQ0x3Ni85OFJoa2J5VnMKyNkGQVmeYGNL2Suelv6qe2MDETSyZ6kT
+            e8z2Xa/TnVIJVjuRPFnAE0Q9tnO7s7f1B/tQW5mS2oZL61r//L4mWA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBVdXg4YkM4NlJkVVBhY2xY
+            MDVPUnhwdHlldnFQMEhBbFpleC8wei94ckVRCnhKTFhoTERseW12TitNRXQyUHds
+            SjZiRzlUS3NDaDdZOXBQZHoyN3hRYTQKLS0tIGFiQ0ZlRC9vcitvYzRuaTkzWE9j
+            L0R3MVVtZlVGdjBCRS9Gd0RrZ1NBaVUKpb5pnpGX5MZWrbpS1I5xcxdSq96/Z7CP
+            qUjbPCeAcR8qz9FAshMWIbkX6kjDLyTT1r4YsRb4r/FNahf16Ml/0A==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-03-22T22:40:52Z"
+    mac: ENC[AES256_GCM,data:9aLcFJnv47VIHBBdhTqWxMO34GAet1m+l2vOp1Vp0+6mgqnpxu1DVVv8PYAlW5liyjFpFktnr1wg8q4bDhxaEAbL5MthmCY6ppCfYyBodURYNQDp9W67Y87gmpvJLfxCYElFEmZ0rzNR3FxB4+KZvObI5/XOKRurFOCxKuRuLRk=,iv:p0inAwGRzyBpnSEJVG9MzO6pUkOoBu0gPlPoUQd4Vio=,tag:tmgX2B7hpGvdl2YMWVurHQ==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
