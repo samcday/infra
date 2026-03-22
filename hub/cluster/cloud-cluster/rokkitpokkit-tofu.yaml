@@ -39,6 +39,8 @@ spec:
         url: https://github.com/samcday/rokkitpokkit.git
     rokkitpokkit-tofu-auth:
       kind: Secret
+      metadata:
+        namespace: rokkitpokkit
   valuesFrom:
     - kind: Secret
       name: rokkitpokkit-tofu-generated
