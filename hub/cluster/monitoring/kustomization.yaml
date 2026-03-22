@@ -6,7 +6,6 @@ resources:
   - dms.yaml
   - gateway-api.yaml
   - grafana.yaml
-  - grafana-postgres.yaml
   - karma.yaml
   - kube-prometheus-stack.yaml
   - rules/conduit.yaml

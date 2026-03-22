@@ -23,15 +23,6 @@ spec:
       retries: -1
   values:
     # https://github.com/grafana/helm-charts/blob/main/charts/grafana/values.yaml
-    envValueFrom:
-      GF_DATABASE_USER:
-        secretKeyRef:
-          name: grafana-db-20250904-app
-          key: username
-      GF_DATABASE_PASSWORD:
-        secretKeyRef:
-          name: grafana-db-20250904-app
-          key: password
     ingress:
       enabled: false
       annotations:
@@ -43,12 +34,13 @@ spec:
           secretName: grafana-certificate
     grafana.ini:
       database:
-        type: postgres
-        host: grafana-db-20250904-rw
-        ssl_mode: require
+        type: sqlite3
+        path: /var/lib/grafana/grafana.db
     persistence:
-      enabled: false
-    replicas: 2
+      enabled: true
+      storageClassName: openebs-hostpath
+      size: 10Gi
+    replicas: 1
     serviceMonitor:
       enabled: true
     sidecar:
