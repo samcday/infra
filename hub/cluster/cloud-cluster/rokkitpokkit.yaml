@@ -12,11 +12,16 @@ spec:
         kind: GitRepository
         name: infra
         namespace: flux-system
+  dependsOn:
+    - name: flux
   driftDetection:
     mode: enabled
   interval: 1h
-  storageNamespace: cloud-cluster
-  targetNamespace: cloud-cluster
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: flux-system
   values:
     rokkitpokkit-git:
       apiVersion: source.toolkit.fluxcd.io/v1
@@ -24,21 +29,10 @@ spec:
       metadata:
         name: rokkitpokkit
       spec:
-        ignore: |
-          /*
-          !/infra/
-          /infra/*
-          !/infra/k8s/
-          !/infra/k8s/**
         interval: 5m
         ref:
           branch: main
         url: https://github.com/samcday/rokkitpokkit.git
-    rokkitpokkit-reconciler:
-      apiVersion: v1
-      kind: ServiceAccount
-      metadata:
-        name: rokkitpokkit-reconciler
     rokkitpokkit-kustomization:
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
@@ -46,14 +40,9 @@ spec:
         name: rokkitpokkit
       spec:
         interval: 5m
-        kubeConfig:
-          secretRef:
-            name: admin-kubeconfig
         path: ./infra/k8s
         prune: true
-        serviceAccountName: rokkitpokkit-reconciler
         sourceRef:
           kind: GitRepository
           name: rokkitpokkit
-        targetNamespace: rokkitpokkit
         timeout: 2m
