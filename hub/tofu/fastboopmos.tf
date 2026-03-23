@@ -1,6 +1,6 @@
 resource "b2_bucket" "fastboopmos" {
   bucket_name = "samcday-fastboopmos"
-  bucket_type = "allPrivate"
+  bucket_type = "allPublic"
 }
 
 resource "b2_application_key" "fastboopmos" {

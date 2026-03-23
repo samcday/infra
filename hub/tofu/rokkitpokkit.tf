@@ -1,6 +1,6 @@
 resource "b2_bucket" "rokkitpokkit" {
   bucket_name = "samcday-rokkitpokkit"
-  bucket_type = "allPrivate"
+  bucket_type = "allPublic"
 }
 
 resource "b2_application_key" "rokkitpokkit" {
