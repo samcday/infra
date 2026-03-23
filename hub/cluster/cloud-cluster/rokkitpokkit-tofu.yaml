@@ -23,34 +23,20 @@ spec:
   storageNamespace: flux-system
   targetNamespace: flux-system
   values:
-    rokkitpokkit:
-      apiVersion: source.toolkit.fluxcd.io/v1
-      kind: GitRepository
-      metadata:
-        name: rokkitpokkit
-      spec:
-        ignore: |
-          /*
-          !/infra/
-          !/infra/**
-        interval: 5m
-        ref:
-          branch: main
-        url: https://github.com/samcday/rokkitpokkit.git
-    rokkitpokkit-tofu-auth:
+    tofu-vars:
       kind: Secret
       metadata:
         namespace: rokkitpokkit
   valuesFrom:
     - kind: Secret
-      name: rokkitpokkit-tofu-generated
-      valuesKey: TF_VAR_b2_application_key_id
-      targetPath: rokkitpokkit-tofu-auth.stringData.TF_VAR_b2_application_key_id
+      name: rokkitpokkit-tofu-vars
+      valuesKey: b2_application_key_id
+      targetPath: tofu-vars.stringData.b2_application_key_id
     - kind: Secret
-      name: rokkitpokkit-tofu-generated
-      valuesKey: TF_VAR_b2_application_key
-      targetPath: rokkitpokkit-tofu-auth.stringData.TF_VAR_b2_application_key
+      name: rokkitpokkit-tofu-vars
+      valuesKey: b2_application_key
+      targetPath: tofu-vars.stringData.b2_application_key
     - kind: Secret
-      name: rokkitpokkit-tofu-state-passphrase
-      valuesKey: TF_VAR_state_passphrase
-      targetPath: rokkitpokkit-tofu-auth.stringData.TF_VAR_state_passphrase
+      name: rokkitpokkit-tofu-vars
+      valuesKey: b2_bucket_name
+      targetPath: tofu-vars.stringData.b2_bucket_name

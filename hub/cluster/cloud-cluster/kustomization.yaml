@@ -14,6 +14,7 @@ resources:
   - external-dns.yaml
   - fastboop.yaml
   - fastboopmos.yaml
+  - fastboopmos-tofu.yaml
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml
@@ -25,7 +26,6 @@ resources:
   - node-bootstrap-token.yaml
   - rokkitpokkit-age-key.yaml
   - rokkitpokkit.yaml
-  - rokkitpokkit-tofu-state-passphrase.yaml
   - rokkitpokkit-tofu.yaml
   - tofu.yaml
   - ts-apiserver.yaml

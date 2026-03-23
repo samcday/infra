@@ -1,0 +1,54 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fastboopmos-tofu
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: flux
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: fastboopmos
+  targetNamespace: fastboopmos
+  values:
+    fastboopmos:
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: GitRepository
+      metadata:
+        name: fastboopmos
+      spec:
+        ignore: |
+          /*
+          !/infra/
+          !/infra/**
+        interval: 5m
+        ref:
+          branch: main
+        url: https://github.com/samcday/fastboopmos.git
+    tofu-vars:
+      kind: Secret
+  valuesFrom:
+    - kind: Secret
+      name: fastboopmos-tofu-vars
+      valuesKey: b2_application_key_id
+      targetPath: fastboopmos-tofu-vars.stringData.b2_application_key_id
+    - kind: Secret
+      name: fastboopmos-tofu-vars
+      valuesKey: b2_application_key
+      targetPath: fastboopmos-tofu-vars.stringData.b2_application_key
+    - kind: Secret
+      name: fastboopmos-tofu-vars
+      valuesKey: b2_bucket_name
+      targetPath: fastboopmos-tofu-vars.stringData.b2_bucket_name
