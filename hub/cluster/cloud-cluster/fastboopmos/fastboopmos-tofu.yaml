@@ -29,12 +29,12 @@ spec:
     - kind: Secret
       name: fastboopmos-tofu-vars
       valuesKey: b2_application_key_id
-      targetPath: fastboopmos-tofu-vars.stringData.b2_application_key_id
+      targetPath: tofu-vars.stringData.b2_application_key_id
     - kind: Secret
       name: fastboopmos-tofu-vars
       valuesKey: b2_application_key
-      targetPath: fastboopmos-tofu-vars.stringData.b2_application_key
+      targetPath: tofu-vars.stringData.b2_application_key
     - kind: Secret
       name: fastboopmos-tofu-vars
       valuesKey: b2_bucket_name
-      targetPath: fastboopmos-tofu-vars.stringData.b2_bucket_name
+      targetPath: tofu-vars.stringData.b2_bucket_name
