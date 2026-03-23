@@ -23,20 +23,6 @@ spec:
   storageNamespace: fastboopmos
   targetNamespace: fastboopmos
   values:
-    fastboopmos:
-      apiVersion: source.toolkit.fluxcd.io/v1
-      kind: GitRepository
-      metadata:
-        name: fastboopmos
-      spec:
-        ignore: |
-          /*
-          !/infra/
-          !/infra/**
-        interval: 5m
-        ref:
-          branch: main
-        url: https://github.com/samcday/fastboopmos.git
     tofu-vars:
       kind: Secret
   valuesFrom:
