@@ -13,8 +13,9 @@ resources:
   - descheduler.yaml
   - external-dns.yaml
   - fastboop.yaml
-  - fastboopmos.yaml
-  - fastboopmos-tofu.yaml
+  - fastboopmos/fastboopmos.yaml
+  - fastboopmos/fastboopmos-age-key.yaml
+  - fastboopmos/fastboopmos-tofu.yaml
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml

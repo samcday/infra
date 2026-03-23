@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: fastboopmos-age-key
+    namespace: cloud-cluster
+stringData:
+    age.agekey: ENC[AES256_GCM,data:YuLzuQt2Iq2ydqi5ejdDhaAAKxPK0lm3nZvNQzV/R3Jg0t9OfoDhh+pAcXW3FTRlnu7hxhkp9sIXFl3pdrXR27AgeT8TihQLt3jDS59PeWiLbhbo0/fkumayJYaKaa34LYgS88SWVbrm4Tp5sLjZygOQgO0dJHTbQNNzYZEPq1I9G0sbMUHdVFZ0rf+H74LoaTHuVYIZu9Qj/nL2zIHKohoEOLn9tRlik6wKVYsXLZlMKEsdoaknoupVa35A,iv:eNGORW5vcGD4eOVgvgmCIdAtO7kklhwnHM5QepIIBlM=,tag:rNCf9ebKp+JBMzfM/Tmp2A==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBpRFdqNDFxc0pKcFBYZHE2
+            VVROQVBTZkN1ZGh6M0Q5VkMrQ1ZXdytUaTNBCmdjYk9DTkloRkdwTDlsdjRoeXU4
+            d3VEeFI1UE0vcWg4bUl2RHpic0RabzAKLS0tIEl3eE1tVnIzaWt2Y0txR1FocGkr
+            WmlFcTR0OWxuQ0x3Ni85OFJoa2J5VnMKyNkGQVmeYGNL2Suelv6qe2MDETSyZ6kT
+            e8z2Xa/TnVIJVjuRPFnAE0Q9tnO7s7f1B/tQW5mS2oZL61r//L4mWA==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBVdXg4YkM4NlJkVVBhY2xY
+            MDVPUnhwdHlldnFQMEhBbFpleC8wei94ckVRCnhKTFhoTERseW12TitNRXQyUHds
+            SjZiRzlUS3NDaDdZOXBQZHoyN3hRYTQKLS0tIGFiQ0ZlRC9vcitvYzRuaTkzWE9j
+            L0R3MVVtZlVGdjBCRS9Gd0RrZ1NBaVUKpb5pnpGX5MZWrbpS1I5xcxdSq96/Z7CP
+            qUjbPCeAcR8qz9FAshMWIbkX6kjDLyTT1r4YsRb4r/FNahf16Ml/0A==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-03-23T08:00:05Z"
+    mac: ENC[AES256_GCM,data:0O1zUzgmBOKcpuuu3HEEA3jeEubwANGQWt/MnrSmqIgSMgpA8pVvWtORRwcEKO314i+wXJIjEIS6NilGQwxELN9vXkgK2NBWaj32+g8tz1Xc+ir5N2X+u1jTVxeEV82oow7zOWNF3Iy13tNbxNSA8Xc7gGFZAB5Wj49PIetinB4=,iv:Us9Hz1Ylh7ekT2udHF79SyXL3mRqYwZdUwNN8mI7aVU=,tag:H9PRQ7pFALLRI8mz0qX8hw==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
