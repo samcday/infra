@@ -16,6 +16,7 @@ resources:
   - fastboopmos/fastboopmos.yaml
   - fastboopmos/fastboopmos-age-key.yaml
   - fastboopmos/fastboopmos-tofu.yaml
+  - fastboopmos/fastboopmos-tofu-bucket-vars.yaml
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml
