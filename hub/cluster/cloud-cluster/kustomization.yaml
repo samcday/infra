@@ -24,9 +24,9 @@ resources:
   - keda.yaml
   - kustomizations.yaml
   - node-bootstrap-token.yaml
-  - rokkitpokkit-age-key.yaml
-  - rokkitpokkit.yaml
-  - rokkitpokkit-tofu.yaml
+  - rokkitpokkit/rokkitpokkit-age-key.yaml
+  - rokkitpokkit/rokkitpokkit.yaml
+  - rokkitpokkit/rokkitpokkit-tofu.yaml
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml

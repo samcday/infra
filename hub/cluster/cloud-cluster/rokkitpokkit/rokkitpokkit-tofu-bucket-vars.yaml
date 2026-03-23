@@ -1,7 +1,7 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: rokkitpokkit-tofu
+  name: rokkitpokkit-tofu-bucket-vars
   namespace: cloud-cluster
 spec:
   chart:
