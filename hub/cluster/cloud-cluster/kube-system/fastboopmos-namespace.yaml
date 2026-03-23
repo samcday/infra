@@ -24,27 +24,3 @@ spec:
     _:
       kind: Namespace
     fastboopmos:
-    fastboopmos-reconciler-role:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: Role
-      metadata:
-        name: fastboopmos-reconciler
-        namespace: fastboopmos
-      rules:
-        - apiGroups: ["*"]
-          resources: ["*"]
-          verbs: ["*"]
-    fastboopmos-reconciler-rb:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: RoleBinding
-      metadata:
-        name: fastboopmos-reconciler
-        namespace: fastboopmos
-      roleRef:
-        apiGroup: rbac.authorization.k8s.io
-        kind: Role
-        name: fastboopmos-reconciler
-      subjects:
-        - kind: ServiceAccount
-          name: fastboopmos-reconciler
-          namespace: cloud-cluster
