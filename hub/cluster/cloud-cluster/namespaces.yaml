@@ -1,8 +1,8 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: fastboop-namespace
-  namespace: cloud-cluster
+  name: namespaces
+  namespace: simonet
 spec:
   chart:
     spec:
@@ -24,16 +24,7 @@ spec:
     _:
       kind: Namespace
     fastboop:
-    fastboop-reconciler-crb:
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: ClusterRoleBinding
-      metadata:
-        name: fastboop-reconciler
-      roleRef:
-        apiGroup: rbac.authorization.k8s.io
-        kind: ClusterRole
-        name: cluster-admin
-      subjects:
-        - kind: ServiceAccount
-          name: fastboop-reconciler
-          namespace: cloud-cluster
+    fastboopmos:
+    gibblox:
+    keda:
+    rokkitpokkit:

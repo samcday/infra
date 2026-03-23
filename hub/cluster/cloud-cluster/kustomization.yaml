@@ -25,6 +25,7 @@ resources:
   - hcloud-token.yaml
   - keda.yaml
   - kustomizations.yaml
+  - namespaces.yaml
   - node-bootstrap-token.yaml
   - rokkitpokkit/rokkitpokkit.yaml
   - rokkitpokkit/rokkitpokkit-age-key.yaml
