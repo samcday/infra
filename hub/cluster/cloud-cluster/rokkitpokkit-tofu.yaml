@@ -23,7 +23,7 @@ spec:
   storageNamespace: flux-system
   targetNamespace: flux-system
   values:
-    tofu-vars:
+    tofu-bucket-vars:
       kind: Secret
       metadata:
         namespace: rokkitpokkit
@@ -31,12 +31,12 @@ spec:
     - kind: Secret
       name: rokkitpokkit-tofu-vars
       valuesKey: b2_application_key_id
-      targetPath: tofu-vars.stringData.b2_application_key_id
+      targetPath: tofu-bucket-vars.stringData.b2_application_key_id
     - kind: Secret
       name: rokkitpokkit-tofu-vars
       valuesKey: b2_application_key
-      targetPath: tofu-vars.stringData.b2_application_key
+      targetPath: tofu-bucket-vars.stringData.b2_application_key
     - kind: Secret
       name: rokkitpokkit-tofu-vars
       valuesKey: b2_bucket_name
-      targetPath: tofu-vars.stringData.b2_bucket_name
+      targetPath: tofu-bucket-vars.stringData.b2_bucket_name
