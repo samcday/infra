@@ -29,7 +29,7 @@ spec:
           name: Tailscale
           secretEnv: TS_SECRET
         - id: fastboop-kubectl
-          redirectURIs: [http://localhost:8000]
+          redirectURIs: [http://localhost:8000, http://localhost:18000]
           name: fastboop kubectl
           public: true
         - id: forgejo
