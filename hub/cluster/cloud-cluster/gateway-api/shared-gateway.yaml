@@ -38,4 +38,5 @@ spec:
     name: letsencrypt
   dnsNames:
     - "*.samcday.com"
+    - "*.cloud.samcday.com"
     - "*.fastboop.win"
