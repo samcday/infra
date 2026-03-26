@@ -39,3 +39,4 @@ resources:
   - vpas.yaml
   - wasmcloud.yaml
   - wasmcloud-demo.yaml
+  - wasmcloud-monitoring.yaml

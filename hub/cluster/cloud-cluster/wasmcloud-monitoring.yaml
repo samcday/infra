@@ -1,0 +1,99 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud-monitoring
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: wasmcloud
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud
+  values:
+    nats-metrics:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      spec:
+        selector:
+          matchLabels:
+            wasmcloud.com/name: nats
+        endpoints:
+          - port: monitoring
+            path: /metrics
+            interval: 30s
+    gateway-metrics:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PodMonitor
+      spec:
+        selector:
+          matchLabels:
+            wasmcloud.com/name: runtime-gateway
+        podMetricsEndpoints:
+          - port: "8080"
+            path: /metrics
+            interval: 30s
+    rules:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      spec:
+        groups:
+          - name: wasmcloud-nats
+            rules:
+              - alert: NATSDown
+                expr: up{job="nats-metrics"} == 0
+                for: 2m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: wasmCloud NATS server is down.
+              - alert: NATSSlowConsumers
+                expr: nats_core_slow_consumer_count > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "NATS has {{ $value }} slow consumer(s)."
+              - alert: NATSJetStreamStorageHigh
+                expr: nats_server_jetstream_storage_used_bytes / nats_server_jetstream_storage_reserved_bytes > 0.85
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "NATS JetStream storage usage is above 85% ({{ $value | humanizePercentage }})."
+              - alert: NATSJetStreamMemoryHigh
+                expr: nats_server_jetstream_memory_used_bytes / nats_server_jetstream_memory_reserved_bytes > 0.85
+                for: 10m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "NATS JetStream memory usage is above 85% ({{ $value | humanizePercentage }})."
+              - alert: NATSHighConnectionCount
+                expr: nats_core_connection_count > 100
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "NATS connection count is unusually high ({{ $value }})."
+          - name: wasmcloud-workloads
+            rules:
+              - alert: WasmCloudWorkloadNotReady
+                expr: |
+                  kube_customresource_workloaddeployment_status_conditions{status="True",type="Ready"} == 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "wasmCloud WorkloadDeployment {{ $labels.name }} is not ready."
