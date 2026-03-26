@@ -27,6 +27,7 @@ resources:
   - kustomizations.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
+  - reloader.yaml
   - rokkitpokkit/rokkitpokkit.yaml
   - rokkitpokkit/rokkitpokkit-age-key.yaml
   - rokkitpokkit/rokkitpokkit-tofu-bucket-vars.yaml
