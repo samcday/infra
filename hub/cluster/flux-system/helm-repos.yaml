@@ -93,3 +93,7 @@ spec:
     tofu-controller:
       spec:
         url: https://flux-iac.github.io/tofu-controller
+    wasmcloud:
+      spec:
+        type: oci
+        url: oci://ghcr.io/wasmcloud/charts

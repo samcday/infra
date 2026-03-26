@@ -1,0 +1,22 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: runtime-operator
+      sourceRef:
+        kind: HelmRepository
+        name: wasmcloud
+        namespace: flux-system
+      version: 2.0.1
+  interval: 1h
+  install:
+    createNamespace: true
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud
