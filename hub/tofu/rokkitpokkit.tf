@@ -27,3 +27,31 @@ resource "kubernetes_secret" "rokkitpokkit-tofu-vars" {
     "b2_bucket_name"        = b2_bucket.rokkitpokkit.bucket_name
   }
 }
+
+resource "cloudflare_api_token" "rokkitpokkit" {
+  name = "rokkitpokkit"
+
+  policy {
+    permission_groups = [
+      data.cloudflare_api_token_permission_groups.all.account["Workers Scripts Write"],
+      data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
+    ]
+    resources = {
+      "com.cloudflare.api.account.*"                                       = "*"
+      "com.cloudflare.api.account.zone.${data.cloudflare_zone.samcday.id}" = "*"
+    }
+  }
+}
+
+resource "kubernetes_secret" "rokkitpokkit-tofu-cloudflare-vars" {
+  metadata {
+    name      = "rokkitpokkit-tofu-cloudflare-vars"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    "cloudflare_api_token"  = cloudflare_api_token.rokkitpokkit.value
+    "cloudflare_account_id" = local.cloudflare_account_id
+    "cloudflare_zone_id"    = data.cloudflare_zone.samcday.id
+  }
+}

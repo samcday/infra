@@ -4,6 +4,12 @@ data "cloudflare_zone" "samcday" {
   name = "samcday.com"
 }
 
+data "cloudflare_accounts" "main" {}
+
+locals {
+  cloudflare_account_id = data.cloudflare_accounts.main.accounts[0].id
+}
+
 resource "cloudflare_record" "samcday_apex" {
   zone_id         = data.cloudflare_zone.samcday.id
   name            = "samcday.com"
@@ -21,7 +27,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_tunnel" "tunnel" {
   name       = "hub-cluster"
   secret     = base64encode(random_password.tunnel_secret.result)
-  account_id = "444c14b123bd021dcdf0400fbd847d63"
+  account_id = local.cloudflare_account_id
 }
 
 resource "kubernetes_secret" "ingress-nginx-cloudflared-tunnel-token" {

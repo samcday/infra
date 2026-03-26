@@ -1,0 +1,42 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: rokkitpokkit-tofu-cloudflare-vars
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: flux
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: flux-system
+  values:
+    tofu-cloudflare-vars:
+      kind: Secret
+      metadata:
+        namespace: rokkitpokkit
+  valuesFrom:
+    - kind: Secret
+      name: rokkitpokkit-tofu-cloudflare-vars
+      valuesKey: cloudflare_api_token
+      targetPath: tofu-cloudflare-vars.stringData.cloudflare_api_token
+    - kind: Secret
+      name: rokkitpokkit-tofu-cloudflare-vars
+      valuesKey: cloudflare_account_id
+      targetPath: tofu-cloudflare-vars.stringData.cloudflare_account_id
+    - kind: Secret
+      name: rokkitpokkit-tofu-cloudflare-vars
+      valuesKey: cloudflare_zone_id
+      targetPath: tofu-cloudflare-vars.stringData.cloudflare_zone_id
