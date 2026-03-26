@@ -57,5 +57,5 @@ spec:
                   type: PathPrefix
                   value: /
             backendRefs:
-              - name: hello-world
-                port: 8000
+              - name: runtime-gateway
+                port: 80
