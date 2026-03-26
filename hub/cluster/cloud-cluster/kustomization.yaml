@@ -38,3 +38,4 @@ resources:
   - tofu-controller.yaml
   - vpas.yaml
   - wasmcloud.yaml
+  - wasmcloud-demo.yaml
