@@ -31,6 +31,7 @@ resources:
   - rokkitpokkit/rokkitpokkit.yaml
   - rokkitpokkit/rokkitpokkit-age-key.yaml
   - rokkitpokkit/rokkitpokkit-tofu-bucket-vars.yaml
+  - rokkitpokkit/rokkitpokkit-tofu-cloudflare-vars.yaml
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml
