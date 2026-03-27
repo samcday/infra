@@ -40,3 +40,15 @@ spec:
       name: rokkitpokkit-tofu-vars
       valuesKey: b2_bucket_name
       targetPath: tofu-bucket-vars.stringData.b2_bucket_name
+    - kind: Secret
+      name: rokkitpokkit-tofu-vars
+      valuesKey: r2_access_key_id
+      targetPath: tofu-bucket-vars.stringData.r2_access_key_id
+    - kind: Secret
+      name: rokkitpokkit-tofu-vars
+      valuesKey: r2_secret_access_key
+      targetPath: tofu-bucket-vars.stringData.r2_secret_access_key
+    - kind: Secret
+      name: rokkitpokkit-tofu-vars
+      valuesKey: r2_bucket_name
+      targetPath: tofu-bucket-vars.stringData.r2_bucket_name

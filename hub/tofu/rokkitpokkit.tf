@@ -4,7 +4,7 @@ resource "b2_bucket" "rokkitpokkit" {
 }
 
 resource "b2_application_key" "rokkitpokkit" {
-  key_name = "rokkitpokkit-cloud"
+  key_name  = "rokkitpokkit-cloud"
   bucket_id = b2_bucket.rokkitpokkit.bucket_id
   capabilities = [
     "listBuckets",
@@ -13,6 +13,26 @@ resource "b2_application_key" "rokkitpokkit" {
     "writeFiles",
     "deleteFiles",
   ]
+}
+
+resource "cloudflare_r2_bucket" "rokkitpokkit_casync" {
+  account_id = local.cloudflare_account_id
+  name       = "rokkitpokkit-casync"
+  location   = "WEUR"
+}
+
+resource "cloudflare_api_token" "rokkitpokkit_r2" {
+  name = "rokkitpokkit-r2"
+
+  policy {
+    permission_groups = [
+      data.cloudflare_api_token_permission_groups.all.account["Workers R2 Storage Read"],
+      data.cloudflare_api_token_permission_groups.all.account["Workers R2 Storage Write"],
+    ]
+    resources = {
+      "com.cloudflare.api.account.*" = "*"
+    }
+  }
 }
 
 resource "kubernetes_secret" "rokkitpokkit-tofu-vars" {
@@ -25,6 +45,9 @@ resource "kubernetes_secret" "rokkitpokkit-tofu-vars" {
     "b2_application_key_id" = b2_application_key.rokkitpokkit.application_key_id
     "b2_application_key"    = b2_application_key.rokkitpokkit.application_key
     "b2_bucket_name"        = b2_bucket.rokkitpokkit.bucket_name
+    "r2_access_key_id"      = cloudflare_api_token.rokkitpokkit_r2.id
+    "r2_secret_access_key"  = sha256(cloudflare_api_token.rokkitpokkit_r2.value)
+    "r2_bucket_name"        = cloudflare_r2_bucket.rokkitpokkit_casync.name
   }
 }
 
@@ -34,6 +57,8 @@ resource "cloudflare_api_token" "rokkitpokkit" {
   policy {
     permission_groups = [
       data.cloudflare_api_token_permission_groups.all.account["Workers Scripts Write"],
+      data.cloudflare_api_token_permission_groups.all.account["Workers R2 Storage Read"],
+      data.cloudflare_api_token_permission_groups.all.account["Workers R2 Storage Write"],
       data.cloudflare_api_token_permission_groups.all.zone["DNS Write"],
     ]
     resources = {
