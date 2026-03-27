@@ -42,7 +42,7 @@ spec:
           matchLabels:
             wasmcloud.com/name: runtime-gateway
         podMetricsEndpoints:
-          - port: "8080"
+          - port: "8080" # gateway doesn't name this port; hardcoded
             path: /metrics
             interval: 30s
     rules:
