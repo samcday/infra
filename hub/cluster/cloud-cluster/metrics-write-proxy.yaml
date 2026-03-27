@@ -5,6 +5,8 @@ metadata:
   name: metrics-write-proxy
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: metrics-write-proxy
@@ -13,6 +15,7 @@ spec:
       labels:
         app: metrics-write-proxy
     spec:
+      serviceAccountName: metrics-write-proxy
       containers:
         - name: kube-rbac-proxy
           image: quay.io/brancz/kube-rbac-proxy:v0.21.2
@@ -30,6 +33,27 @@ spec:
             - name: kubeconfig
               mountPath: /kubeconfig
               subPath: kubeconfig
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5
+          env:
+            - name: TS_DEST_IP
+              value: '$(METRICS_WRITE_PROXY_SERVICE_HOST)'
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net
+            - name: TS_HOSTNAME
+              value: cloud-cluster-metrics-write
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: metrics-write-ts-auth
+                  key: authkey
+            - name: TS_KUBE_SECRET
+              value: metrics-write-ts-state
+            - name: TS_USERSPACE
+              value: "false"
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
       volumes:
         - name: cert
           secret:
@@ -50,23 +74,35 @@ spec:
       targetPort: http
       name: http
 ---
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
+apiVersion: v1
+kind: ServiceAccount
 metadata:
-  name: metrics-write
-  annotations:
-    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
-spec:
-  hostnames:
-    - metrics-write.hub.samcday.com
-  parentRefs:
-    - name: public
-      namespace: ingress-nginx
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
-        - name: metrics-write-proxy
-          port: 8080
+  name: metrics-write-proxy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metrics-write-proxy
+rules:
+  - apiGroups: [""]
+    resourceNames: [metrics-write-ts-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metrics-write-proxy
+subjects:
+  - kind: ServiceAccount
+    name: metrics-write-proxy
+roleRef:
+  kind: Role
+  name: metrics-write-proxy
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metrics-write-ts-state
+type: Opaque

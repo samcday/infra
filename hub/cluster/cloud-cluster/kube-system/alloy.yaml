@@ -76,7 +76,8 @@ spec:
           // Ship metrics to hub Prometheus
           prometheus.remote_write "hub" {
             endpoint {
-              url = "https://metrics-write.hub.samcday.com/api/v1/write"
+              // Connects via Tailscale (WireGuard-encrypted) to kube-rbac-proxy
+              url = "http://cloud-cluster-metrics-write.tailnet.hub.samcday.com:8080/api/v1/write"
               authorization {
                 type             = "Bearer"
                 credentials_file = "/var/run/secrets/metrics-token/token"
