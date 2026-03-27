@@ -23,6 +23,55 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-state-metrics/values.yaml
+    customResourceState:
+      enabled: true
+      config:
+        spec:
+          resources:
+            - groupVersionKind:
+                group: runtime.wasmcloud.dev
+                version: v1alpha1
+                kind: WorkloadDeployment
+              metricNamePrefix: kube_customresource_workloaddeployment
+              labelsFromPath:
+                name: [metadata, name]
+                namespace: [metadata, namespace]
+              metrics:
+                - name: status_conditions
+                  each:
+                    type: Gauge
+                    gauge:
+                      path: [status, conditions]
+                      labelsFromPath:
+                        type: [type]
+                      valueFrom: [status]
+                      nilIsZero: true
+                - name: replicas
+                  each:
+                    type: Gauge
+                    gauge:
+                      path: [status, replicas, ready]
+                  commonLabels:
+                    type: ready
+                - name: replicas
+                  each:
+                    type: Gauge
+                    gauge:
+                      path: [status, replicas, current]
+                  commonLabels:
+                    type: current
+                - name: replicas
+                  each:
+                    type: Gauge
+                    gauge:
+                      path: [spec, replicas]
+                  commonLabels:
+                    type: desired
+    rbac:
+      extraRules:
+        - apiGroups: ["runtime.wasmcloud.dev"]
+          resources: ["workloaddeployments"]
+          verbs: ["list", "watch"]
     prometheus:
       monitor:
         enabled: true
