@@ -37,3 +37,6 @@ resources:
   - ts-apiserver.yaml
   - tofu-controller.yaml
   - vpas.yaml
+  - wasmcloud.yaml
+  - wasmcloud-demo.yaml
+  - wasmcloud-monitoring.yaml
