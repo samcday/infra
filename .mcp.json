@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "kubernetes": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "kubernetes-mcp-server@latest",
+        "--kubeconfig",
+        "./kubeconfig",
+        "--read-only",
+        "--toolsets",
+        "core,config,helm"
+      ]
+    }
+  }
+}
