@@ -20,7 +20,7 @@ spec:
     spec:
       initContainers:
       - name: butane
-        image: ghcr.io/samcday/infra-bootie:2025091700 # {"$imagepolicy": "flux-system:bootie"}
+        image: ghcr.io/samcday/infra-bootie:2026032821 # {"$imagepolicy": "flux-system:bootie"}
         command:
         - ash
         - -uexo
@@ -76,7 +76,7 @@ spec:
           mountPath: /token
       containers:
       - name: bootie
-        image: ghcr.io/samcday/infra-bootie:2025091700 # {"$imagepolicy": "flux-system:bootie"}
+        image: ghcr.io/samcday/infra-bootie:2026032821 # {"$imagepolicy": "flux-system:bootie"}
         env:
         - name: EXTRA_BASE_CONFIGS
           value: secrets ssh-hostkeys
