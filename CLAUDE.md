@@ -66,7 +66,7 @@ scripts/build-router-image.sh <config_dir> <platform> <target> <profile>
 
 **Container image build:**
 ```bash
-docker build -t bootie:dev images/bootie
+docker build -t bootie:dev apps/bootie
 ```
 
 ## Architecture
@@ -81,7 +81,7 @@ docker build -t bootie:dev images/bootie
 - `simonet/`, `ilumbaclusta/` -- Child cluster + router configs (same structure: `butane/`, `router/`, optionally `cluster/`)
 - `common/` -- Shared Butane and router configs inherited by all sites
 - `charts/` -- Local Helm charts: `k8s-control-plane` (nested K8s control plane), `resources` (generic resource deployer), `tailscale-subnet-router`, `hcloud-cloud-controller-manager`
-- `images/` -- Container images (currently `bootie`, a PXE/Ignition boot helper)
+- `apps/` -- Apps that haven't made it to their own repo yet.
 - `scripts/` -- Build and operational scripts
 - `.kustomize-config/` -- Shared Kustomize transformer config referenced by overlays
 

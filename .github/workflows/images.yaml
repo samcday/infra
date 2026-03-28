@@ -1,11 +1,11 @@
-name: Build container images
+name: Build app images
 
 on:
   push:
     branches: [main]
     paths:
       - .github/workflows/node-image.yml
-      - 'images/**'
+      - 'apps/**'
   workflow_dispatch: {}
 
 concurrency:
@@ -49,7 +49,7 @@ jobs:
         id: build-and-push
         uses: docker/build-push-action@v6.18.0
         with:
-          context: images/${{ matrix.name }}
+          context: apps/${{ matrix.name }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

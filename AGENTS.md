@@ -9,7 +9,7 @@
 - `charts/`: local Helm charts (`k8s-control-plane`, `resources`, `tailscale-subnet-router`, `hcloud-cloud-controller-manager`).
 - `*/butane/`: Fedora CoreOS Butane configs, often SOPS-encrypted.
 - `*/router/` and `common/router/`: OpenWrt overlay files and package lists.
-- `images/bootie/`: PXE/Ignition helper container.
+- `apps/bootie/`: PXE/Ignition helper container.
 - `scripts/`: helper scripts, including OpenWrt image builds.
 ## Cursor/Copilot Rules
 - `.cursorrules` not found.
@@ -36,7 +36,7 @@ scripts/build-router-image.sh simonet/router ramips mt7621 asus_rt-ax53u
 ```
 ### bootie Container Build
 ```bash
-docker build -t bootie:dev images/bootie
+docker build -t bootie:dev apps/bootie
 ```
 ### Hub Bootstrap Ignition
 ```bash
