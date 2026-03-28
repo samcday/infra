@@ -142,6 +142,7 @@ ensure_hub_credentials() {
   ensure_cache_dir hub
 
   tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
   decrypted_key_path="$tmp_dir/ca-key.pem"
 
   sops -d "$ca_key_enc_path" > "$decrypted_key_path"
@@ -149,6 +150,7 @@ ensure_hub_credentials() {
 
   secure_delete "$decrypted_key_path"
   rm -rf "$tmp_dir"
+  trap - EXIT
 }
 
 hub_kubeconfig_for_child_flow() {
@@ -210,15 +212,25 @@ ensure_child_credentials() {
   local root
   root="$(repo_root)"
   local repo_server_ca_path="$root/hub/pki/k8s/${cluster}-server-ca.crt"
+  local cache_is_valid="false"
 
-  if cache_valid "$cert_path" "$key_path" && [[ -s "$server_ca_path" ]] && [[ -s "$repo_server_ca_path" ]]; then
+  if cache_valid "$cert_path" "$key_path" && [[ -s "$server_ca_path" ]]; then
+    cache_is_valid="true"
+  fi
+
+  if [[ "$cache_is_valid" == "true" ]] && [[ -s "$repo_server_ca_path" ]]; then
     return 0
+  fi
+
+  if [[ "$cache_is_valid" == "false" ]] && [[ ! -s "$repo_server_ca_path" ]]; then
+    fail "${cluster} server CA not found. Run './scripts/kube-credential-helper.sh --init' first."
   fi
 
   ensure_hub_credentials
   ensure_cache_dir "$cluster"
 
   tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
   hub_kubeconfig="$tmp_dir/hub.kubeconfig"
   child_ca_key_path="$tmp_dir/child-ca.key"
   child_ca_cert_path="$tmp_dir/child-ca.crt"
@@ -243,6 +255,7 @@ ensure_child_credentials() {
   secure_delete "$child_ca_key_path"
   secure_delete "$child_ca_cert_path"
   rm -rf "$tmp_dir"
+  trap - EXIT
 }
 
 emit_exec_credential() {
