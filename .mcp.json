@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "kubernetes-mcp-server@latest",
+        "kubernetes-mcp-server@0.0.59",
         "--kubeconfig",
         "./kubeconfig",
         "--read-only",
