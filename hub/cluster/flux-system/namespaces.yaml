@@ -18,6 +18,7 @@ spec:
   values:
     _:
       kind: Namespace
+    binarylane-demo:
     bootie:
     cert-manager:
     cloud-cluster:
