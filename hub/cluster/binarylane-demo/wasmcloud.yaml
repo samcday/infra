@@ -1,0 +1,76 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud
+  namespace: binarylane-demo
+spec:
+  chart:
+    spec:
+      chart: runtime-operator
+      sourceRef:
+        kind: HelmRepository
+        name: wasmcloud
+        namespace: flux-system
+      version: 2.0.1
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  postRenderers:
+    - kustomize:
+        patches:
+          # Enable NATS HTTP monitoring port for Prometheus metrics.
+          - target:
+              version: v1
+              kind: ConfigMap
+              name: nats
+            patch: |
+              - op: replace
+                path: /data/nats-server.conf
+                value: |
+                  port: 4222
+                  http_port: 8222
+                  jetstream: enabled
+
+                  tls {
+                    cert_file: /nats-cert/tls.crt
+                    key_file: /nats-cert/tls.key
+                    ca_file: /nats-cert/ca.crt
+                    verify_and_map: true
+                  }
+
+                  authorization {
+                    users = [
+                      { user: "wasmcloud-operator" },
+                      { user: "wasmcloud-runtime" },
+                      { user: "wasmcloud-data" }
+                    ]
+                  }
+          - target:
+              group: apps
+              version: v1
+              kind: Deployment
+              name: nats
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/ports/-
+                value:
+                  containerPort: 8222
+                  name: monitoring
+                  protocol: TCP
+          - target:
+              version: v1
+              kind: Service
+              name: nats
+            patch: |
+              - op: add
+                path: /spec/ports/-
+                value:
+                  name: monitoring
+                  port: 8222
+                  targetPort: monitoring
+                  protocol: TCP
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud

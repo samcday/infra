@@ -1,0 +1,98 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cluster-autoscaler
+  namespace: binarylane-demo
+spec:
+  chart:
+    spec:
+      chart: cluster-autoscaler
+      sourceRef:
+        kind: HelmRepository
+        name: autoscaler
+        namespace: flux-system
+      version: 9.46.3
+  dependsOn:
+    - name: bl-controllers
+  interval: 1h
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: apps
+              version: v1
+              kind: Deployment
+            patch: |
+              - op: remove
+                path: /spec/template/spec/containers/0/command/2
+              - op: remove
+                path: /spec/template/spec/serviceAccountName
+  values:
+    cloudProvider: externalgrpc
+    autoscalingGroups:
+      - name: placeholder
+        minSize: 0
+        maxSize: 0
+    deployment:
+      annotations:
+        reloader.stakater.com/auto: "true"
+    extraArgs:
+      cloud-config: /config/cloud-config
+      kubeconfig: /kubeconfig
+      expander: random
+    extraVolumes:
+      - name: cloud-config
+        configMap:
+          name: cluster-autoscaler-cloud-config
+      - name: grpc-client-cert
+        secret:
+          secretName: binarylane-controller-mtls-client
+          defaultMode: 292
+      - name: cert
+        secret:
+          secretName: admin
+      - name: kubeconfig
+        configMap:
+          name: kubeconfig
+    extraVolumeMounts:
+      - name: cloud-config
+        mountPath: /config
+        readOnly: true
+      - name: grpc-client-cert
+        mountPath: /etc/ssl/client-cert
+        readOnly: true
+      - name: cert
+        mountPath: /cert
+      - name: kubeconfig
+        mountPath: /kubeconfig
+        subPath: kubeconfig
+    rbac:
+      create: false
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cluster-autoscaler-cloud-config
+  namespace: binarylane-demo
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  values:
+    cluster-autoscaler-cloud-config:
+      kind: ConfigMap
+      data:
+        cloud-config: |
+          address: bl-controllers-binarylane-controller.binarylane-demo.svc:8086
+          key: /etc/ssl/client-cert/tls.key
+          cert: /etc/ssl/client-cert/tls.crt
+          cacert: /etc/ssl/client-cert/ca.crt

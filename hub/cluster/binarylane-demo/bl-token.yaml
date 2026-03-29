@@ -1,0 +1,9 @@
+# TODO: add BinaryLane API token and encrypt with sops
+# sops --encrypt --in-place hub/cluster/binarylane-demo/bl-token.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bl-token
+  namespace: binarylane-demo
+stringData:
+  BL_API_TOKEN: PLACEHOLDER

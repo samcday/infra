@@ -36,6 +36,11 @@
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
+        },
+        {
+            "action": "accept",
+            "src": ["tag:binarylane-demo-node"],
+            "dst": ["tag:binarylane-demo-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -61,6 +66,8 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
+        "tag:binarylane-demo-apiserver": [],
+        "tag:binarylane-demo-node": [],
         "tag:simonet": []
     }
 }

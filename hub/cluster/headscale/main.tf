@@ -165,3 +165,45 @@ resource "kubernetes_secret" "simonet-subnet-router-preauth" {
     key = headscale_pre_auth_key.simonet-subnet-router.key
   }
 }
+
+resource "headscale_user" "binarylane_demo" {
+  name = "binarylane-demo"
+}
+
+resource "headscale_pre_auth_key" "binarylane_demo_apiserver" {
+  user           = headscale_user.binarylane_demo.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:binarylane-demo-apiserver"]
+}
+
+resource "headscale_pre_auth_key" "binarylane_demo_nodes" {
+  user           = headscale_user.binarylane_demo.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:binarylane-demo-node"]
+}
+
+resource "kubernetes_secret" "binarylane_demo_node_preauth" {
+  metadata {
+    name      = "node-ts-auth"
+    namespace = "binarylane-demo"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.binarylane_demo_nodes.key
+  }
+}
+
+resource "kubernetes_secret" "binarylane_demo_apiserver_preauth" {
+  metadata {
+    name      = "apiserver-ts-auth"
+    namespace = "binarylane-demo"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.binarylane_demo_apiserver.key
+  }
+}
