@@ -16,8 +16,8 @@ etcd:
     - https://hub-az1-cp1.hub.internal:2379
     - https://hub-az1-cp2.hub.internal:2379
     - https://hub-az1-cp3.hub.internal:2379
-# TODO: set externalIP after ts-apiserver registers with headscale
 externalHostname: binarylane-demo-apiserver.tailnet.hub.samcday.com
+externalIP: 100.64.0.15
 konnectivity:
   agent:
     image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.32.0
