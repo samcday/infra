@@ -13,5 +13,9 @@ creation_rules:
     encrypted_comment_regex: "cryptme"
     path_regex: .*/butane/.*\.yaml$
 
+  # encrypt hub k8s PKI artifacts with same key as hub/pki/etcd
+  - age: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+    path_regex: hub/pki/k8s/.*\.enc$
+
   # encrypt everything else against Sam's personal key
   - age: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0

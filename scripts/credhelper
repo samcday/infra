@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="${script_dir}/../credhelper"
+binary_path="${project_dir}/target/release/credhelper"
+
+needs_build=0
+if [[ ! -x "${binary_path}" ]]; then
+  needs_build=1
+else
+  while IFS= read -r -d '' src_file; do
+    if [[ "${src_file}" -nt "${binary_path}" ]]; then
+      needs_build=1
+      break
+    fi
+  done < <(find "${project_dir}/src" -type f -print0; printf '%s\0' "${project_dir}/Cargo.toml" "${project_dir}/Cargo.lock")
+fi
+
+if [[ "${needs_build}" -eq 1 ]]; then
+  cargo build --release --manifest-path "${project_dir}/Cargo.toml"
+fi
+
+exec "${binary_path}" "$@"

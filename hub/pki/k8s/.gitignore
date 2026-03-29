@@ -1,0 +1,3 @@
+*.pem
+# child cluster server CAs populated by kube-credential-helper.sh --init
+*-server-ca.crt
