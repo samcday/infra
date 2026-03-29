@@ -11,12 +11,13 @@ pub const CERT_SUBJECT_ORG: &str = "system:masters";
 pub fn child_namespace(cluster: &str) -> Option<&'static str> {
     match cluster {
         "cloud" => Some("cloud-cluster"),
+        "binarylane-demo" => Some("binarylane-demo"),
         _ => None,
     }
 }
 
 pub fn all_child_clusters() -> &'static [&'static str] {
-    &["cloud"]
+    &["cloud", "binarylane-demo"]
 }
 
 pub fn cache_root() -> PathBuf {

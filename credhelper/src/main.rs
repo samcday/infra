@@ -145,7 +145,8 @@ fn usage() {
 
 Clusters:
   hub
-  cloud"
+  cloud
+  binarylane-demo"
     );
 }
 
