@@ -94,6 +94,13 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
         return Ok(paths);
     }
 
+    if cache_ok && !repo_server_ca.exists() {
+        eprintln!(
+            "warning: repo server CA missing at {}, re-fetching from hub API...",
+            repo_server_ca.display()
+        );
+    }
+
     if !init && !cache_ok && !repo_server_ca.exists() {
         bail!(
             "{cluster} server CA not found at {}. Run 'credhelper --init' first.",

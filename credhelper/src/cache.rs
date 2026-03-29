@@ -47,7 +47,10 @@ fn is_valid_inner(paths: &CachePaths) -> Result<bool> {
         return Ok(false);
     }
     let cert_pem = fs::read_to_string(&paths.client_cert)?;
-    Ok(!pki::cert_expires_within(&cert_pem, config::CACHE_EXPIRY_MARGIN_SECS)?)
+    Ok(!pki::cert_expires_within(
+        &cert_pem,
+        config::CACHE_EXPIRY_MARGIN_SECS,
+    )?)
 }
 
 pub fn write_cert(path: &Path, content: &str) -> Result<()> {
@@ -71,19 +74,5 @@ pub fn write_key(path: &Path, content: &str) -> Result<()> {
         .open(path)
         .with_context(|| format!("failed to write key: {}", path.display()))?;
     f.write_all(content.as_bytes())?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn secure_delete(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let len = fs::metadata(path)?.len() as usize;
-    if len > 0 {
-        let zeros = vec![0u8; len];
-        fs::write(path, &zeros)?;
-    }
-    fs::remove_file(path)?;
     Ok(())
 }

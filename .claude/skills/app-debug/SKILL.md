@@ -31,6 +31,8 @@ ik --context=cloud <command>  # App workloads, pods, services, routes
 | rokkitpokkit | rokkitpokkit | hub/cluster/cloud-cluster/rokkitpokkit/ |
 | gibblox | gibblox | hub/cluster/cloud-cluster/gibblox.yaml |
 
+Note: This table is a convenience reference and may drift. Always also check `hub/cluster/cloud-cluster/` directly for the authoritative current app list.
+
 ## Checks (substitute $APP with the argument)
 
 ### 1. Flux Source and Reconciliation (Hub)

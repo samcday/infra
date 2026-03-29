@@ -1,7 +1,7 @@
-use aes_gcm::aead::Aead;
 use aes_gcm::aead::consts::U32;
-use aes_gcm::{AesGcm, KeyInit, Nonce, aes::Aes256};
-use anyhow::{Context, Result, bail};
+use aes_gcm::aead::Aead;
+use aes_gcm::{aes::Aes256, AesGcm, KeyInit, Nonce};
+use anyhow::{bail, Context, Result};
 use base64ct::{Base64, Encoding};
 use serde::Deserialize;
 use std::io::Read;
@@ -30,21 +30,15 @@ pub fn decrypt_file(path: &Path) -> Result<Zeroizing<String>> {
     let sops_file: SopsFile =
         serde_json::from_str(&content).context("failed to parse SOPS JSON")?;
 
-    let age_stanza = sops_file
-        .sops
-        .age
-        .first()
-        .context("no age recipients in SOPS file")?;
-
-    let data_key = decrypt_age_data_key(&age_stanza.enc)
+    let data_key = decrypt_age_data_key(&sops_file.sops.age)
         .context("failed to decrypt SOPS data key with age")?;
 
     // SOPS uses "key:" as AAD (trailing colon in key paths)
     let plaintext = decrypt_sops_value(&sops_file.data, &data_key, "data:")
         .context("failed to decrypt SOPS data value")?;
 
-    let text = String::from_utf8(plaintext.to_vec())
-        .context("decrypted SOPS value is not valid UTF-8")?;
+    let text =
+        String::from_utf8(plaintext.to_vec()).context("decrypted SOPS value is not valid UTF-8")?;
     Ok(Zeroizing::new(text))
 }
 
@@ -64,27 +58,47 @@ fn age_identities() -> Result<Vec<Box<dyn age::Identity>>> {
     Ok(identities)
 }
 
-fn decrypt_age_data_key(encrypted: &str) -> Result<Zeroizing<Vec<u8>>> {
+fn decrypt_age_data_key(age_recipients: &[AgeRecipient]) -> Result<Zeroizing<Vec<u8>>> {
+    if age_recipients.is_empty() {
+        bail!("no age recipients in SOPS file");
+    }
+
     let identities = age_identities()?;
-    let armored = age::armor::ArmoredReader::new(encrypted.as_bytes());
-    let decryptor = age::Decryptor::new(armored)
-        .context("failed to create age decryptor")?;
-    let mut reader = decryptor
-        .decrypt(identities.iter().map(|i| i.as_ref() as &dyn age::Identity))
-        .context("age decryption failed")?;
-    let mut data_key = Vec::new();
-    reader
-        .read_to_end(&mut data_key)
-        .context("failed to read decrypted data key")?;
-    Ok(Zeroizing::new(data_key))
+    let identity_refs: Vec<&dyn age::Identity> = identities
+        .iter()
+        .map(|i| i.as_ref() as &dyn age::Identity)
+        .collect();
+
+    let mut errors = Vec::new();
+    for (index, recipient) in age_recipients.iter().enumerate() {
+        let attempt = (|| -> Result<Zeroizing<Vec<u8>>> {
+            let armored = age::armor::ArmoredReader::new(recipient.enc.as_bytes());
+            let decryptor =
+                age::Decryptor::new(armored).context("failed to create age decryptor")?;
+            let mut reader = decryptor
+                .decrypt(identity_refs.iter().copied())
+                .context("age decryption failed")?;
+            let mut data_key = Vec::new();
+            reader
+                .read_to_end(&mut data_key)
+                .context("failed to read decrypted data key")?;
+            Ok(Zeroizing::new(data_key))
+        })();
+
+        match attempt {
+            Ok(data_key) => return Ok(data_key),
+            Err(err) => errors.push(format!("recipient #{index}: {err:#}")),
+        }
+    }
+
+    bail!(
+        "age decryption failed for all recipients: {}",
+        errors.join("; ")
+    );
 }
 
 /// Parse `ENC[AES256_GCM,data:<b64>,iv:<b64>,tag:<b64>,type:str]` and decrypt.
-fn decrypt_sops_value(
-    enc_str: &str,
-    data_key: &[u8],
-    aad: &str,
-) -> Result<Zeroizing<Vec<u8>>> {
+fn decrypt_sops_value(enc_str: &str, data_key: &[u8], aad: &str) -> Result<Zeroizing<Vec<u8>>> {
     let inner = enc_str
         .strip_prefix("ENC[AES256_GCM,")
         .and_then(|s| s.strip_suffix(']'))
@@ -120,8 +134,7 @@ fn decrypt_sops_value(
 
     // SOPS uses 32-byte nonces (non-standard; Go's cipher.NewGCMWithNonceSize)
     type Aes256Gcm32 = AesGcm<Aes256, U32>;
-    let cipher = Aes256Gcm32::new_from_slice(data_key)
-        .context("invalid AES-256 key length")?;
+    let cipher = Aes256Gcm32::new_from_slice(data_key).context("invalid AES-256 key length")?;
     let nonce = Nonce::<U32>::from_slice(&iv);
 
     let payload = aes_gcm::aead::Payload {
