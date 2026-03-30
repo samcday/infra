@@ -35,15 +35,39 @@ impl std::fmt::Display for ConditionStatus {
     }
 }
 
-/// Build a Ready condition. `last_transition_time` uses RFC 3339 UTC.
-pub fn ready_condition(ready: bool, reason: &str, message: &str) -> Condition {
-    let now = rfc3339_now();
+/// Build a Ready condition, preserving `last_transition_time` when status is unchanged.
+pub fn ready_condition_with_existing(
+    ready: bool,
+    reason: &str,
+    message: &str,
+    existing_conditions: &[Condition],
+) -> Condition {
+    let desired_status = if ready {
+        ConditionStatus::True
+    } else {
+        ConditionStatus::False
+    };
+
+    let last_transition_time = match existing_conditions
+        .iter()
+        .find(|condition| condition.type_ == "Ready")
+    {
+        Some(existing) if existing.status == desired_status => {
+            existing.last_transition_time.clone()
+        }
+        _ => rfc3339_now(),
+    };
+
     Condition {
         type_: "Ready".to_string(),
-        status: if ready { ConditionStatus::True } else { ConditionStatus::False },
+        status: desired_status,
         reason: Some(reason.to_string()),
-        message: if message.is_empty() { None } else { Some(message.to_string()) },
-        last_transition_time: now,
+        message: if message.is_empty() {
+            None
+        } else {
+            Some(message.to_string())
+        },
+        last_transition_time,
     }
 }
 
@@ -88,7 +112,9 @@ pub struct LocalSecretReference {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ClusterReference {
     pub name: String,
-    pub namespace: String,
+    /// Namespace of the EtcdCluster. Defaults to the tenant's namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +202,7 @@ pub struct EtcdTenantSpec {
     pub cluster_ref: ClusterReference,
 
     /// etcd key prefix for this tenant. Defaults to `/<name>/`.
-    #[schemars(regex(pattern = r"^/[A-Za-z0-9/_-]*$"))]
+    #[schemars(regex(pattern = r"^/[A-Za-z0-9/_-]*/$"))]
     #[serde(default)]
     pub prefix: Option<String>,
 
