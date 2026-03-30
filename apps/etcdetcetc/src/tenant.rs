@@ -1,12 +1,26 @@
 //! EtcdTenant controller.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::Duration};
 
 use futures::StreamExt;
-use k8s_openapi::{ByteString, api::core::v1::Secret};
+use k8s_openapi::{
+    ByteString,
+    api::{
+        core::v1::{ConfigMap, Secret},
+        rbac::v1::{
+            ClusterRole,
+            ClusterRoleBinding,
+            PolicyRule,
+            Role,
+            RoleBinding,
+            RoleRef,
+            Subject,
+        },
+    },
+};
 use kube::{
     Api, Client, Resource, ResourceExt,
-    api::{ObjectMeta, Patch, PatchParams, PostParams},
+    api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
     runtime::{
         Controller,
         controller::Action,
@@ -56,11 +70,15 @@ pub enum TenantError {
 /// Runs the EtcdTenant controller until the stream ends.
 pub async fn run(context: TenantContext) {
     let api = Api::<EtcdTenant>::all(context.client.clone());
+    let secret_api = Api::<Secret>::all(context.client.clone());
+    let configmap_api = Api::<ConfigMap>::all(context.client.clone());
     let context = Arc::new(context);
 
     info!("starting EtcdTenant controller");
 
     Controller::new(api, watcher::Config::default())
+        .owns(secret_api, watcher::Config::default())
+        .owns(configmap_api, watcher::Config::default())
         .run(reconcile, error_policy, context)
         .for_each(|result| async move {
             match result {
@@ -171,11 +189,25 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
     ensure_output_secret(
         &context.client,
         &tenant,
-        &cluster,
         &namespace,
         &secret_name,
         &name,
         &password,
+    )
+    .await?;
+    ensure_config_mirror(
+        &context.client,
+        &tenant,
+        &namespace,
+        &name,
+    )
+    .await?;
+    ensure_k8s_rbac(
+        &context.client,
+        &cluster,
+        &namespace,
+        &name,
+        &secret_name,
     )
     .await?;
     update_ready_status(
@@ -248,6 +280,7 @@ async fn reconcile_delete(
         }
     }
 
+    cleanup_k8s_rbac(&context.client, namespace, name).await?;
     remove_finalizer(&context.client, &tenant, namespace).await?;
     Ok(Action::await_change())
 }
@@ -333,29 +366,11 @@ async fn ensure_tenant_rbac(
 async fn ensure_output_secret(
     client: &Client,
     tenant: &EtcdTenant,
-    cluster: &EtcdCluster,
     tenant_namespace: &str,
     secret_name: &str,
     tenant_name: &str,
     password: &str,
 ) -> Result<(), TenantError> {
-    let auth_secret_name = &cluster.spec.auth_secret_ref.name;
-    let cluster_ns = tenant.spec.cluster_ref.namespace.as_deref()
-        .unwrap_or(tenant_namespace);
-    let source_secrets = Api::<Secret>::namespaced(client.clone(), cluster_ns);
-    let source_secret = source_secrets.get(auth_secret_name).await?;
-    let ca_crt = source_secret
-        .data
-        .as_ref()
-        .and_then(|data| data.get("ca.crt"))
-        .cloned()
-        .ok_or_else(|| {
-            TenantError::Invalid(format!(
-                "auth secret {}/{} missing required key ca.crt",
-                cluster_ns, cluster.spec.auth_secret_ref.name
-            ))
-        })?;
-
     let owner_reference = tenant.controller_owner_ref(&()).ok_or_else(|| {
         TenantError::Invalid(format!(
             "{} cannot produce controller owner reference",
@@ -372,11 +387,6 @@ async fn ensure_output_secret(
         "password".to_string(),
         ByteString(password.as_bytes().to_vec()),
     );
-    data.insert(
-        "endpoints".to_string(),
-        ByteString(serde_json::to_vec(&cluster.spec.endpoints)?),
-    );
-    data.insert("ca.crt".to_string(), ca_crt);
 
     let secret = Secret {
         metadata: ObjectMeta {
@@ -400,6 +410,365 @@ async fn ensure_output_secret(
         .await?;
 
     Ok(())
+}
+
+async fn ensure_config_mirror(
+    client: &Client,
+    tenant: &EtcdTenant,
+    tenant_namespace: &str,
+    tenant_name: &str,
+) -> Result<(), TenantError> {
+    let cluster_namespace = tenant.spec.cluster_ref.namespace.as_deref()
+        .unwrap_or(tenant_namespace);
+    let cluster_name = tenant.spec.cluster_ref.name.as_str();
+    let source_name = format!("{cluster_name}-etcd");
+
+    let source_configmaps = Api::<ConfigMap>::namespaced(client.clone(), cluster_namespace);
+    let source = match source_configmaps.get(&source_name).await {
+        Ok(source) => source,
+        Err(kube::Error::Api(ae)) if ae.code == 404 => {
+            warn!(
+                tenant_namespace,
+                tenant_name,
+                cluster_namespace,
+                cluster_name,
+                source_configmap = source_name,
+                "source EtcdCluster ConfigMap not found yet, will retry on next reconcile"
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let owner_reference = tenant.controller_owner_ref(&()).ok_or_else(|| {
+        TenantError::Invalid(format!(
+            "{} cannot produce controller owner reference",
+            tenant.name_any()
+        ))
+    })?;
+    let target_name = format!("{tenant_name}-etcd");
+    let target = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(target_name.clone()),
+            namespace: Some(tenant_namespace.to_string()),
+            owner_references: Some(vec![owner_reference]),
+            ..ObjectMeta::default()
+        },
+        data: source.data,
+        ..ConfigMap::default()
+    };
+
+    let target_configmaps = Api::<ConfigMap>::namespaced(client.clone(), tenant_namespace);
+    target_configmaps
+        .patch(
+            &target_name,
+            &PatchParams::apply("etcdetcetc").force(),
+            &Patch::Apply(&target),
+        )
+        .await?;
+
+    Ok(())
+}
+
+async fn ensure_k8s_rbac(
+    client: &Client,
+    cluster: &EtcdCluster,
+    tenant_namespace: &str,
+    tenant_name: &str,
+    secret_name: &str,
+) -> Result<(), TenantError> {
+    if cluster.spec.allowed_namespaces.is_empty() {
+        ensure_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name, secret_name).await?;
+        cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &BTreeSet::new()).await?;
+    } else {
+        let desired_namespaces: BTreeSet<String> = cluster
+            .spec
+            .allowed_namespaces
+            .iter()
+            .filter(|namespace| !namespace.is_empty())
+            .cloned()
+            .collect();
+        ensure_namespaced_k8s_rbac(
+            client,
+            tenant_namespace,
+            tenant_name,
+            secret_name,
+            &desired_namespaces,
+        )
+        .await?;
+        cleanup_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name).await?;
+        cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &desired_namespaces).await?;
+    }
+
+    Ok(())
+}
+
+async fn ensure_clusterwide_k8s_rbac(
+    client: &Client,
+    tenant_namespace: &str,
+    tenant_name: &str,
+    secret_name: &str,
+) -> Result<(), TenantError> {
+    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
+    let labels = tenant_rbac_labels(tenant_namespace, tenant_name);
+
+    let cluster_role = ClusterRole {
+        metadata: ObjectMeta {
+            name: Some(name.clone()),
+            labels: Some(labels.clone()),
+            ..ObjectMeta::default()
+        },
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec!["".to_string()]),
+            resources: Some(vec!["secrets".to_string()]),
+            resource_names: Some(vec![secret_name.to_string()]),
+            verbs: vec!["get".to_string()],
+            ..PolicyRule::default()
+        }]),
+        ..ClusterRole::default()
+    };
+
+    let cluster_roles = Api::<ClusterRole>::all(client.clone());
+    cluster_roles
+        .patch(
+            &name,
+            &PatchParams::apply("etcdetcetc").force(),
+            &Patch::Apply(&cluster_role),
+        )
+        .await?;
+
+    let cluster_role_binding = ClusterRoleBinding {
+        metadata: ObjectMeta {
+            name: Some(name.clone()),
+            labels: Some(labels),
+            ..ObjectMeta::default()
+        },
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "ClusterRole".to_string(),
+            name: name.clone(),
+        },
+        subjects: Some(vec![Subject {
+            api_group: Some("rbac.authorization.k8s.io".to_string()),
+            kind: "Group".to_string(),
+            name: "system:serviceaccounts".to_string(),
+            namespace: None,
+        }]),
+        ..ClusterRoleBinding::default()
+    };
+
+    let cluster_role_bindings = Api::<ClusterRoleBinding>::all(client.clone());
+    cluster_role_bindings
+        .patch(
+            &name,
+            &PatchParams::apply("etcdetcetc").force(),
+            &Patch::Apply(&cluster_role_binding),
+        )
+        .await?;
+
+    Ok(())
+}
+
+async fn ensure_namespaced_k8s_rbac(
+    client: &Client,
+    tenant_namespace: &str,
+    tenant_name: &str,
+    secret_name: &str,
+    desired_namespaces: &BTreeSet<String>,
+) -> Result<(), TenantError> {
+    let name = format!("etcdetcetc:{tenant_name}");
+
+    for namespace in desired_namespaces {
+        let mut labels = tenant_rbac_labels(tenant_namespace, tenant_name);
+        labels.insert("etcdetcetc.samcday.com/consumer-namespace".to_string(), namespace.clone());
+
+        let role = Role {
+            metadata: ObjectMeta {
+                name: Some(name.clone()),
+                namespace: Some(namespace.clone()),
+                labels: Some(labels.clone()),
+                ..ObjectMeta::default()
+            },
+            rules: Some(vec![PolicyRule {
+                api_groups: Some(vec!["".to_string()]),
+                resources: Some(vec!["secrets".to_string()]),
+                resource_names: Some(vec![secret_name.to_string()]),
+                verbs: vec!["get".to_string()],
+                ..PolicyRule::default()
+            }]),
+            ..Role::default()
+        };
+
+        let roles = Api::<Role>::namespaced(client.clone(), namespace);
+        roles
+            .patch(
+                &name,
+                &PatchParams::apply("etcdetcetc").force(),
+                &Patch::Apply(&role),
+            )
+            .await?;
+
+        let role_binding = RoleBinding {
+            metadata: ObjectMeta {
+                name: Some(name.clone()),
+                namespace: Some(namespace.clone()),
+                labels: Some(labels),
+                ..ObjectMeta::default()
+            },
+            role_ref: RoleRef {
+                api_group: "rbac.authorization.k8s.io".to_string(),
+                kind: "Role".to_string(),
+                name: name.clone(),
+            },
+            subjects: Some(vec![Subject {
+                api_group: Some("rbac.authorization.k8s.io".to_string()),
+                kind: "Group".to_string(),
+                name: format!("system:serviceaccounts:{namespace}"),
+                namespace: None,
+            }]),
+            ..RoleBinding::default()
+        };
+
+        let role_bindings = Api::<RoleBinding>::namespaced(client.clone(), namespace);
+        role_bindings
+            .patch(
+                &name,
+                &PatchParams::apply("etcdetcetc").force(),
+                &Patch::Apply(&role_binding),
+            )
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn cleanup_clusterwide_k8s_rbac(
+    client: &Client,
+    tenant_namespace: &str,
+    tenant_name: &str,
+) -> Result<(), TenantError> {
+    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
+
+    let cluster_roles = Api::<ClusterRole>::all(client.clone());
+    match cluster_roles.delete(&name, &DeleteParams::default()).await {
+        Ok(_) => {}
+        Err(kube::Error::Api(ae)) if ae.code == 404 => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    let cluster_role_bindings = Api::<ClusterRoleBinding>::all(client.clone());
+    match cluster_role_bindings
+        .delete(&name, &DeleteParams::default())
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(ae)) if ae.code == 404 => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    Ok(())
+}
+
+async fn cleanup_namespaced_k8s_rbac(
+    client: &Client,
+    tenant_namespace: &str,
+    tenant_name: &str,
+    desired_namespaces: &BTreeSet<String>,
+) -> Result<(), TenantError> {
+    let name = format!("etcdetcetc:{tenant_name}");
+
+    let roles = Api::<Role>::all(client.clone());
+    let existing_roles = roles.list(&ListParams::default()).await?;
+    for role in existing_roles.items {
+        if role.name_any() != name {
+            continue;
+        }
+        if !is_tenant_rbac_object(&role.metadata.labels, tenant_namespace, tenant_name) {
+            continue;
+        }
+        let Some(namespace) = role.namespace() else {
+            continue;
+        };
+        if desired_namespaces.contains(&namespace) {
+            continue;
+        }
+
+        let namespaced_roles = Api::<Role>::namespaced(client.clone(), &namespace);
+        match namespaced_roles.delete(&name, &DeleteParams::default()).await {
+            Ok(_) => {}
+            Err(kube::Error::Api(ae)) if ae.code == 404 => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    let role_bindings = Api::<RoleBinding>::all(client.clone());
+    let existing_role_bindings = role_bindings.list(&ListParams::default()).await?;
+    for role_binding in existing_role_bindings.items {
+        if role_binding.name_any() != name {
+            continue;
+        }
+        if !is_tenant_rbac_object(&role_binding.metadata.labels, tenant_namespace, tenant_name) {
+            continue;
+        }
+        let Some(namespace) = role_binding.namespace() else {
+            continue;
+        };
+        if desired_namespaces.contains(&namespace) {
+            continue;
+        }
+
+        let namespaced_role_bindings = Api::<RoleBinding>::namespaced(client.clone(), &namespace);
+        match namespaced_role_bindings
+            .delete(&name, &DeleteParams::default())
+            .await
+        {
+            Ok(_) => {}
+            Err(kube::Error::Api(ae)) if ae.code == 404 => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(())
+}
+
+async fn cleanup_k8s_rbac(client: &Client, tenant_namespace: &str, tenant_name: &str) -> Result<(), TenantError> {
+    cleanup_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name).await?;
+    cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &BTreeSet::new()).await?;
+    Ok(())
+}
+
+fn tenant_rbac_labels(tenant_namespace: &str, tenant_name: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("app.kubernetes.io/managed-by".to_string(), "etcdetcetc".to_string()),
+        (
+            "etcdetcetc.samcday.com/tenant-namespace".to_string(),
+            tenant_namespace.to_string(),
+        ),
+        (
+            "etcdetcetc.samcday.com/tenant-name".to_string(),
+            tenant_name.to_string(),
+        ),
+    ])
+}
+
+fn is_tenant_rbac_object(
+    labels: &Option<BTreeMap<String, String>>,
+    tenant_namespace: &str,
+    tenant_name: &str,
+) -> bool {
+    let Some(labels) = labels else {
+        return false;
+    };
+
+    labels
+        .get("app.kubernetes.io/managed-by")
+        .is_some_and(|value| value == "etcdetcetc")
+        && labels
+            .get("etcdetcetc.samcday.com/tenant-namespace")
+            .is_some_and(|value| value == tenant_namespace)
+        && labels
+            .get("etcdetcetc.samcday.com/tenant-name")
+            .is_some_and(|value| value == tenant_name)
 }
 
 async fn update_ready_status(
