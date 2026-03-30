@@ -1,0 +1,12 @@
+docker_build('etcdetcetc', '.', only=['src/', 'Cargo.toml', 'Cargo.lock'])
+
+k8s_yaml(local('cargo run -p etcdetcetc -- crds 2>/dev/null'))
+k8s_yaml('dev/deploy.yaml')
+
+k8s_resource('etcdetcetc', objects=[
+    'etcdetcetc:serviceaccount',
+    'etcdetcetc:clusterrole',
+    'etcdetcetc:clusterrolebinding',
+    'etcdclusters.etcdetcetc.samcday.com:customresourcedefinition',
+    'etcdtenants.etcdetcetc.samcday.com:customresourcedefinition',
+])
