@@ -1,7 +1,7 @@
 //! EtcdCluster controller.
 
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     sync::{Arc, RwLock as StdRwLock},
     time::Duration,
@@ -9,10 +9,10 @@ use std::{
 
 use anyhow::anyhow;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use kube::{
     Api, Client, Resource, ResourceExt,
-    api::{Patch, PatchParams},
+    api::{ObjectMeta, Patch, PatchParams},
     runtime::{Controller, controller::Action, reflector::ObjectRef, watcher},
 };
 use tokio::sync::RwLock;
@@ -202,6 +202,8 @@ async fn reconcile(
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&key);
                 update_status(&cluster, &context.client, &namespace, &name, false).await?;
+            } else {
+                ensure_cluster_configmap(&cluster, &context.client, &namespace, &secret).await?;
             }
         }
         None => {
@@ -271,6 +273,60 @@ async fn fetch_and_update_status(
     );
 
     patch_status_if_changed(cluster, kube_client, namespace, name, desired).await
+}
+
+async fn ensure_cluster_configmap(
+    cluster: &EtcdCluster,
+    client: &Client,
+    namespace: &str,
+    secret: &Secret,
+) -> Result<(), ClusterError> {
+    let ca_crt = secret
+        .data
+        .as_ref()
+        .and_then(|data| data.get("ca.crt"))
+        .ok_or_else(|| {
+            ClusterError::Invalid(format!(
+                "auth secret {}/{} missing required key ca.crt",
+                namespace, cluster.spec.auth_secret_ref.name
+            ))
+        })?;
+    let ca_crt = String::from_utf8(ca_crt.0.clone())
+        .map_err(|_| ClusterError::Invalid("ca.crt is not valid UTF-8".to_string()))?;
+
+    let owner_reference = cluster.controller_owner_ref(&()).ok_or_else(|| {
+        ClusterError::Invalid(format!(
+            "{} cannot produce controller owner reference",
+            cluster.name_any()
+        ))
+    })?;
+
+    let mut data = BTreeMap::new();
+    data.insert("endpoints".to_string(), cluster.spec.endpoints.join(","));
+    data.insert("ca.crt".to_string(), ca_crt);
+
+    let configmap_name = format!("{}-etcd", cluster.name_any());
+    let configmap = ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(configmap_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_reference]),
+            ..ObjectMeta::default()
+        },
+        data: Some(data),
+        ..ConfigMap::default()
+    };
+
+    let configmaps = Api::<ConfigMap>::namespaced(client.clone(), namespace);
+    configmaps
+        .patch(
+            &configmap_name,
+            &PatchParams::apply("etcdetcetc").force(),
+            &Patch::Apply(&configmap),
+        )
+        .await?;
+
+    Ok(())
 }
 
 fn format_bytes(bytes: i64) -> String {

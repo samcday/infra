@@ -145,6 +145,12 @@ pub struct EtcdClusterSpec {
 
     /// Reference to a Secret with root/admin credentials.
     pub auth_secret_ref: LocalSecretReference,
+
+    /// Namespaces allowed to consume this cluster's tenants.
+    /// When empty, cluster-wide RBAC is used. When set, per-namespace
+    /// Role/RoleBindings are created for each listed namespace.
+    #[serde(default)]
+    pub allowed_namespaces: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
