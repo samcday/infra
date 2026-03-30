@@ -312,8 +312,12 @@ async fn ensure_tenant_rbac(
         }
     }
 
+    // TODO: this is best-effort — for mTLS clusters the password is irrelevant and this
+    // call may fail harmlessly. For non-mTLS (basic auth) clusters a failure here means
+    // the output Secret password diverges from etcd. We need proper handling once we
+    // solidify non-mTLS support (detect auth mode, propagate error for basic-auth clusters).
     if let Err(err) = auth.user_change_password(name, password).await {
-        warn!(name, error = %err, "failed to sync etcd user password (may be unchanged)");
+        warn!(name, error = %err, "failed to sync etcd user password");
     }
 
     if let Err(err) = auth.role_get(name).await {
