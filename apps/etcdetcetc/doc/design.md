@@ -20,7 +20,6 @@ means its keyspace rots in etcd forever.
 
 - Managing etcd cluster deployment or lifecycle.
 - Issuing or rotating TLS certificates (that's cert-manager's job).
-- Password-based tenant auth (future).
 - Multi-cluster scheduling or migration (future -- but the CRD shape
   accommodates it).
 
@@ -113,7 +112,7 @@ Watches: EtcdCluster, referenced Secrets (for credential rotation).
 
 1. Resolve the referenced EtcdCluster. If not connected, requeue.
 2. Compute effective prefix (`spec.prefix` or `/<name>/`).
-3. Ensure etcd user exists (no password -- cert CN auth for v1alpha1).
+3. Ensure etcd user exists with a generated password.
 4. Ensure etcd role exists (named same as the user).
 5. Ensure role has `readwrite` permission on the prefix.
 6. Ensure role is granted to the user.
@@ -146,21 +145,38 @@ metadata:
 type: Opaque
 data:
   username: <base64 tenant name>
-  endpoints: <base64 JSON array of endpoints>
-  ca.crt: <base64 etcd CA cert>
+  password: <base64 generated password>
 ```
 
-Downstream consumers (e.g. the k8s-control-plane Helm chart) mount this Secret
-to configure their etcd connection. Client certs are handled separately by
-cert-manager -- this controller doesn't touch PKI.
+### Output ConfigMap
+
+Mirrored from the EtcdCluster's ConfigMap into the tenant's namespace, owned
+by the EtcdTenant.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <tenant>-etcd
+  namespace: <tenant namespace>
+  ownerReferences:
+    - apiVersion: etcdetcetc.samcday.com/v1alpha1
+      kind: EtcdTenant
+      name: <tenant>
+      controller: true
+data:
+  endpoints: "https://host1:2379,https://host2:2379"
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+```
+
+Downstream consumers mount the Secret for credentials and the ConfigMap for
+connection info. Client certs are handled separately by cert-manager -- this
+controller doesn't touch PKI.
 
 ## Future roadmap
-
-### Password-based tenant auth
-
-Add a `spec.authMode: password` field to EtcdTenant. The controller generates a
-random password, creates the etcd user with it, and includes `password` in the
-output Secret. This enables tenants that don't use cert-based identity.
 
 ### Multiple EtcdCluster support
 

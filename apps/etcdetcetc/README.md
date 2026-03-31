@@ -47,7 +47,7 @@ spec:
 ```
 
 The controller creates the etcd user, role, and prefix permissions, then emits
-a Secret with connection details. On deletion, the keyspace is purged and RBAC
+a Secret with credentials and a ConfigMap with connection info. On deletion, the keyspace is purged and RBAC
 entities are removed.
 
 Defaults:
@@ -56,6 +56,5 @@ Defaults:
 
 ## Future
 
-- Static username/password auth for tenants (not just cert-based identity)
 - Multiple EtcdCluster support with pluggable tenant scheduling
 - Tenant migration between clusters
