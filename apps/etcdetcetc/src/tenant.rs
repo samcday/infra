@@ -1,24 +1,17 @@
 //! EtcdTenant controller.
 
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use k8s_openapi::{
     ByteString,
     api::{
         core::v1::{ConfigMap, Secret},
-        rbac::v1::{
-            PolicyRule,
-            Role,
-            RoleBinding,
-            RoleRef,
-            Subject,
-        },
     },
 };
 use kube::{
     Api, Client, Resource, ResourceExt,
-    api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams},
+    api::{ObjectMeta, Patch, PatchParams},
     runtime::{
         Controller,
         controller::Action,
@@ -125,31 +118,6 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
 
     let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.clone());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
-    let clusters = Api::<EtcdCluster>::namespaced(context.client.clone(), &cluster_namespace);
-    let cluster = match clusters.get(&cluster_name).await {
-        Ok(cluster) => cluster,
-        Err(kube::Error::Api(ae)) if ae.code == 404 => {
-            warn!(
-                tenant_namespace = namespace,
-                tenant_name = name,
-                cluster_namespace,
-                cluster_name,
-                "referenced EtcdCluster not found, requeueing"
-            );
-            update_ready_status(
-                &context.client,
-                &tenant,
-                &namespace,
-                &name,
-                false,
-                "ClusterNotFound",
-                "referenced EtcdCluster not found",
-            )
-            .await?;
-            return Ok(Action::requeue(Duration::from_secs(30)));
-        }
-        Err(err) => return Err(err.into()),
-    };
 
     let mut etcd_client = match get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
         Some(client) => client,
@@ -213,14 +181,6 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         .await?;
         return Ok(Action::requeue(Duration::from_secs(30)));
     }
-    ensure_k8s_rbac(
-        &context.client,
-        &cluster,
-        &namespace,
-        &name,
-        &secret_name,
-    )
-    .await?;
     update_ready_status(
         &context.client,
         &tenant,
@@ -291,7 +251,6 @@ async fn reconcile_delete(
         }
     }
 
-    cleanup_k8s_rbac(&context.client, namespace, name).await?;
     remove_finalizer(&context.client, &tenant, namespace).await?;
     Ok(Action::await_change())
 }
@@ -483,227 +442,6 @@ async fn ensure_config_mirror(
         .await?;
 
     Ok(true)
-}
-
-async fn ensure_k8s_rbac(
-    client: &Client,
-    cluster: &EtcdCluster,
-    tenant_namespace: &str,
-    tenant_name: &str,
-    secret_name: &str,
-) -> Result<(), TenantError> {
-    let (desired_namespaces, all_service_accounts) = if cluster.spec.allowed_namespaces.is_empty() {
-        // Unrestricted: RBAC in tenant namespace only, granting all service accounts
-        // cluster-wide. Scoped to the tenant namespace so same-named Secrets in other
-        // namespaces are not exposed.
-        (BTreeSet::from([tenant_namespace.to_string()]), true)
-    } else {
-        let ns: BTreeSet<String> = cluster
-            .spec
-            .allowed_namespaces
-            .iter()
-            .filter(|ns| !ns.is_empty())
-            .cloned()
-            .collect();
-        (ns, false)
-    };
-
-    ensure_namespaced_k8s_rbac(
-        client,
-        tenant_namespace,
-        tenant_name,
-        secret_name,
-        &desired_namespaces,
-        all_service_accounts,
-    )
-    .await?;
-    cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &desired_namespaces).await?;
-
-    Ok(())
-}
-
-async fn ensure_namespaced_k8s_rbac(
-    client: &Client,
-    tenant_namespace: &str,
-    tenant_name: &str,
-    secret_name: &str,
-    desired_namespaces: &BTreeSet<String>,
-    all_service_accounts: bool,
-) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
-
-    for namespace in desired_namespaces {
-        let mut labels = tenant_rbac_labels(tenant_namespace, tenant_name);
-        labels.insert("etcdetcetc.samcday.com/consumer-namespace".to_string(), namespace.clone());
-
-        let role = Role {
-            metadata: ObjectMeta {
-                name: Some(name.clone()),
-                namespace: Some(namespace.clone()),
-                labels: Some(labels.clone()),
-                ..ObjectMeta::default()
-            },
-            rules: Some(vec![PolicyRule {
-                api_groups: Some(vec!["".to_string()]),
-                resources: Some(vec!["secrets".to_string()]),
-                resource_names: Some(vec![secret_name.to_string()]),
-                verbs: vec!["get".to_string()],
-                ..PolicyRule::default()
-            }]),
-            ..Role::default()
-        };
-
-        let roles = Api::<Role>::namespaced(client.clone(), namespace);
-        roles
-            .patch(
-                &name,
-                &PatchParams::apply("etcdetcetc").force(),
-                &Patch::Apply(&role),
-            )
-            .await?;
-
-        let role_binding = RoleBinding {
-            metadata: ObjectMeta {
-                name: Some(name.clone()),
-                namespace: Some(namespace.clone()),
-                labels: Some(labels),
-                ..ObjectMeta::default()
-            },
-            role_ref: RoleRef {
-                api_group: "rbac.authorization.k8s.io".to_string(),
-                kind: "Role".to_string(),
-                name: name.clone(),
-            },
-            subjects: Some(vec![if all_service_accounts {
-                Subject {
-                    api_group: Some("rbac.authorization.k8s.io".to_string()),
-                    kind: "Group".to_string(),
-                    name: "system:serviceaccounts".to_string(),
-                    namespace: None,
-                }
-            } else {
-                Subject {
-                    api_group: Some("rbac.authorization.k8s.io".to_string()),
-                    kind: "Group".to_string(),
-                    name: format!("system:serviceaccounts:{namespace}"),
-                    namespace: None,
-                }
-            }]),
-            ..RoleBinding::default()
-        };
-
-        let role_bindings = Api::<RoleBinding>::namespaced(client.clone(), namespace);
-        role_bindings
-            .patch(
-                &name,
-                &PatchParams::apply("etcdetcetc").force(),
-                &Patch::Apply(&role_binding),
-            )
-            .await?;
-    }
-
-    Ok(())
-}
-
-async fn cleanup_namespaced_k8s_rbac(
-    client: &Client,
-    tenant_namespace: &str,
-    tenant_name: &str,
-    desired_namespaces: &BTreeSet<String>,
-) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
-
-    let roles = Api::<Role>::all(client.clone());
-    let existing_roles = roles.list(&ListParams::default()).await?;
-    for role in existing_roles.items {
-        if role.name_any() != name {
-            continue;
-        }
-        if !is_tenant_rbac_object(&role.metadata.labels, tenant_namespace, tenant_name) {
-            continue;
-        }
-        let Some(namespace) = role.namespace() else {
-            continue;
-        };
-        if desired_namespaces.contains(&namespace) {
-            continue;
-        }
-
-        let namespaced_roles = Api::<Role>::namespaced(client.clone(), &namespace);
-        match namespaced_roles.delete(&name, &DeleteParams::default()).await {
-            Ok(_) => {}
-            Err(kube::Error::Api(ae)) if ae.code == 404 => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-
-    let role_bindings = Api::<RoleBinding>::all(client.clone());
-    let existing_role_bindings = role_bindings.list(&ListParams::default()).await?;
-    for role_binding in existing_role_bindings.items {
-        if role_binding.name_any() != name {
-            continue;
-        }
-        if !is_tenant_rbac_object(&role_binding.metadata.labels, tenant_namespace, tenant_name) {
-            continue;
-        }
-        let Some(namespace) = role_binding.namespace() else {
-            continue;
-        };
-        if desired_namespaces.contains(&namespace) {
-            continue;
-        }
-
-        let namespaced_role_bindings = Api::<RoleBinding>::namespaced(client.clone(), &namespace);
-        match namespaced_role_bindings
-            .delete(&name, &DeleteParams::default())
-            .await
-        {
-            Ok(_) => {}
-            Err(kube::Error::Api(ae)) if ae.code == 404 => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-
-    Ok(())
-}
-
-async fn cleanup_k8s_rbac(client: &Client, tenant_namespace: &str, tenant_name: &str) -> Result<(), TenantError> {
-    cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &BTreeSet::new()).await?;
-    Ok(())
-}
-
-fn tenant_rbac_labels(tenant_namespace: &str, tenant_name: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("app.kubernetes.io/managed-by".to_string(), "etcdetcetc".to_string()),
-        (
-            "etcdetcetc.samcday.com/tenant-namespace".to_string(),
-            tenant_namespace.to_string(),
-        ),
-        (
-            "etcdetcetc.samcday.com/tenant-name".to_string(),
-            tenant_name.to_string(),
-        ),
-    ])
-}
-
-fn is_tenant_rbac_object(
-    labels: &Option<BTreeMap<String, String>>,
-    tenant_namespace: &str,
-    tenant_name: &str,
-) -> bool {
-    let Some(labels) = labels else {
-        return false;
-    };
-
-    labels
-        .get("app.kubernetes.io/managed-by")
-        .is_some_and(|value| value == "etcdetcetc")
-        && labels
-            .get("etcdetcetc.samcday.com/tenant-namespace")
-            .is_some_and(|value| value == tenant_namespace)
-        && labels
-            .get("etcdetcetc.samcday.com/tenant-name")
-            .is_some_and(|value| value == tenant_name)
 }
 
 async fn update_ready_status(

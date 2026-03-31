@@ -4,7 +4,7 @@
 
 A Kubernetes controller that manages multi-tenant etcd access. Automates the
 lifecycle of etcd users, roles, and prefix-scoped permissions -- the tedious
-RBAC plumbing that makes shared etcd clusters actually work.
+access-control plumbing that makes shared etcd clusters actually work.
 
 ## CRDs
 
@@ -47,7 +47,7 @@ spec:
 ```
 
 The controller creates the etcd user, role, and prefix permissions, then emits
-a Secret with credentials and a ConfigMap with connection info. On deletion, the keyspace is purged and RBAC
+a Secret with credentials and a ConfigMap with connection info. On deletion, the keyspace is purged and access-control
 entities are removed.
 
 Defaults:
