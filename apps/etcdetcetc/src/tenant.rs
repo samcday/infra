@@ -8,8 +8,6 @@ use k8s_openapi::{
     api::{
         core::v1::{ConfigMap, Secret},
         rbac::v1::{
-            ClusterRole,
-            ClusterRoleBinding,
             PolicyRule,
             Role,
             RoleBinding,
@@ -494,97 +492,32 @@ async fn ensure_k8s_rbac(
     tenant_name: &str,
     secret_name: &str,
 ) -> Result<(), TenantError> {
-    if cluster.spec.allowed_namespaces.is_empty() {
-        ensure_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name, secret_name).await?;
-        cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &BTreeSet::new()).await?;
+    let (desired_namespaces, all_service_accounts) = if cluster.spec.allowed_namespaces.is_empty() {
+        // Unrestricted: RBAC in tenant namespace only, granting all service accounts
+        // cluster-wide. Scoped to the tenant namespace so same-named Secrets in other
+        // namespaces are not exposed.
+        (BTreeSet::from([tenant_namespace.to_string()]), true)
     } else {
-        let desired_namespaces: BTreeSet<String> = cluster
+        let ns: BTreeSet<String> = cluster
             .spec
             .allowed_namespaces
             .iter()
-            .filter(|namespace| !namespace.is_empty())
+            .filter(|ns| !ns.is_empty())
             .cloned()
             .collect();
-        ensure_namespaced_k8s_rbac(
-            client,
-            tenant_namespace,
-            tenant_name,
-            secret_name,
-            &desired_namespaces,
-        )
-        .await?;
-        cleanup_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name).await?;
-        cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &desired_namespaces).await?;
-    }
-
-    Ok(())
-}
-
-async fn ensure_clusterwide_k8s_rbac(
-    client: &Client,
-    tenant_namespace: &str,
-    tenant_name: &str,
-    secret_name: &str,
-) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
-    let labels = tenant_rbac_labels(tenant_namespace, tenant_name);
-
-    let cluster_role = ClusterRole {
-        metadata: ObjectMeta {
-            name: Some(name.clone()),
-            labels: Some(labels.clone()),
-            ..ObjectMeta::default()
-        },
-        rules: Some(vec![PolicyRule {
-            api_groups: Some(vec!["".to_string()]),
-            resources: Some(vec!["secrets".to_string()]),
-            resource_names: Some(vec![secret_name.to_string()]),
-            verbs: vec!["get".to_string()],
-            ..PolicyRule::default()
-        }]),
-        ..ClusterRole::default()
+        (ns, false)
     };
 
-    let cluster_roles = Api::<ClusterRole>::all(client.clone());
-    cluster_roles
-        .patch(
-            &name,
-            &PatchParams::apply("etcdetcetc").force(),
-            &Patch::Apply(&cluster_role),
-        )
-        .await?;
-
-    let cluster_role_binding = ClusterRoleBinding {
-        metadata: ObjectMeta {
-            name: Some(name.clone()),
-            labels: Some(labels),
-            ..ObjectMeta::default()
-        },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "ClusterRole".to_string(),
-            name: name.clone(),
-        },
-        // When allowedNamespaces is empty, grant access to all service accounts
-        // cluster-wide. Set allowedNamespaces on the EtcdCluster to restrict
-        // access to specific namespaces instead.
-        subjects: Some(vec![Subject {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Group".to_string(),
-            name: "system:serviceaccounts".to_string(),
-            namespace: None,
-        }]),
-        ..ClusterRoleBinding::default()
-    };
-
-    let cluster_role_bindings = Api::<ClusterRoleBinding>::all(client.clone());
-    cluster_role_bindings
-        .patch(
-            &name,
-            &PatchParams::apply("etcdetcetc").force(),
-            &Patch::Apply(&cluster_role_binding),
-        )
-        .await?;
+    ensure_namespaced_k8s_rbac(
+        client,
+        tenant_namespace,
+        tenant_name,
+        secret_name,
+        &desired_namespaces,
+        all_service_accounts,
+    )
+    .await?;
+    cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &desired_namespaces).await?;
 
     Ok(())
 }
@@ -595,8 +528,9 @@ async fn ensure_namespaced_k8s_rbac(
     tenant_name: &str,
     secret_name: &str,
     desired_namespaces: &BTreeSet<String>,
+    all_service_accounts: bool,
 ) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_name}");
+    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
 
     for namespace in desired_namespaces {
         let mut labels = tenant_rbac_labels(tenant_namespace, tenant_name);
@@ -640,11 +574,20 @@ async fn ensure_namespaced_k8s_rbac(
                 kind: "Role".to_string(),
                 name: name.clone(),
             },
-            subjects: Some(vec![Subject {
-                api_group: Some("rbac.authorization.k8s.io".to_string()),
-                kind: "Group".to_string(),
-                name: format!("system:serviceaccounts:{namespace}"),
-                namespace: None,
+            subjects: Some(vec![if all_service_accounts {
+                Subject {
+                    api_group: Some("rbac.authorization.k8s.io".to_string()),
+                    kind: "Group".to_string(),
+                    name: "system:serviceaccounts".to_string(),
+                    namespace: None,
+                }
+            } else {
+                Subject {
+                    api_group: Some("rbac.authorization.k8s.io".to_string()),
+                    kind: "Group".to_string(),
+                    name: format!("system:serviceaccounts:{namespace}"),
+                    namespace: None,
+                }
             }]),
             ..RoleBinding::default()
         };
@@ -662,40 +605,13 @@ async fn ensure_namespaced_k8s_rbac(
     Ok(())
 }
 
-async fn cleanup_clusterwide_k8s_rbac(
-    client: &Client,
-    tenant_namespace: &str,
-    tenant_name: &str,
-) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
-
-    let cluster_roles = Api::<ClusterRole>::all(client.clone());
-    match cluster_roles.delete(&name, &DeleteParams::default()).await {
-        Ok(_) => {}
-        Err(kube::Error::Api(ae)) if ae.code == 404 => {}
-        Err(err) => return Err(err.into()),
-    }
-
-    let cluster_role_bindings = Api::<ClusterRoleBinding>::all(client.clone());
-    match cluster_role_bindings
-        .delete(&name, &DeleteParams::default())
-        .await
-    {
-        Ok(_) => {}
-        Err(kube::Error::Api(ae)) if ae.code == 404 => {}
-        Err(err) => return Err(err.into()),
-    }
-
-    Ok(())
-}
-
 async fn cleanup_namespaced_k8s_rbac(
     client: &Client,
     tenant_namespace: &str,
     tenant_name: &str,
     desired_namespaces: &BTreeSet<String>,
 ) -> Result<(), TenantError> {
-    let name = format!("etcdetcetc:{tenant_name}");
+    let name = format!("etcdetcetc:{tenant_namespace}:{tenant_name}");
 
     let roles = Api::<Role>::all(client.clone());
     let existing_roles = roles.list(&ListParams::default()).await?;
@@ -752,7 +668,6 @@ async fn cleanup_namespaced_k8s_rbac(
 }
 
 async fn cleanup_k8s_rbac(client: &Client, tenant_namespace: &str, tenant_name: &str) -> Result<(), TenantError> {
-    cleanup_clusterwide_k8s_rbac(client, tenant_namespace, tenant_name).await?;
     cleanup_namespaced_k8s_rbac(client, tenant_namespace, tenant_name, &BTreeSet::new()).await?;
     Ok(())
 }
@@ -974,8 +889,8 @@ fn is_not_found_error(error: &etcd_client::Error) -> bool {
     match error {
         etcd_client::Error::GRpcStatus(status) => {
             // NOT_FOUND (5) is the standard code for missing keys.
-            // FAILED_PRECONDITION (9) is what etcd returns for missing auth entities
-            // (users, roles) — or when auth is not enabled.
+            // etcd may also use FAILED_PRECONDITION (9) for missing auth entities
+            // (users, roles); we only treat it as "not found" when the message says so.
             let code = status.code() as i32;
             code == 5 || (code == 9 && status.message().to_ascii_lowercase().contains("not found"))
         }
