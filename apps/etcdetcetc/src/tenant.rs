@@ -20,7 +20,7 @@ use k8s_openapi::{
 };
 use kube::{
     Api, Client, Resource, ResourceExt,
-    api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
+    api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams},
     runtime::{
         Controller,
         controller::Action,
@@ -195,13 +195,26 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         &password,
     )
     .await?;
-    ensure_config_mirror(
+    let config_mirror_ready = ensure_config_mirror(
         &context.client,
         &tenant,
         &namespace,
         &name,
     )
     .await?;
+    if !config_mirror_ready {
+        update_ready_status(
+            &context.client,
+            &tenant,
+            &namespace,
+            &name,
+            false,
+            "ConfigMapNotFound",
+            "source EtcdCluster ConfigMap not found yet",
+        )
+        .await?;
+        return Ok(Action::requeue(Duration::from_secs(30)));
+    }
     ensure_k8s_rbac(
         &context.client,
         &cluster,
@@ -421,7 +434,7 @@ async fn ensure_config_mirror(
     tenant: &EtcdTenant,
     tenant_namespace: &str,
     tenant_name: &str,
-) -> Result<(), TenantError> {
+) -> Result<bool, TenantError> {
     let cluster_namespace = tenant.spec.cluster_ref.namespace.as_deref()
         .unwrap_or(tenant_namespace);
     let cluster_name = tenant.spec.cluster_ref.name.as_str();
@@ -439,7 +452,7 @@ async fn ensure_config_mirror(
                 source_configmap = source_name,
                 "source EtcdCluster ConfigMap not found yet, will retry on next reconcile"
             );
-            return Ok(());
+            return Ok(false);
         }
         Err(err) => return Err(err.into()),
     };
@@ -471,7 +484,7 @@ async fn ensure_config_mirror(
         )
         .await?;
 
-    Ok(())
+    Ok(true)
 }
 
 async fn ensure_k8s_rbac(
@@ -552,6 +565,9 @@ async fn ensure_clusterwide_k8s_rbac(
             kind: "ClusterRole".to_string(),
             name: name.clone(),
         },
+        // When allowedNamespaces is empty, grant access to all service accounts
+        // cluster-wide. Set allowedNamespaces on the EtcdCluster to restrict
+        // access to specific namespaces instead.
         subjects: Some(vec![Subject {
             api_group: Some("rbac.authorization.k8s.io".to_string()),
             kind: "Group".to_string(),
@@ -797,6 +813,9 @@ async fn update_ready_status(
         message,
         existing_conditions,
     );
+    if existing_conditions.len() == 1 && existing_conditions[0] == condition {
+        return Ok(());
+    }
     let patch = serde_json::json!({
         "status": {
             "conditions": [condition],
@@ -930,7 +949,13 @@ async fn ensure_password_secret(
                 ..Secret::default()
             };
 
-            secrets.create(&PostParams::default(), &secret).await?;
+            secrets
+                .patch(
+                    &password_secret_name,
+                    &PatchParams::apply("etcdetcetc").force(),
+                    &Patch::Apply(&secret),
+                )
+                .await?;
             Ok(password)
         }
         Err(err) => Err(err.into()),
