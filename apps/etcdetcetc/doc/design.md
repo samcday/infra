@@ -42,6 +42,9 @@ spec:
     - https://hub-az1-cp3.hub.internal:2379
   authSecretRef:
     name: hub-etcd-root
+  allowedNamespaces:
+    - cloud-cluster
+    - simonet
 status:
   connected: false
 ```
@@ -58,6 +61,10 @@ present:
 | Basic | `username`, `password`, `ca.crt` |
 
 The `ca.crt` key is always required (TLS to etcd is non-negotiable).
+
+**spec.allowedNamespaces**: which tenant namespaces may reference this
+EtcdCluster. Empty means same-namespace only. Use `["*"]` to allow all
+namespaces.
 
 **status.connected**: set to true when the controller has successfully
 authenticated and pinged the cluster.
@@ -77,7 +84,6 @@ spec:
   clusterRef:
     name: hub-etcd
     namespace: etcd-system
-  prefix: "/cloud/"
   secretName: cloud-etcd
 status:
   conditions:
@@ -88,8 +94,8 @@ status:
 
 **spec.clusterRef**: cross-namespace reference to an EtcdCluster.
 
-**spec.prefix**: etcd key prefix for this tenant. Defaults to `/<name>/` if
-omitted.
+The etcd key prefix is computed by the controller as `/{namespace}-{name}/`.
+This value is not user-configurable.
 
 **spec.secretName**: name of the output Secret to create in the tenant's
 namespace. Defaults to `<name>-etcd` if omitted.
@@ -115,13 +121,17 @@ Watches: EtcdCluster, referenced Secrets (for credential rotation).
 **Create / Update:**
 
 1. Resolve the referenced EtcdCluster. If not connected, requeue.
-2. Compute effective prefix (`spec.prefix` or `/<name>/`).
-3. Ensure etcd user exists with a generated password.
-4. Ensure etcd role exists (named same as the user).
-5. Ensure role has `readwrite` permission on the prefix.
-6. Ensure role is granted to the user.
-7. Create or update the output Secret (see below).
-8. Set `Ready` condition to `True`.
+2. Authorize cross-namespace references using EtcdCluster
+   `spec.allowedNamespaces`.
+3. Compute scoped etcd identifiers:
+   - name: `{namespace}-{name}`
+   - prefix: `/{namespace}-{name}/`
+4. Ensure etcd user exists with a generated password.
+5. Ensure etcd role exists (named same as the user).
+6. Ensure role has `readwrite` permission on the prefix.
+7. Ensure role is granted to the user.
+8. Create or update the output Secret (see below).
+9. Set `Ready` condition to `True`.
 
 **Delete (finalizer: `etcdetcetc.samcday.com/tenant`):**
 
@@ -148,7 +158,7 @@ metadata:
       controller: true
 type: Opaque
 data:
-  username: <base64 tenant name>
+  username: <base64 {tenant namespace}-{tenant name}>
   password: <base64 generated password>
 ```
 
@@ -170,6 +180,7 @@ metadata:
       controller: true
 data:
   endpoints: "https://host1:2379,https://host2:2379"
+  prefix: "/<tenant namespace>-<tenant name>/"
   ca.crt: |
     -----BEGIN CERTIFICATE-----
     ...

@@ -122,6 +122,11 @@ pub struct EtcdClusterSpec {
 
     /// Reference to a Secret with root/admin credentials.
     pub auth_secret_ref: LocalSecretReference,
+
+    /// Namespaces allowed to reference this cluster. Empty means same-namespace
+    /// only. Use `["*"]` to allow all namespaces.
+    #[serde(default)]
+    pub allowed_namespaces: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -170,18 +175,12 @@ pub struct ClusterMember {
     kind = "EtcdTenant",
     namespaced,
     status = "EtcdTenantStatus",
-    printcolumn = r#"{"name": "Ready", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status"}"#,
-    printcolumn = r#"{"name": "Prefix", "type": "string", "jsonPath": ".spec.prefix"}"#
+    printcolumn = r#"{"name": "Ready", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct EtcdTenantSpec {
     /// Reference to the EtcdCluster to provision on.
     pub cluster_ref: ClusterReference,
-
-    /// etcd key prefix for this tenant. Defaults to `/<name>/`.
-    #[schemars(regex(pattern = r"^/[A-Za-z0-9/_-]*/$"))]
-    #[serde(default)]
-    pub prefix: Option<String>,
 
     /// Name of the output Secret. Defaults to `<name>-etcd`.
     #[serde(default)]

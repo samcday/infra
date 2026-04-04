@@ -102,22 +102,42 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         return Ok(Action::await_change());
     }
 
-    let prefix = tenant
-        .spec
-        .prefix
-        .clone()
-        .unwrap_or_else(|| format!("/{name}/"));
+    let etcd_name = format!("{namespace}-{name}");
+    let prefix = format!("/{namespace}-{name}/");
 
     info!(namespace, name, "reconciling EtcdTenant");
 
     if tenant.meta().deletion_timestamp.is_some() {
-        return reconcile_delete(tenant, context, &namespace, &name, &prefix).await;
+        return reconcile_delete(tenant, context, &namespace, &name).await;
     }
 
     ensure_finalizer(&context.client, &tenant, &namespace).await?;
 
     let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.clone());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
+
+    if cluster_namespace != namespace {
+        let clusters = Api::<EtcdCluster>::namespaced(context.client.clone(), &cluster_namespace);
+        let cluster = clusters.get(&cluster_name).await?;
+        let allowed_namespaces = &cluster.spec.allowed_namespaces;
+        let namespace_allowed = allowed_namespaces.iter().any(|allowed| allowed == "*" || allowed == &namespace);
+        if !namespace_allowed {
+            let message = format!(
+                "tenant namespace {namespace} is not in EtcdCluster allowedNamespaces"
+            );
+            update_ready_status(
+                &context.client,
+                &tenant,
+                &namespace,
+                &name,
+                false,
+                "NamespaceNotAllowed",
+                &message,
+            )
+            .await?;
+            return Ok(Action::await_change());
+        }
+    }
 
     let mut etcd_client = match get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
         Some(client) => client,
@@ -151,13 +171,13 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
 
     let password = ensure_password_secret(&context.client, &tenant, &namespace, &name).await?;
 
-    ensure_tenant_rbac(&mut etcd_client, &name, &prefix, &password).await?;
+    ensure_tenant_rbac(&mut etcd_client, &etcd_name, &prefix, &password).await?;
     ensure_output_secret(
         &context.client,
         &tenant,
         &namespace,
         &secret_name,
-        &name,
+        &etcd_name,
         &password,
     )
     .await?;
@@ -166,6 +186,7 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         &tenant,
         &namespace,
         &name,
+        &prefix,
     )
     .await?;
     if !config_mirror_ready {
@@ -205,7 +226,6 @@ async fn reconcile_delete(
     context: Arc<TenantContext>,
     namespace: &str,
     name: &str,
-    prefix: &str,
 ) -> Result<Action, TenantError> {
     if !has_finalizer(&tenant) {
         return Ok(Action::await_change());
@@ -213,6 +233,8 @@ async fn reconcile_delete(
 
     let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.to_owned());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
+    let etcd_name = format!("{namespace}-{name}");
+    let prefix = format!("/{namespace}-{name}/");
 
     if let Some(mut etcd_client) = get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
         info!(namespace, name, prefix, "cleaning up tenant data and RBAC");
@@ -222,9 +244,9 @@ async fn reconcile_delete(
             .await?;
 
         let mut auth = etcd_client.auth_client();
-        ignore_not_found(auth.user_revoke_role(name, name).await)?;
-        ignore_not_found(auth.user_delete(name).await)?;
-        ignore_not_found(auth.role_delete(name).await)?;
+        ignore_not_found(auth.user_revoke_role(&etcd_name, &etcd_name).await)?;
+        ignore_not_found(auth.user_delete(&etcd_name).await)?;
+        ignore_not_found(auth.role_delete(&etcd_name).await)?;
     } else {
         let clusters = Api::<EtcdCluster>::namespaced(context.client.clone(), &cluster_namespace);
         match clusters.get(&cluster_name).await {
@@ -391,6 +413,7 @@ async fn ensure_config_mirror(
     tenant: &EtcdTenant,
     tenant_namespace: &str,
     tenant_name: &str,
+    prefix: &str,
 ) -> Result<bool, TenantError> {
     let cluster_namespace = tenant.spec.cluster_ref.namespace.as_deref()
         .unwrap_or(tenant_namespace);
@@ -421,6 +444,8 @@ async fn ensure_config_mirror(
         ))
     })?;
     let target_name = format!("{tenant_name}-etcd");
+    let mut data = source.data.unwrap_or_default();
+    data.insert("prefix".to_string(), prefix.to_string());
     let target = ConfigMap {
         metadata: ObjectMeta {
             name: Some(target_name.clone()),
@@ -428,7 +453,7 @@ async fn ensure_config_mirror(
             owner_references: Some(vec![owner_reference]),
             ..ObjectMeta::default()
         },
-        data: source.data,
+        data: Some(data),
         ..ConfigMap::default()
     };
 

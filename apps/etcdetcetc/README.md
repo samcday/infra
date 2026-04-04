@@ -24,11 +24,16 @@ spec:
     - https://etcd3.example.com:2379
   authSecretRef:
     name: etcd-root-credentials
+  allowedNamespaces:
+    - my-app
 ```
 
 The referenced Secret holds root/admin credentials. Supports:
 - **TLS cert auth**: keys `tls.crt`, `tls.key`, `ca.crt`
 - **Basic auth**: keys `username`, `password`, `ca.crt`
+
+`allowedNamespaces` controls cross-namespace tenant references. Empty means
+same-namespace only; use `["*"]` to allow all namespaces.
 
 ### EtcdTenant
 
@@ -51,7 +56,7 @@ a Secret with credentials and a ConfigMap with connection info. On deletion, the
 entities are removed.
 
 Defaults:
-- `prefix`: `/<name>/`
+- `prefix`: auto-assigned as `/{namespace}-{name}/`
 - `secretName`: `<name>-etcd`
 
 ## Future
