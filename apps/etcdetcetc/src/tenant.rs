@@ -486,20 +486,21 @@ async fn ensure_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str)
         return Ok(());
     }
 
-    let mut finalizers = tenant.meta().finalizers.clone().unwrap_or_default();
-    finalizers.push(TENANT_FINALIZER.to_string());
-
     let api = Api::<EtcdTenant>::namespaced(client.clone(), namespace);
-    let patch = serde_json::json!({
-        "metadata": {
-            "finalizers": finalizers,
-        }
-    });
+    let patch: json_patch::Patch = if tenant.meta().finalizers.is_some() {
+        serde_json::from_value(serde_json::json!([
+            { "op": "add", "path": "/metadata/finalizers/-", "value": TENANT_FINALIZER }
+        ])).unwrap()
+    } else {
+        serde_json::from_value(serde_json::json!([
+            { "op": "add", "path": "/metadata/finalizers", "value": [TENANT_FINALIZER] }
+        ])).unwrap()
+    };
 
     api.patch(
         &tenant.name_any(),
         &PatchParams::default(),
-        &Patch::Merge(&patch),
+        &Patch::Json::<()>(patch),
     )
     .await?;
 
@@ -507,20 +508,26 @@ async fn ensure_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str)
 }
 
 async fn remove_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str) -> Result<(), TenantError> {
-    let mut finalizers = tenant.meta().finalizers.clone().unwrap_or_default();
-    finalizers.retain(|f| f != TENANT_FINALIZER);
+    let Some(index) = tenant
+        .meta()
+        .finalizers
+        .as_ref()
+        .and_then(|finalizers| finalizers.iter().position(|f| f == TENANT_FINALIZER))
+    else {
+        return Ok(());
+    };
 
     let api = Api::<EtcdTenant>::namespaced(client.clone(), namespace);
-    let patch = serde_json::json!({
-        "metadata": {
-            "finalizers": finalizers,
-        }
-    });
+    let path = format!("/metadata/finalizers/{index}");
+    let patch: json_patch::Patch = serde_json::from_value(serde_json::json!([
+        { "op": "test", "path": &path, "value": TENANT_FINALIZER },
+        { "op": "remove", "path": &path }
+    ])).unwrap();
 
     api.patch(
         &tenant.name_any(),
         &PatchParams::default(),
-        &Patch::Merge(&patch),
+        &Patch::Json::<()>(patch),
     )
     .await?;
 

@@ -94,6 +94,13 @@ fn cmd_dev_up() -> Result<()> {
     run("docker", &["cp", &cp_key_src, &cp_key_dst])
         .context("copying apiserver etcd client key from container")?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tls_key, std::fs::Permissions::from_mode(0o600))
+            .context("setting permissions on tls.key")?;
+    }
+
     let inspect_ip = run_stdout(
         "docker",
         &[

@@ -121,6 +121,16 @@ async fn reconcile(
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&key);
+        {
+            let mut refs = context
+                .secret_refs
+                .write()
+                .unwrap_or_else(|p| p.into_inner());
+            for clusters in refs.values_mut() {
+                clusters.retain(|existing| existing != &key);
+            }
+            refs.retain(|_, clusters| !clusters.is_empty());
+        }
         update_status(&cluster, &context.client, &namespace, &name, false).await?;
         return Ok(Action::await_change());
     }

@@ -80,7 +80,10 @@ spec:
   prefix: "/cloud/"
   secretName: cloud-etcd
 status:
-  ready: false
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: Pending
 ```
 
 **spec.clusterRef**: cross-namespace reference to an EtcdCluster.
@@ -91,8 +94,9 @@ omitted.
 **spec.secretName**: name of the output Secret to create in the tenant's
 namespace. Defaults to `<name>-etcd` if omitted.
 
-**status.ready**: set to true when user, role, and permissions are all
-provisioned in etcd.
+**status.conditions**: standard Kubernetes conditions array. The `Ready`
+condition is `True` when user, role, and permissions are all provisioned in
+etcd. Use `kubectl wait --for=condition=Ready etcdtenant/<name>` to wait.
 
 ## Controller behaviour
 
@@ -117,7 +121,7 @@ Watches: EtcdCluster, referenced Secrets (for credential rotation).
 5. Ensure role has `readwrite` permission on the prefix.
 6. Ensure role is granted to the user.
 7. Create or update the output Secret (see below).
-8. Set `status.ready = true`.
+8. Set `Ready` condition to `True`.
 
 **Delete (finalizer: `etcdetcetc.samcday.com/tenant`):**
 
