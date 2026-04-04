@@ -50,7 +50,7 @@ spec:
       serviceAccountName: etcdetcetc
       containers:
         - name: controller
-          image: etcdetcetc
+          image: localhost:5001/etcdetcetc
           env:
             - name: RUST_LOG
               value: info,etcdetcetc=debug

@@ -37,6 +37,32 @@ fn cmd_dev_up() -> Result<()> {
     ensure_tool("kind")?;
     ensure_tool("docker")?;
     ensure_tool("kubectl")?;
+    ensure_tool("crane")?;
+
+    // Ensure local registry container is running.
+    let registry_exists = Command::new("docker")
+        .args(["inspect", "kind-registry"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !registry_exists {
+        run(
+            "docker",
+            &[
+                "run",
+                "-d",
+                "--restart=always",
+                "-p",
+                "127.0.0.1:5001:5000",
+                "--name",
+                "kind-registry",
+                "registry:2",
+            ],
+        )
+        .context("starting local registry container")?;
+    }
 
     let clusters =
         run_stdout("kind", &["get", "clusters"]).context("checking existing kind clusters")?;
@@ -44,8 +70,25 @@ fn cmd_dev_up() -> Result<()> {
     if cluster_exists {
         eprintln!("Kind cluster '{CLUSTER_NAME}' already exists, reusing it");
     } else {
-        run("kind", &["create", "cluster", "--name", CLUSTER_NAME])
-            .context("creating kind cluster")?;
+        run(
+            "kind",
+            &[
+                "create",
+                "cluster",
+                "--name",
+                CLUSTER_NAME,
+                "--config",
+                "dev/kind-config.yaml",
+            ],
+        )
+        .context("creating kind cluster")?;
+
+        // Connect registry to kind network (ignore error if already connected).
+        let _ = Command::new("docker")
+            .args(["network", "connect", "kind", "kind-registry"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     let cwd = std::env::current_dir().context("getting current directory")?;
