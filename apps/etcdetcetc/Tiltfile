@@ -1,8 +1,8 @@
 custom_build(
     'localhost:5001/etcdetcetc',
-    'cargo build --target x86_64-unknown-linux-musl && '
-    'tar cf /tmp/etcdetcetc-layer.tar -C target/x86_64-unknown-linux-musl/debug etcdetcetc && '
-    'crane append -b alpine -f /tmp/etcdetcetc-layer.tar -t $EXPECTED_REF --insecure && '
+    'CC=gcc cargo build --target x86_64-unknown-linux-musl && ' +
+    'tar cf /tmp/etcdetcetc-layer.tar -C target/x86_64-unknown-linux-musl/debug etcdetcetc && ' +
+    'crane append -b alpine -f /tmp/etcdetcetc-layer.tar -t $EXPECTED_REF --insecure && ' +
     'crane mutate $EXPECTED_REF --entrypoint /etcdetcetc --insecure',
     deps=['src/', 'Cargo.toml', 'Cargo.lock'],
     skips_local_docker=True,

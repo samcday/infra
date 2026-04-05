@@ -89,6 +89,31 @@ fn cmd_dev_up() -> Result<()> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+
+        // Configure containerd to resolve localhost:5001 via the kind-registry container.
+        let container_name = format!("{CLUSTER_NAME}-control-plane");
+        run(
+            "docker",
+            &[
+                "exec",
+                &container_name,
+                "mkdir",
+                "-p",
+                "/etc/containerd/certs.d/localhost:5001",
+            ],
+        )
+        .context("creating containerd certs.d directory")?;
+        run_with_stdin(
+            "docker",
+            &["exec", "-i", &container_name, "tee", "/etc/containerd/certs.d/localhost:5001/hosts.toml"],
+            b"server = \"http://kind-registry:5000\"\n\n[host.\"http://kind-registry:5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n",
+        )
+        .context("writing containerd registry hosts.toml")?;
+        run(
+            "docker",
+            &["exec", &container_name, "systemctl", "restart", "containerd"],
+        )
+        .context("restarting containerd")?;
     }
 
     let cwd = std::env::current_dir().context("getting current directory")?;
