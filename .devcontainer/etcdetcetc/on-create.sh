@@ -25,5 +25,22 @@ curl -fsSL "https://github.com/google/go-containerregistry/releases/latest/downl
 rustup target add x86_64-unknown-linux-musl
 
 cd "$REPO_ROOT/apps/etcdetcetc"
+cargo build -p xtask
 cargo build --target x86_64-unknown-linux-musl
-cargo build
+
+# Wait for Docker-in-Docker, then run full dev-up + tilt ci to validate the
+# pipeline and warm the Docker image cache (kindest/node, registry:2).
+# Cluster state won't survive prebuild, but the image cache does.
+timeout_seconds=30
+elapsed=0
+until docker info >/dev/null 2>&1; do
+  if [ "$elapsed" -ge "$timeout_seconds" ]; then
+    echo "docker daemon not ready after ${timeout_seconds}s" >&2
+    exit 1
+  fi
+  sleep 2
+  elapsed=$((elapsed + 2))
+done
+
+cargo xtask dev-up
+tilt ci
