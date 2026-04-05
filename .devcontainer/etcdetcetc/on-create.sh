@@ -26,4 +26,4 @@ rustup target add x86_64-unknown-linux-musl
 
 cd "$REPO_ROOT/apps/etcdetcetc"
 cargo build --target x86_64-unknown-linux-musl
-cargo build -p xtask
+cargo build
