@@ -22,6 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/instal
 
 curl -fsSL "https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_${crane_arch}.tar.gz" | sudo tar xz -C /usr/local/bin crane
 
+curl -fsSL "https://github.com/derailed/k9s/releases/download/v0.50.18/k9s_Linux_${crane_arch}.tar.gz" | sudo tar xz -C /usr/local/bin k9s
+
 rustup target add x86_64-unknown-linux-musl
 
 cd "$REPO_ROOT/apps/etcdetcetc"

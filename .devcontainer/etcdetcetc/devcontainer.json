@@ -6,7 +6,8 @@
     "ghcr.io/devcontainers/features/rust:1": {},
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "minikube": "none"
-    }
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}/apps/etcdetcetc",
   "onCreateCommand": "bash /workspaces/${localWorkspaceFolderBasename}/.devcontainer/etcdetcetc/on-create.sh",

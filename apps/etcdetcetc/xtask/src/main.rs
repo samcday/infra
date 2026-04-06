@@ -111,7 +111,13 @@ fn cmd_dev_up() -> Result<()> {
         .context("writing containerd registry hosts.toml")?;
         run(
             "docker",
-            &["exec", &container_name, "systemctl", "restart", "containerd"],
+            &[
+                "exec",
+                &container_name,
+                "systemctl",
+                "restart",
+                "containerd",
+            ],
         )
         .context("restarting containerd")?;
     }
@@ -182,7 +188,14 @@ fn cmd_dev_up() -> Result<()> {
     if inspect_ip.is_empty() {
         bail!("control-plane container IP was empty");
     }
-    let endpoint = format!("https://{inspect_ip}:2379");
+    eprintln!("Control-plane IP: {inspect_ip}");
+
+    // Use the container hostname as the etcd endpoint instead of the raw IP.
+    // The etcd server cert includes DnsName("<cluster>-control-plane") as a SAN,
+    // so TLS verification passes even when Docker reassigns container IPs
+    // (e.g. across prebuild -> codespace start transitions).
+    // A headless Service + Endpoints makes this hostname resolvable from pods.
+    let endpoint = format!("https://{container_name}:2379");
     eprintln!("Using etcd endpoint: {endpoint}");
 
     pipe_cmd(
@@ -192,6 +205,36 @@ fn cmd_dev_up() -> Result<()> {
         &["apply", "-f", "-"],
     )
     .context("installing CRDs")?;
+
+    // Create a headless Service + Endpoints so pods can resolve the
+    // control-plane container hostname to its current Docker network IP.
+    let etcd_service = format!(
+        r#"{{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {{"name": "{container_name}", "namespace": "default"}},
+  "spec": {{
+    "clusterIP": "None",
+    "ports": [{{"port": 2379, "targetPort": 2379, "protocol": "TCP"}}]
+  }}
+}}"#
+    );
+    run_with_stdin("kubectl", &["apply", "-f", "-"], etcd_service.as_bytes())
+        .context("creating/updating etcd headless service")?;
+
+    let etcd_endpoints = format!(
+        r#"{{
+  "apiVersion": "v1",
+  "kind": "Endpoints",
+  "metadata": {{"name": "{container_name}", "namespace": "default"}},
+  "subsets": [{{
+    "addresses": [{{"ip": "{inspect_ip}"}}],
+    "ports": [{{"port": 2379, "protocol": "TCP"}}]
+  }}]
+}}"#
+    );
+    run_with_stdin("kubectl", &["apply", "-f", "-"], etcd_endpoints.as_bytes())
+        .context("creating/updating etcd endpoints")?;
 
     let ca_crt_str = ca_crt.to_string_lossy().into_owned();
     let tls_crt_str = tls_crt.to_string_lossy().into_owned();
