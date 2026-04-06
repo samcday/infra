@@ -1,0 +1,45 @@
+{
+  "name": "etcdetcetc",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/rust:1": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "minikube": "none"
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}/apps/etcdetcetc",
+  "onCreateCommand": "bash /workspaces/${localWorkspaceFolderBasename}/.devcontainer/etcdetcetc/on-create.sh",
+  "postStartCommand": "bash /workspaces/${localWorkspaceFolderBasename}/.devcontainer/etcdetcetc/post-start.sh",
+  "postAttachCommand": {
+    "tilt": "tilt up"
+  },
+  "remoteEnv": {
+    "KUBECONFIG": "${containerWorkspaceFolder}/.dev/kubeconfig"
+  },
+  "forwardPorts": [10350],
+  "portsAttributes": {
+    "10350": {
+      "label": "Tilt UI"
+    }
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "tilt-dev.tiltfile"
+      ],
+      "settings": {
+        "vs-kubernetes.kubeconfig": "${workspaceFolder}/.dev/kubeconfig"
+      }
+    }
+  }
+}
