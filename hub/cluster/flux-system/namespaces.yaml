@@ -25,6 +25,7 @@ spec:
     conduit:
     dex:
     cnpg-system:
+    etcdetcetc:
     external-dns:
     forgejo:
     heisenbridge:

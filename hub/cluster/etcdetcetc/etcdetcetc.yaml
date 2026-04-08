@@ -1,0 +1,18 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: etcdetcetc
+spec:
+  chart:
+    spec:
+      chart: charts/etcdetcetc
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  interval: 1h
+  values:
+    image:
+      repository: ghcr.io/samcday/infra-etcdetcetc
+      tag: "0" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}

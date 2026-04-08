@@ -1,0 +1,4 @@
+image:
+  repository: ghcr.io/samcday/infra-etcdetcetc
+  tag: latest
+allowedNamespaces: []

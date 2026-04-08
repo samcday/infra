@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcdetcetc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: etcdetcetc
+  template:
+    metadata:
+      labels:
+        app: etcdetcetc
+    spec:
+      serviceAccountName: etcdetcetc
+      containers:
+        - name: controller
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          {{- with .Values.allowedNamespaces }}
+          args:
+            {{- range . }}
+            - --allowed-namespace={{ . }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: RUST_LOG
+              value: info,etcdetcetc=debug

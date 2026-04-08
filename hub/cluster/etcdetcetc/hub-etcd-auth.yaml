@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hub-etcd-auth
+spec:
+  secretName: hub-etcd-auth
+  commonName: root
+  issuerRef:
+    name: etcd
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA

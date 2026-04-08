@@ -1,0 +1,13 @@
+apiVersion: etcdetcetc.samcday.com/v1alpha1
+kind: EtcdCluster
+metadata:
+  name: hub-etcd
+spec:
+  endpoints:
+    - https://hub-az1-cp1.hub.internal:2379
+    - https://hub-az1-cp2.hub.internal:2379
+    - https://hub-az1-cp3.hub.internal:2379
+  authSecretRef:
+    name: hub-etcd-auth
+  allowedNamespaces:
+    - "*"

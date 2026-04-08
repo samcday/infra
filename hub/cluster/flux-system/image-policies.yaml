@@ -30,3 +30,7 @@ spec:
       spec:
         imageRepositoryRef:
           name: bootie
+    etcdetcetc:
+      spec:
+        imageRepositoryRef:
+          name: etcdetcetc

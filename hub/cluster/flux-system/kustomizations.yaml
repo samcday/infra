@@ -68,6 +68,10 @@ spec:
           - name: gateway-api
           - name: ingress-nginx
         path: hub/cluster/conduit
+    etcdetcetc:
+      spec:
+        dependsOn: [name: cert-manager]
+        path: hub/cluster/etcdetcetc
     external-dns:
       spec:
         dependsOn: [name: gateway-api]

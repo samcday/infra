@@ -1,0 +1,238 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: etcdclusters.etcdetcetc.samcday.com
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  group: etcdetcetc.samcday.com
+  names:
+    categories: []
+    kind: EtcdCluster
+    plural: etcdclusters
+    shortNames: []
+    singular: etcdcluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.version
+      name: Version
+      type: string
+    - jsonPath: .status.dbSize
+      name: DB Size
+      type: string
+    - jsonPath: .status.leader
+      name: Leader
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for EtcdClusterSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'An etcd cluster that tenants can be provisioned on.
+
+
+              The controller connects using root credentials from the referenced auth
+              Secret, which can hold either TLS certs (tls.crt, tls.key, ca.crt) or
+              basic auth (username, password, ca.crt).'
+            properties:
+              allowedNamespaces:
+                default: []
+                description: Namespaces allowed to reference this cluster. Empty means
+                  same-namespace only. Use `["*"]` to allow all namespaces.
+                items:
+                  type: string
+                type: array
+              authSecretRef:
+                description: Reference to a Secret with root/admin credentials.
+                properties:
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
+              endpoints:
+                description: etcd endpoint URLs (e.g. https://host:2379).
+                items:
+                  type: string
+                type: array
+            required:
+            - authSecretRef
+            - endpoints
+            type: object
+          status:
+            nullable: true
+            properties:
+              alarms:
+                default: []
+                description: 'Active alarms (e.g. "etcd-1: NOSPACE")'
+                items:
+                  type: string
+                type: array
+              conditions:
+                default: []
+                description: Standard Kubernetes conditions (supports `kubectl wait
+                  --for=condition=Ready`).
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  type: object
+                type: array
+              connected:
+                default: false
+                type: boolean
+              dbSize:
+                description: Database size, human-readable (e.g. "24 MiB")
+                nullable: true
+                type: string
+              leader:
+                description: Current leader member name
+                nullable: true
+                type: string
+              members:
+                default: []
+                description: Cluster members
+                items:
+                  properties:
+                    endpoint:
+                      type: string
+                    isLearner:
+                      default: false
+                      type: boolean
+                    name:
+                      type: string
+                  required:
+                  - endpoint
+                  - name
+                  type: object
+                type: array
+              version:
+                description: etcd server version
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: EtcdCluster
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: etcdtenants.etcdetcetc.samcday.com
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  group: etcdetcetc.samcday.com
+  names:
+    categories: []
+    kind: EtcdTenant
+    plural: etcdtenants
+    shortNames: []
+    singular: etcdtenant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for EtcdTenantSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'A tenant on an EtcdCluster. The controller provisions the
+              etcd user, role, and prefix-scoped permissions, then emits a Secret
+              with connection details.
+
+
+              On deletion a finalizer purges the keyspace and removes RBAC entities.'
+            properties:
+              clusterRef:
+                description: Reference to the EtcdCluster to provision on.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    description: Namespace of the EtcdCluster. Defaults to the tenant's
+                      namespace.
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
+              secretName:
+                description: Name of the output Secret. Defaults to `<name>-etcd`.
+                nullable: true
+                type: string
+            required:
+            - clusterRef
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                description: Standard Kubernetes conditions (supports `kubectl wait
+                  --for=condition=Ready`).
+                items:
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      nullable: true
+                      type: string
+                    reason:
+                      nullable: true
+                      type: string
+                    status:
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: EtcdTenant
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

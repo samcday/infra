@@ -24,3 +24,6 @@ spec:
     bootie:
       spec:
         image: ghcr.io/samcday/infra-bootie
+    etcdetcetc:
+      spec:
+        image: ghcr.io/samcday/infra-etcdetcetc
