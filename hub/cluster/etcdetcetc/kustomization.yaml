@@ -5,3 +5,4 @@ resources:
   - ../../../.kustomize-config
   - etcdetcetc.yaml
   - hub-etcd-auth.yaml
+  - hub-etcd.yaml
