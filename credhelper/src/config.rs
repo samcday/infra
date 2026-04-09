@@ -30,8 +30,11 @@ pub fn cache_root() -> PathBuf {
 }
 
 pub fn repo_root() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("failed to determine executable path")?;
+    let exe_dir = exe.parent().context("executable has no parent directory")?;
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
+        .current_dir(exe_dir)
         .output()
         .context("failed to run git")?;
     if !output.status.success() {
