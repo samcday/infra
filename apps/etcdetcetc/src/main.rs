@@ -6,9 +6,15 @@ mod tenant;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use kube::CustomResourceExt;
-use std::{collections::HashMap, sync::{Arc, RwLock as StdRwLock}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock as StdRwLock},
+};
 use tokio::sync::RwLock;
-use tokio::{signal::unix::{SignalKind, signal}, task::JoinError};
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    task::JoinError,
+};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[derive(Parser)]

@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 const CLUSTER_NAME: &str = "etcdetcetc";

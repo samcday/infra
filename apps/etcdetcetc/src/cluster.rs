@@ -108,7 +108,10 @@ async fn reconcile(
     if !context.allowed_namespaces.is_empty()
         && !context.allowed_namespaces.iter().any(|ns| ns == &namespace)
     {
-        warn!(namespace, name, "cluster namespace not in allowedNamespaces, skipping");
+        warn!(
+            namespace,
+            name, "cluster namespace not in allowedNamespaces, skipping"
+        );
         return Ok(Action::await_change());
     }
 
@@ -195,14 +198,9 @@ async fn reconcile(
     let client = context.clients.read().await.get(&key).cloned();
     match client {
         Some(mut client) => {
-            if let Err(err) = fetch_and_update_status(
-                &mut client,
-                &cluster,
-                &context.client,
-                &namespace,
-                &name,
-            )
-            .await
+            if let Err(err) =
+                fetch_and_update_status(&mut client, &cluster, &context.client, &namespace, &name)
+                    .await
             {
                 warn!(namespace, name, error = %err, "health check failed, marking disconnected");
                 context.clients.write().await.remove(&key);
@@ -224,7 +222,11 @@ async fn reconcile(
     Ok(Action::requeue(Duration::from_secs(15)))
 }
 
-fn error_policy(_cluster: Arc<EtcdCluster>, error: &ClusterError, _context: Arc<ClusterContext>) -> Action {
+fn error_policy(
+    _cluster: Arc<EtcdCluster>,
+    error: &ClusterError,
+    _context: Arc<ClusterContext>,
+) -> Action {
     warn!(error = %error, "applying EtcdCluster error policy");
     Action::requeue(Duration::from_secs(60))
 }
@@ -476,11 +478,7 @@ async fn update_status(
     patch_status_if_changed(current, client, namespace, name, desired).await
 }
 
-fn index_secret_ref(
-    index: &SecretRefIndex,
-    cluster_key: (&str, &str),
-    secret_key: (&str, &str),
-) {
+fn index_secret_ref(index: &SecretRefIndex, cluster_key: (&str, &str), secret_key: (&str, &str)) {
     let cluster_key = (cluster_key.0.to_owned(), cluster_key.1.to_owned());
     let secret_key = (secret_key.0.to_owned(), secret_key.1.to_owned());
 

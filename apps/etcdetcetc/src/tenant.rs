@@ -5,24 +5,18 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use futures::StreamExt;
 use k8s_openapi::{
     ByteString,
-    api::{
-        core::v1::{ConfigMap, Secret},
-    },
+    api::core::v1::{ConfigMap, Secret},
 };
 use kube::{
     Api, Client, Resource, ResourceExt,
-    api::{ObjectMeta, Patch, PatchParams},
-    runtime::{
-        Controller,
-        controller::Action,
-        watcher,
-    },
+    api::{ApiResource, DynamicObject, GroupVersionKind, ObjectMeta, Patch, PatchParams},
+    runtime::{Controller, controller::Action, watcher},
 };
 use tracing::{error, info, warn};
 
 use crate::{
     cluster::ClusterClients,
-    crd::{EtcdCluster, EtcdTenant},
+    crd::{CertIssuerRef, EtcdCluster, EtcdTenant},
 };
 
 const TENANT_FINALIZER: &str = "etcdetcetc.samcday.com/tenant";
@@ -89,7 +83,10 @@ pub async fn run(context: TenantContext) {
         .await;
 }
 
-async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Result<Action, TenantError> {
+async fn reconcile(
+    tenant: Arc<EtcdTenant>,
+    context: Arc<TenantContext>,
+) -> Result<Action, TenantError> {
     let namespace = tenant
         .namespace()
         .ok_or_else(|| TenantError::Invalid(format!("{} has no namespace", tenant.name_any())))?;
@@ -98,12 +95,15 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
     if !context.allowed_namespaces.is_empty()
         && !context.allowed_namespaces.iter().any(|ns| ns == &namespace)
     {
-        warn!(namespace, name, "tenant namespace not in allowedNamespaces, skipping");
+        warn!(
+            namespace,
+            name, "tenant namespace not in allowedNamespaces, skipping"
+        );
         return Ok(Action::await_change());
     }
 
-    let etcd_name = format!("{namespace}-{name}");
-    let prefix = format!("/{namespace}-{name}/");
+    let etcd_name = format!("{namespace}:{name}");
+    let prefix = format!("/{namespace}:{name}/");
 
     info!(namespace, name, "reconciling EtcdTenant");
 
@@ -113,18 +113,25 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
 
     ensure_finalizer(&context.client, &tenant, &namespace).await?;
 
-    let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.clone());
+    let cluster_namespace = tenant
+        .spec
+        .cluster_ref
+        .namespace
+        .clone()
+        .unwrap_or_else(|| namespace.clone());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
 
+    let clusters = Api::<EtcdCluster>::namespaced(context.client.clone(), &cluster_namespace);
+    let cluster = clusters.get(&cluster_name).await?;
+
     if cluster_namespace != namespace {
-        let clusters = Api::<EtcdCluster>::namespaced(context.client.clone(), &cluster_namespace);
-        let cluster = clusters.get(&cluster_name).await?;
         let allowed_namespaces = &cluster.spec.allowed_namespaces;
-        let namespace_allowed = allowed_namespaces.iter().any(|allowed| allowed == "*" || allowed == &namespace);
+        let namespace_allowed = allowed_namespaces
+            .iter()
+            .any(|allowed| allowed == "*" || allowed == &namespace);
         if !namespace_allowed {
-            let message = format!(
-                "tenant namespace {namespace} is not in EtcdCluster allowedNamespaces"
-            );
+            let message =
+                format!("tenant namespace {namespace} is not in EtcdCluster allowedNamespaces");
             update_ready_status(
                 &context.client,
                 &tenant,
@@ -139,29 +146,30 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         }
     }
 
-    let mut etcd_client = match get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
-        Some(client) => client,
-        None => {
-            warn!(
-                tenant_namespace = namespace,
-                tenant_name = name,
-                cluster_namespace,
-                cluster_name,
-                "referenced EtcdCluster not connected yet, requeueing"
-            );
-            update_ready_status(
-                &context.client,
-                &tenant,
-                &namespace,
-                &name,
-                false,
-                "ClusterNotConnected",
-                "referenced EtcdCluster not connected yet",
-            )
-            .await?;
-            return Ok(Action::requeue(Duration::from_secs(30)));
-        }
-    };
+    let mut etcd_client =
+        match get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
+            Some(client) => client,
+            None => {
+                warn!(
+                    tenant_namespace = namespace,
+                    tenant_name = name,
+                    cluster_namespace,
+                    cluster_name,
+                    "referenced EtcdCluster not connected yet, requeueing"
+                );
+                update_ready_status(
+                    &context.client,
+                    &tenant,
+                    &namespace,
+                    &name,
+                    false,
+                    "ClusterNotConnected",
+                    "referenced EtcdCluster not connected yet",
+                )
+                .await?;
+                return Ok(Action::requeue(Duration::from_secs(30)));
+            }
+        };
 
     let secret_name = tenant
         .spec
@@ -169,26 +177,63 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         .clone()
         .unwrap_or_else(|| format!("{name}-etcd"));
 
-    let password = ensure_password_secret(&context.client, &tenant, &namespace, &name).await?;
+    let tls_mode = cluster.spec.cert_issuer_ref.is_some();
 
-    ensure_tenant_rbac(&mut etcd_client, &etcd_name, &prefix, &password).await?;
-    ensure_output_secret(
-        &context.client,
-        &tenant,
-        &namespace,
-        &secret_name,
-        &etcd_name,
-        &password,
-    )
-    .await?;
-    let config_mirror_ready = ensure_config_mirror(
-        &context.client,
-        &tenant,
-        &namespace,
-        &name,
-        &prefix,
-    )
-    .await?;
+    if let Some(cert_issuer_ref) = cluster.spec.cert_issuer_ref.as_ref() {
+        ensure_tenant_certificate(
+            &context.client,
+            &tenant,
+            &namespace,
+            &etcd_name,
+            &secret_name,
+            cert_issuer_ref,
+        )
+        .await?;
+
+        ensure_tenant_rbac(&mut etcd_client, &etcd_name, &prefix, "", true).await?;
+    } else {
+        let password = ensure_password_secret(&context.client, &tenant, &namespace, &name).await?;
+
+        ensure_tenant_rbac(&mut etcd_client, &etcd_name, &prefix, &password, false).await?;
+        ensure_output_secret(
+            &context.client,
+            &tenant,
+            &namespace,
+            &secret_name,
+            &etcd_name,
+            &password,
+        )
+        .await?;
+    }
+
+    if tls_mode {
+        let secrets = Api::<Secret>::namespaced(context.client.clone(), &namespace);
+        let cert_secret_ready = match secrets.get(&secret_name).await {
+            Ok(secret) => secret
+                .data
+                .as_ref()
+                .is_some_and(|data| data.contains_key("tls.crt")),
+            Err(kube::Error::Api(ae)) if ae.code == 404 => false,
+            Err(err) => return Err(err.into()),
+        };
+
+        if !cert_secret_ready {
+            update_ready_status(
+                &context.client,
+                &tenant,
+                &namespace,
+                &name,
+                false,
+                "CertificateNotReady",
+                "tenant TLS certificate has not been issued yet",
+            )
+            .await?;
+            return Ok(Action::requeue(Duration::from_secs(30)));
+        }
+    }
+
+    let config_mirror_ready =
+        ensure_config_mirror(&context.client, &tenant, &namespace, &name, &prefix).await?;
     if !config_mirror_ready {
         update_ready_status(
             &context.client,
@@ -216,7 +261,11 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
     Ok(Action::requeue(Duration::from_secs(5 * 60)))
 }
 
-fn error_policy(_tenant: Arc<EtcdTenant>, error: &TenantError, _context: Arc<TenantContext>) -> Action {
+fn error_policy(
+    _tenant: Arc<EtcdTenant>,
+    error: &TenantError,
+    _context: Arc<TenantContext>,
+) -> Action {
     warn!(error = %error, "applying EtcdTenant error policy");
     Action::requeue(Duration::from_secs(60))
 }
@@ -231,16 +280,26 @@ async fn reconcile_delete(
         return Ok(Action::await_change());
     }
 
-    let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.to_owned());
+    let cluster_namespace = tenant
+        .spec
+        .cluster_ref
+        .namespace
+        .clone()
+        .unwrap_or_else(|| namespace.to_owned());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
-    let etcd_name = format!("{namespace}-{name}");
-    let prefix = format!("/{namespace}-{name}/");
+    let etcd_name = format!("{namespace}:{name}");
+    let prefix = format!("/{namespace}:{name}/");
 
-    if let Some(mut etcd_client) = get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
+    if let Some(mut etcd_client) =
+        get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await
+    {
         info!(namespace, name, prefix, "cleaning up tenant data and RBAC");
 
         etcd_client
-            .delete(prefix, Some(etcd_client::DeleteOptions::new().with_prefix()))
+            .delete(
+                prefix,
+                Some(etcd_client::DeleteOptions::new().with_prefix()),
+            )
             .await?;
 
         let mut auth = etcd_client.auth_client();
@@ -292,24 +351,36 @@ async fn ensure_tenant_rbac(
     name: &str,
     prefix: &str,
     password: &str,
+    tls_mode: bool,
 ) -> Result<(), TenantError> {
     let mut auth = client.auth_client();
 
     if let Err(err) = auth.user_get(name).await {
         if is_not_found_error(&err) {
             info!(name, "creating etcd tenant user");
-            auth.user_add(name, password, None).await?;
+            if tls_mode {
+                auth.user_add(
+                    name,
+                    "",
+                    Some(etcd_client::UserAddOptions::new().with_no_pwd()),
+                )
+                .await?;
+            } else {
+                auth.user_add(name, password, None).await?;
+            }
         } else {
             return Err(TenantError::Etcd(err));
         }
     }
 
-    // TODO: this is best-effort — for mTLS clusters the password is irrelevant and this
-    // call may fail harmlessly. For non-mTLS (basic auth) clusters a failure here means
-    // the output Secret password diverges from etcd. We need proper handling once we
-    // solidify non-mTLS support (detect auth mode, propagate error for basic-auth clusters).
-    if let Err(err) = auth.user_change_password(name, password).await {
-        warn!(name, error = %err, "failed to sync etcd user password");
+    if !tls_mode {
+        // TODO: this is best-effort — for mTLS clusters the password is irrelevant and this
+        // call may fail harmlessly. For non-mTLS (basic auth) clusters a failure here means
+        // the output Secret password diverges from etcd. We need proper handling once we
+        // solidify non-mTLS support (detect auth mode, propagate error for basic-auth clusters).
+        if let Err(err) = auth.user_change_password(name, password).await {
+            warn!(name, error = %err, "failed to sync etcd user password");
+        }
     }
 
     if let Err(err) = auth.role_get(name).await {
@@ -325,7 +396,10 @@ async fn ensure_tenant_rbac(
     let role = auth.role_get(name).await?;
     for permission in role.permissions() {
         if permission != desired_permission {
-            info!(name, prefix, "revoking stale prefix permission from tenant role");
+            info!(
+                name,
+                prefix, "revoking stale prefix permission from tenant role"
+            );
             let options = if permission.is_prefix() {
                 Some(etcd_client::RoleRevokePermissionOptions::new().with_prefix())
             } else if permission.is_from_key() {
@@ -345,7 +419,11 @@ async fn ensure_tenant_rbac(
     }
 
     let role = auth.role_get(name).await?;
-    if !role.permissions().iter().any(|perm| perm == &desired_permission) {
+    if !role
+        .permissions()
+        .iter()
+        .any(|perm| perm == &desired_permission)
+    {
         info!(name, prefix, "granting prefix permission to tenant role");
         auth.role_grant_permission(name, desired_permission).await?;
     }
@@ -355,6 +433,61 @@ async fn ensure_tenant_rbac(
         info!(name, "granting role to tenant user");
         auth.user_grant_role(name, name).await?;
     }
+
+    Ok(())
+}
+
+async fn ensure_tenant_certificate(
+    client: &Client,
+    tenant: &EtcdTenant,
+    tenant_namespace: &str,
+    etcd_name: &str,
+    secret_name: &str,
+    cert_issuer_ref: &CertIssuerRef,
+) -> Result<(), TenantError> {
+    let owner_reference = tenant.controller_owner_ref(&()).ok_or_else(|| {
+        TenantError::Invalid(format!(
+            "{} cannot produce controller owner reference",
+            tenant.name_any()
+        ))
+    })?;
+
+    let gvk = GroupVersionKind::gvk("cert-manager.io", "v1", "Certificate");
+    let certificate_ar = ApiResource::from_gvk_with_plural(&gvk, "certificates");
+    let certificates =
+        Api::<DynamicObject>::namespaced_with(client.clone(), tenant_namespace, &certificate_ar);
+
+    let certificate_name = format!("{}-cert", tenant.name_any());
+    let certificate = serde_json::json!({
+        "apiVersion": "cert-manager.io/v1",
+        "kind": "Certificate",
+        "metadata": {
+            "name": &certificate_name,
+            "namespace": tenant_namespace,
+            "ownerReferences": [owner_reference],
+        },
+        "spec": {
+            "secretName": secret_name,
+            "commonName": etcd_name,
+            "usages": ["client auth"],
+            "issuerRef": {
+                "name": &cert_issuer_ref.name,
+                "kind": &cert_issuer_ref.kind,
+                "group": &cert_issuer_ref.group,
+            },
+            "privateKey": {
+                "algorithm": "ECDSA",
+            },
+        }
+    });
+
+    certificates
+        .patch(
+            &certificate_name,
+            &PatchParams::apply("etcdetcetc").force(),
+            &Patch::Apply(&certificate),
+        )
+        .await?;
 
     Ok(())
 }
@@ -415,7 +548,11 @@ async fn ensure_config_mirror(
     tenant_name: &str,
     prefix: &str,
 ) -> Result<bool, TenantError> {
-    let cluster_namespace = tenant.spec.cluster_ref.namespace.as_deref()
+    let cluster_namespace = tenant
+        .spec
+        .cluster_ref
+        .namespace
+        .as_deref()
         .unwrap_or(tenant_namespace);
     let cluster_name = tenant.spec.cluster_ref.name.as_str();
     let source_name = format!("{cluster_name}-etcd");
@@ -485,12 +622,8 @@ async fn update_ready_status(
         .map(|status| status.conditions.as_slice())
         .unwrap_or(&[]);
 
-    let condition = crate::crd::ready_condition_with_existing(
-        ready,
-        reason,
-        message,
-        existing_conditions,
-    );
+    let condition =
+        crate::crd::ready_condition_with_existing(ready, reason, message, existing_conditions);
     if existing_conditions.len() == 1 && existing_conditions[0] == condition {
         return Ok(());
     }
@@ -506,7 +639,11 @@ async fn update_ready_status(
     Ok(())
 }
 
-async fn ensure_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str) -> Result<(), TenantError> {
+async fn ensure_finalizer(
+    client: &Client,
+    tenant: &EtcdTenant,
+    namespace: &str,
+) -> Result<(), TenantError> {
     if has_finalizer(tenant) {
         return Ok(());
     }
@@ -515,11 +652,13 @@ async fn ensure_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str)
     let patch: json_patch::Patch = if tenant.meta().finalizers.is_some() {
         serde_json::from_value(serde_json::json!([
             { "op": "add", "path": "/metadata/finalizers/-", "value": TENANT_FINALIZER }
-        ])).unwrap()
+        ]))
+        .unwrap()
     } else {
         serde_json::from_value(serde_json::json!([
             { "op": "add", "path": "/metadata/finalizers", "value": [TENANT_FINALIZER] }
-        ])).unwrap()
+        ]))
+        .unwrap()
     };
 
     api.patch(
@@ -532,7 +671,11 @@ async fn ensure_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str)
     Ok(())
 }
 
-async fn remove_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str) -> Result<(), TenantError> {
+async fn remove_finalizer(
+    client: &Client,
+    tenant: &EtcdTenant,
+    namespace: &str,
+) -> Result<(), TenantError> {
     let Some(index) = tenant
         .meta()
         .finalizers
@@ -547,7 +690,8 @@ async fn remove_finalizer(client: &Client, tenant: &EtcdTenant, namespace: &str)
     let patch: json_patch::Patch = serde_json::from_value(serde_json::json!([
         { "op": "test", "path": &path, "value": TENANT_FINALIZER },
         { "op": "remove", "path": &path }
-    ])).unwrap();
+    ]))
+    .unwrap();
 
     api.patch(
         &tenant.name_any(),

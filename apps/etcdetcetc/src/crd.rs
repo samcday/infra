@@ -94,6 +94,19 @@ pub struct ClusterReference {
     pub namespace: Option<String>,
 }
 
+/// Reference to a cert-manager Issuer or ClusterIssuer.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CertIssuerRef {
+    pub name: String,
+    pub kind: String,
+    #[serde(default = "default_cert_manager_group")]
+    pub group: String,
+}
+
+fn default_cert_manager_group() -> String {
+    "cert-manager.io".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // EtcdCluster
 // ---------------------------------------------------------------------------
@@ -127,6 +140,11 @@ pub struct EtcdClusterSpec {
     /// only. Use `["*"]` to allow all namespaces.
     #[serde(default)]
     pub allowed_namespaces: Vec<String>,
+
+    /// Optional cert-manager issuer for provisioning tenant TLS client certs.
+    /// When set, tenants get TLS cert Secrets instead of username/password.
+    #[serde(default)]
+    pub cert_issuer_ref: Option<CertIssuerRef>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]

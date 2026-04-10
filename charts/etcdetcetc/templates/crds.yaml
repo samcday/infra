@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: etcdclusters.etcdetcetc.samcday.com
   annotations:
     helm.sh/resource-policy: keep
+  name: etcdclusters.etcdetcetc.samcday.com
 spec:
   group: etcdetcetc.samcday.com
   names:
@@ -53,6 +53,23 @@ spec:
                   name:
                     type: string
                 required:
+                - name
+                type: object
+              certIssuerRef:
+                description: Optional cert-manager issuer for provisioning tenant
+                  TLS client certs. When set, tenants get TLS cert Secrets instead
+                  of username/password.
+                nullable: true
+                properties:
+                  group:
+                    default: cert-manager.io
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
                 - name
                 type: object
               endpoints:
@@ -146,9 +163,9 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: etcdtenants.etcdetcetc.samcday.com
   annotations:
     helm.sh/resource-policy: keep
+  name: etcdtenants.etcdetcetc.samcday.com
 spec:
   group: etcdetcetc.samcday.com
   names:
@@ -236,3 +253,4 @@ spec:
     storage: true
     subresources:
       status: {}
+
