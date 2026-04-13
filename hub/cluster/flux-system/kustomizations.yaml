@@ -147,3 +147,10 @@ spec:
     tailscale:
       spec:
         path: hub/cluster/tailscale
+    vaultwarden:
+      spec:
+        dependsOn:
+          - name: gateway-api
+          - name: cert-manager
+          - name: rook-ceph
+        path: hub/cluster/vaultwarden
