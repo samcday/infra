@@ -82,6 +82,7 @@ spec:
           - >-
             litestream restore
             -if-db-not-exists
+            -if-replica-exists
             -config /etc/litestream.yml
             /data/db.sqlite3
         envFrom:
