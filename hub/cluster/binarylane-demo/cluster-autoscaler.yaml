@@ -92,7 +92,7 @@ spec:
       kind: ConfigMap
       data:
         cloud-config: |
-          address: bl-controllers-binarylane-controller.binarylane-demo.svc:8086
+          address: bl-controllers-binarylane-controllers.binarylane-demo.svc:8086
           key: /etc/ssl/client-cert/tls.key
           cert: /etc/ssl/client-cert/tls.crt
           cacert: /etc/ssl/client-cert/ca.crt

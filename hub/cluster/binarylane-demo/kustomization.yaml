@@ -8,6 +8,7 @@ namespace: binarylane-demo
 resources:
   - ../../../.kustomize-config
   - bl-controllers.yaml
+  - bl-crds.yaml
   - bl-token.yaml
   - cluster-autoscaler.yaml
   - control-plane.yaml

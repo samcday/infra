@@ -37,3 +37,10 @@ spec:
           secretRef:
             name: admin-kubeconfig
         path: hub/cluster/binarylane-demo/gateway-api
+    asg:
+      spec:
+        dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: hub/cluster/binarylane-demo/asg

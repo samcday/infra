@@ -1,0 +1,96 @@
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-syd
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: syd
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-mel
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: mel
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-bne
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: bne
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-per
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: per
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-adl
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: adl
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data
+---
+apiVersion: blc.samcday.com/v1alpha1
+kind: AutoScalingGroup
+metadata:
+  name: bldemo-sin
+spec:
+  minSize: 0
+  maxSize: 3
+  size: std-1vcpu
+  region: sin
+  image: ubuntu-24.04
+  namePrefix: bldemo-
+  userDataSecretRef:
+    name: bldemo-cloud-init
+    namespace: kube-system
+    key: user-data

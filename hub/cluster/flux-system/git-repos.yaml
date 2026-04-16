@@ -34,4 +34,6 @@ spec:
         url: https://github.com/samcday/build.postmarketos.org.git
     binarylane-controllers:
       spec:
+        ref:
+          branch: charts
         url: https://github.com/samcday/binarylane-controllers.git
