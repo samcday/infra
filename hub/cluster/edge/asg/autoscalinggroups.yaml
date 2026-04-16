@@ -2,95 +2,95 @@
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-syd
+  name: edge-syd
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: syd
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data
 ---
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-mel
+  name: edge-mel
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: mel
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data
 ---
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-bne
+  name: edge-bne
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: bne
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data
 ---
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-per
+  name: edge-per
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: per
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data
 ---
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-adl
+  name: edge-adl
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: adl
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data
 ---
 apiVersion: blc.samcday.com/v1alpha1
 kind: AutoScalingGroup
 metadata:
-  name: bldemo-sin
+  name: edge-sin
 spec:
   minSize: 0
   maxSize: 3
   size: std-1vcpu
   region: sin
   image: ubuntu-24.04
-  namePrefix: bldemo-
+  namePrefix: edge-
   userDataSecretRef:
-    name: bldemo-cloud-init
+    name: edge-cloud-init
     namespace: kube-system
     key: user-data

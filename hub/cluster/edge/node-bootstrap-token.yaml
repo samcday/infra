@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Secret
 metadata:
     name: node-bootstrap-token
-    namespace: binarylane-demo
+    namespace: edge
 stringData:
     id: ENC[AES256_GCM,data:KGFHQGoX,iv:yD67YfBlvPZ6WiJPbHaoGPTkVtLSY/E7poGTR5XrA8o=,tag:9AzBqML1woDhPZcquaf7Vw==,type:str]
     secret: ENC[AES256_GCM,data:jNSBXimDc8YbXPJ9z5dftw==,iv:FWgBpWj6bFT4NMQRyIJVMEu2xvE+F/Ku7+CCP0pZjQ4=,tag:oPUjSzMMn4Ntsmp8iUhr3w==,type:str]

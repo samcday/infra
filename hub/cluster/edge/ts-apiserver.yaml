@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ts-apiserver
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   replicas: 1
   strategy:
@@ -25,7 +25,7 @@ spec:
             - name: TS_EXTRA_ARGS
               value: --login-server=https://headscale.tail22d0a0.ts.net
             - name: TS_HOSTNAME
-              value: binarylane-demo-apiserver
+              value: edge-apiserver
             - name: TS_AUTHKEY
               valueFrom:
                 secretKeyRef:
@@ -44,7 +44,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: ts-apiserver
-  namespace: binarylane-demo
+  namespace: edge
 rules:
 - apiGroups: [""]
   resourceNames: [apiserver-ts-state]
@@ -55,7 +55,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: ts-apiserver
-  namespace: binarylane-demo
+  namespace: edge
 subjects:
 - kind: ServiceAccount
   name: ts-apiserver
@@ -68,11 +68,11 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: ts-apiserver
-  namespace: binarylane-demo
+  namespace: edge
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: apiserver-ts-state
-  namespace: binarylane-demo
+  namespace: edge
 type: Opaque

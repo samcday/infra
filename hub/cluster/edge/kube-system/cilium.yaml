@@ -3,7 +3,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: cilium
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -42,7 +42,7 @@ spec:
     ipam:
       mode: kubernetes
     ipv4NativeRoutingCIDR: 172.24.0.0/16
-    k8sServiceHost: binarylane-demo-apiserver.tailnet.hub.samcday.com
+    k8sServiceHost: edge-apiserver.tailnet.hub.samcday.com
     k8sServicePort: 6443
     kubeProxyReplacement: true
     nodeIPAM:

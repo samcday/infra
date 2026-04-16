@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Secret
 metadata:
     name: bl-token
-    namespace: binarylane-demo
+    namespace: edge
 stringData:
     BL_API_TOKEN: ENC[AES256_GCM,data:eeb3/pGLaePYsUnMc9PRyl1XOz/rYremSmBjN/tz9HpXbH0cBKAC/+9TvJexE0JZ9jzy35D2gJ7NwFotLlCGNg==,iv:yppMOL0ux+H94pWkfcg9mli2TWgqcg6UnJLHGzeZ3o8=,tag:FpszjVrMXL/mEX0xb5ssew==,type:str]
 sops:

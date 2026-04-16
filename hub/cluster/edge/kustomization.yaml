@@ -4,7 +4,7 @@ configMapGenerator:
   - name: control-plane-values
     files:
       - values.yaml=control-plane-values.yaml
-namespace: binarylane-demo
+namespace: edge
 resources:
   - ../../../.kustomize-config
   - bl-controllers.yaml

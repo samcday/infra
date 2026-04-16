@@ -7,8 +7,9 @@ bootstrapTokens:
     # token ID+secret is set from HelmRelease spec.valuesFrom
 clusterCIDRs: [172.24.0.0/16]
 clusterDNS: [172.23.0.10]
-clusterName: binarylane-demo
+clusterName: edge
 etcd:
+  prefix: /edge:k8s
   certIssuer:
     name: etcd
     kind: ClusterIssuer
@@ -16,7 +17,7 @@ etcd:
     - https://hub-az1-cp1.hub.internal:2379
     - https://hub-az1-cp2.hub.internal:2379
     - https://hub-az1-cp3.hub.internal:2379
-externalHostname: binarylane-demo-apiserver.tailnet.hub.samcday.com
+externalHostname: edge-apiserver.tailnet.hub.samcday.com
 externalIP: 100.64.0.15
 konnectivity:
   agent:

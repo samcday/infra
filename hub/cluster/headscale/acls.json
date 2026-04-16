@@ -39,8 +39,8 @@
         },
         {
             "action": "accept",
-            "src": ["tag:binarylane-demo-node"],
-            "dst": ["tag:binarylane-demo-apiserver:*"]
+            "src": ["tag:edge-node"],
+            "dst": ["tag:edge-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -66,8 +66,8 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
-        "tag:binarylane-demo-apiserver": [],
-        "tag:binarylane-demo-node": [],
+        "tag:edge-apiserver": [],
+        "tag:edge-node": [],
         "tag:simonet": []
     }
 }

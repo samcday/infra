@@ -36,4 +36,4 @@ spec:
     kind: ClusterIssuer
     name: letsencrypt
   dnsNames:
-    - "*.binarylane-demo.samcday.com"
+    - "*.edge.samcday.com"

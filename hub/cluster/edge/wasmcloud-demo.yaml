@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: wasmcloud-demo
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -41,13 +41,13 @@ spec:
                 interfaces:
                   - incoming-handler
                 config:
-                  host: wasmcloud-demo.binarylane-demo.samcday.com
+                  host: wasmcloud-demo.edge.samcday.com
     route:
       apiVersion: gateway.networking.k8s.io/v1
       kind: HTTPRoute
       spec:
         hostnames:
-          - wasmcloud-demo.binarylane-demo.samcday.com
+          - wasmcloud-demo.edge.samcday.com
         parentRefs:
           - name: shared
             namespace: kube-system

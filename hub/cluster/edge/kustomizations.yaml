@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: kustomizations
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -29,18 +29,18 @@ spec:
         timeout: 5m
     kube-system:
       spec:
-        path: hub/cluster/binarylane-demo/kube-system
+        path: hub/cluster/edge/kube-system
     gateway-api:
       spec:
         dependsOn: [name: kube-system]
         kubeConfig:
           secretRef:
             name: admin-kubeconfig
-        path: hub/cluster/binarylane-demo/gateway-api
+        path: hub/cluster/edge/gateway-api
     asg:
       spec:
         dependsOn: [name: kube-system]
         kubeConfig:
           secretRef:
             name: admin-kubeconfig
-        path: hub/cluster/binarylane-demo/asg
+        path: hub/cluster/edge/asg

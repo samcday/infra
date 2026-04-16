@@ -166,44 +166,44 @@ resource "kubernetes_secret" "simonet-subnet-router-preauth" {
   }
 }
 
-resource "headscale_user" "binarylane_demo" {
-  name = "binarylane-demo"
+resource "headscale_user" "edge" {
+  name = "edge"
 }
 
-resource "headscale_pre_auth_key" "binarylane_demo_apiserver" {
-  user           = headscale_user.binarylane_demo.id
+resource "headscale_pre_auth_key" "edge_apiserver" {
+  user           = headscale_user.edge.id
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = false
-  acl_tags       = ["tag:binarylane-demo-apiserver"]
+  acl_tags       = ["tag:edge-apiserver"]
 }
 
-resource "headscale_pre_auth_key" "binarylane_demo_nodes" {
-  user           = headscale_user.binarylane_demo.id
+resource "headscale_pre_auth_key" "edge_nodes" {
+  user           = headscale_user.edge.id
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = false
-  acl_tags       = ["tag:binarylane-demo-node"]
+  acl_tags       = ["tag:edge-node"]
 }
 
-resource "kubernetes_secret" "binarylane_demo_node_preauth" {
+resource "kubernetes_secret" "edge_node_preauth" {
   metadata {
     name      = "node-ts-auth"
-    namespace = "binarylane-demo"
+    namespace = "edge"
   }
 
   data = {
-    key = headscale_pre_auth_key.binarylane_demo_nodes.key
+    key = headscale_pre_auth_key.edge_nodes.key
   }
 }
 
-resource "kubernetes_secret" "binarylane_demo_apiserver_preauth" {
+resource "kubernetes_secret" "edge_apiserver_preauth" {
   metadata {
     name      = "apiserver-ts-auth"
-    namespace = "binarylane-demo"
+    namespace = "edge"
   }
 
   data = {
-    authkey = headscale_pre_auth_key.binarylane_demo_apiserver.key
+    authkey = headscale_pre_auth_key.edge_apiserver.key
   }
 }

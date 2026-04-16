@@ -3,7 +3,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: cluster-autoscaler
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -74,7 +74,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: cluster-autoscaler-cloud-config
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -92,7 +92,7 @@ spec:
       kind: ConfigMap
       data:
         cloud-config: |
-          address: bl-controllers-binarylane-controllers.binarylane-demo.svc:8086
+          address: bl-controllers-binarylane-controllers.edge.svc:8086
           key: /etc/ssl/client-cert/tls.key
           cert: /etc/ssl/client-cert/tls.crt
           cacert: /etc/ssl/client-cert/ca.crt

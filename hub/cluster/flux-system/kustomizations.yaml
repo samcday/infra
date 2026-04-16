@@ -34,9 +34,9 @@ spec:
     bootie:
       spec:
         path: hub/cluster/bootie
-    binarylane-demo:
+    edge:
       spec:
-        path: hub/cluster/binarylane-demo
+        path: hub/cluster/edge
     butane:
       spec:
         path: hub/butane

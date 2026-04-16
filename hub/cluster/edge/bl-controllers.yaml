@@ -3,7 +3,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: bl-controllers
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
@@ -112,11 +112,11 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: bl-controllers-config
-  namespace: binarylane-demo
+  namespace: edge
 spec:
   chart:
     spec:
-      chart: hub/cluster/binarylane-demo/bl-config
+      chart: hub/cluster/edge/bl-config
       reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
