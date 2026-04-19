@@ -99,6 +99,10 @@ spec:
                 name: unused
   values:
     existingSecret: bl-token
+    # Controller runs in the hub cluster's `edge` namespace but manages a
+    # separate tenanted control plane via --kubeconfig. Per-node Secrets live
+    # in kube-system on the target cluster since `edge` doesn't exist there.
+    namespace: kube-system
     deployment:
       annotations:
         reloader.stakater.com/auto: "true"
