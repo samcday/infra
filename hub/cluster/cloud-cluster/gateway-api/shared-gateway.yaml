@@ -37,8 +37,10 @@ spec:
     kind: ClusterIssuer
     name: letsencrypt
   dnsNames:
+    - samcday.win
     - "*.samcday.com"
     - "*.cloud.samcday.com"
+    - fastboop.win
     - "*.fastboop.win"
     - "*.rokkitpokkit.samcday.com"
     - "*.fastboopmos.samcday.com"
