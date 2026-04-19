@@ -1,3 +1,3 @@
 {{- define "k8s-control-plane.kubectl-image" -}}
-bitnami/kubectl:1.34
+bitnamilegacy/kubectl:1.33.4
 {{- end }}
