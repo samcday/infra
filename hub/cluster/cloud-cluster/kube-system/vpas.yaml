@@ -1,0 +1,116 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vpas
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: vpa
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: kube-system
+  targetNamespace: kube-system
+  values:
+    _:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        updatePolicy:
+          updateMode: Auto
+    coredns:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-coredns
+    metrics-server:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-metrics-server
+    kube-state-metrics:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-kube-state-metrics
+    cert-manager:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-cert-manager
+    cert-manager-webhook:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-cert-manager-webhook
+    cert-manager-cainjector:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: kube-system-cert-manager-cainjector
+    cilium-operator:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: cilium-operator
+    hubble-relay:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: hubble-relay
+    hubble-ui:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: hubble-ui
+    konnectivity-agent:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: konnectivity-agent
+    alloy:
+      spec:
+        updatePolicy:
+          updateMode: Initial
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: kube-system-alloy
+    node-exporter:
+      spec:
+        updatePolicy:
+          updateMode: Initial
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: kube-system-node-exporter-prometheus-node-exporter
+    hcloud-csi-node:
+      spec:
+        updatePolicy:
+          updateMode: Initial
+        targetRef:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          name: kube-system-hcloud-csi-node
