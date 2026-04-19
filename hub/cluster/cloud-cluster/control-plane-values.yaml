@@ -31,18 +31,6 @@ konnectivity:
     image: registry.k8s.io/kas-network-proxy/proxy-server:v0.32.0
 parentClusterDomain: cluster.hub.internal
 scheduler:
-  config:
-    profiles:
-      - pluginConfig:
-          - name: NodeResourcesFit
-            args:
-              scoringStrategy:
-                type: MostAllocated
-                resources:
-                  - name: cpu
-                    weight: 1
-                  - name: memory
-                    weight: 1
   deployment:
     spec:
       replicas: 1
