@@ -16,21 +16,47 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
-  kubeConfig:
-    secretRef:
-      name: admin-kubeconfig
-  storageNamespace: kube-system
-  targetNamespace: kube-system
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: batch
+              version: v1
+              kind: CronJob
+            patch: |
+              - op: add
+                path: /spec/jobTemplate/spec/template/spec/volumes/-
+                value:
+                  name: kubeconfig
+                  secret:
+                    secretName: admin-kubeconfig
+                    items:
+                      - key: value
+                        path: kubeconfig
+              - op: add
+                path: /spec/jobTemplate/spec/template/spec/containers/0/volumeMounts/-
+                value:
+                  name: kubeconfig
+                  mountPath: /kubeconfig
+                  subPath: kubeconfig
+                  readOnly: true
   values:
     # https://github.com/kubernetes-sigs/descheduler/blob/master/charts/descheduler/values.yaml
+    cmdOptions:
+      kubeconfig: /kubeconfig
+    rbac:
+      create: false
+    serviceAccount:
+      create: false
     deschedulerPolicy:
       profiles:
         - name: default
           pluginConfig:
             - name: DefaultEvictor
               args:
-                ignorePvcPods: false
+                ignorePvcPods: true
                 evictLocalStoragePods: true
+                nodeFit: true
             - name: RemoveDuplicates
             - name: RemovePodsHavingTooManyRestarts
               args:
@@ -46,7 +72,6 @@ spec:
           plugins:
             balance:
               enabled:
-                # - RemoveDuplicates
                 - RemovePodsViolatingTopologySpreadConstraint
             deschedule:
               enabled:
@@ -73,28 +98,53 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
-  kubeConfig:
-    secretRef:
-      name: admin-kubeconfig
-  storageNamespace: kube-system
-  targetNamespace: kube-system
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: batch
+              version: v1
+              kind: CronJob
+            patch: |
+              - op: add
+                path: /spec/jobTemplate/spec/template/spec/volumes/-
+                value:
+                  name: kubeconfig
+                  secret:
+                    secretName: admin-kubeconfig
+                    items:
+                      - key: value
+                        path: kubeconfig
+              - op: add
+                path: /spec/jobTemplate/spec/template/spec/containers/0/volumeMounts/-
+                value:
+                  name: kubeconfig
+                  mountPath: /kubeconfig
+                  subPath: kubeconfig
+                  readOnly: true
   values:
     # https://github.com/kubernetes-sigs/descheduler/blob/master/charts/descheduler/values.yaml
     cmdOptions:
+      kubeconfig: /kubeconfig
       v: 4
+    rbac:
+      create: false
+    serviceAccount:
+      create: false
     deschedulerPolicy:
       profiles:
         - name: default
           pluginConfig:
             - name: DefaultEvictor
               args:
-                ignorePvcPods: false
+                ignorePvcPods: true
                 evictLocalStoragePods: true
                 nodeFit: true
             - name: HighNodeUtilization
               args:
                 thresholds:
-                  memory: 75
+                  cpu: 50
+                  memory: 50
           plugins:
             balance:
               enabled: [HighNodeUtilization]
