@@ -31,7 +31,7 @@ spec:
     autoscalingGroups:
       - name: cx33
         maxSize: 10
-        minSize: 1
+        minSize: 2
         instanceType: cx33
         region: nbg1
       - name: cax21
