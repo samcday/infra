@@ -125,4 +125,4 @@ users: []
 # Can be either an IPv4 subnet, an IPv6 subnet, or exactly one of each.
 serviceCIDRs: []
 
-version: 1.33.5
+version: 1.34.6
