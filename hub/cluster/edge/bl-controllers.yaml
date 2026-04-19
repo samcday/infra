@@ -108,6 +108,8 @@ spec:
         reloader.stakater.com/auto: "true"
     autoscaler:
       enabled: true
+    image:
+      tag: 0.0.1-rc.2
     mtls:
       enabled: true
       clientSecretName: binarylane-controller-mtls-client
