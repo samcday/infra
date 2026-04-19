@@ -66,3 +66,43 @@ spec:
           name: ts-apiserver
         updatePolicy:
           updateMode: Auto
+    reloader:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: reloader-cloud-cluster-reloader
+        updatePolicy:
+          updateMode: Auto
+    metrics-write-proxy:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: metrics-write-proxy
+        updatePolicy:
+          updateMode: Auto
+    descheduler:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: batch/v1
+          kind: CronJob
+          name: descheduler
+        updatePolicy:
+          updateMode: Auto
+    descheduler-highutil:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        targetRef:
+          apiVersion: batch/v1
+          kind: CronJob
+          name: descheduler-highutil
+        updatePolicy:
+          updateMode: Auto
