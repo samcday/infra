@@ -24,6 +24,7 @@ resources:
   - hccm.yaml
   - hcloud-token.yaml
   - keda.yaml
+  - keda-vpas.yaml
   - kustomizations.yaml
   - metrics-write-proxy.yaml
   - namespaces.yaml
@@ -40,3 +41,4 @@ resources:
   - wasmcloud.yaml
   - wasmcloud-demo.yaml
   - wasmcloud-monitoring.yaml
+  - wasmcloud-vpas.yaml

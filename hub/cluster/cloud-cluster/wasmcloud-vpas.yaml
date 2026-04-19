@@ -1,0 +1,57 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud-vpas
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: vpa
+    - name: wasmcloud
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud
+  values:
+    _:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        updatePolicy:
+          updateMode: Auto
+    runtime-operator:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: runtime-operator
+    runtime-gateway:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: runtime-gateway
+    hostgroup-default:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: hostgroup-default
+    nats:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: nats

@@ -1,0 +1,51 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: keda-vpas
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: vpa
+    - name: keda
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: keda
+  targetNamespace: keda
+  values:
+    _:
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      spec:
+        updatePolicy:
+          updateMode: Auto
+    keda-operator:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: keda-operator
+    keda-operator-metrics-apiserver:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: keda-operator-metrics-apiserver
+    keda-admission-webhooks:
+      spec:
+        targetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: keda-admission-webhooks
