@@ -24,6 +24,8 @@ spec:
     env:
       HCLOUD_NETWORK_DISABLE_ATTACHED_CHECK:
         value: 'true'
+      HCLOUD_LOAD_BALANCERS_ENABLED:
+        value: 'false'
     extraVolumeMounts:
       - name: cert
         mountPath: /cert
