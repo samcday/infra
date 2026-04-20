@@ -24,6 +24,11 @@ YAML
   exit 0
 fi
 
+# shell-operator uses KUBECONFIG to watch edge via admin-kubeconfig.
+# Our kubectl calls create Jobs on hub via the pod's in-cluster SA,
+# which only kicks in when KUBECONFIG is unset.
+unset KUBECONFIG
+
 NAMESPACE=edge
 TEMPLATE=/hooks/job-template.yaml
 
