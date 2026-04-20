@@ -25,12 +25,16 @@ spec:
                 path: kubeconfig
       containers:
         - name: join
-          image: alpine:3.21
+          image: ghcr.io/samcday/infra-node-joiner:2026042111 # {"$imagepolicy": "flux-system:node-joiner"}
           env:
-            - name: NODE_IP
-              value: "${NODE_IP}"
             - name: NODE_NAME
               value: "${NODE_NAME}"
+            - name: NODE_IP
+              value: "${NODE_IP}"
+            - name: HEADSCALE_URL
+              value: https://headscale.tail22d0a0.ts.net
+            - name: APISERVER_URL
+              value: edge-apiserver.tailnet.hub.samcday.com:6443
             - name: TS_AUTH_KEY
               valueFrom:
                 secretKeyRef:
@@ -50,31 +54,3 @@ spec:
             - name: edge-kubeconfig
               mountPath: /etc/edge-kubeconfig
               readOnly: true
-          command: [/bin/sh, -c]
-          args:
-            - |
-              set -euo pipefail
-              apk add --no-cache openssh-client sshpass bash kubectl
-
-              NODE_PASSWORD=$(kubectl --kubeconfig=/etc/edge-kubeconfig/kubeconfig \
-                -n kube-system get secret "$NODE_NAME-node-password" \
-                -o jsonpath='{.data.password}' | base64 -d)
-
-              SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
-
-              # cloud-init is still installing packages when SSH first comes up;
-              # retry until the node accepts a login.
-              until sshpass -p "$NODE_PASSWORD" ssh $SSH_OPTS "root@$NODE_IP" true; do
-                echo "waiting for sshd on $NODE_IP..."
-                sleep 10
-              done
-
-              sshpass -p "$NODE_PASSWORD" ssh $SSH_OPTS "root@$NODE_IP" bash -s <<EOF
-              exec 2>&1
-              set -uxo pipefail
-              # cloud-init exits 2 on "recoverable error" (non-fatal module warnings)
-              # which Ubuntu 24.04 reliably trips on. Treat any exit as "done".
-              cloud-init status --wait || true
-              tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key=${TS_AUTH_KEY}
-              kubeadm join edge-apiserver.tailnet.hub.samcday.com:6443 --token ${BOOTSTRAP_TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH}
-              EOF

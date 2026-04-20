@@ -27,3 +27,6 @@ spec:
     etcdetcetc:
       spec:
         image: ghcr.io/samcday/infra-etcdetcetc
+    node-joiner:
+      spec:
+        image: ghcr.io/samcday/infra-node-joiner

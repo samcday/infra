@@ -34,3 +34,7 @@ spec:
       spec:
         imageRepositoryRef:
           name: etcdetcetc
+    node-joiner:
+      spec:
+        imageRepositoryRef:
+          name: node-joiner
