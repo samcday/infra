@@ -26,6 +26,8 @@ spec:
             key: token
     extraArgs:
       - --kubeconfig=/kubeconfig
+      - --crd-source-apiversion=externaldns.k8s.io/v1alpha1
+      - --crd-source-kind=DNSEndpoint
     extraVolumeMounts:
       - name: cert
         mountPath: /cert
@@ -44,6 +46,7 @@ spec:
     provider:
       name: cloudflare
     sources:
+      - crd
       - gateway-httproute
     rbac:
       create: false
