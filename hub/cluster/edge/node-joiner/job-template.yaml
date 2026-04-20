@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: join-${NODE_NAME}
+  labels:
+    app.kubernetes.io/component: node-joiner
+    bl.samcday.com/node: ${NODE_NAME}
+spec:
+  backoffLimit: 30
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: node-joiner
+        bl.samcday.com/node: ${NODE_NAME}
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: edge-kubeconfig
+          secret:
+            secretName: admin-kubeconfig
+            defaultMode: 0400
+            items:
+              - key: value
+                path: kubeconfig
+      containers:
+        - name: join
+          image: alpine:3.21
+          env:
+            - name: NODE_IP
+              value: "${NODE_IP}"
+            - name: NODE_NAME
+              value: "${NODE_NAME}"
+            - name: TS_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: node-ts-auth
+                  key: key
+            - name: BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bl-controllers-config
+                  key: token
+            - name: CA_HASH
+              valueFrom:
+                configMapKeyRef:
+                  name: ca-hash
+                  key: hash
+          volumeMounts:
+            - name: edge-kubeconfig
+              mountPath: /etc/edge-kubeconfig
+              readOnly: true
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -euo pipefail
+              apk add --no-cache openssh-client sshpass bash kubectl
+
+              NODE_PASSWORD=$(kubectl --kubeconfig=/etc/edge-kubeconfig/kubeconfig \
+                -n kube-system get secret "$NODE_NAME-node-password" \
+                -o jsonpath='{.data.password}' | base64 -d)
+
+              SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+
+              # cloud-init is still installing packages when SSH first comes up;
+              # retry until the node accepts a login.
+              until sshpass -p "$NODE_PASSWORD" ssh $SSH_OPTS "root@$NODE_IP" true; do
+                echo "waiting for sshd on $NODE_IP..."
+                sleep 10
+              done
+
+              sshpass -p "$NODE_PASSWORD" ssh $SSH_OPTS "root@$NODE_IP" bash -s <<EOF
+              set -euo pipefail
+              cloud-init status --wait
+              tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key=${TS_AUTH_KEY}
+              kubeadm join edge-apiserver.tailnet.hub.samcday.com:6443 --token ${BOOTSTRAP_TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH}
+              EOF

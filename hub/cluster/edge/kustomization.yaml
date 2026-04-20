@@ -16,6 +16,7 @@ resources:
   - kustomizations.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
+  - node-joiner
   - ts-apiserver.yaml
   - wasmcloud.yaml
   - wasmcloud-demo.yaml
