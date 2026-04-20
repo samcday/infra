@@ -8,6 +8,7 @@ namespace: edge
 resources:
   - ../../../.kustomize-config
   - bl-controllers.yaml
+  - bl-controllers-mtls.yaml
   - bl-crds.yaml
   - bl-token.yaml
   - cluster-autoscaler.yaml
