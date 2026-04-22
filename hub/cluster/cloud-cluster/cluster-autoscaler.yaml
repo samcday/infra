@@ -49,16 +49,6 @@ spec:
         minSize: 0
         instanceType: cx23
         region: hel1
-      - name: edge-ash-cx23
-        maxSize: 3
-        minSize: 0
-        instanceType: cx23
-        region: ash
-      - name: edge-hil-cx23
-        maxSize: 3
-        minSize: 0
-        instanceType: cx23
-        region: hil
     cloudProvider: hetzner
     deployment:
       annotations:
