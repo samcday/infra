@@ -64,3 +64,17 @@ resource "hcloud_network_subnet" "subnet" {
   network_zone = "eu-central"
   ip_range     = "172.29.0.0/16"
 }
+
+resource "hcloud_network_subnet" "subnet_us_east" {
+  network_id   = hcloud_network.network.id
+  type         = "cloud"
+  network_zone = "us-east"
+  ip_range     = "172.28.0.0/17"
+}
+
+resource "hcloud_network_subnet" "subnet_us_west" {
+  network_id   = hcloud_network.network.id
+  type         = "cloud"
+  network_zone = "us-west"
+  ip_range     = "172.28.128.0/17"
+}
