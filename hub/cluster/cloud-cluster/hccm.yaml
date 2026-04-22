@@ -43,4 +43,9 @@ spec:
       podMonitor:
         enabled: true
     networking:
-      enabled: false
+      enabled: true
+      hostNetwork: false
+      clusterCIDR: 172.28.0.0/16
+      network:
+        value: network
+        valueFrom: ~
