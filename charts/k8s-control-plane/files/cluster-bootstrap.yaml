@@ -195,6 +195,13 @@ spec:
       serviceAccountName: konnectivity-agent
       tolerations:
         - operator: Exists
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: konnectivity-agent
       volumes:
         - name: konnectivity-agent-token
           projected:
