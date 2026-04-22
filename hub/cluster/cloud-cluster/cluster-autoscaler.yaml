@@ -58,6 +58,7 @@ spec:
       kubeconfig: /kubeconfig
     extraEnv:
       HCLOUD_FIREWALL: firewall
+      HCLOUD_NETWORK: network
       HCLOUD_SSH_KEY: samcday
     envFromSecret: cluster-autoscaler-config
     extraEnvSecrets:
