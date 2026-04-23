@@ -23,6 +23,9 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/v1.18.0/install/kubernetes/cilium/values.yaml
+    # Cilium autodetects the incorrect 1280 MTU of tailscale0
+    # https://github.com/cilium/cilium/issues/14339
+    MTU: 1500
     envoy:
       securityContext:
         capabilities:

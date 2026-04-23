@@ -15,6 +15,13 @@ spec:
         namespace: flux-system
   interval: 1h
   values:
+    # samcday/hcloud-cloud-controller-manager fork: preserves the existing
+    # Node InternalIP when the hcloud backend doesn't discover one (upstream
+    # strips it, clobbering tailscale-node-controller's tailnet IP writes).
+    # https://github.com/samcday/hcloud-cloud-controller-manager/commit/74053d7
+    image:
+      repository: ghcr.io/samcday/hcloud-cloud-controller-manager
+      tag: main-7c9687a
     args:
       kubeconfig: /kubeconfig
       authentication-kubeconfig: /kubeconfig
@@ -43,9 +50,4 @@ spec:
       podMonitor:
         enabled: true
     networking:
-      enabled: true
-      hostNetwork: false
-      clusterCIDR: 172.28.0.0/16
-      network:
-        value: network
-        valueFrom: ~
+      enabled: false
