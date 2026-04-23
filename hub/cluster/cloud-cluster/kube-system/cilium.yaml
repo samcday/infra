@@ -23,13 +23,12 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/v1.18.0/install/kubernetes/cilium/values.yaml
-    # Pod traffic crosses nodes via tailscale0 (MTU 1280) in this cluster, so
-    # pin Cilium's MTU to match. Otherwise pods get MTU 1500, negotiate TCP
-    # MSS 1460, and the large segments (e.g. apiserver TLS cert chain) don't
-    # survive the WireGuard overhead on tailscale0 — reply gets silently
-    # dropped and TLS handshakes stall. Simonet keeps the 1500 override
-    # because its pod traffic rides a 1500 MTU LAN, not tailscale0.
-    MTU: 1280
+    # Pod traffic crosses nodes via tailscale0 (MTU 1280) in this cluster,
+    # so we want Cilium to pick that up: leave MTU at the default (autodetect).
+    # Matches tailscale0's actual MTU so pod-originated TCP negotiates an MSS
+    # that survives the WireGuard overhead; otherwise TLS handshakes whose
+    # server hello + cert chain exceed ~1220 bytes stall (silent drop of the
+    # large reply segment after masq onto tailscale0).
     envoy:
       securityContext:
         capabilities:
