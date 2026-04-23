@@ -31,12 +31,12 @@ spec:
     autoscalingGroups:
       - name: cx23
         maxSize: 10
-        minSize: 1
+        minSize: 3
         instanceType: cx23
         region: nbg1
       - name: cax11
         maxSize: 10
-        minSize: 1
+        minSize: 0
         instanceType: cax11
         region: nbg1
       - name: edge-fsn1-cx23
