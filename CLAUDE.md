@@ -95,7 +95,7 @@ OpenTofu modules are applied in-cluster via Flux's tofu-controller, not manually
 
 All child clusters have their K8s control planes running inside the hub cluster via the `k8s-control-plane` Helm chart. Their configs live under `hub/cluster/<name>/`.
 
-**cloud-cluster** is the active child cluster, running on Hetzner Cloud (hcloud). It has cloud-native infrastructure that the bare-metal sites don't: cluster-autoscaler (scaling cx33/cax21 VMs in nbg1), hcloud-cloud-controller-manager, hcloud-csi-driver for volumes, descheduler for utilization balancing, and KEDA-scaled Forgejo CI runners. Worker nodes are provisioned via cloud-init (Ubuntu + kubeadm join). It has its own Flux instance, Cilium, CoreDNS, cert-manager, external-dns, and Gateway API. OpenTofu in `hub/cluster/cloud-cluster/main.tf` manages the Hetzner network, firewall, and placement group. May expand to BinaryLane in the future.
+**cloud-cluster** is the active child cluster, running on Hetzner Cloud (hcloud). It has cloud-native infrastructure that the bare-metal sites don't: cluster-autoscaler (scaling cx23/cax21 VMs in nbg1), hcloud-cloud-controller-manager, hcloud-csi-driver for volumes, descheduler for utilization balancing, and KEDA-scaled Forgejo CI runners. Worker nodes are provisioned via cloud-init (Ubuntu + kubeadm join). It has its own Flux instance, Cilium, CoreDNS, cert-manager, external-dns, and Gateway API. OpenTofu in `hub/cluster/cloud-cluster/main.tf` manages the Hetzner network, firewall, and placement group. May expand to BinaryLane in the future.
 
 **simonet** and **ilumbaclusta** are bare-metal sites (currently inactive). They use Fedora CoreOS nodes provisioned via Butane/bootie PXE and have OpenWrt router configs in their top-level directories.
 

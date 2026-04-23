@@ -3,7 +3,7 @@ config:
     arm64: ubuntu-22.04
     amd64: ubuntu-22.04
   nodeConfigs:
-    cx33:
+    cx23:
       cloudInit: |
         #!/bin/bash
         set -uexo pipefail
