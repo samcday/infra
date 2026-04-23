@@ -34,21 +34,6 @@ spec:
         minSize: 3
         instanceType: cx23
         region: nbg1
-      - name: cax11
-        maxSize: 10
-        minSize: 0
-        instanceType: cax11
-        region: nbg1
-      - name: edge-fsn1-cx23
-        maxSize: 3
-        minSize: 0
-        instanceType: cx23
-        region: fsn1
-      - name: edge-hel1-cx23
-        maxSize: 3
-        minSize: 0
-        instanceType: cx23
-        region: hel1
     cloudProvider: hetzner
     deployment:
       annotations:
