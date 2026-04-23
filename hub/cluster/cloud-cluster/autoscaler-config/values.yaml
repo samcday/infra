@@ -1,21 +1,22 @@
 config:
   imagesForArch:
-    arm64: ubuntu-22.04
-    amd64: ubuntu-22.04
+    arm64: ubuntu-24.04
+    amd64: ubuntu-24.04
   nodeConfigs:
     cx23:
       cloudInit: |
         #!/bin/bash
         set -uexo pipefail
         cat > /etc/apt/sources.list <<HERE
-        deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
-        deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+        deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
         curl -fsSL https://tailscale.com/install.sh | sh
         tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key={{ $.Values.tsAuthKey }}
+        mkdir -p /etc/apt/keyrings
         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
         apt-get update
@@ -35,14 +36,15 @@ config:
         #!/bin/bash
         set -uexo pipefail
         cat > /etc/apt/sources.list <<HERE
-        deb http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
-        deb http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+        deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+        deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+        deb http://ports.ubuntu.com/ubuntu-ports noble-backports main restricted universe multiverse
+        deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
         curl -fsSL https://tailscale.com/install.sh | sh
         tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key={{ $.Values.tsAuthKey }}
+        mkdir -p /etc/apt/keyrings
         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
         apt-get update
@@ -62,14 +64,15 @@ config:
         #!/bin/bash
         set -uexo pipefail
         cat > /etc/apt/sources.list <<HERE
-        deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
-        deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+        deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
         curl -fsSL https://tailscale.com/install.sh | sh
         tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key={{ $.Values.tsAuthKey }}
+        mkdir -p /etc/apt/keyrings
         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
         apt-get update
@@ -97,14 +100,15 @@ config:
         #!/bin/bash
         set -uexo pipefail
         cat > /etc/apt/sources.list <<HERE
-        deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
-        deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+        deb http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
         HERE
         export DEBIAN_FRONTEND=noninteractive
         curl -fsSL https://tailscale.com/install.sh | sh
         tailscale up --accept-routes --login-server=https://headscale.tail22d0a0.ts.net --auth-key={{ $.Values.tsAuthKey }}
+        mkdir -p /etc/apt/keyrings
         curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
         echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
         apt-get update
