@@ -31,15 +31,12 @@
                 "tag:hub-subnet-router:*"
             ]
         },
-        // Allow cloud-cluster nodes and pods to access the apiserver, peer
-        // nodes, and pod CIDR. Pod-to-pod traffic rides the tailnet via
-        // tailscale-node-controller advertised routes; for headscale's
-        // packet filter to accept a podCIDR-sourced packet at the receiver
-        // we list 172.28.0.0/16 explicitly as src (headscale doesn't
-        // auto-expand advertised subnets into ACL sources).
+        // Allow cloud-cluster nodes to access their apiserver, peer nodes,
+        // and the pod CIDR (pod-to-pod traffic rides the tailnet via
+        // tailscale-node-controller advertised routes).
         {
             "action": "accept",
-            "src": ["tag:cloud-cluster-node", "172.28.0.0/16"],
+            "src": ["tag:cloud-cluster-node"],
             "dst": [
                 "tag:cloud-cluster-apiserver:*",
                 "tag:cloud-cluster-node:*",
