@@ -34,10 +34,10 @@ spec:
         minSize: 1
         instanceType: cx23
         region: nbg1
-      - name: cax21
+      - name: cax11
         maxSize: 10
         minSize: 1
-        instanceType: cax21
+        instanceType: cax11
         region: nbg1
       - name: edge-fsn1-cx23
         maxSize: 3
