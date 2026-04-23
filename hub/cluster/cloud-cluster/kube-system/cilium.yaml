@@ -23,9 +23,12 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/v1.18.0/install/kubernetes/cilium/values.yaml
-    # Cilium autodetects the incorrect 1280 MTU of tailscale0
-    # https://github.com/cilium/cilium/issues/14339
-    MTU: 1500
+    # Pod traffic crosses nodes via tailscale0 (MTU 1280) in this cluster,
+    # so we want Cilium to pick that up: leave MTU at the default (autodetect).
+    # Matches tailscale0's actual MTU so pod-originated TCP negotiates an MSS
+    # that survives the WireGuard overhead; otherwise TLS handshakes whose
+    # server hello + cert chain exceed ~1220 bytes stall (silent drop of the
+    # large reply segment after masq onto tailscale0).
     envoy:
       securityContext:
         capabilities:
