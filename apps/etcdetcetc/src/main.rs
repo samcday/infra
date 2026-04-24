@@ -6,9 +6,16 @@ mod tenant;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use kube::CustomResourceExt;
-use std::{collections::HashMap, sync::{Arc, RwLock as StdRwLock}};
+use std::{
+    collections::HashMap,
+    error::Error as StdError,
+    sync::{Arc, RwLock as StdRwLock},
+};
 use tokio::sync::RwLock;
-use tokio::{signal::unix::{SignalKind, signal}, task::JoinError};
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    task::JoinError,
+};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[derive(Parser)]
@@ -41,6 +48,15 @@ fn print_crds() {
     println!("{}", serde_json::to_string_pretty(&list).unwrap());
 }
 
+pub(crate) fn format_error_chain(mut error: &dyn StdError) -> String {
+    let mut chain = vec![error.to_string()];
+    while let Some(source) = error.source() {
+        chain.push(source.to_string());
+        error = source;
+    }
+    chain.join(": ")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let Cli {
@@ -61,7 +77,16 @@ async fn main() -> Result<()> {
 
     tracing::info!("etcdetcetc starting");
 
-    let client = kube::Client::try_default().await?;
+    let config = kube::Config::infer().await?;
+    tracing::info!(
+        cluster_url = %config.cluster_url,
+        default_namespace = %config.default_namespace,
+        kubernetes_service_host = ?std::env::var("KUBERNETES_SERVICE_HOST").ok(),
+        kubernetes_service_port = ?std::env::var("KUBERNETES_SERVICE_PORT").ok(),
+        "loaded kubernetes client config"
+    );
+
+    let client = kube::Client::try_from(config)?;
     tracing::info!("connected to kubernetes");
 
     let cluster_clients: cluster::ClusterClients = Arc::new(RwLock::new(HashMap::new()));

@@ -82,7 +82,12 @@ pub async fn run(context: TenantContext) {
                     );
                 }
                 Err(err) => {
-                    error!(error = %err, "EtcdTenant reconciliation failed");
+                    error!(
+                        error = %err,
+                        error_debug = ?err,
+                        error_chain = %crate::format_error_chain(&err),
+                        "EtcdTenant reconciliation failed"
+                    );
                 }
             }
         })
@@ -217,7 +222,12 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
 }
 
 fn error_policy(_tenant: Arc<EtcdTenant>, error: &TenantError, _context: Arc<TenantContext>) -> Action {
-    warn!(error = %error, "applying EtcdTenant error policy");
+    warn!(
+        error = %error,
+        error_debug = ?error,
+        error_chain = %crate::format_error_chain(error),
+        "applying EtcdTenant error policy"
+    );
     Action::requeue(Duration::from_secs(60))
 }
 
