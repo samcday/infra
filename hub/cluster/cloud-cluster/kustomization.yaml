@@ -11,6 +11,7 @@ resources:
   - control-plane.yaml
   - csi-driver.yaml
   - descheduler.yaml
+  - etcdetcetc.yaml
   - external-dns.yaml
   - fastboop.yaml
   - fastboopmos/fastboopmos.yaml
