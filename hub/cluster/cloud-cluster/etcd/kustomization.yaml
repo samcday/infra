@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: etcd
+resources:
+  - namespace.yaml
+  - pki.yaml
+  - service.yaml
+  - pdb.yaml
+  - statefulset.yaml

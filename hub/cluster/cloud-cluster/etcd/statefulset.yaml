@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+spec:
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etcd
+  serviceName: etcd
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app.kubernetes.io/name: etcd
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: etcd
+              topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.6.10
+          command:
+            - /usr/local/bin/etcd
+          args:
+            - --name=$(POD_NAME)
+            - --data-dir=/var/lib/etcd/$(POD_NAME)
+            - --initial-cluster=etcd-0=https://etcd-0.etcd.$(POD_NAMESPACE).svc:2380,etcd-1=https://etcd-1.etcd.$(POD_NAMESPACE).svc:2380,etcd-2=https://etcd-2.etcd.$(POD_NAMESPACE).svc:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=cloud-cluster-etcd
+            - --initial-advertise-peer-urls=https://$(POD_NAME).etcd.$(POD_NAMESPACE).svc:2380
+            - --listen-peer-urls=https://0.0.0.0:2380
+            - --advertise-client-urls=https://$(POD_NAME).etcd.$(POD_NAMESPACE).svc:2379
+            - --listen-client-urls=https://0.0.0.0:2379
+            - --client-cert-auth=true
+            - --peer-client-cert-auth=true
+            - --cert-file=/etc/etcd/pki/peer/tls.crt
+            - --key-file=/etc/etcd/pki/peer/tls.key
+            - --trusted-ca-file=/etc/etcd/pki/peer/ca.crt
+            - --peer-cert-file=/etc/etcd/pki/peer/tls.crt
+            - --peer-key-file=/etc/etcd/pki/peer/tls.key
+            - --peer-trusted-ca-file=/etc/etcd/pki/peer/ca.crt
+            - --auto-compaction-retention=5m
+            - --auto-compaction-mode=periodic
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ETCDCTL_API
+              value: "3"
+            - name: ETCDCTL_CACERT
+              value: /etc/etcd/pki/root/ca.crt
+            - name: ETCDCTL_CERT
+              value: /etc/etcd/pki/root/tls.crt
+            - name: ETCDCTL_KEY
+              value: /etc/etcd/pki/root/tls.key
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+            failureThreshold: 3
+            periodSeconds: 30
+            timeoutSeconds: 5
+          ports:
+            - containerPort: 2379
+              name: client
+            - containerPort: 2380
+              name: peer
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/etcd
+            - name: peer-certs
+              mountPath: /etc/etcd/pki/peer
+              readOnly: true
+            - name: root-certs
+              mountPath: /etc/etcd/pki/root
+              readOnly: true
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/lib/cloud-cluster-etcd
+            type: DirectoryOrCreate
+        - name: peer-certs
+          secret:
+            secretName: etcd-peer
+        - name: root-certs
+          secret:
+            secretName: etcd-root
