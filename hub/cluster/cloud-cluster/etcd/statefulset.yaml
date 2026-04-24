@@ -60,6 +60,8 @@ spec:
                   fieldPath: metadata.namespace
             - name: ETCDCTL_API
               value: "3"
+            - name: ETCDCTL_ENDPOINTS
+              value: https://$(POD_NAME).etcd.$(POD_NAMESPACE).svc:2379
             - name: ETCDCTL_CACERT
               value: /etc/etcd/pki/root/ca.crt
             - name: ETCDCTL_CERT
@@ -69,9 +71,9 @@ spec:
           livenessProbe:
             exec:
               command:
-                - /bin/sh
-                - -ec
-                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+                - /usr/local/bin/etcdctl
+                - endpoint
+                - health
             failureThreshold: 3
             periodSeconds: 30
             timeoutSeconds: 5
@@ -83,9 +85,9 @@ spec:
           readinessProbe:
             exec:
               command:
-                - /bin/sh
-                - -ec
-                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+                - /usr/local/bin/etcdctl
+                - endpoint
+                - health
             failureThreshold: 3
             periodSeconds: 10
             timeoutSeconds: 5
@@ -98,9 +100,9 @@ spec:
           startupProbe:
             exec:
               command:
-                - /bin/sh
-                - -ec
-                - etcdctl --endpoints "https://${POD_NAME}.etcd.${POD_NAMESPACE}.svc:2379" endpoint health
+                - /usr/local/bin/etcdctl
+                - endpoint
+                - health
             failureThreshold: 30
             periodSeconds: 10
             timeoutSeconds: 5
