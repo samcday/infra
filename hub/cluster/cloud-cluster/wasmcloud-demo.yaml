@@ -31,6 +31,9 @@ spec:
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             namespace: fastboop
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            namespace: fastboopmos
         to:
           - group: ""
             kind: Service
