@@ -94,7 +94,8 @@ status:
 
 **spec.clusterRef**: cross-namespace reference to an EtcdCluster.
 
-The etcd key prefix is computed by the controller as `/{namespace}-{name}/`.
+The etcd user and role are computed by the controller as `{namespace}:{name}`.
+The etcd key prefix is computed by the controller as `/{namespace}:{name}/`.
 This value is not user-configurable.
 
 **spec.secretName**: name of the output Secret to create in the tenant's
@@ -124,8 +125,9 @@ Watches: EtcdCluster, referenced Secrets (for credential rotation).
 2. Authorize cross-namespace references using EtcdCluster
    `spec.allowedNamespaces`.
 3. Compute scoped etcd identifiers:
-   - name: `{namespace}-{name}`
-   - prefix: `/{namespace}-{name}/`
+   - user: `{namespace}:{name}`
+   - role: `{namespace}:{name}`
+   - prefix: `/{namespace}:{name}/`
 4. Ensure etcd user exists with a generated password.
 5. Ensure etcd role exists (named same as the user).
 6. Ensure role has `readwrite` permission on the prefix.
@@ -158,7 +160,7 @@ metadata:
       controller: true
 type: Opaque
 data:
-  username: <base64 {tenant namespace}-{tenant name}>
+  username: <base64 {tenant namespace}:{tenant name}>
   password: <base64 generated password>
 ```
 
@@ -180,7 +182,7 @@ metadata:
       controller: true
 data:
   endpoints: "https://host1:2379,https://host2:2379"
-  prefix: "/<tenant namespace>-<tenant name>/"
+  prefix: "/<tenant namespace>:<tenant name>/"
   ca.crt: |
     -----BEGIN CERTIFICATE-----
     ...

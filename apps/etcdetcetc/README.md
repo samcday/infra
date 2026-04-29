@@ -56,7 +56,9 @@ a Secret with credentials and a ConfigMap with connection info. On deletion, the
 entities are removed.
 
 Defaults:
-- `prefix`: auto-assigned as `/{namespace}-{name}/`
+- `user`: auto-assigned as `{namespace}:{name}`
+- `role`: auto-assigned as `{namespace}:{name}`
+- `prefix`: auto-assigned as `/{namespace}:{name}/`
 - `secretName`: `<name>-etcd`
 
 ## Future

@@ -107,8 +107,8 @@ async fn reconcile(tenant: Arc<EtcdTenant>, context: Arc<TenantContext>) -> Resu
         return Ok(Action::await_change());
     }
 
-    let etcd_name = format!("{namespace}-{name}");
-    let prefix = format!("/{namespace}-{name}/");
+    let etcd_name = format!("{namespace}:{name}");
+    let prefix = format!("/{namespace}:{name}/");
 
     info!(namespace, name, "reconciling EtcdTenant");
 
@@ -243,8 +243,8 @@ async fn reconcile_delete(
 
     let cluster_namespace = tenant.spec.cluster_ref.namespace.clone().unwrap_or_else(|| namespace.to_owned());
     let cluster_name = tenant.spec.cluster_ref.name.clone();
-    let etcd_name = format!("{namespace}-{name}");
-    let prefix = format!("/{namespace}-{name}/");
+    let etcd_name = format!("{namespace}:{name}");
+    let prefix = format!("/{namespace}:{name}/");
 
     if let Some(mut etcd_client) = get_cluster_client(&context.clients, &cluster_namespace, &cluster_name).await {
         info!(namespace, name, prefix, "cleaning up tenant data and RBAC");
