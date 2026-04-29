@@ -1,0 +1,19 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: {{ include "managed-cluster-tenant.sourceName" . }}
+  namespace: {{ include "managed-cluster-tenant.namespace" . }}
+spec:
+  interval: {{ .Values.source.interval }}
+{{- with .Values.source.ref }}
+  ref:
+{{ toYaml . | indent 4 }}
+{{- end }}
+{{- if .Values.source.ignore }}
+  ignore: |
+{{ .Values.source.ignore | indent 4 }}
+{{- end }}
+{{- if .Values.source.suspend }}
+  suspend: true
+{{- end }}
+  url: {{ required "source.url is required" .Values.source.url }}

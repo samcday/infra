@@ -1,0 +1,10 @@
+{{- if .Values.sops.ageKey }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "managed-cluster-tenant.sopsSecretName" . }}
+  namespace: {{ include "managed-cluster-tenant.namespace" . }}
+type: Opaque
+stringData:
+  age.agekey: {{ .Values.sops.ageKey | quote }}
+{{- end }}
