@@ -25,7 +25,7 @@ spec:
                 path: kubeconfig
       containers:
         - name: join
-          image: ghcr.io/samcday/infra-node-joiner:2026042401 # {"$imagepolicy": "flux-system:node-joiner"}
+          image: ghcr.io/samcday/infra-node-joiner:2026042921 # {"$imagepolicy": "flux-system:node-joiner"}
           env:
             - name: NODE_NAME
               value: "${NODE_NAME}"
