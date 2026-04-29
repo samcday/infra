@@ -21,7 +21,6 @@ resources:
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml
-  - gibblox.yaml
   - hccm.yaml
   - hcloud-token.yaml
   - keda.yaml
@@ -35,6 +34,7 @@ resources:
   - rokkitpokkit/rokkitpokkit-age-key.yaml
   - rokkitpokkit/rokkitpokkit-tofu-bucket-vars.yaml
   - rokkitpokkit/rokkitpokkit-tofu-cloudflare-vars.yaml
+  - tenants
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml
