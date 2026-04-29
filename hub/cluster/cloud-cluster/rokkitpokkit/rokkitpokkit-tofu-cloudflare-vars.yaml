@@ -21,6 +21,7 @@ spec:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: flux-system
+  suspend: true
   targetNamespace: flux-system
   values:
     tofu-cloudflare-vars:

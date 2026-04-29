@@ -12,6 +12,7 @@ spec:
   interval: 5m
   ref:
     branch: main
+  suspend: true
   url: https://github.com/samcday/fastboop.git
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -32,5 +33,5 @@ spec:
   sourceRef:
     kind: GitRepository
     name: fastboop
-  suspend: false
+  suspend: true
   timeout: 2m

@@ -14,6 +14,7 @@ spec:
   interval: 5m
   ref:
     branch: main
+  suspend: true
   url: https://github.com/samcday/rokkitpokkit.git
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -35,5 +36,6 @@ spec:
   sourceRef:
     kind: GitRepository
     name: rokkitpokkit
+  suspend: true
   targetNamespace: rokkitpokkit
   timeout: 2m
