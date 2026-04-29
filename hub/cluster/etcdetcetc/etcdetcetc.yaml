@@ -15,4 +15,4 @@ spec:
   values:
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
-      tag: "2026042401" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}
+      tag: "2026042921" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}
