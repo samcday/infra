@@ -39,6 +39,10 @@ etcd:
   certIssuer: # required
     # name: etcd
     # kind: ClusterIssuer
+  clientSecret:
+    # Set create=false when an external controller/template manages the Secret.
+    create: true
+    name: apiserver-etcd-client
   endpoints: []
   # It's assumed that this control plane is using a multi-tenanted etcd cluster with RBAC enabled,
   # and thus the compaction API is not permitted.

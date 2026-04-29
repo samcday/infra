@@ -166,7 +166,7 @@ spec:
             secretName: apiserver-cert
         - name: apiserver-etcd-client
           secret:
-            secretName: apiserver-etcd-client
+            secretName: {{ required "missing etcd.clientSecret.name" $.Values.etcd.clientSecret.name }}
         - name: front-proxy-client
           secret:
             secretName: front-proxy-client

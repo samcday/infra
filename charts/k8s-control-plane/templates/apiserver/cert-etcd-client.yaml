@@ -1,11 +1,13 @@
+{{- if $.Values.etcd.clientSecret.create }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: apiserver-etcd-client
+  name: {{ required "missing etcd.clientSecret.name" $.Values.etcd.clientSecret.name }}
 spec:
-  secretName: apiserver-etcd-client
+  secretName: {{ required "missing etcd.clientSecret.name" $.Values.etcd.clientSecret.name }}
   duration: 24h
   usages: [client auth]
   commonName: {{ $.Values.clusterName }}
   issuerRef:
     {{- required "missing etcd.certIssuer" $.Values.etcd.certIssuer | toYaml | nindent 4 }}
+{{- end }}
