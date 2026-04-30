@@ -3,3 +3,4 @@ kind: Kustomization
 namespace: cloud-cluster
 resources:
   - gibblox.yaml
+  - rokkitpokkit.yaml
