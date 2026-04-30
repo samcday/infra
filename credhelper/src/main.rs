@@ -145,8 +145,7 @@ fn usage() {
 
 Clusters:
   hub
-  cloud
-  edge"
+  cloud"
     );
 }
 

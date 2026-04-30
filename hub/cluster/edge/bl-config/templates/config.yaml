@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: bl-controllers-config
-stringData:
-  token: {{ $.Values.token.id }}.{{ $.Values.token.secret }}

@@ -32,6 +32,3 @@ spec:
     build-postmarketos-org:
       spec:
         url: https://github.com/samcday/build.postmarketos.org.git
-    binarylane-controllers:
-      spec:
-        url: https://github.com/samcday/binarylane-controllers.git

@@ -34,9 +34,6 @@ spec:
     bootie:
       spec:
         path: hub/cluster/bootie
-    edge:
-      spec:
-        path: hub/cluster/edge
     butane:
       spec:
         path: hub/butane

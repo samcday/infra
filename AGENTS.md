@@ -18,7 +18,7 @@
 - `cargo xtask dev-up` requires `kind`, `docker`, `kubectl`, and `crane`; it also creates/reuses Docker registry `127.0.0.1:5001`.
 - The `etcdetcetc` Tilt path uses `tilt up` or `tilt ci` and builds `x86_64-unknown-linux-musl`; local setup needs protobuf and musl tooling like the devcontainer installs.
 - The shipped `apps/etcdetcetc` image strips `xtask` from `Cargo.toml`; do not rely on `xtask` existing in the runtime container.
-- `credhelper` is a separate Rust crate; use `./scripts/credhelper <hub|cloud|edge>` or `./scripts/credhelper --init`, and the wrapper rebuilds `credhelper/target/release/credhelper` when sources change.
+- `credhelper` is a separate Rust crate; use `./scripts/credhelper <hub|cloud>` or `./scripts/credhelper --init`, and the wrapper rebuilds `credhelper/target/release/credhelper` when sources change.
 - Router images are built with `scripts/build-router-image.sh <hub/router|simonet/router|ilumbaclusta/router> <platform> <target> <profile>`; it overlays `common/router`, decrypts `files.enc/` with SOPS, and caches under `_build/`.
 
 ## Secrets And Generated Files

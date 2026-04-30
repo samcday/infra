@@ -36,11 +36,6 @@
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
-        },
-        {
-            "action": "accept",
-            "src": ["tag:edge-node"],
-            "dst": ["tag:edge-apiserver:*"]
         }
     ],
     "autoApprovers": {
@@ -66,8 +61,6 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
-        "tag:edge-apiserver": [],
-        "tag:edge-node": [],
         "tag:simonet": []
     }
 }
