@@ -1,0 +1,37 @@
+# AGENTS.md
+
+## Repo Shape
+- This is an infrastructure repo, not a single app workspace; there is no root build, lint, or test command.
+- `hub/cluster/flux-system/kustomizations.yaml` is the hub Flux fan-out that creates Flux Kustomizations for `hub/cluster/*`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` paths.
+- `hub/cluster/cloud-cluster/` defines the Hetzner child cluster and app Flux sources; app workload manifests usually live in each app repo under `infra/k8s/`, not here.
+- `charts/resources` is a helper chart: each values key renders one resource, `_` is merged into every resource, `metadata.name` defaults to the key, and `apiVersion` defaults to `v1`.
+- `.kustomize-config` is intentionally included by top-level cluster kustomizations so Kustomize rewrites Secret/ConfigMap references inside HelmRelease values.
+
+## Cluster Access
+- Use `scripts/ik --context=hub ...` for the management cluster and `scripts/ik --context=cloud ...` for app workloads; it always uses the repo-local `kubeconfig`.
+- `.mcp.json` configures a read-only Kubernetes MCP server against `./kubeconfig` with `core,config,helm` toolsets.
+- For app debugging, check Flux `GitRepository`/`Kustomization` objects in the hub `cloud-cluster` namespace, then workloads in the same app namespace on the `cloud` context.
+
+## Component Commands
+- `apps/etcdetcetc` is a Rust Kubernetes controller workspace; run commands from that directory.
+- `cargo run -p etcdetcetc -- crds` prints CRDs, `cargo xtask dev-up` creates the kind dev cluster and `.dev/kubeconfig`, and `cargo xtask dev-down` removes them.
+- `cargo xtask dev-up` requires `kind`, `docker`, `kubectl`, and `crane`; it also creates/reuses Docker registry `127.0.0.1:5001`.
+- The `etcdetcetc` Tilt path uses `tilt up` or `tilt ci` and builds `x86_64-unknown-linux-musl`; local setup needs protobuf and musl tooling like the devcontainer installs.
+- The shipped `apps/etcdetcetc` image strips `xtask` from `Cargo.toml`; do not rely on `xtask` existing in the runtime container.
+- `credhelper` is a separate Rust crate; use `./scripts/credhelper <hub|cloud|edge>` or `./scripts/credhelper --init`, and the wrapper rebuilds `credhelper/target/release/credhelper` when sources change.
+- Router images are built with `scripts/build-router-image.sh <hub/router|simonet/router|ilumbaclusta/router> <platform> <target> <profile>`; it overlays `common/router`, decrypts `files.enc/` with SOPS, and caches under `_build/`.
+
+## Secrets And Generated Files
+- Use SOPS for secrets and never commit decrypted material; `.sops.yaml` encrypts `hub/cluster` `data`/`stringData`, Butane values marked by `# cryptme`, `hub/pki/k8s/*.enc`, and otherwise falls back to Sam's personal age key.
+- Butane YAML under `hub/butane`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` is packaged by Kustomize `secretGenerator`; bootie renders it to Ignition at runtime.
+- CI builds only `apps/bootie`, `apps/etcdetcetc`, and `apps/node-joiner` images on `main`, tagging as `YYYYMMDDHH`.
+- Flux image automation updates tags in `hub/cluster` using comments like `# {"$imagepolicy": "flux-system:bootie:tag"}`; keep those comments with image tags.
+
+## OpenTofu
+- OpenTofu is reconciled by tofu-controller from `Terraform` CRs such as `hub/cluster/*/tofu.yaml`; these use `approvePlan: auto` and `disableDriftDetection: true`.
+- Local `tofu plan` needs the same provider credentials the controller receives from Kubernetes Secrets, so prefer manifest review unless credentials are already available.
+
+## Focused Verification
+- Rust checks are per crate: `cargo check` in `apps/etcdetcetc`, or `cargo check --manifest-path credhelper/Cargo.toml` for `credhelper`.
+- There are currently no test files; use focused Rust checks, Docker builds, Helm renders, or `kubectl kustomize <path>` for the component touched.
+- GitHub Actions do not run repo-wide validation; `.github/workflows/images.yaml` only builds/pushes the three app images.
