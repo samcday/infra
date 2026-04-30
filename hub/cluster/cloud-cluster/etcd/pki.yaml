@@ -33,7 +33,7 @@ spec:
     - '*.etcd.etcd.svc'
     - '*.etcd.etcd.svc.cluster.local'
   issuerRef:
-    kind: ClusterIssuer
+    kind: Issuer
     name: etcd
   privateKey:
     algorithm: ECDSA
@@ -51,7 +51,7 @@ metadata:
 spec:
   commonName: root
   issuerRef:
-    kind: ClusterIssuer
+    kind: Issuer
     name: etcd
   privateKey:
     algorithm: ECDSA
