@@ -1,28 +1,6 @@
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: etcd-ca
-spec:
-  commonName: etcd-ca
-  isCA: true
-  issuerRef:
-    kind: ClusterIssuer
-    name: selfsigned
-  privateKey:
-    algorithm: ECDSA
-  secretName: etcd-ca
----
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: etcd
-spec:
-  ca:
-    secretName: etcd-ca
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
   name: etcd-peer
 spec:
   commonName: etcd
@@ -33,7 +11,7 @@ spec:
     - '*.etcd.etcd.svc'
     - '*.etcd.etcd.svc.cluster.local'
   issuerRef:
-    kind: Issuer
+    kind: ClusterIssuer
     name: etcd
   privateKey:
     algorithm: ECDSA
@@ -51,7 +29,7 @@ metadata:
 spec:
   commonName: root
   issuerRef:
-    kind: Issuer
+    kind: ClusterIssuer
     name: etcd
   privateKey:
     algorithm: ECDSA

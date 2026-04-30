@@ -24,6 +24,7 @@ spec:
     _:
       kind: Namespace
     edge:
+    etcd:
     fastboop:
     fastboopmos:
     gibblox:

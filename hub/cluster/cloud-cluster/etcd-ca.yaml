@@ -1,0 +1,69 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: etcd-ca
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: namespaces
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: kube-system
+  targetNamespace: kube-system
+  valuesFrom:
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: tls.crt
+      targetPath: etcd-ca-kube-system.stringData.tls\.crt
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: tls.key
+      targetPath: etcd-ca-kube-system.stringData.tls\.key
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: ca.crt
+      targetPath: etcd-ca-kube-system.stringData.ca\.crt
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: tls.crt
+      targetPath: etcd-ca-etcd.stringData.tls\.crt
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: tls.key
+      targetPath: etcd-ca-etcd.stringData.tls\.key
+    - kind: Secret
+      name: cloud-etcd-ca
+      valuesKey: ca.crt
+      targetPath: etcd-ca-etcd.stringData.ca\.crt
+  values:
+    _:
+      kind: Secret
+      type: kubernetes.io/tls
+    etcd-ca-kube-system:
+      metadata:
+        name: etcd-ca
+        namespace: kube-system
+      stringData:
+        tls.crt: ""
+        tls.key: ""
+        ca.crt: ""
+    etcd-ca-etcd:
+      metadata:
+        name: etcd-ca
+        namespace: etcd
+      stringData:
+        tls.crt: ""
+        tls.key: ""
+        ca.crt: ""

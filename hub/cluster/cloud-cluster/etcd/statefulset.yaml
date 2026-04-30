@@ -43,10 +43,10 @@ spec:
             - --peer-client-cert-auth=true
             - --cert-file=/etc/etcd/pki/peer/tls.crt
             - --key-file=/etc/etcd/pki/peer/tls.key
-            - --trusted-ca-file=/etc/etcd/pki/peer/ca.crt
+            - --trusted-ca-file=/etc/etcd/pki/ca/ca.crt
             - --peer-cert-file=/etc/etcd/pki/peer/tls.crt
             - --peer-key-file=/etc/etcd/pki/peer/tls.key
-            - --peer-trusted-ca-file=/etc/etcd/pki/peer/ca.crt
+            - --peer-trusted-ca-file=/etc/etcd/pki/ca/ca.crt
             - --auto-compaction-retention=5m
             - --auto-compaction-mode=periodic
           env:
@@ -63,7 +63,7 @@ spec:
             - name: ETCDCTL_ENDPOINTS
               value: https://$(POD_NAME).etcd.$(POD_NAMESPACE).svc:2379
             - name: ETCDCTL_CACERT
-              value: /etc/etcd/pki/root/ca.crt
+              value: /etc/etcd/pki/ca/ca.crt
             - name: ETCDCTL_CERT
               value: /etc/etcd/pki/root/tls.crt
             - name: ETCDCTL_KEY
@@ -115,6 +115,9 @@ spec:
             - name: root-certs
               mountPath: /etc/etcd/pki/root
               readOnly: true
+            - name: ca-certs
+              mountPath: /etc/etcd/pki/ca
+              readOnly: true
       volumes:
         - name: data
           hostPath:
@@ -126,3 +129,6 @@ spec:
         - name: root-certs
           secret:
             secretName: etcd-root
+        - name: ca-certs
+          secret:
+            secretName: etcd-ca
