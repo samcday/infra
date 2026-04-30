@@ -1,20 +1,29 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: gibblox-tenant
+  name: gibblox-bootstrap
   namespace: cloud-cluster
 spec:
   chart:
     spec:
-      chart: charts/managed-cluster-tenant-parent
+      chart: charts/managed-cluster-tenant
       reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
         name: infra
         namespace: flux-system
+  dependsOn:
+    - name: flux
   driftDetection:
     mode: enabled
+  install:
+    createNamespace: true
   interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: gibblox
   values:
     tenant:
       name: gibblox

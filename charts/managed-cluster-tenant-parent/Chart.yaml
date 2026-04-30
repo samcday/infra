@@ -1,5 +1,0 @@
-apiVersion: v2
-name: managed-cluster-tenant-parent
-description: Parent-cluster bootstrap for a managed-cluster tenant.
-type: application
-version: 0.0.1

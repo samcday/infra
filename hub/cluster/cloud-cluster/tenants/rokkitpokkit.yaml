@@ -1,20 +1,34 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: rokkitpokkit-tenant
+  name: rokkitpokkit-bootstrap
   namespace: cloud-cluster
 spec:
   chart:
     spec:
-      chart: charts/managed-cluster-tenant-parent
+      chart: charts/managed-cluster-tenant
       reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
         name: infra
         namespace: flux-system
+  dependsOn:
+    - name: flux
   driftDetection:
     mode: enabled
+  install:
+    createNamespace: true
   interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  targetNamespace: rokkitpokkit
+  valuesFrom:
+    - kind: Secret
+      name: rokkitpokkit-age-key
+      valuesKey: age.agekey
+      targetPath: sops.ageKey
   values:
     tenant:
       name: rokkitpokkit
@@ -35,8 +49,3 @@ spec:
     sops:
       enabled: true
       secretName: rokkitpokkit-age-key
-    valuesFrom:
-      - kind: Secret
-        name: rokkitpokkit-age-key
-        valuesKey: age.agekey
-        targetPath: sops.ageKey
