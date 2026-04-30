@@ -23,6 +23,7 @@ spec:
   values:
     _:
       kind: Namespace
+    edge:
     fastboop:
     fastboopmos:
     gibblox:

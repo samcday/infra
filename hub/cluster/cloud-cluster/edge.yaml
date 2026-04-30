@@ -1,0 +1,50 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: edge-foundation
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: cert-manager-issuers
+    - name: etcdetcetc-cloud-etcd
+    - name: namespaces
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: edge
+  targetNamespace: edge
+  values:
+    au-east:
+      apiVersion: etcdetcetc.samcday.com/v1alpha1
+      kind: EtcdTenant
+      spec:
+        clusterRef:
+          name: etcd
+          namespace: etcd
+        secretName: au-east-etcd
+    au-east-apiserver-etcd-client:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      spec:
+        commonName: edge:au-east
+        issuerRef:
+          kind: ClusterIssuer
+          name: etcd
+        privateKey:
+          algorithm: ECDSA
+        secretName: au-east-apiserver-etcd-client
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth

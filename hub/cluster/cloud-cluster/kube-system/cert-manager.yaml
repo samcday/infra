@@ -106,6 +106,22 @@ spec:
     selfsigned:
       spec:
         selfSigned: {}
+    etcd-ca:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      spec:
+        commonName: etcd-ca
+        isCA: true
+        issuerRef:
+          kind: ClusterIssuer
+          name: selfsigned
+        privateKey:
+          algorithm: ECDSA
+        secretName: etcd-ca
+    etcd:
+      spec:
+        ca:
+          secretName: etcd-ca
     cloudflare:
       apiVersion: v1
       kind: Secret
