@@ -24,6 +24,11 @@ spec:
       name: admin-kubeconfig
   storageNamespace: flux-system
   targetNamespace: gibblox
+  valuesFrom:
+    - kind: Secret
+      name: gibblox-webhook-token
+      valuesKey: token
+      targetPath: receiver.token
   values:
     tenant:
       name: gibblox
@@ -37,3 +42,5 @@ spec:
       path: ./infra/k8s
       prune: true
       timeout: 2m
+    receiver:
+      enabled: true

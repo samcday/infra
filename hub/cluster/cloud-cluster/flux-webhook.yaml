@@ -62,14 +62,7 @@ spec:
           name: webhook-token
         resources:
           - kind: GitRepository
-            name: rokkitpokkit
-            namespace: rokkitpokkit
-          - kind: GitRepository
-            name: gibblox
-            namespace: gibblox
-          - kind: GitRepository
-            name: fastboopmos
-            namespace: fastboopmos
+            name: infra
   valuesFrom:
     - kind: Secret
       name: flux-webhook-token

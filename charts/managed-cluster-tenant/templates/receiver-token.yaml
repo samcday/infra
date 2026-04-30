@@ -1,0 +1,9 @@
+{{- if .Values.receiver.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "managed-cluster-tenant.receiverSecretName" . }}
+  namespace: {{ .Values.receiver.namespace }}
+stringData:
+  token: {{ required "receiver.token is required when receiver.enabled is true" .Values.receiver.token | quote }}
+{{- end }}

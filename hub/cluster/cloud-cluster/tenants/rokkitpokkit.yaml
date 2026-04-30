@@ -29,6 +29,10 @@ spec:
       name: rokkitpokkit-age-key
       valuesKey: age.agekey
       targetPath: sops.ageKey
+    - kind: Secret
+      name: rokkitpokkit-webhook-token
+      valuesKey: token
+      targetPath: receiver.token
   values:
     tenant:
       name: rokkitpokkit
@@ -46,6 +50,8 @@ spec:
       path: ./infra/k8s
       prune: true
       timeout: 2m
+    receiver:
+      enabled: true
     sops:
       enabled: true
       secretName: rokkitpokkit-age-key

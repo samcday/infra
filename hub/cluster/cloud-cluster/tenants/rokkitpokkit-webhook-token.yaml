@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: rokkitpokkit-webhook-token
+    namespace: cloud-cluster
+stringData:
+    token: ENC[AES256_GCM,data:IhBCElGYvzXGWCqUL1Aa/kPTfM3P4vb8hw8xnp8Xir03/W8/7nc+0ktWc4NsUpLg63Le6i8792owzfRBi1uH5g==,iv:PV8xG1+1SeU18b8FE0/KgUxIP65Gt7NTQ1oigGaW3HI=,tag:QqMqLMuSUdnOlAV1F8z5HA==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBVd3Z1S2ZXWWNmcGRQeFor
+            Umdhd1VDSHpmV3huWjNvK1oxSDlSU0RBQkRFCm9ya2VIaTNxemJidXB3NW9lQlBz
+            anRUcUtUWkxWZVJ4ZFZUK25tdWhscWMKLS0tIHp5eEVHdWZ2YndoaUx6MG5FSTly
+            KzdhQVZsZXBJd0FrdGxSbThIbEtZUlkKb6fQxS9h2dONmiKz7Eab3lLDYQKyLnGG
+            BCWr5t93Q+Yder7V8t1DaKhGd8SnTiCox5OYE4HYn9CEqFvMPa++RQ==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQRStOSStpYURucm8rK01q
+            RnJGYmQvUllVWVR1WnJDL0Q0dThUbmFRdDJJCndzQktMU1NLVzdZQ1dJOEpVRUFS
+            b0V3YXA3ZnZvYlA2YnBJdTJsdWJ0ZUEKLS0tIFJBWTVKRWV2TFJYaUc4bnc0QjUy
+            TXlxM0xZK21RLzdTTjlHeW1MWmhPSFUKBWAiEUWctAaJ92i8Wn9OOqojCLMRXTc7
+            QtBUQ7jKamdKKPYYv5lFLHUYw1TbhpVsDYtaYvbDnDyL0SO6rVamkA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-04-30T07:12:43Z"
+    mac: ENC[AES256_GCM,data:9et1InnCJPaZSnmPyX8Ny0hb2r4HhRalXCdQKvhSq1jf+RhjQ6j+Ty9dgbaAmk3HG60xiyLc9opR8OmiK0UnYg3Uhkdh78eHbwNHwng17TlKIOjf6u6c2PHVXzZWkuY6g8sBsQeGyR0NawshCOd0dkL2qVztP0GcM5AiiPjiZc8=,iv:NjoOmA/NjooHke6M8urxUfjk5OJrA4BGeUi8wOEmT7w=,tag:RN8vP4dmbdWd6u/x6K7qHQ==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

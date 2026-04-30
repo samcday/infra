@@ -1,0 +1,17 @@
+{{- if .Values.receiver.enabled }}
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata:
+  name: {{ include "managed-cluster-tenant.receiverName" . }}
+  namespace: {{ .Values.receiver.namespace }}
+spec:
+  type: {{ .Values.receiver.type }}
+  events:
+{{ toYaml .Values.receiver.events | indent 4 }}
+  secretRef:
+    name: {{ include "managed-cluster-tenant.receiverSecretName" . }}
+  resources:
+    - kind: GitRepository
+      name: {{ include "managed-cluster-tenant.sourceName" . }}
+      namespace: {{ include "managed-cluster-tenant.namespace" . }}
+{{- end }}

@@ -29,3 +29,14 @@ sops:
   enabled: false
   secretName: ""
   ageKey: ""
+
+receiver:
+  enabled: false
+  name: ""
+  namespace: flux-system
+  type: github
+  events:
+    - ping
+    - push
+  secretName: ""
+  token: ""

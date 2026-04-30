@@ -20,3 +20,13 @@
 {{- $sops := default (dict) .Values.sops -}}
 {{- default (printf "%s-age-key" (include "managed-cluster-tenant.name" .)) $sops.secretName -}}
 {{- end -}}
+
+{{- define "managed-cluster-tenant.receiverName" -}}
+{{- $receiver := default (dict) .Values.receiver -}}
+{{- default (include "managed-cluster-tenant.sourceName" .) $receiver.name -}}
+{{- end -}}
+
+{{- define "managed-cluster-tenant.receiverSecretName" -}}
+{{- $receiver := default (dict) .Values.receiver -}}
+{{- default (printf "%s-webhook-token" (include "managed-cluster-tenant.receiverName" .)) $receiver.secretName -}}
+{{- end -}}

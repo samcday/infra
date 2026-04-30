@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: gibblox-webhook-token
+    namespace: cloud-cluster
+stringData:
+    token: ENC[AES256_GCM,data:FVFodgYvPFdp6J+3g6JKCdck6er9Pgtd8sBefZ7CT9sGH4GvIb+pjWraA39NWMDcbhub7SOzLFtBkY521xBi0w==,iv:YKqVVreNUF1BQxMNIRm9jD2/fYl77Me0QD52nB5BqTA=,tag:lumVduGu/KW9hYmvmN5I3A==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB1eDZ2U3hFUkIzRGUvSmlo
+            bkJuYzROTzlxVTJXOW1TMXFPbkVoSkQ2UHdVClNXQnR4aHdEb2xlNXRuK3hLbnNI
+            bWtDZDBEL1FsSG50RzNyZTJ6NjBLdzAKLS0tIGlTSnMyMThtcGVsb1lSbnVNTS9D
+            NnA0R3U4SERhc2p5UVNJbVZKLzZCQkkKRAaxhNI03dDrUs1DcVl/VE+KOiKYVXbj
+            GXID8uHxH8CqxtHvUF2Y8v7TCnYxth9zvITWqtWczkRvB38xNJjWKg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA2K2JEVFhrZ3pCWTk0OGtS
+            NFhQNzRaV3NhVWlJalEwa09PNS83QVVEMWk0CmJvaVFlWXNHYVNwT004VXFSeFlY
+            VXRPdjNUQWZ3QW1wcEZQNXkvZUVSR3MKLS0tIGJJN3ZQK1MwT1pPMDFuWDJZSUhC
+            TzY2T3lFenFoZ3Y1S283aVJOV3pibTgKK01GGnAHCIsHCd6hsiwyysS59YQVboil
+            JyzD9IBRzplQs/gu1Ah4vJk+icHII9Hpv5PMVxW2sCwqc3OCmWGabw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-04-30T07:12:43Z"
+    mac: ENC[AES256_GCM,data:hdmgd2nVthBiNFMBIVjfYIww7ZSXVUzgjGwUMvfmLobbsIEJ4XV5ZjxsME01QX4V7UAebRDRxBLaOYYaZRmN9MuyHzofcmPdrqIXHlnDwVOicy9RJFY5kwaZMu+RW9OYraX7ZAqBVoGNpkff18W1trB7pv5PgBTQ7R0E/G8BlHE=,iv:C3sEgHRlcPzkO4oUt+/IHwQVRNKv460PINKhtYZXJeQ=,tag:IkzbWpFR5Q4E3lT4J0S8qw==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0
