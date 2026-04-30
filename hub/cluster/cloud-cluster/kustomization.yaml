@@ -12,8 +12,6 @@ resources:
   - csi-driver.yaml
   - descheduler.yaml
   - edge.yaml
-  - etcd-ca.yaml
-  - etcd-ca-source.yaml
   - etcdetcetc.yaml
   - external-dns.yaml
   - fastboop.yaml

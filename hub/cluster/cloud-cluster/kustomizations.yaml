@@ -20,6 +20,10 @@ spec:
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
       spec:
+        decryption:
+          provider: sops
+          secretRef:
+            name: age-key
         interval: 1h
         prune: true
         sourceRef:
@@ -37,9 +41,16 @@ spec:
           secretRef:
             name: admin-kubeconfig
         path: hub/cluster/cloud-cluster/gateway-api
-    etcd:
+    pki:
       spec:
         dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: hub/cluster/cloud-cluster/pki
+    etcd:
+      spec:
+        dependsOn: [name: pki]
         kubeConfig:
           secretRef:
             name: admin-kubeconfig

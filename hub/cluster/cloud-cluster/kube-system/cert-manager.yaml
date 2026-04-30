@@ -73,7 +73,6 @@ spec:
         namespace: flux-system
   dependsOn:
     - name: cert-manager
-    - name: etcd-ca
   driftDetection:
     mode: enabled
   interval: 1h
