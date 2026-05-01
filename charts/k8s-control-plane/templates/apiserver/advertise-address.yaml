@@ -15,7 +15,13 @@ spec:
             - pipefail
             - -c
             - |
+              {{- if $.Values.externalHostname }}
+              until ip=$(getent ahostsv4 {{ $.Values.externalHostname | quote }} | awk '{print $1; exit}') && [[ -n "$ip" ]]; do
+                sleep 5
+              done
+              {{- else }}
               ip=$(kubectl get svc apiserver -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              {{- end }}
               kubectl create configmap advertise-address --from-literal=value="$ip" --dry-run=client --output yaml \
                 | kubectl apply -f-
               kubectl patch cert apiserver --type merge -p "{\"spec\":{\"ipAddresses\":[\"$ip\",\"{{ $.Values.serviceIP }}\"]}}"
