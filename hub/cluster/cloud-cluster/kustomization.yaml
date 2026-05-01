@@ -14,8 +14,6 @@ resources:
   - edge.yaml
   - etcdetcetc.yaml
   - external-dns.yaml
-  - fastboop.yaml
-  - fastboopmos/fastboopmos.yaml
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml
