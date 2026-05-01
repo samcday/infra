@@ -1,0 +1,107 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: edge-au-east-apiserver-proxy
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: edge-foundation
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: edge
+  targetNamespace: edge
+  valuesFrom:
+    - kind: Secret
+      name: edge-au-east-apiserver-ts-auth
+      valuesKey: authkey
+      targetPath: apiserverTsAuth.stringData.authkey
+  values:
+    apiserverTsAuth:
+      kind: Secret
+      metadata:
+        name: apiserver-ts-auth
+      stringData:
+        authkey: ""
+    apiserverTsState:
+      kind: Secret
+      metadata:
+        name: apiserver-ts-state
+      type: Opaque
+    tsApiserverServiceAccount:
+      kind: ServiceAccount
+      metadata:
+        name: ts-apiserver
+    tsApiserverRole:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: ts-apiserver
+      rules:
+        - apiGroups: [""]
+          resourceNames: [apiserver-ts-state]
+          resources: [secrets]
+          verbs: [get, update, patch]
+    tsApiserverRoleBinding:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: ts-apiserver
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: ts-apiserver
+      subjects:
+        - kind: ServiceAccount
+          name: ts-apiserver
+    tsApiserver:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ts-apiserver
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app: ts-apiserver
+        template:
+          metadata:
+            labels:
+              app: ts-apiserver
+          spec:
+            serviceAccountName: ts-apiserver
+            containers:
+              - name: tailscale
+                image: ghcr.io/tailscale/tailscale:v1.86.5
+                env:
+                  - name: TS_DEST_IP
+                    value: "172.27.23.43"
+                  - name: TS_EXTRA_ARGS
+                    value: --login-server=https://headscale.tail22d0a0.ts.net
+                  - name: TS_HOSTNAME
+                    value: edge-au-east-apiserver
+                  - name: TS_AUTHKEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: apiserver-ts-auth
+                        key: authkey
+                  - name: TS_KUBE_SECRET
+                    value: apiserver-ts-state
+                  - name: TS_USERSPACE
+                    value: "false"
+                securityContext:
+                  capabilities:
+                    add: [NET_ADMIN]

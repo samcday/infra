@@ -1,0 +1,47 @@
+apiServer:
+  service:
+    spec:
+      clusterIP: 172.27.23.43
+      type: ClusterIP
+bootstrapTokens:
+  - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
+    # token ID+secret is set from HelmRelease spec.valuesFrom
+clusterCIDRs: [172.24.0.0/16]
+clusterDNS: [172.23.0.10]
+clusterName: edge-au-east
+etcd:
+  clientSecret:
+    create: false
+    name: au-east-apiserver-etcd-client
+  endpoints:
+    - https://etcd-0.etcd.etcd.svc:2379
+    - https://etcd-1.etcd.etcd.svc:2379
+    - https://etcd-2.etcd.etcd.svc:2379
+  prefix: /edge:au-east/
+externalHostname: edge-au-east-apiserver.tailnet.hub.samcday.com
+konnectivity:
+  agent:
+    image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0
+  server:
+    image: registry.k8s.io/kas-network-proxy/proxy-server:v0.34.0
+parentClusterDomain: cluster.local
+scheduler:
+  config:
+    profiles:
+      - pluginConfig:
+          - name: NodeResourcesFit
+            args:
+              scoringStrategy:
+                type: MostAllocated
+                resources:
+                  - name: cpu
+                    weight: 1
+                  - name: memory
+                    weight: 100
+  deployment:
+    spec:
+      replicas: 1
+      strategy:
+        type: Recreate
+serviceCIDRs: [172.23.0.0/16]
+serviceIP: 172.23.0.1

@@ -35,6 +35,8 @@ rules:
   resourceNames:
     - apiserver-ts-auth
     - node-ts-auth
+    - edge-au-east-apiserver-ts-auth
+    - edge-au-east-node-ts-auth
     - conduit-ts-auth
   verbs: [create, patch, update, get]
 ---

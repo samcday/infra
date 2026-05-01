@@ -1,0 +1,274 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: edge-au-east-node-joiner
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: edge-au-east-apiserver-proxy
+    - name: edge-au-east-control-plane
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: edge
+  targetNamespace: edge
+  valuesFrom:
+    - kind: Secret
+      name: edge-au-east-node-ts-auth
+      valuesKey: key
+      targetPath: nodeTsAuth.stringData.key
+    - kind: Secret
+      name: edge-au-east-node-bootstrap-token
+      valuesKey: token
+      targetPath: nodeBootstrapToken.stringData.token
+  values:
+    nodeTsAuth:
+      kind: Secret
+      metadata:
+        name: node-ts-auth
+      stringData:
+        key: ""
+    nodeBootstrapToken:
+      kind: Secret
+      metadata:
+        name: node-bootstrap-token
+      stringData:
+        token: ""
+    nodeJoinerServiceAccount:
+      kind: ServiceAccount
+      metadata:
+        name: node-joiner
+    nodeJoinerRole:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: node-joiner
+      rules:
+        - apiGroups: [batch]
+          resources: [jobs]
+          verbs: [get, list, watch, create, delete]
+    nodeJoinerRoleBinding:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: node-joiner
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: node-joiner
+      subjects:
+        - kind: ServiceAccount
+          name: node-joiner
+    nodeJoinerHook:
+      kind: ConfigMap
+      metadata:
+        name: node-joiner-hook
+      data:
+        hook.sh: |
+          #!/bin/bash
+          set -euo pipefail
+
+          if [[ "${1:-}" == "--config" ]]; then
+            cat <<'YAML'
+          configVersion: v1
+          kubernetes:
+            - name: edge-nodes
+              apiVersion: v1
+              kind: Node
+              labelSelector:
+                matchExpressions:
+                  - key: blc.samcday.com/asg
+                    operator: Exists
+              executeHookOnEvent: [Added, Modified, Deleted]
+              executeHookOnSynchronization: true
+              jqFilter: |
+                {
+                  name:  .metadata.name,
+                  ip:    ((.status.addresses // []) | map(select(.type=="ExternalIP"))[0].address // ""),
+                  ready: ((.status.conditions // []) | any(.type=="Ready" and .status=="True")),
+                }
+          YAML
+            exit 0
+          fi
+
+          # shell-operator uses KUBECONFIG to watch the child cluster. Unset it
+          # for kubectl calls that create parent-cluster Jobs via the pod SA.
+          unset KUBECONFIG
+
+          NAMESPACE=edge
+          TEMPLATE=/hooks/job-template.yaml
+
+          reconcile() {
+            local op=$1 name=$2 ip=$3 ready=$4
+            local job="join-$name"
+
+            if [[ -z "$name" ]]; then
+              return
+            fi
+
+            if [[ "$op" == "Deleted" || "$ready" == "true" ]]; then
+              kubectl -n "$NAMESPACE" delete job "$job" --ignore-not-found
+              return
+            fi
+
+            if [[ -z "$ip" ]]; then
+              echo "node $name: no ExternalIP yet, waiting for next event"
+              return
+            fi
+
+            if kubectl -n "$NAMESPACE" get job "$job" >/dev/null 2>&1; then
+              return
+            fi
+
+            echo "creating join job for $name ($ip)"
+            local template manifest
+            template=$(<"$TEMPLATE")
+            manifest=${template//\$\{NODE_NAME\}/$name}
+            manifest=${manifest//\$\{NODE_IP\}/$ip}
+            kubectl -n "$NAMESPACE" create -f - <<<"$manifest"
+          }
+
+          jq -c '.[]' "$BINDING_CONTEXT_PATH" | while read -r row; do
+            type=$(jq -r '.type' <<<"$row")
+            case "$type" in
+              Synchronization)
+                jq -c '.objects[]? // empty' <<<"$row" | while read -r obj; do
+                  reconcile "Synchronization" \
+                    "$(jq -r '.filterResult.name  // ""'   <<<"$obj")" \
+                    "$(jq -r '.filterResult.ip    // ""'   <<<"$obj")" \
+                    "$(jq -r '.filterResult.ready // false' <<<"$obj")"
+                done
+                ;;
+              Event)
+                reconcile \
+                  "$(jq -r '.watchEvent         // ""'    <<<"$row")" \
+                  "$(jq -r '.filterResult.name  // ""'    <<<"$row")" \
+                  "$(jq -r '.filterResult.ip    // ""'    <<<"$row")" \
+                  "$(jq -r '.filterResult.ready // false' <<<"$row")"
+                ;;
+            esac
+          done
+        job-template.yaml: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: join-${NODE_NAME}
+            labels:
+              app.kubernetes.io/component: node-joiner
+              bl.samcday.com/node: ${NODE_NAME}
+          spec:
+            backoffLimit: 30
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/component: node-joiner
+                  bl.samcday.com/node: ${NODE_NAME}
+              spec:
+                restartPolicy: OnFailure
+                volumes:
+                  - name: edge-kubeconfig
+                    secret:
+                      secretName: admin-kubeconfig
+                      defaultMode: 256
+                      items:
+                        - key: value
+                          path: kubeconfig
+                containers:
+                  - name: join
+                    image: ghcr.io/samcday/infra-node-joiner:2026042921 # {"$imagepolicy": "flux-system:node-joiner:tag"}
+                    env:
+                      - name: NODE_NAME
+                        value: "${NODE_NAME}"
+                      - name: NODE_IP
+                        value: "${NODE_IP}"
+                      - name: HEADSCALE_URL
+                        value: https://headscale.tail22d0a0.ts.net
+                      - name: APISERVER_URL
+                        value: edge-au-east-apiserver.tailnet.hub.samcday.com:6443
+                      - name: TS_AUTH_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: node-ts-auth
+                            key: key
+                      - name: BOOTSTRAP_TOKEN
+                        valueFrom:
+                          secretKeyRef:
+                            name: node-bootstrap-token
+                            key: token
+                      - name: CA_HASH
+                        valueFrom:
+                          configMapKeyRef:
+                            name: ca-hash
+                            key: hash
+                    volumeMounts:
+                      - name: edge-kubeconfig
+                        mountPath: /etc/edge-kubeconfig
+                        readOnly: true
+    nodeJoiner:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: node-joiner
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: node-joiner
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: node-joiner
+          spec:
+            serviceAccountName: node-joiner
+            containers:
+              - name: shell-operator
+                image: ghcr.io/flant/shell-operator:v1.4.16
+                env:
+                  - name: KUBECONFIG
+                    value: /etc/edge-kubeconfig/kubeconfig
+                  - name: SHELL_OPERATOR_HOOKS_DIR
+                    value: /hooks
+                  - name: SHELL_OPERATOR_TMP_DIR
+                    value: /tmp/shell-operator
+                  - name: LOG_LEVEL
+                    value: info
+                volumeMounts:
+                  - name: edge-kubeconfig
+                    mountPath: /etc/edge-kubeconfig
+                    readOnly: true
+                  - name: hooks
+                    mountPath: /hooks
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+                resources:
+                  requests: { cpu: 20m, memory: 128Mi }
+                  limits: { memory: 256Mi }
+            volumes:
+              - name: edge-kubeconfig
+                secret:
+                  secretName: admin-kubeconfig
+                  defaultMode: 256
+                  items:
+                    - key: value
+                      path: kubeconfig
+              - name: hooks
+                configMap:
+                  name: node-joiner-hook
+                  defaultMode: 493
+              - name: tmp
+                emptyDir: {}

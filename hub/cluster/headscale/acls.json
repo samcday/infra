@@ -36,6 +36,15 @@
             "action": "accept",
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
+        },
+        // Allow edge-au-east nodes to access only their hosted apiserver.
+        {
+            "action": "accept",
+            "src": ["tag:edge-au-east-node"],
+            "dst": [
+                "tag:edge-au-east-apiserver:6443",
+                "tag:edge-au-east-apiserver:8091"
+            ]
         }
     ],
     "autoApprovers": {
@@ -61,6 +70,8 @@
         "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-node": [],
+        "tag:edge-au-east-apiserver": [],
+        "tag:edge-au-east-node": [],
         "tag:simonet": []
     }
 }
