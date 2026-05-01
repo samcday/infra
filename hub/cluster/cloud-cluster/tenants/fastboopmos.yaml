@@ -23,7 +23,6 @@ spec:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: flux-system
-  suspend: true
   targetNamespace: fastboopmos
   valuesFrom:
     - kind: Secret
