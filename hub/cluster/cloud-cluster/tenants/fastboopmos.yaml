@@ -1,0 +1,54 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fastboopmos-tenant
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/managed-cluster-tenant
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: flux
+  driftDetection:
+    mode: enabled
+  install:
+    createNamespace: true
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  suspend: true
+  targetNamespace: fastboopmos
+  valuesFrom:
+    - kind: Secret
+      name: fastboopmos-age-key
+      valuesKey: age.agekey
+      targetPath: sops.ageKey
+  values:
+    tenant:
+      name: fastboopmos
+    namespace:
+      create: false
+    source:
+      ignore: |
+        /*
+        !/infra/
+        /infra/*
+        !/infra/k8s/
+        !/infra/k8s/**
+      interval: 1h
+      url: https://github.com/samcday/fastboopmos.git
+    kustomization:
+      interval: 1h
+      path: ./infra/k8s
+      prune: true
+      timeout: 2m
+    sops:
+      enabled: true
+      secretName: fastboopmos-age-key

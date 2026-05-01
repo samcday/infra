@@ -1,0 +1,54 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fastboop-tenant
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/managed-cluster-tenant
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: flux
+  driftDetection:
+    mode: enabled
+  install:
+    createNamespace: true
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: flux-system
+  suspend: true
+  targetNamespace: fastboop
+  valuesFrom:
+    - kind: Secret
+      name: fastboop-age-key
+      valuesKey: age.agekey
+      targetPath: sops.ageKey
+  values:
+    tenant:
+      name: fastboop
+    namespace:
+      create: false
+    source:
+      ignore: |
+        /*
+        !/infra/
+        /infra/*
+        !/infra/k8s/
+        !/infra/k8s/**
+      interval: 5m
+      url: https://github.com/samcday/fastboop.git
+    kustomization:
+      interval: 5m
+      path: ./infra/k8s
+      prune: true
+      timeout: 2m
+    sops:
+      enabled: true
+      secretName: fastboop-age-key
