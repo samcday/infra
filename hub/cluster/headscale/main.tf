@@ -24,6 +24,10 @@ resource "headscale_user" "conduit" {
   name = "conduit"
 }
 
+resource "headscale_user" "edge_au_east" {
+  name = "edge-au-east"
+}
+
 resource "headscale_user" "hub" {
   name = "hub"
 }
@@ -64,6 +68,22 @@ resource "headscale_pre_auth_key" "conduit_client_stable" {
   time_to_expire = "520w"
   reusable       = true
   ephemeral      = false
+}
+
+resource "headscale_pre_auth_key" "edge_au_east_apiserver" {
+  user           = headscale_user.edge_au_east.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:edge-au-east-apiserver"]
+}
+
+resource "headscale_pre_auth_key" "edge_au_east_nodes" {
+  user           = headscale_user.edge_au_east.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = true
+  acl_tags       = ["tag:edge-au-east-node"]
 }
 
 resource "headscale_pre_auth_key" "subnet-router" {
@@ -115,6 +135,28 @@ resource "kubernetes_secret" "conduit_client_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.conduit_client_stable.key
+  }
+}
+
+resource "kubernetes_secret" "edge_au_east_apiserver_preauth" {
+  metadata {
+    name      = "edge-au-east-apiserver-ts-auth"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.edge_au_east_apiserver.key
+  }
+}
+
+resource "kubernetes_secret" "edge_au_east_node_preauth" {
+  metadata {
+    name      = "edge-au-east-node-ts-auth"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    key = headscale_pre_auth_key.edge_au_east_nodes.key
   }
 }
 
