@@ -16,9 +16,6 @@ resources:
   - external-dns.yaml
   - fastboop.yaml
   - fastboopmos/fastboopmos.yaml
-  - fastboopmos/fastboopmos-age-key.yaml
-  - fastboopmos/fastboopmos-tofu.yaml
-  - fastboopmos/fastboopmos-tofu-bucket-vars.yaml
   - flux.yaml
   - flux-webhook-token.yaml
   - flux-webhook.yaml
@@ -31,9 +28,6 @@ resources:
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - reloader.yaml
-  - rokkitpokkit/rokkitpokkit-age-key.yaml
-  - rokkitpokkit/rokkitpokkit-tofu-bucket-vars.yaml
-  - rokkitpokkit/rokkitpokkit-tofu-cloudflare-vars.yaml
   - tenants
   - tofu.yaml
   - ts-apiserver.yaml

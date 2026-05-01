@@ -2,7 +2,13 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: cloud-cluster
 resources:
+  - fastboopmos/fastboopmos-age-key.yaml
+  - fastboopmos/fastboopmos-tofu.yaml
+  - fastboopmos/fastboopmos-tofu-bucket-vars.yaml
   - gibblox-webhook-token.yaml
   - gibblox.yaml
+  - rokkitpokkit/rokkitpokkit-age-key.yaml
+  - rokkitpokkit/rokkitpokkit-tofu-bucket-vars.yaml
+  - rokkitpokkit/rokkitpokkit-tofu-cloudflare-vars.yaml
   - rokkitpokkit-webhook-token.yaml
   - rokkitpokkit.yaml
