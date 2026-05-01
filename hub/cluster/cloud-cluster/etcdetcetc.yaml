@@ -28,7 +28,7 @@ spec:
   values:
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
-      tag: "2026042921" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}
+      tag: "2026050120" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
