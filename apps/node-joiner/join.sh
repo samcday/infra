@@ -24,7 +24,7 @@ APISERVER_HOST=${APISERVER_URL%%:*}
 
 sshpass -p "$NODE_PASSWORD" ssh $SSH_OPTS "root@$NODE_IP" bash -s <<EOF
 exec 2>&1
-set -uxo pipefail
+set -euo pipefail
 # cloud-init exits 2 on "recoverable error" for cosmetic module warnings,
 # which Ubuntu 24.04 reliably trips. Treat any exit as "wait complete".
 cloud-init status --wait || true
@@ -38,5 +38,5 @@ tailscale up --accept-routes --login-server=${HEADSCALE_URL} --auth-key=${TS_AUT
 APISERVER_IP=\$(getent hosts ${APISERVER_HOST} | awk '{print \$1; exit}')
 echo "\${APISERVER_IP} ${APISERVER_HOST}" >> /etc/hosts
 
-kubeadm join ${APISERVER_URL} --token ${BOOTSTRAP_TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH}
+kubeadm join ${APISERVER_URL} --node-name ${NODE_NAME} --token ${BOOTSTRAP_TOKEN} --discovery-token-ca-cert-hash sha256:${CA_HASH}
 EOF
