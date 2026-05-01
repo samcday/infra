@@ -5,9 +5,8 @@ use kube::config::{AuthInfo, Cluster, KubeConfigOptions, Kubeconfig, NamedAuthIn
 use kube::{Client, Config};
 use std::path::Path;
 
-use crate::config as cfg;
-
 pub async fn fetch_ca_secret(
+    server_url: &str,
     server_ca_path: &Path,
     client_cert_path: &Path,
     client_key_path: &Path,
@@ -17,7 +16,7 @@ pub async fn fetch_ca_secret(
         clusters: vec![NamedCluster {
             name: "hub".to_string(),
             cluster: Some(Cluster {
-                server: Some(cfg::HUB_SERVER_URL.to_string()),
+                server: Some(server_url.to_string()),
                 certificate_authority: Some(server_ca_path.to_string_lossy().to_string()),
                 ..Default::default()
             }),

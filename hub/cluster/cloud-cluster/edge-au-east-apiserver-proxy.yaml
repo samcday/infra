@@ -43,6 +43,22 @@ spec:
       kind: ServiceAccount
       metadata:
         name: ts-apiserver
+    apiserverTsServeConfig:
+      kind: ConfigMap
+      metadata:
+        name: apiserver-ts-serve-config
+      data:
+        serve.json: |
+          {
+            "TCP": {
+              "6443": {
+                "TCPForward": "apiserver.edge.svc.cluster.local:6443"
+              },
+              "8091": {
+                "TCPForward": "apiserver.edge.svc.cluster.local:8091"
+              }
+            }
+          }
     tsApiserverRole:
       apiVersion: rbac.authorization.k8s.io/v1
       kind: Role
@@ -87,8 +103,6 @@ spec:
               - name: tailscale
                 image: ghcr.io/tailscale/tailscale:v1.86.5
                 env:
-                  - name: TS_DEST_IP
-                    value: "172.27.23.43"
                   - name: TS_EXTRA_ARGS
                     value: --login-server=https://headscale.tail22d0a0.ts.net
                   - name: TS_HOSTNAME
@@ -100,8 +114,15 @@ spec:
                         key: authkey
                   - name: TS_KUBE_SECRET
                     value: apiserver-ts-state
+                  - name: TS_SERVE_CONFIG
+                    value: /config/serve.json
                   - name: TS_USERSPACE
-                    value: "false"
-                securityContext:
-                  capabilities:
-                    add: [NET_ADMIN]
+                    value: "true"
+                volumeMounts:
+                  - name: serve-config
+                    mountPath: /config
+                    readOnly: true
+            volumes:
+              - name: serve-config
+                configMap:
+                  name: apiserver-ts-serve-config

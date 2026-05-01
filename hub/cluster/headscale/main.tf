@@ -20,8 +20,16 @@ resource "headscale_user" "cloud" {
   name = "cloud"
 }
 
+resource "headscale_user" "binarylane_demo" {
+  name = "binarylane-demo"
+}
+
 resource "headscale_user" "conduit" {
   name = "conduit"
+}
+
+resource "headscale_user" "edge" {
+  name = "edge"
 }
 
 resource "headscale_user" "edge_au_east" {
