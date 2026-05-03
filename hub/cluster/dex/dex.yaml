@@ -40,10 +40,6 @@ spec:
         - email: me@samcday.com
           hashFromEnv: PASS_HASH
           username: samcday
-        - email: insane.prawny@gmail.com
-          hashFromEnv: FRIEND_PASS_HASH
-          username: insane-prawny
-          userID: 6734ad9a-6e67-4545-a81e-c07247e0ab1a
     envFrom:
       - secretRef:
           name: dex-secrets
