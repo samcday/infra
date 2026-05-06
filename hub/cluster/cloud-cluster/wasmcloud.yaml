@@ -18,6 +18,21 @@ spec:
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: apps
+              version: v1
+              kind: Deployment
+              name: hostgroup-default
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --scheduler-nats-tls-first
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --data-nats-tls-first
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
   values:
