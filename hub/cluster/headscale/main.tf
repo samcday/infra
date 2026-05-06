@@ -71,6 +71,14 @@ resource "headscale_pre_auth_key" "cloud-cluster" {
   ephemeral      = true
 }
 
+resource "headscale_pre_auth_key" "cloud-cluster-wasmcloud-nats" {
+  user           = headscale_user.cloud.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:cloud-cluster-wasmcloud-nats"]
+}
+
 resource "headscale_pre_auth_key" "conduit_client_stable" {
   user           = headscale_user.conduit.id
   time_to_expire = "520w"
@@ -132,6 +140,17 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.cloud_cluster_apiserver_stable.key
+  }
+}
+
+resource "kubernetes_secret" "cloud-cluster-wasmcloud-nats-preauth" {
+  metadata {
+    name      = "wasmcloud-nats-ts-auth"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.cloud-cluster-wasmcloud-nats.key
   }
 }
 

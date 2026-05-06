@@ -1,0 +1,370 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud-nats-certs
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: cert-manager-issuers
+    - name: namespaces
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: kube-system
+  targetNamespace: kube-system
+  values:
+    wasmcloud-nats-ca-bootstrap:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      spec:
+        selfSigned: {}
+    wasmcloud-nats-ca:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      spec:
+        commonName: wasmcloud NATS CA
+        isCA: true
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats-ca-bootstrap
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-ca
+        usages:
+          - cert sign
+          - crl sign
+          - digital signature
+    wasmcloud-nats:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      spec:
+        ca:
+          secretName: wasmcloud-nats-ca
+    wasmcloud-nats-server:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: cloud-cluster-wasmcloud-nats.tailnet.hub.samcday.com
+        dnsNames:
+          - wasmcloud-nats
+          - wasmcloud-nats.wasmcloud
+          - wasmcloud-nats.wasmcloud.svc
+          - wasmcloud-nats.wasmcloud.svc.cluster.local
+          - cloud-cluster-wasmcloud-nats.tailnet.hub.samcday.com
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-server-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - server auth
+    wasmcloud-nats-cluster:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: wasmcloud-nats-cluster
+        dnsNames:
+          - '*.wasmcloud-nats-headless.wasmcloud.svc.cluster.local'
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-cluster-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth
+          - server auth
+    wasmcloud-nats-operator:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: wasmcloud-operator
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-operator-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth
+    wasmcloud-nats-runtime:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: wasmcloud-runtime
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-runtime-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth
+    wasmcloud-nats-data:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: wasmcloud-data
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-data-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth
+    wasmcloud-nats-admin:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        namespace: wasmcloud
+      spec:
+        commonName: wasmcloud-admin
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: wasmcloud-nats
+        privateKey:
+          algorithm: ECDSA
+        secretName: wasmcloud-nats-admin-tls
+        usages:
+          - digital signature
+          - key encipherment
+          - client auth
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud-nats
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: nats
+      sourceRef:
+        kind: HelmRepository
+        name: nats
+        namespace: flux-system
+      version: 2.12.6
+  dependsOn:
+    - name: wasmcloud-nats-certs
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud
+  values:
+    config:
+      cluster:
+        enabled: true
+        replicas: 3
+        routeURLs:
+          k8sClusterDomain: cluster.local
+          useFQDN: true
+        tls:
+          enabled: true
+          secretName: wasmcloud-nats-cluster-tls
+          merge:
+            verify: true
+      jetstream:
+        enabled: true
+        fileStore:
+          pvc:
+            size: 10Gi
+            storageClassName: hcloud-volumes
+      merge:
+        authorization:
+          users:
+            - user: wasmcloud-operator
+            - user: wasmcloud-runtime
+            - user: wasmcloud-data
+            - user: wasmcloud-admin
+      monitor:
+        enabled: true
+      nats:
+        tls:
+          enabled: true
+          secretName: wasmcloud-nats-server-tls
+          merge:
+            verify: true
+            verify_and_map: true
+    container:
+      env:
+        GOMEMLIMIT: 410MiB
+      merge:
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+    natsBox:
+      enabled: false
+    podTemplate:
+      topologySpreadConstraints:
+        kubernetes.io/hostname:
+          maxSkew: 1
+          whenUnsatisfiable: DoNotSchedule
+    promExporter:
+      enabled: true
+      podMonitor:
+        enabled: true
+    service:
+      ports:
+        monitor:
+          enabled: true
+    tlsCA:
+      enabled: true
+      key: ca.crt
+      secretName: wasmcloud-nats-server-tls
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wasmcloud-nats-tailnet
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: wasmcloud-nats
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: wasmcloud
+  targetNamespace: wasmcloud
+  valuesFrom:
+    - kind: Secret
+      name: wasmcloud-nats-ts-auth
+      valuesKey: authkey
+      targetPath: wasmcloudNatsTsAuth.stringData.authkey
+  values:
+    wasmcloudNatsTsAuth:
+      kind: Secret
+      metadata:
+        name: wasmcloud-nats-ts-auth
+      stringData:
+        authkey: ""
+    wasmcloudNatsTsState:
+      kind: Secret
+      metadata:
+        name: wasmcloud-nats-ts-state
+      type: Opaque
+    wasmcloudNatsTailnetServiceAccount:
+      kind: ServiceAccount
+      metadata:
+        name: wasmcloud-nats-tailnet
+    wasmcloudNatsTailnetRole:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: wasmcloud-nats-tailnet
+      rules:
+        - apiGroups: [""]
+          resourceNames: [wasmcloud-nats-ts-state]
+          resources: [secrets]
+          verbs: [get, update, patch]
+    wasmcloudNatsTailnetRoleBinding:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: wasmcloud-nats-tailnet
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: wasmcloud-nats-tailnet
+      subjects:
+        - kind: ServiceAccount
+          name: wasmcloud-nats-tailnet
+    wasmcloudNatsTailnet:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: wasmcloud-nats-tailnet
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app: wasmcloud-nats-tailnet
+        template:
+          metadata:
+            labels:
+              app: wasmcloud-nats-tailnet
+          spec:
+            serviceAccountName: wasmcloud-nats-tailnet
+            containers:
+              - name: tailscale
+                image: ghcr.io/tailscale/tailscale:v1.86.5
+                env:
+                  - name: TS_DEST_IP
+                    value: '$(WASMCLOUD_NATS_SERVICE_HOST)'
+                  - name: TS_EXTRA_ARGS
+                    value: --login-server=https://headscale.tail22d0a0.ts.net
+                  - name: TS_HOSTNAME
+                    value: cloud-cluster-wasmcloud-nats
+                  - name: TS_AUTHKEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: wasmcloud-nats-ts-auth
+                        key: authkey
+                  - name: TS_KUBE_SECRET
+                    value: wasmcloud-nats-ts-state
+                  - name: TS_USERSPACE
+                    value: "false"
+                securityContext:
+                  capabilities:
+                    add: [NET_ADMIN]

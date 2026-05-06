@@ -39,6 +39,7 @@ resources:
   - tofu-controller.yaml
   - vpas.yaml
   - wasmcloud.yaml
+  - wasmcloud-nats.yaml
   - wasmcloud-demo.yaml
   - wasmcloud-monitoring.yaml
   - wasmcloud-vpas.yaml

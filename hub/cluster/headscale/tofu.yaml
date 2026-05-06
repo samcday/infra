@@ -38,6 +38,7 @@ rules:
     - edge-au-east-apiserver-ts-auth
     - edge-au-east-node-ts-auth
     - conduit-ts-auth
+    - wasmcloud-nats-ts-auth
   verbs: [create, patch, update, get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
