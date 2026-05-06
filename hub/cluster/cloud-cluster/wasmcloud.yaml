@@ -12,6 +12,8 @@ spec:
         name: wasmcloud
         namespace: flux-system
       version: 2.0.1
+  dependsOn:
+    - name: wasmcloud-nats
   driftDetection:
     mode: enabled
   interval: 1h
@@ -21,58 +23,35 @@ spec:
   postRenderers:
     - kustomize:
         patches:
-          # Enable NATS HTTP monitoring port for Prometheus metrics.
-          # NOTE: replaces the entire nats-server.conf from chart v2.0.1.
-          # On chart upgrades, diff the upstream config template for new defaults.
-          - target:
-              version: v1
-              kind: ConfigMap
-              name: nats
-            patch: |
-              - op: replace
-                path: /data/nats-server.conf
-                value: |
-                  port: 4222
-                  http_port: 8222
-                  jetstream: enabled
-
-                  tls {
-                    cert_file: /nats-cert/tls.crt
-                    key_file: /nats-cert/tls.key
-                    ca_file: /nats-cert/ca.crt
-                    verify_and_map: true
-                  }
-
-                  authorization {
-                    users = [
-                      { user: "wasmcloud-operator" },
-                      { user: "wasmcloud-runtime" },
-                      { user: "wasmcloud-data" }
-                    ]
-                  }
           - target:
               group: apps
               version: v1
               kind: Deployment
-              name: nats
+              name: runtime-operator
             patch: |
-              - op: add
-                path: /spec/template/spec/containers/0/ports/-
-                value:
-                  containerPort: 8222
-                  name: monitoring
-                  protocol: TCP
+              - op: replace
+                path: /spec/template/spec/containers/0/args/0
+                value: -nats-url=nats://wasmcloud-nats:4222
           - target:
+              group: apps
               version: v1
-              kind: Service
-              name: nats
+              kind: Deployment
+              name: hostgroup-default
             patch: |
-              - op: add
-                path: /spec/ports/-
-                value:
-                  name: monitoring
-                  port: 8222
-                  targetPort: monitoring
-                  protocol: TCP
+              - op: replace
+                path: /spec/template/spec/containers/0/args/3
+                value: --scheduler-nats-url=tls://wasmcloud-nats:4222
+              - op: replace
+                path: /spec/template/spec/containers/0/args/7
+                value: --data-nats-url=tls://wasmcloud-nats:4222
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
+  values:
+    global:
+      certificates:
+        generate: false
+        operatorCertSecretName: wasmcloud-nats-operator-tls
+        runtimeCertSecretName: wasmcloud-nats-runtime-tls
+        dataCertSecretName: wasmcloud-nats-data-tls
+    nats:
+      enabled: false

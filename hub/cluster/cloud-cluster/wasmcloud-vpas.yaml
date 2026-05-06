@@ -16,6 +16,7 @@ spec:
   dependsOn:
     - name: vpa
     - name: wasmcloud
+    - name: wasmcloud-nats
   driftDetection:
     mode: enabled
   interval: 1h
@@ -49,9 +50,9 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           name: hostgroup-default
-    nats:
+    wasmcloud-nats:
       spec:
         targetRef:
           apiVersion: apps/v1
-          kind: Deployment
-          name: nats
+          kind: StatefulSet
+          name: wasmcloud-nats
