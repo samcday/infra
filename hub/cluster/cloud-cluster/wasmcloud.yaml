@@ -11,7 +11,7 @@ spec:
         kind: HelmRepository
         name: wasmcloud
         namespace: flux-system
-      version: 2.0.1
+      version: 2.0.7
   driftDetection:
     mode: enabled
   interval: 1h
@@ -22,7 +22,7 @@ spec:
     - kustomize:
         patches:
           # Enable NATS HTTP monitoring port for Prometheus metrics.
-          # NOTE: replaces the entire nats-server.conf from chart v2.0.1.
+          # NOTE: replaces the entire nats-server.conf from chart v2.0.7.
           # On chart upgrades, diff the upstream config template for new defaults.
           - target:
               version: v1
@@ -76,3 +76,6 @@ spec:
                   protocol: TCP
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
+  values:
+    gateway:
+      enabled: false

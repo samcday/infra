@@ -23,25 +23,23 @@ spec:
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
   values:
-    gateway-ref-grant:
-      apiVersion: gateway.networking.k8s.io/v1beta1
-      kind: ReferenceGrant
+    hello-world-service:
+      kind: Service
+      metadata:
+        name: hello-world
       spec:
-        from:
-          - group: gateway.networking.k8s.io
-            kind: HTTPRoute
-            namespace: fastboop
-          - group: gateway.networking.k8s.io
-            kind: HTTPRoute
-            namespace: fastboopmos
-        to:
-          - group: ""
-            kind: Service
+        ports:
+          - name: http
+            port: 80
+            protocol: TCP
     hello-world:
       apiVersion: runtime.wasmcloud.dev/v1alpha1
       kind: WorkloadDeployment
       spec:
         replicas: 1
+        kubernetes:
+          service:
+            name: hello-world
         template:
           spec:
             hostSelector:
@@ -71,5 +69,5 @@ spec:
                   type: PathPrefix
                   value: /
             backendRefs:
-              - name: runtime-gateway
+              - name: hello-world
                 port: 80

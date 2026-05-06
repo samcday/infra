@@ -34,17 +34,6 @@ spec:
           - port: monitoring
             path: /metrics
             interval: 30s
-    gateway-metrics:
-      apiVersion: monitoring.coreos.com/v1
-      kind: PodMonitor
-      spec:
-        selector:
-          matchLabels:
-            wasmcloud.com/name: runtime-gateway
-        podMetricsEndpoints:
-          - port: "8080" # gateway doesn't name this port; hardcoded
-            path: /metrics
-            interval: 30s
     rules:
       apiVersion: monitoring.coreos.com/v1
       kind: PrometheusRule
