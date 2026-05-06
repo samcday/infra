@@ -51,14 +51,16 @@ do
 done < <(cd "$config_dir" && find files.enc/ -type f -print0)
 
 mkdir -p "$build_dir/_ipxe" "$build_dir/files/usr/share/tftp"
-for name in undionly.kpxe ipxe.efi; do
-  dst="$build_dir/_ipxe/$name"
-  if [[ ! -f "$dst" ]]; then
-    $curl -s -o "$dst" "http://boot.ipxe.org/$name"
-  fi
-  cp "$dst" "$build_dir/files/usr/share/tftp/$name"
-done
-cp "$build_dir/files/usr/share/tftp/undionly.kpxe" "$build_dir/files/usr/share/tftp/undionly.kpxe.0"
+ipxe_dir="$build_dir/_ipxe/"
+if [[ ! -f "$ipxe_dir/ipxe.efi" ]]; then
+  $curl -s -o "$ipxe_dir/ipxe.efi" "http://boot.ipxe.org/x86_64-efi/ipxe.efi"
+fi
+if [[ ! -f "$ipxe_dir/undionly.kpxe" ]]; then
+  $curl -s -o "$ipxe_dir/undionly.kpxe" "http://boot.ipxe.org/x86_64-pcbios/undionly.kpxe"
+fi
+cp "$ipxe_dir/ipxe.efi" "$build_dir/files/usr/share/tftp/"
+cp "$ipxe_dir/undionly.kpxe" "$build_dir/files/usr/share/tftp/"
+cp "$ipxe_dir/undionly.kpxe" "$build_dir/files/usr/share/tftp/undionly.kpxe.0"
 
 packages="$(xargs < "$common_dir/packages")"
 if [[ -f "$config_dir/packages" ]]; then
