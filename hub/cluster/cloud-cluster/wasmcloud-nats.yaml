@@ -193,6 +193,7 @@ spec:
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
+  releaseName: wasmcloud-nats
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
   values:
