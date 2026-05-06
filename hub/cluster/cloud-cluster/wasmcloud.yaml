@@ -32,6 +32,9 @@ spec:
               - op: replace
                 path: /spec/template/spec/containers/0/args/0
                 value: -nats-url=nats://wasmcloud-nats:4222
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: -nats-tls-first
           - target:
               group: apps
               version: v1
@@ -40,10 +43,16 @@ spec:
             patch: |
               - op: replace
                 path: /spec/template/spec/containers/0/args/3
-                value: --scheduler-nats-url=tls://wasmcloud-nats:4222
+                value: --scheduler-nats-url=nats://wasmcloud-nats:4222
               - op: replace
                 path: /spec/template/spec/containers/0/args/7
-                value: --data-nats-url=tls://wasmcloud-nats:4222
+                value: --data-nats-url=nats://wasmcloud-nats:4222
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --scheduler-nats-tls-first
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --data-nats-tls-first
   storageNamespace: wasmcloud
   targetNamespace: wasmcloud
   values:

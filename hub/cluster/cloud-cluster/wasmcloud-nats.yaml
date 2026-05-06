@@ -105,6 +105,8 @@ spec:
         namespace: wasmcloud
       spec:
         commonName: wasmcloud-operator
+        dnsNames:
+          - wasmcloud-operator
         issuerRef:
           group: cert-manager.io
           kind: ClusterIssuer
@@ -123,6 +125,8 @@ spec:
         namespace: wasmcloud
       spec:
         commonName: wasmcloud-runtime
+        dnsNames:
+          - wasmcloud-runtime
         issuerRef:
           group: cert-manager.io
           kind: ClusterIssuer
@@ -141,6 +145,8 @@ spec:
         namespace: wasmcloud
       spec:
         commonName: wasmcloud-data
+        dnsNames:
+          - wasmcloud-data
         issuerRef:
           group: cert-manager.io
           kind: ClusterIssuer
@@ -159,6 +165,8 @@ spec:
         namespace: wasmcloud
       spec:
         commonName: wasmcloud-admin
+        dnsNames:
+          - wasmcloud-admin
         issuerRef:
           group: cert-manager.io
           kind: ClusterIssuer
@@ -229,6 +237,7 @@ spec:
           enabled: true
           secretName: wasmcloud-nats-server-tls
           merge:
+            handshake_first: true
             verify: true
             verify_and_map: true
     container:
