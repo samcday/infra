@@ -11,7 +11,7 @@ spec:
         kind: HelmRepository
         name: wasmcloud
         namespace: flux-system
-      version: 2.0.7
+      version: 2.0.6
   driftDetection:
     mode: enabled
   interval: 1h
