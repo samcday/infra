@@ -23,3 +23,9 @@ spec:
   values:
     gateway:
       enabled: false
+    operator:
+      image:
+        tag: v2.0.7
+    runtime:
+      image:
+        tag: v2.0.7
