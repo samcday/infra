@@ -1,4 +1,14 @@
 ---
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: litestream
+  namespace: headscale
+spec:
+  generateBucketName: headscale-litestream-
+  storageClassName: ceph-bucket
+
+---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -19,8 +29,6 @@ spec:
     additionalVolumeMounts:
       - name: config
         mountPath: /etc/headscale
-      - name: data
-        mountPath: /var/lib/headscale
       - name: noise-privkey
         mountPath: /var/lib/headscale/noise_private.key
         subPath: noise_private.key
@@ -28,8 +36,6 @@ spec:
       - name: config
         configMap:
           name: config
-      - name: data
-        emptyDir: {}
       - name: noise-privkey
         secret:
           secretName: noise-privkey
@@ -69,6 +75,12 @@ spec:
         containerPort: 8080
       - name: metrics
         containerPort: 9090
+    persistence:
+      enabled: true
+      mountPath: /var/lib/headscale
+      storage: 2Gi
+      accessMode: ReadWriteOnce
+      storageClassName: ceph-block
     readinessProbe:
       httpGet:
         path: /metrics
