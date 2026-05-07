@@ -17,7 +17,7 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     initContainers:
       - name: butane
-        image: ghcr.io/samcday/infra-bootie:2026050120 # {"$imagepolicy": "flux-system:bootie"}
+        image: ghcr.io/samcday/infra-bootie:2026050721 # {"$imagepolicy": "flux-system:bootie"}
         command:
           - ash
           - -uexo
@@ -59,7 +59,7 @@ spec:
       FCOS_VERSION: 42.20250803.3.0
     image:
       repository: ghcr.io/samcday/infra-bootie
-      tag: "2026050120" # {"$imagepolicy": "flux-system:bootie:tag"}
+      tag: "2026050721" # {"$imagepolicy": "flux-system:bootie:tag"}
     livenessProbe:
       httpGet: ~
     nodeSelector:
