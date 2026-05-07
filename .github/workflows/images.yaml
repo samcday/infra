@@ -27,6 +27,7 @@ jobs:
         name:
           - bootie
           - etcdetcetc
+          - headscale-node-cleaner
           - node-joiner
     steps:
       - name: Checkout repository

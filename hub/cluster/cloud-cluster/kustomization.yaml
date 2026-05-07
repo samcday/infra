@@ -25,6 +25,7 @@ resources:
   - flux-webhook-token.yaml
   - flux-webhook.yaml
   - hccm.yaml
+  - headscale-node-cleaner.yaml
   - hcloud-token.yaml
   - keda.yaml
   - keda-vpas.yaml
