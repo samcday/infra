@@ -243,7 +243,7 @@ spec:
             serviceAccountName: headscale-node-cleaner
             containers:
               - name: shell-operator
-                image: ghcr.io/samcday/infra-headscale-node-cleaner:2026050700 # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
+                image: "2026050721" # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
                 env:
                   - name: KUBECONFIG
                     value: /etc/cloud-kubeconfig/kubeconfig
@@ -265,8 +265,8 @@ spec:
                   - name: tmp
                     mountPath: /tmp
                 resources:
-                  requests: { cpu: 20m, memory: 128Mi }
-                  limits: { memory: 256Mi }
+                  requests: {cpu: 20m, memory: 128Mi}
+                  limits: {memory: 256Mi}
             volumes:
               - name: cloud-kubeconfig
                 secret:
