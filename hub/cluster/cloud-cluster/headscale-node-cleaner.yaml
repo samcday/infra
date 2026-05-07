@@ -243,7 +243,7 @@ spec:
             serviceAccountName: headscale-node-cleaner
             containers:
               - name: shell-operator
-                image: ghcr.io/samcday/infra-headscale-node-cleaner:2026050721 # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
+                image: "2026050721" # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
                 env:
                   - name: KUBECONFIG
                     value: /etc/cloud-kubeconfig/kubeconfig
