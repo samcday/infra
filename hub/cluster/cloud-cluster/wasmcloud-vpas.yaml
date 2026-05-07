@@ -38,18 +38,6 @@ spec:
           apiVersion: apps/v1
           kind: Deployment
           name: runtime-operator
-    runtime-gateway:
-      spec:
-        targetRef:
-          apiVersion: apps/v1
-          kind: Deployment
-          name: runtime-gateway
-    hostgroup-default:
-      spec:
-        targetRef:
-          apiVersion: apps/v1
-          kind: Deployment
-          name: hostgroup-default
     wasmcloud-nats:
       spec:
         targetRef:

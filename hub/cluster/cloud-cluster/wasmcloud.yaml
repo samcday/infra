@@ -11,11 +11,13 @@ spec:
         kind: HelmRepository
         name: wasmcloud
         namespace: flux-system
-      version: 2.0.1
+      version: 2.1.0
   dependsOn:
     - name: wasmcloud-nats
   driftDetection:
     mode: enabled
+  install:
+    crds: CreateReplace
   interval: 1h
   kubeConfig:
     secretRef:
@@ -42,10 +44,10 @@ spec:
               name: hostgroup-default
             patch: |
               - op: replace
-                path: /spec/template/spec/containers/0/args/3
+                path: /spec/template/spec/containers/0/args/4
                 value: --scheduler-nats-url=nats://wasmcloud-nats:4222
               - op: replace
-                path: /spec/template/spec/containers/0/args/7
+                path: /spec/template/spec/containers/0/args/8
                 value: --data-nats-url=nats://wasmcloud-nats:4222
               - op: add
                 path: /spec/template/spec/containers/0/args/-
@@ -62,5 +64,9 @@ spec:
         operatorCertSecretName: wasmcloud-nats-operator-tls
         runtimeCertSecretName: wasmcloud-nats-runtime-tls
         dataCertSecretName: wasmcloud-nats-data-tls
+    gateway:
+      enabled: false
     nats:
       enabled: false
+  upgrade:
+    crds: CreateReplace
