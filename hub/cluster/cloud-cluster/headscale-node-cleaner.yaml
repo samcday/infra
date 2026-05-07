@@ -1,0 +1,283 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: headscale-node-cleaner
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  values:
+    serviceAccount:
+      kind: ServiceAccount
+      metadata:
+        name: headscale-node-cleaner
+    adminApiKeyReader:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: headscale-node-cleaner
+      rules:
+        - apiGroups: [""]
+          resources: [secrets]
+          resourceNames: [admin-apikey]
+          verbs: [get]
+    adminApiKeyReaderBinding:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: headscale-node-cleaner
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: headscale-node-cleaner
+      subjects:
+        - kind: ServiceAccount
+          name: headscale-node-cleaner
+          namespace: cloud-cluster
+    hook:
+      kind: ConfigMap
+      metadata:
+        name: headscale-node-cleaner-hook
+      data:
+        hook.sh: |
+          #!/bin/bash
+          set -euo pipefail
+
+          if [[ "${1:-}" == "--config" ]]; then
+            cat <<'YAML'
+          configVersion: v1
+          kubernetes:
+            - name: cloud-nodes
+              apiVersion: v1
+              kind: Node
+              labelSelector:
+                matchExpressions:
+                  - key: instance.hetzner.cloud/provided-by
+                    operator: In
+                    values: [cloud]
+              executeHookOnEvent: [Added, Modified, Deleted]
+              executeHookOnSynchronization: true
+              jqFilter: |
+                {
+                  name: .metadata.name,
+                  deleting: (.metadata.deletionTimestamp != null),
+                  finalizers: (.metadata.finalizers // [])
+                }
+          YAML
+            exit 0
+          fi
+
+          FINALIZER=${FINALIZER:-headscale.samcday.com/node-cleanup}
+          HEADSCALE_USER=${HEADSCALE_USER:-cloud}
+          HEADSCALE_TAG=${HEADSCALE_TAG:-tag:cloud-cluster-node}
+          HEADSCALE_CONFIG=${HEADSCALE_CONFIG:-/tmp/headscale/config.yaml}
+          HEADSCALE_CLI_ADDRESS=${HEADSCALE_CLI_ADDRESS:-headscale-generic.headscale.svc.cluster.hub.internal:50443}
+          HEADSCALE_API_KEY_SECRET_NAMESPACE=${HEADSCALE_API_KEY_SECRET_NAMESPACE:-headscale}
+          HEADSCALE_API_KEY_SECRET_NAME=${HEADSCALE_API_KEY_SECRET_NAME:-admin-apikey}
+          HEADSCALE_API_KEY_SECRET_KEY=${HEADSCALE_API_KEY_SECRET_KEY:-key}
+          CLOUD_KUBECONFIG=${KUBECONFIG:?KUBECONFIG must point at the child cluster kubeconfig}
+
+          cloud_kubectl() {
+            kubectl --kubeconfig="$CLOUD_KUBECONFIG" "$@"
+          }
+
+          hub_kubectl() {
+            env -u KUBECONFIG kubectl "$@"
+          }
+
+          ensure_headscale_config() {
+            local api_key
+            api_key=$(hub_kubectl -n "$HEADSCALE_API_KEY_SECRET_NAMESPACE" \
+              get secret "$HEADSCALE_API_KEY_SECRET_NAME" -o json | \
+              jq -r --arg key "$HEADSCALE_API_KEY_SECRET_KEY" '.data[$key]' | base64 -d)
+
+            mkdir -p "$(dirname "$HEADSCALE_CONFIG")"
+            cat >"$HEADSCALE_CONFIG" <<EOF
+          cli:
+            address: ${HEADSCALE_CLI_ADDRESS}
+            api_key: ${api_key}
+            plaintext: true
+          log:
+            format: json
+            level: warn
+          server_url: http://127.0.0.1
+          noise:
+            private_key_path: /tmp/headscale/noise_private.key
+          EOF
+          }
+
+          headscale_json() {
+            ensure_headscale_config
+            headscale -c "$HEADSCALE_CONFIG" nodes list --user "$HEADSCALE_USER" -o json
+          }
+
+          matching_headscale_ids() {
+            local node_name=$1
+            headscale_json | jq -r --arg name "$node_name" --arg tag "$HEADSCALE_TAG" '
+              select(type == "array")[]
+              | select(.name == $name)
+              | select(((.forced_tags // []) + (.valid_tags // []) + (.pre_auth_key.acl_tags // [])) | index($tag))
+              | .id
+            '
+          }
+
+          ensure_finalizer() {
+            local node_name=$1 current finalizers desired
+            current=$(cloud_kubectl get node "$node_name" -o json 2>/dev/null || true)
+            if [[ -z "$current" ]] || [[ "$(jq -r '.metadata.deletionTimestamp != null' <<<"$current")" == "true" ]]; then
+              return
+            fi
+
+            finalizers=$(jq -c '.metadata.finalizers // []' <<<"$current")
+            if jq -e --arg finalizer "$FINALIZER" 'index($finalizer)' <<<"$finalizers" >/dev/null; then
+              return
+            fi
+
+            desired=$(jq -c --arg finalizer "$FINALIZER" '. + [$finalizer]' <<<"$finalizers")
+            echo "node $node_name: adding Headscale cleanup finalizer"
+            cloud_kubectl patch node "$node_name" --type=merge -p \
+              "{\"metadata\":{\"finalizers\":$desired}}"
+          }
+
+          cleanup_headscale() {
+            local node_name=$1 id
+            mapfile -t ids < <(matching_headscale_ids "$node_name")
+            if [[ ${#ids[@]} -eq 0 ]]; then
+              echo "node $node_name: no matching Headscale node found"
+            fi
+
+            for id in "${ids[@]}"; do
+              echo "node $node_name: deleting Headscale node $id"
+              ensure_headscale_config
+              headscale -c "$HEADSCALE_CONFIG" nodes delete --force --identifier "$id"
+            done
+
+            mapfile -t remaining < <(matching_headscale_ids "$node_name")
+            if [[ ${#remaining[@]} -ne 0 ]]; then
+              echo "node $node_name: Headscale nodes still present: ${remaining[*]}" >&2
+              return 1
+            fi
+          }
+
+          remove_finalizer() {
+            local node_name=$1 current finalizers desired
+            current=$(cloud_kubectl get node "$node_name" -o json 2>/dev/null || true)
+            if [[ -z "$current" ]]; then
+              return
+            fi
+
+            finalizers=$(jq -c '.metadata.finalizers // []' <<<"$current")
+            if ! jq -e --arg finalizer "$FINALIZER" 'index($finalizer)' <<<"$finalizers" >/dev/null; then
+              return
+            fi
+
+            desired=$(jq -c --arg finalizer "$FINALIZER" 'map(select(. != $finalizer))' <<<"$finalizers")
+            echo "node $node_name: removing Headscale cleanup finalizer"
+            cloud_kubectl patch node "$node_name" --type=merge -p \
+              "{\"metadata\":{\"finalizers\":$desired}}"
+          }
+
+          reconcile() {
+            local op=$1 node_name=$2 deleting=$3 finalizers=$4
+            if [[ -z "$node_name" || "$op" == "Deleted" ]]; then
+              return
+            fi
+
+            if [[ "$deleting" == "true" ]]; then
+              if jq -e --arg finalizer "$FINALIZER" 'index($finalizer)' <<<"$finalizers" >/dev/null; then
+                cleanup_headscale "$node_name"
+                remove_finalizer "$node_name"
+              fi
+              return
+            fi
+
+            ensure_finalizer "$node_name"
+          }
+
+          jq -c '.[]' "$BINDING_CONTEXT_PATH" | while read -r row; do
+            type=$(jq -r '.type' <<<"$row")
+            case "$type" in
+              Synchronization)
+                jq -c '.objects[]? // empty' <<<"$row" | while read -r obj; do
+                  reconcile "Synchronization" \
+                    "$(jq -r '.filterResult.name // ""' <<<"$obj")" \
+                    "$(jq -r '.filterResult.deleting // false' <<<"$obj")" \
+                    "$(jq -c '.filterResult.finalizers // []' <<<"$obj")"
+                done
+                ;;
+              Event)
+                reconcile \
+                  "$(jq -r '.watchEvent // ""' <<<"$row")" \
+                  "$(jq -r '.filterResult.name // ""' <<<"$row")" \
+                  "$(jq -r '.filterResult.deleting // false' <<<"$row")" \
+                  "$(jq -c '.filterResult.finalizers // []' <<<"$row")"
+                ;;
+            esac
+          done
+    deployment:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: headscale-node-cleaner
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: headscale-node-cleaner
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: headscale-node-cleaner
+          spec:
+            serviceAccountName: headscale-node-cleaner
+            containers:
+              - name: shell-operator
+                image: ghcr.io/samcday/infra-headscale-node-cleaner:2026050700 # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
+                env:
+                  - name: KUBECONFIG
+                    value: /etc/cloud-kubeconfig/kubeconfig
+                  - name: SHELL_OPERATOR_HOOKS_DIR
+                    value: /hooks
+                  - name: SHELL_OPERATOR_TMP_DIR
+                    value: /tmp/shell-operator
+                  - name: LOG_LEVEL
+                    value: info
+                  - name: HEADSCALE_CONFIG
+                    value: /tmp/headscale/config.yaml
+                volumeMounts:
+                  - name: cloud-kubeconfig
+                    mountPath: /etc/cloud-kubeconfig
+                    readOnly: true
+                  - name: hooks
+                    mountPath: /hooks
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+                resources:
+                  requests: { cpu: 20m, memory: 128Mi }
+                  limits: { memory: 256Mi }
+            volumes:
+              - name: cloud-kubeconfig
+                secret:
+                  secretName: admin-kubeconfig
+                  defaultMode: 256
+                  items:
+                    - key: value
+                      path: kubeconfig
+              - name: hooks
+                configMap:
+                  name: headscale-node-cleaner-hook
+                  defaultMode: 493
+              - name: tmp
+                emptyDir: {}
