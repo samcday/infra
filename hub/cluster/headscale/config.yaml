@@ -135,7 +135,7 @@ database:
   # Database type. Available options: sqlite, postgres
   # Please note that using Postgres is highly discouraged as it is only supported for legacy reasons.
   # All new development, testing and optimisations are done with SQLite in mind.
-  type: postgres
+  type: sqlite
 
   # Enable debug mode. This setting requires the log.level to be set to "debug" or "trace".
   debug: false

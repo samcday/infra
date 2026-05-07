@@ -26,6 +26,25 @@ spec:
   interval: 1h
   values:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
+    additionalContainers:
+      - name: litestream
+        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
+        args:
+          - replicate
+          - -config
+          - /etc/litestream.yml
+        envFrom:
+          - secretRef:
+              name: litestream
+          - configMapRef:
+              name: litestream
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/headscale
+          - name: configmap
+            mountPath: /etc/litestream.yml
+            subPath: litestream.yml
+            readOnly: true
     additionalVolumeMounts:
       - name: config
         mountPath: /etc/headscale
@@ -41,13 +60,20 @@ spec:
           secretName: noise-privkey
     args:
       - serve
+    configMap:
+      enabled: true
+      data:
+        litestream.yml: |-
+          dbs:
+            - path: /var/lib/headscale/db.sqlite
+              restore-if-db-not-exists: true
+              replica:
+                url: s3://${BUCKET_NAME}/db.sqlite?endpoint=http://${BUCKET_HOST}:${BUCKET_PORT}&region=${BUCKET_REGION}&force-path-style=true
+      mountFiles:
+        - subPath: litestream.yml
+          mountPath: /etc/litestream.yml
     deploymentStrategy:
       type: Recreate
-    envValueFrom:
-      HEADSCALE_DATABASE_POSTGRES_PASS:
-        secretKeyRef:
-          name: db-app
-          key: password
     image:
       repository: ghcr.io/juanfont/headscale
       tag: v0.26.1
@@ -68,6 +94,31 @@ spec:
       httpGet:
         path: /metrics
         port: metrics
+    initContainers:
+      - name: litestream-restore
+        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
+        command:
+          - /bin/sh
+          - -ec
+        args:
+          - >-
+            litestream restore
+            -if-db-not-exists
+            -if-replica-exists
+            -config /etc/litestream.yml
+            /var/lib/headscale/db.sqlite
+        envFrom:
+          - secretRef:
+              name: litestream
+          - configMapRef:
+              name: litestream
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/headscale
+          - name: configmap
+            mountPath: /etc/litestream.yml
+            subPath: litestream.yml
+            readOnly: true
     ports:
       - name: grpc
         containerPort: 50443
