@@ -27,9 +27,6 @@ spec:
     cilium:
       spec:
         url: https://helm.cilium.io/
-    cloudnative-pg:
-      spec:
-        url: https://cloudnative-pg.github.io/charts
     community-tooling-charts:
       spec:
         url: https://community-tooling.github.io/charts/
