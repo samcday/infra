@@ -76,7 +76,7 @@ spec:
       type: Recreate
     image:
       repository: ghcr.io/juanfont/headscale
-      tag: v0.26.1
+      tag: v0.28.0
     ingress:
       enabled: true
       annotations:

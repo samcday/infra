@@ -2,7 +2,7 @@ terraform {
   required_providers {
     headscale = {
       source  = "awlsring/headscale"
-      version = "0.4.2"
+      version = "0.5.1"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
