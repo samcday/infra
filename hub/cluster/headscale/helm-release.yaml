@@ -66,6 +66,8 @@ spec:
         litestream.yml: |-
           dbs:
             - path: /var/lib/headscale/db.sqlite
+              checkpoint-interval: 30s
+              min-checkpoint-page-count: 1
               restore-if-db-not-exists: true
               replica:
                 url: s3://${BUCKET_NAME}/db.sqlite?endpoint=http://${BUCKET_HOST}:${BUCKET_PORT}&region=${BUCKET_REGION}&force-path-style=true
