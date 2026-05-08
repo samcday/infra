@@ -1,4 +1,4 @@
-FROM ghcr.io/juanfont/headscale:v0.26.1 AS headscale
+FROM ghcr.io/juanfont/headscale:v0.28.0 AS headscale
 
 FROM ghcr.io/flant/shell-operator:v1.4.16
 
