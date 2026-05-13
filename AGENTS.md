@@ -5,6 +5,7 @@
 - `hub/cluster/flux-system/kustomizations.yaml` is the hub Flux fan-out that creates Flux Kustomizations for `hub/cluster/*`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` paths.
 - `hub/cluster/cloud-cluster/` defines the Hetzner child cluster and app Flux sources; app workload manifests usually live in each app repo under `infra/k8s/`, not here.
 - `charts/resources` is a helper chart: each values key renders one resource, `_` is merged into every resource, `metadata.name` defaults to the key, and `apiVersion` defaults to `v1`.
+- Use `charts/resources` sparingly. Prefer direct manifests for normal Flux objects and workloads; reserve `charts/resources` for small glue resources that must be rendered from parent-cluster-only data such as SOPS secrets, generated values, or cross-cluster handoff inputs.
 - `.kustomize-config` is intentionally included by top-level cluster kustomizations so Kustomize rewrites Secret/ConfigMap references inside HelmRelease values.
 
 ## Cluster Access
