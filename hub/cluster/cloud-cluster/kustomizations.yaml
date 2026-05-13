@@ -55,6 +55,13 @@ spec:
           secretRef:
             name: admin-kubeconfig
         path: hub/cluster/cloud-cluster/etcd
+    edge:
+      spec:
+        dependsOn: [name: kube-system]
+        kubeConfig:
+          secretRef:
+            name: admin-kubeconfig
+        path: hub/cluster/cloud-cluster/edge
     forgejo-runners:
       spec:
         dependsOn: [name: kube-system]

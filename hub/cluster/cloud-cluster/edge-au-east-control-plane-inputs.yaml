@@ -1,12 +1,12 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: edge-au-east-control-plane
+  name: edge-au-east-control-plane-inputs
   namespace: cloud-cluster
 spec:
   chart:
     spec:
-      chart: charts/k8s-control-plane
+      chart: charts/resources
       reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
@@ -14,27 +14,28 @@ spec:
         namespace: flux-system
   dependsOn:
     - name: edge-foundation
+  driftDetection:
+    mode: enabled
   interval: 1h
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: edge
-  # Migration tombstone: keep this object so its finalizer does not uninstall
-  # the existing release while the cloud-side HelmRelease adopts it.
-  suspend: true
   targetNamespace: edge
-  upgrade:
-    # Jobs in this chart have ttlSecondsAfterFinished and get GC'd between chart
-    # upgrades; force recreates missing resources instead of failing to patch.
-    force: true
   valuesFrom:
-    - kind: ConfigMap
-      name: edge-au-east-control-plane-values
     - kind: Secret
       name: edge-au-east-node-bootstrap-token
       valuesKey: id
-      targetPath: bootstrapTokens[0].id
+      targetPath: nodeBootstrapToken.stringData.id
     - kind: Secret
       name: edge-au-east-node-bootstrap-token
       valuesKey: secret
-      targetPath: bootstrapTokens[0].secret
+      targetPath: nodeBootstrapToken.stringData.secret
+  values:
+    nodeBootstrapToken:
+      kind: Secret
+      metadata:
+        name: edge-au-east-node-bootstrap-token
+      stringData:
+        id: ""
+        secret: ""

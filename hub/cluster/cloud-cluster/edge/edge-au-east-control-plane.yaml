@@ -2,7 +2,6 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: edge-au-east-control-plane
-  namespace: cloud-cluster
 spec:
   chart:
     spec:
@@ -11,18 +10,8 @@ spec:
       sourceRef:
         kind: GitRepository
         name: infra
-        namespace: flux-system
-  dependsOn:
-    - name: edge-foundation
   interval: 1h
-  kubeConfig:
-    secretRef:
-      name: admin-kubeconfig
-  storageNamespace: edge
-  # Migration tombstone: keep this object so its finalizer does not uninstall
-  # the existing release while the cloud-side HelmRelease adopts it.
-  suspend: true
-  targetNamespace: edge
+  releaseName: edge-edge-au-east-control-plane
   upgrade:
     # Jobs in this chart have ttlSecondsAfterFinished and get GC'd between chart
     # upgrades; force recreates missing resources instead of failing to patch.
