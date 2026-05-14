@@ -1,0 +1,174 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kube-system
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  interval: 1h
+  path: hub/cluster/cloud-cluster/kube-system
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gateway-api
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: kube-system
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/gateway-api
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pki
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: kube-system
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/pki
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: etcd
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: pki
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/etcd
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: edge-inputs
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  interval: 1h
+  path: hub/cluster/cloud-cluster/edge/parent
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: edge
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: kube-system
+    - name: pki
+    - name: etcd
+    - name: edge-inputs
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/edge/cluster
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: forgejo-runners
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: kube-system
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/forgejo-runners
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  targetNamespace: forgejo-runners
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tenants
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: kube-system
+  interval: 1h
+  path: hub/cluster/cloud-cluster/tenants
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m

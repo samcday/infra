@@ -23,6 +23,10 @@ spec:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: edge
+  # Migration tombstone: edge foundation is now applied as direct manifests by
+  # the cloud-side edge Kustomization. Keep this suspended so its finalizer does
+  # not uninstall the existing tenant/certificate objects during handoff.
+  suspend: true
   targetNamespace: edge
   values:
     au-east:

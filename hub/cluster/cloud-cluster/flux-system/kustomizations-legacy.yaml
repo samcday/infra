@@ -15,6 +15,10 @@ spec:
   driftDetection:
     mode: enabled
   interval: 1h
+  # Migration tombstone: direct Kustomization manifests now live alongside this
+  # file. Keep the HelmRelease suspended so its finalizer does not uninstall the
+  # Kustomizations it used to render.
+  suspend: true
   values:
     _:
       apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -61,7 +65,7 @@ spec:
         kubeConfig:
           secretRef:
             name: admin-kubeconfig
-        path: hub/cluster/cloud-cluster/edge
+        path: hub/cluster/cloud-cluster/edge/cluster
     forgejo-runners:
       spec:
         dependsOn: [name: kube-system]

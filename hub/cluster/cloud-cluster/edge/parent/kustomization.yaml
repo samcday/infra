@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: edge-au-east-control-plane-values
+    files:
+      - values.yaml=../cluster/edge-au-east-control-plane-values.yaml
+namespace: cloud-cluster
+resources:
+  - ../../../../../.kustomize-config
+  - edge-foundation-legacy.yaml
+  - edge-au-east-apiserver-proxy.yaml
+  - edge-au-east-control-plane-inputs.yaml
+  - edge-au-east-control-plane-legacy.yaml
+  - edge-au-east-node-bootstrap-token.yaml
+  - edge-au-east-node-joiner.yaml

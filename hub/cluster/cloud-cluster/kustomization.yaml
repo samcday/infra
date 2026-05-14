@@ -4,9 +4,6 @@ configMapGenerator:
   - name: control-plane-values
     files:
       - values.yaml=control-plane-values.yaml
-  - name: edge-au-east-control-plane-values
-    files:
-      - values.yaml=edge/edge-au-east-control-plane-values.yaml
 namespace: cloud-cluster
 resources:
   - ../../../.kustomize-config
@@ -14,15 +11,10 @@ resources:
   - control-plane.yaml
   - csi-driver.yaml
   - descheduler.yaml
-  - edge.yaml
-  - edge-au-east-apiserver-proxy.yaml
-  - edge-au-east-control-plane.yaml
-  - edge-au-east-control-plane-inputs.yaml
-  - edge-au-east-node-joiner.yaml
-  - edge-au-east-node-bootstrap-token.yaml
   - etcdetcetc.yaml
   - external-dns.yaml
   - flux.yaml
+  - flux-system
   - flux-webhook-token.yaml
   - flux-webhook.yaml
   - hccm.yaml
@@ -30,12 +22,10 @@ resources:
   - hcloud-token.yaml
   - keda.yaml
   - keda-vpas.yaml
-  - kustomizations.yaml
   - metrics-write-proxy.yaml
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - reloader.yaml
-  - tenants
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml

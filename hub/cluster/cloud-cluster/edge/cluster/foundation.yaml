@@ -1,0 +1,26 @@
+apiVersion: etcdetcetc.samcday.com/v1alpha1
+kind: EtcdTenant
+metadata:
+  name: au-east
+spec:
+  clusterRef:
+    name: etcd
+    namespace: etcd
+  secretName: au-east-etcd
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: au-east-apiserver-etcd-client
+spec:
+  commonName: edge:au-east
+  issuerRef:
+    kind: ClusterIssuer
+    name: etcd
+  privateKey:
+    algorithm: ECDSA
+  secretName: au-east-apiserver-etcd-client
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth

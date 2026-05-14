@@ -6,6 +6,7 @@ configMapGenerator:
       - values.yaml=edge-au-east-control-plane-values.yaml
 namespace: edge
 resources:
-  - ../../../../.kustomize-config
+  - ../../../../../.kustomize-config
+  - foundation.yaml
   - edge-au-east-control-plane.yaml
   - source.yaml
