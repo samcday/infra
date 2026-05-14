@@ -7,6 +7,10 @@ configMapGenerator:
 namespace: edge
 resources:
   - ../../../../../.kustomize-config
+  - binarylane.yaml
+  - bl-token.yaml
+  - child-addons.yaml
   - foundation.yaml
   - edge-au-east-control-plane.yaml
+  - edge-au-east-workers.yaml
   - source.yaml

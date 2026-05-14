@@ -1,0 +1,16 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: edge-au-east-workers
+spec:
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  path: hub/cluster/cloud-cluster/edge/child
+  prune: true
+  retryInterval: 1m
+  sourceRef:
+    kind: GitRepository
+    name: infra
+  timeout: 5m

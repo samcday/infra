@@ -23,6 +23,7 @@ externalIP: 100.64.0.64
 konnectivity:
   agent:
     image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0
+    replicas: 1
   server:
     image: registry.k8s.io/kas-network-proxy/proxy-server:v0.34.0
 parentClusterDomain: cluster.local

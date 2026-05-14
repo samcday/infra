@@ -7,3 +7,45 @@ spec:
   ref:
     branch: main
   url: https://github.com/samcday/infra.git
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: binarylane-controllers
+spec:
+  interval: 1h
+  ref:
+    branch: main
+  url: https://github.com/samcday/binarylane-controllers.git
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: autoscaler
+spec:
+  interval: 1h
+  url: https://kubernetes.github.io/autoscaler
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cilium
+spec:
+  interval: 1h
+  url: https://helm.cilium.io/
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: coredns
+spec:
+  interval: 1h
+  url: https://coredns.github.io/helm
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: metrics-server
+spec:
+  interval: 1h
+  url: https://kubernetes-sigs.github.io/metrics-server/
