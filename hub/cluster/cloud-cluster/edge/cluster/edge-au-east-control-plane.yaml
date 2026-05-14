@@ -21,9 +21,5 @@ spec:
       name: edge-au-east-control-plane-values
     - kind: Secret
       name: edge-au-east-node-bootstrap-token
-      valuesKey: id
-      targetPath: bootstrapTokens[0].id
-    - kind: Secret
-      name: edge-au-east-node-bootstrap-token
-      valuesKey: secret
-      targetPath: bootstrapTokens[0].secret
+      valuesKey: token
+      targetPath: bootstrapTokens[0].token

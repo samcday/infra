@@ -5,7 +5,7 @@ apiServer:
       type: ClusterIP
 bootstrapTokens:
   - extraGroups: [system:bootstrappers:kubeadm:default-node-token]
-    # token ID+secret is set from HelmRelease spec.valuesFrom
+    # token is set from HelmRelease spec.valuesFrom
 clusterCIDRs: [172.24.0.0/16]
 clusterDNS: [172.23.0.10]
 clusterName: edge-au-east

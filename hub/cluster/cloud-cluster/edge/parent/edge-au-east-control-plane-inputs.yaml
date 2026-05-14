@@ -23,17 +23,12 @@ spec:
   valuesFrom:
     - kind: Secret
       name: edge-au-east-node-bootstrap-token
-      valuesKey: id
-      targetPath: nodeBootstrapToken.stringData.id
-    - kind: Secret
-      name: edge-au-east-node-bootstrap-token
-      valuesKey: secret
-      targetPath: nodeBootstrapToken.stringData.secret
+      valuesKey: token
+      targetPath: nodeBootstrapToken.stringData.token
   values:
     nodeBootstrapToken:
       kind: Secret
       metadata:
         name: edge-au-east-node-bootstrap-token
       stringData:
-        id: ""
-        secret: ""
+        token: ""

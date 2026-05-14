@@ -212,15 +212,25 @@ spec:
 ---
 {{- end }}
 {{- range $.Values.bootstrapTokens }}
+{{- $id := .id }}
+{{- $secret := .secret }}
+{{- with .token }}
+{{- $parts := splitList "." . }}
+{{- if ne (len $parts) 2 }}
+{{- fail "token must be formatted as <id>.<secret>" }}
+{{- end }}
+{{- $id = index $parts 0 }}
+{{- $secret = index $parts 1 }}
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
-  name: bootstrap-token-{{ required "token missing id" .id }}
+  name: bootstrap-token-{{ required "token missing id" $id }}
   namespace: kube-system
 type: bootstrap.kubernetes.io/token
 stringData:
-  token-id: {{ .id }}
-  token-secret: {{ required "token missing secret" .secret }}
+  token-id: {{ $id }}
+  token-secret: {{ required "token missing secret" $secret }}
   {{- with .extraGroups }}
   auth-extra-groups: {{ . | join "," }}
   {{- end }}
