@@ -203,6 +203,12 @@ data:
             transport:
               uds:
                 udsName: /konnectivity/socket
+        - name: controlplane
+          connection:
+            proxyProtocol: GRPC
+            transport:
+              uds:
+                udsName: /konnectivity/socket
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

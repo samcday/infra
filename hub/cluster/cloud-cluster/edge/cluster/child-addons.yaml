@@ -12,12 +12,39 @@ spec:
       version: 1.18.0
   driftDetection:
     mode: enabled
+  install:
+    remediation:
+      retries: 3
   interval: 1h
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: apps
+              version: v1
+              kind: Deployment
+              name: cilium-operator
+            patch: |
+              - op: replace
+                path: /spec/template/spec/containers/0/livenessProbe/failureThreshold
+                value: 10
+              - op: replace
+                path: /spec/template/spec/containers/0/livenessProbe/timeoutSeconds
+                value: 15
+              - op: replace
+                path: /spec/template/spec/containers/0/readinessProbe/failureThreshold
+                value: 10
+              - op: replace
+                path: /spec/template/spec/containers/0/readinessProbe/timeoutSeconds
+                value: 15
   storageNamespace: kube-system
   targetNamespace: kube-system
+  upgrade:
+    remediation:
+      retries: 3
   values:
     envoy:
       securityContext:
@@ -38,7 +65,15 @@ spec:
     nodeIPAM:
       enabled: true
     operator:
+      extraArgs:
+        - --leader-election-lease-duration=60s
+        - --leader-election-renew-deadline=45s
+        - --leader-election-retry-period=10s
       replicas: 1
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
       rollOutPods: true
     routingMode: native
 ---
@@ -56,12 +91,18 @@ spec:
       version: 1.39.2
   driftDetection:
     mode: enabled
+  install:
+    remediation:
+      retries: 3
   interval: 1h
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: kube-system
   targetNamespace: kube-system
+  upgrade:
+    remediation:
+      retries: 3
   values:
     k8sAppLabelOverride: kube-dns
     replicaCount: 1
@@ -82,12 +123,18 @@ spec:
       version: 3.12.1
   driftDetection:
     mode: enabled
+  install:
+    remediation:
+      retries: 3
   interval: 1h
   kubeConfig:
     secretRef:
       name: admin-kubeconfig
   storageNamespace: kube-system
   targetNamespace: kube-system
+  upgrade:
+    remediation:
+      retries: 3
   values:
     args:
       - --kubelet-insecure-tls

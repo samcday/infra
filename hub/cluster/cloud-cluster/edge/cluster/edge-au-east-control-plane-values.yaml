@@ -1,4 +1,6 @@
 apiServer:
+  extraArgs:
+    - --enable-aggregator-routing=true
   service:
     spec:
       clusterIP: 172.27.23.43

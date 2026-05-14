@@ -14,6 +14,7 @@ spec:
         namespace: flux-system
   dependsOn:
     - name: edge-au-east-apiserver-proxy
+    - name: edge-au-east-control-plane-inputs
   driftDetection:
     mode: enabled
   interval: 1h
@@ -27,10 +28,6 @@ spec:
       name: edge-au-east-node-ts-auth
       valuesKey: key
       targetPath: nodeTsAuth.stringData.key
-    - kind: Secret
-      name: edge-au-east-node-bootstrap-token
-      valuesKey: token
-      targetPath: nodeBootstrapToken.stringData.token
   values:
     nodeTsAuth:
       kind: Secret
@@ -38,12 +35,6 @@ spec:
         name: node-ts-auth
       stringData:
         key: ""
-    nodeBootstrapToken:
-      kind: Secret
-      metadata:
-        name: node-bootstrap-token
-      stringData:
-        token: ""
     nodeJoinerServiceAccount:
       kind: ServiceAccount
       metadata:
@@ -96,6 +87,7 @@ spec:
                   name:  .metadata.name,
                   ip:    ((.status.addresses // []) | map(select(.type=="ExternalIP"))[0].address // ""),
                   ready: ((.status.conditions // []) | any(.type=="Ready" and .status=="True")),
+                  joined: ((.status.nodeInfo.kubeletVersion // "") != ""),
                 }
           YAML
             exit 0
@@ -109,14 +101,14 @@ spec:
           TEMPLATE=/hooks/job-template.yaml
 
           reconcile() {
-            local op=$1 name=$2 ip=$3 ready=$4
+            local op=$1 name=$2 ip=$3 ready=$4 joined=$5
             local job="join-$name"
 
             if [[ -z "$name" ]]; then
               return
             fi
 
-            if [[ "$op" == "Deleted" || "$ready" == "true" ]]; then
+            if [[ "$op" == "Deleted" || "$ready" == "true" || "$joined" == "true" ]]; then
               kubectl -n "$NAMESPACE" delete job "$job" --ignore-not-found
               return
             fi
@@ -146,7 +138,8 @@ spec:
                   reconcile "Synchronization" \
                     "$(jq -r '.filterResult.name  // ""'   <<<"$obj")" \
                     "$(jq -r '.filterResult.ip    // ""'   <<<"$obj")" \
-                    "$(jq -r '.filterResult.ready // false' <<<"$obj")"
+                    "$(jq -r '.filterResult.ready // false' <<<"$obj")" \
+                    "$(jq -r '.filterResult.joined // false' <<<"$obj")"
                 done
                 ;;
               Event)
@@ -154,7 +147,8 @@ spec:
                   "$(jq -r '.watchEvent         // ""'    <<<"$row")" \
                   "$(jq -r '.filterResult.name  // ""'    <<<"$row")" \
                   "$(jq -r '.filterResult.ip    // ""'    <<<"$row")" \
-                  "$(jq -r '.filterResult.ready // false' <<<"$row")"
+                  "$(jq -r '.filterResult.ready // false' <<<"$row")" \
+                  "$(jq -r '.filterResult.joined // false' <<<"$row")"
                 ;;
             esac
           done
@@ -176,6 +170,10 @@ spec:
                   bl.samcday.com/node: ${NODE_NAME}
               spec:
                 restartPolicy: OnFailure
+                dnsConfig:
+                  options:
+                    - name: ndots
+                      value: "1"
                 volumes:
                   - name: edge-kubeconfig
                     secret:
@@ -204,7 +202,7 @@ spec:
                       - name: BOOTSTRAP_TOKEN
                         valueFrom:
                           secretKeyRef:
-                            name: node-bootstrap-token
+                            name: edge-au-east-node-bootstrap-token
                             key: token
                       - name: CA_HASH
                         valueFrom:
@@ -233,6 +231,10 @@ spec:
               app.kubernetes.io/name: node-joiner
           spec:
             serviceAccountName: node-joiner
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
             containers:
               - name: shell-operator
                 image: ghcr.io/flant/shell-operator:v1.4.16
