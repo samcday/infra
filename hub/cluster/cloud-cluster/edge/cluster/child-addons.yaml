@@ -66,9 +66,9 @@ spec:
       enabled: true
     operator:
       extraArgs:
-        - --leader-election-lease-duration=60s
-        - --leader-election-renew-deadline=45s
-        - --leader-election-retry-period=10s
+        - --leader-election-lease-duration=10m
+        - --leader-election-renew-deadline=8m
+        - --leader-election-retry-period=30s
       replicas: 1
       resources:
         requests:
