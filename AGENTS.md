@@ -12,6 +12,7 @@
 - Use `scripts/ik --context=hub ...` for the management cluster and `scripts/ik --context=cloud ...` for app workloads; it always uses the repo-local `kubeconfig`.
 - `.mcp.json` configures a read-only Kubernetes MCP server against `./kubeconfig` with `core,config,helm` toolsets.
 - For app debugging, check Flux `GitRepository`/`Kustomization` objects in the hub `cloud-cluster` namespace, then workloads in the same app namespace on the `cloud` context.
+- Mutating cluster state directly is expressly forbidden unless Sam explicitly allows it for the specific operation. Make changes through Git and Flux reconciliation by default; use direct `kubectl`/`scripts/ik` mutation only when explicitly authorized.
 
 ## Component Commands
 - `apps/etcdetcetc` is a Rust Kubernetes controller workspace; run commands from that directory.
