@@ -26,6 +26,7 @@ resources:
   - namespaces.yaml
   - node-bootstrap-token.yaml
   - reloader.yaml
+  - scaleup-probe.yaml
   - tofu.yaml
   - ts-apiserver.yaml
   - tofu-controller.yaml
