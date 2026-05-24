@@ -125,7 +125,7 @@ spec:
             headscale_json | jq -r --arg name "$node_name" --arg tag "$HEADSCALE_TAG" '
               select(type == "array")[]
               | select(.name == $name)
-              | select(((.forced_tags // []) + (.valid_tags // []) + (.pre_auth_key.acl_tags // [])) | index($tag))
+              | select(((.tags // []) + (.forced_tags // []) + (.valid_tags // []) + (.pre_auth_key.acl_tags // [])) | index($tag))
               | .id
             '
           }
@@ -243,7 +243,7 @@ spec:
             serviceAccountName: headscale-node-cleaner
             containers:
               - name: shell-operator
-                image: "2026050721" # {"$imagepolicy": "flux-system:headscale-node-cleaner:tag"}
+                image: ghcr.io/samcday/infra-headscale-node-cleaner:2026050721 # {"$imagepolicy": "flux-system:headscale-node-cleaner"}
                 env:
                   - name: KUBECONFIG
                     value: /etc/cloud-kubeconfig/kubeconfig
