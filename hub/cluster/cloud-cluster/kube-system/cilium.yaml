@@ -23,6 +23,8 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cilium/cilium/blob/v1.19.4/install/kubernetes/cilium/values.yaml
+    bpf:
+      enableTCX: false
     envoy:
       securityContext:
         capabilities:
@@ -88,3 +90,4 @@ spec:
       serviceMonitor:
         enabled: true
     routingMode: native
+    rollOutCiliumPods: true
