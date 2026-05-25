@@ -68,8 +68,6 @@ spec:
         name: nginx-edge-wasmcloud-demo
         namespace: wasmcloud
       spec:
-        hostnames:
-          - wasmclouddemo.samcday.com
         parentRefs:
           - name: nginx-edge
             namespace: nginx-gateway
