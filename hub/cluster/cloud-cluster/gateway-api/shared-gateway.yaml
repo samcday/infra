@@ -8,7 +8,7 @@ spec:
   gatewayClassName: cilium
   infrastructure:
     annotations:
-      io.cilium.nodeipam/match-node-labels: "kubernetes.io/hostname=cx23-371c807f58d39a0e"
+      io.cilium.nodeipam/match-node-labels: "kubernetes.io/hostname in (cx23-371c807f58d39a0e,cx23-3a3ac4ca1464496)"
   listeners:
     - name: http
       protocol: HTTP
