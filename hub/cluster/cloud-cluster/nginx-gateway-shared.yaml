@@ -32,7 +32,6 @@ spec:
         dnsNames:
           - samcday.com
           - "*.samcday.com"
-          - cloud.samcday.com
           - "*.cloud.samcday.com"
           - fastboop.win
           - "*.fastboop.win"
