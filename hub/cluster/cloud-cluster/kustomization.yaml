@@ -25,7 +25,7 @@ resources:
   - metrics-write-proxy.yaml
   - namespaces.yaml
   - nginx-gateway-fabric.yaml
-  - nginx-gateway-test.yaml
+  - nginx-gateway-shared.yaml
   - node-bootstrap-token.yaml
   - reloader.yaml
   - tofu.yaml

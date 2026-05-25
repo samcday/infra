@@ -1,0 +1,148 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nginx-gateway-shared
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: charts/resources
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: nginx-gateway-fabric
+  driftDetection:
+    mode: enabled
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  storageNamespace: nginx-gateway
+  targetNamespace: nginx-gateway
+  values:
+    certificate:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: shared-gateway-certificate
+      spec:
+        dnsNames:
+          - samcday.com
+          - "*.samcday.com"
+          - cloud.samcday.com
+          - "*.cloud.samcday.com"
+          - fastboop.win
+          - "*.fastboop.win"
+          - "*.rokkitpokkit.samcday.com"
+          - "*.fastboopmos.samcday.com"
+        issuerRef:
+          group: cert-manager.io
+          kind: ClusterIssuer
+          name: letsencrypt
+        secretName: shared-gateway-certificate
+    gateway:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: shared
+      spec:
+        gatewayClassName: nginx-edge
+        listeners:
+          - allowedRoutes:
+              namespaces:
+                from: All
+            name: http
+            port: 80
+            protocol: HTTP
+          - allowedRoutes:
+              namespaces:
+                from: All
+            name: https
+            port: 443
+            protocol: HTTPS
+            tls:
+              certificateRefs:
+                - name: shared-gateway-certificate
+              mode: Terminate
+    dns:
+      apiVersion: externaldns.k8s.io/v1alpha1
+      kind: DNSEndpoint
+      metadata:
+        name: shared-gateway
+      spec:
+        endpoints:
+          - dnsName: docs.fastboop.win
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: fastboop.win
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: fastboopmos.samcday.com
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: flux.cloud.samcday.com
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "true"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: matrix.fastboop.win
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: rokkitpokkit.samcday.com
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: wasmclouddemo.samcday.com
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: www.fastboop.win
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
+          - dnsName: xn--nu8h3y.samcday.com
+            providerSpecific:
+              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+                value: "false"
+            recordTTL: 300
+            recordType: CNAME
+            targets:
+              - cloud.samcday.com
