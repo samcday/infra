@@ -1,0 +1,45 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nginx-gateway-fabric
+  namespace: cloud-cluster
+spec:
+  chart:
+    spec:
+      chart: nginx-gateway-fabric
+      sourceRef:
+        kind: HelmRepository
+        name: nginx
+        namespace: flux-system
+      version: 2.6.0
+  dependsOn:
+    - name: namespaces
+  install:
+    crds: Create
+  interval: 1h
+  kubeConfig:
+    secretRef:
+      name: admin-kubeconfig
+  releaseName: nginx-gateway-fabric
+  storageNamespace: nginx-gateway
+  targetNamespace: nginx-gateway
+  upgrade:
+    crds: CreateReplace
+  values:
+    nginxGateway:
+      gatewayClassName: nginx-edge
+      productTelemetry:
+        enable: false
+    nginx:
+      kind: daemonSet
+      pod:
+        dnsPolicy: ClusterFirstWithHostNet
+        hostNetwork: true
+      service:
+        type: ClusterIP
+      container:
+        hostPorts:
+          - containerPort: 81
+            port: 81
+          - containerPort: 444
+            port: 444

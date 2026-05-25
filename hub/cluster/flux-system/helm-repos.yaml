@@ -69,6 +69,10 @@ spec:
     nats:
       spec:
         url: https://nats-io.github.io/k8s/helm/charts/
+    nginx:
+      spec:
+        type: oci
+        url: oci://ghcr.io/nginx/charts
     openebs:
       spec:
         url: https://openebs.github.io/openebs

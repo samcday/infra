@@ -24,6 +24,8 @@ resources:
   - keda-vpas.yaml
   - metrics-write-proxy.yaml
   - namespaces.yaml
+  - nginx-gateway-fabric.yaml
+  - nginx-gateway-test.yaml
   - node-bootstrap-token.yaml
   - reloader.yaml
   - tofu.yaml

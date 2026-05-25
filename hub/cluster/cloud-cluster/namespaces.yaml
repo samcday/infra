@@ -29,5 +29,6 @@ spec:
     fastboopmos:
     gibblox:
     keda:
+    nginx-gateway:
     rokkitpokkit:
     wasmcloud:
