@@ -77,10 +77,10 @@ storage:
                 spec:
                   repo: https://helm.cilium.io/
                   chart: cilium
-                  version: 1.18.0
+                  version: 1.19.4
                   bootstrap: true
                   targetNamespace: kube-system
-                  # https://github.com/cilium/cilium/blob/v1.18.0/install/kubernetes/cilium/values.yaml
+                  # https://github.com/cilium/cilium/blob/v1.19.4/install/kubernetes/cilium/values.yaml
                   valuesContent: |-
                     autoDirectNodeRoutes: true
                     bgpControlPlane:
