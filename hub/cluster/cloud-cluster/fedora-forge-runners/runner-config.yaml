@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: fedora-forge-runner-config
+type: Opaque
+stringData:
+    amd64-config.yaml: ENC[AES256_GCM,data:pHw7a2XxgR7e3/6K3pW5euxiRXlCQ4OCT7vh0Jlt16hizMZmDXVQftfcY/HPIdPtpEQgcz5icyiAmHJrJxH60/XcVXgmdAWOLBRLJdesHNWvClJEwzK5Kt850sFtxO83nC9c3Nlv3go8B0ZjJ7jutfQ+/sbQLm/hnNhboV4veojoO/ot5KD3n5e75VWAEzJtxaz3mW685+Soe15oUCTOEPmHd1uNve3rskDpcOh89A+t/gMpTIOIcEZaemMtpJ8fUh2QuBukoru2hTXZbqhk479djlTd4ng3dsOfQZULu94PwVolGWBEZz4BmrXLoDj+tOC0AtKT9gjRfLaq2rZYDwM0u9lpJkwooyoA5ffzggg0VPdw/7nsPoAvbZ7CTzhRT737NnIH/+fPfHZnpL7SpNM1JDRGxqTy1rLupwuxawXzZulK5jN5r50uPURQLlZy1N6OZuSxakmC1dhuxlp2IBs6JwYZCZkE0XUo7mkOSyZ8YTJGjy/+O5hTxuQwBJYhRj/Je+PD8bjd39aYIsYduMn2mg4kWA5yDzgOWyKf9j9iCp5Mk7VupZ5O1rruzaPjm9acc1vrrLO+r9Hm8XdtCZGitB7pLGTEo00QWAjsz05+iFy9n/gBe1SGsdvRCjsmqi9VFY0ojrQH1MNbjDcHnLa9BwLMwOs38aiKQ0vAlZobOqsMbL0HHRQwZGkby2kD4gxqBPEw3TdvTCTkgans8KGq5FA37VVv6ohAuTRmX5ziNJuGX/Z2gkk91Vw5ex38wmNIdV4=,iv:sC9UtYZM1nQtSqm2IWy2vijQi6l9o+D0qJYCIVKxXmI=,tag:94gtRT49R9RfX+pRn8zo3w==,type:str]
+    arm64-config.yaml: ENC[AES256_GCM,data:rRXJX+FIvn4arU/wXNqT6nad7kz+e/H6K6SsWU4tx9bBVRM5ypk3ODYw1O2EFk0ynuUwWRcyk905wjzmWQsG5aFNuOgqLcCyGNYgESxrdjgJaOJBMMn4D6dNXMyyom6qAdjd8BD51FjF6yMKj9kgNXvgI1k1ZmN+ZHgnX8qlsfWfqe1+1bzJ7vKnvC71/sEfu2tIqZTObF1F0B0p3ocnmZjlLJnbjzTA6phEPUjeGTp6o0zv9bZsyNsk7HBrzhsO0JkHW6PNpy4cGBDZ+TCpv4pqPIrt5HSzXTucBblK+dMxqMZMls0GafRGXxNJWMEQkI3DG17ez6+YmWgVEQBBRoH2ohsCoLsyyF+Udm6h9HtAFfmd115Fv3vGbw3pZGwY7fLXE+DCTAgmDUa13aqXIG/UeJOH6rTivXAT9a/NXdS83ERN4s4/WpNYmWMFu7sjYs4yGE0YPaJL7ICDDP070NNDhFZe16tHk8/QpUWhAdADgbvrukoiZn2X7a3uik//AqCtYP0y55V0JzVdPltr4jmW14Nv17Lw3igrv0iOi0ob7/S4F8OCQlKrBnpWYVz8jcBu51ChmemMg21vQjfL/QPf/M2AEUcti1TBlZ/Y9RKb95PekkXK9BTvdtFl9B3RiHRltPzSM5IKp70GRLUioeFxlFHGRajNXBXPzLiwgXebybs0ZcHQVoxYOCl6bN6bAPZAJ54oaTlvKzCms5mwTEXBdejk/ccx6hrTnkOzr+uhEHlwsP1GiiaZIAtCQXwm9g0srvA=,iv:F2rQM3tHZH9IbRr8wdSbpOXOtdgr5XGezieBffA7RRU=,tag:TPQ61rJaKU5sul1hYQBMOw==,type:str]
+sops:
+    age:
+        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBpZmN0SGtqZTlpTmVodXFl
+            WmR4VHNkNjZod2cxbTZvQVNuemdUU2dycEZjCkxSUVd1aElrWHF2bVNjdnJsU1Bm
+            Z0s1QUFBUkFteEFQNkhVUXJ6VmM0eW8KLS0tIGlWK3pkbEl3Y3lKSGxxcFM1elMx
+            bEZraERuWWtLTVlaclV6aVY5QWRHRFEK7izTfeELKqvTZH/X05hW4a6aqJUArmmO
+            qkTPeAcZgXOT8rR8X5H9ugbwKMS6ruXPt2t1TP2oEP00QWfqjjNcUg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBUSFhoWWl1WGlna3hpa0ZC
+            akFCWXQ4eW9hYloxKyt5d1U1NVc2bTcwQWhJCnhBMXB1N0htVXlwYjJ4K3U1MTMr
+            Y2hQVllUUGtCejBZMXVFWHo3ZTJnZ0kKLS0tIEZjTUhuSDE1Tmt0WVp6Q1pzVG5q
+            dURlYmx6bXBjaW5NMTV2ZlIzcGtzWm8KXcninJ6WwiEyNBX4vAHYpfa1M5V1F5aW
+            VAojLZUmoUIOeABs47sPeUIPHSygb6cpRf8bituDWoxzvfN0EOdP3g==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-06T06:07:26Z"
+    mac: ENC[AES256_GCM,data:tyUwZWePfp3liJ/M+f2Kwik2Nq5v+2tgVg+H4OUl7s6JmQoDXFJH3rsLDTfaDw3zsIbyWxCrZJu0/JXiOwtdFbBH+6C6YKqJRb1YjLHD+zxU9Jpj6UDCRH62m72K9J2vXgmi846EJlu14PjgLBiXWRXQ+slUZLQ1rKKo7jvMBgc=,iv:MVHXjf2ERvrDoyEK+5SDtvTDJBzD5TcH1IPNWvBiVso=,tag:WXgibrIbF1fzueHWTczXXw==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

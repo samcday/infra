@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fedora-forge-runner-arm64
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fedora-forge-runner
+      app.kubernetes.io/component: arm64
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fedora-forge-runner
+        app.kubernetes.io/component: arm64
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      volumes:
+        - name: docker-data
+          emptyDir: {}
+        - name: runner-config
+          secret:
+            secretName: fedora-forge-runner-config
+            items:
+              - key: arm64-config.yaml
+                path: config.yaml
+        - name: runner-data
+          emptyDir: {}
+      containers:
+        - name: runner
+          image: data.forgejo.org/forgejo/runner:12
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              for i in $(seq 1 60); do
+                if forgejo-runner --config /config/config.yaml daemon; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "forgejo-runner failed after retries"
+              exit 1
+          env:
+            - name: DOCKER_HOST
+              value: tcp://127.0.0.1:2375
+          volumeMounts:
+            - name: runner-config
+              mountPath: /config
+              readOnly: true
+            - name: runner-data
+              mountPath: /data
+        - name: dind
+          image: docker:27.5-dind
+          securityContext:
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          command:
+            - /bin/sh
+            - -ec
+            - dockerd-entrypoint.sh --host=tcp://0.0.0.0:2375 --tls=false
+          volumeMounts:
+            - name: docker-data
+              mountPath: /var/lib/docker
