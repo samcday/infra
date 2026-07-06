@@ -38,7 +38,7 @@ spec:
         maxSize: 2
         minSize: 0
         instanceType: cax11
-        region: nbg1
+        region: fsn1
     cloudProvider: hetzner
     deployment:
       annotations:
