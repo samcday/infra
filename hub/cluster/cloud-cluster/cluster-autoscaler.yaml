@@ -30,9 +30,14 @@ spec:
     # https://github.com/kubernetes/autoscaler/blob/master/charts/cluster-autoscaler/values.yaml
     autoscalingGroups:
       - name: cx23
-        maxSize: 10
-        minSize: 3
+        maxSize: 2
+        minSize: 2
         instanceType: cx23
+        region: nbg1
+      - name: cax23
+        maxSize: 2
+        minSize: 0
+        instanceType: cax23
         region: nbg1
     cloudProvider: hetzner
     deployment:
