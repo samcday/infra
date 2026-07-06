@@ -34,10 +34,10 @@ spec:
         minSize: 2
         instanceType: cx23
         region: nbg1
-      - name: cax23
+      - name: cax11
         maxSize: 2
         minSize: 0
-        instanceType: cax23
+        instanceType: cax11
         region: nbg1
     cloudProvider: hetzner
     deployment:
