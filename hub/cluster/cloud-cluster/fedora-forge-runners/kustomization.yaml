@@ -5,4 +5,5 @@ resources:
   - namespace.yaml
   - runner-config.yaml
   - runner-amd64.yaml
+  - runner-mobility-amd64.yaml
   - runner-arm64.yaml
