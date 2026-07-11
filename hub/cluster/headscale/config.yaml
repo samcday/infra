@@ -285,9 +285,7 @@ dns:
 
     # Split DNS (see https://tailscale.com/kb/1054/dns/),
     # a map of domains and which DNS server to use for each.
-    split:
-      cluster.hub.internal: [172.31.0.10]
-      hub.internal: [10.0.1.1]
+    split: {}
 
   # Set custom DNS search domains. With MagicDNS enabled,
   # your tailnet base_domain is always the first search domain.

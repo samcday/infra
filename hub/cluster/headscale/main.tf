@@ -44,10 +44,6 @@ resource "headscale_user" "sam" {
   name = "sam"
 }
 
-resource "headscale_user" "simonet" {
-  name = "simonet"
-}
-
 resource "headscale_pre_auth_key" "cloud_cluster_apiserver_stable" {
   user           = headscale_user.cloud.id
   time_to_expire = "520w"
@@ -100,25 +96,6 @@ resource "headscale_pre_auth_key" "edge_au_east_nodes" {
   reusable       = true
   ephemeral      = true
   acl_tags       = ["tag:edge-au-east-node"]
-}
-
-resource "headscale_pre_auth_key" "subnet-router" {
-  user           = headscale_user.hub.id
-  time_to_expire = "521w"
-  reusable       = true
-  acl_tags       = ["tag:hub-subnet-router"]
-}
-
-
-resource "kubernetes_secret" "subnet-router-preauth" {
-  metadata {
-    name      = "subnet-router-ts-auth"
-    namespace = "headscale"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.subnet-router.key
-  }
 }
 
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
@@ -184,53 +161,5 @@ resource "kubernetes_secret" "edge_au_east_node_preauth" {
 
   data = {
     key = headscale_pre_auth_key.edge_au_east_nodes.key
-  }
-}
-
-resource "headscale_pre_auth_key" "simonet-router" {
-  user           = headscale_user.simonet.id
-  time_to_expire = "520w"
-  reusable       = true
-  acl_tags       = ["tag:simonet", "tag:simonet-router"]
-}
-
-output "simonet-router-ts-auth" {
-  value     = headscale_pre_auth_key.simonet-router.key
-  sensitive = true
-}
-
-resource "headscale_pre_auth_key" "simonet-nodes" {
-  user           = headscale_user.simonet.id
-  time_to_expire = "520w"
-  reusable       = true
-  acl_tags       = ["tag:simonet", "tag:simonet-nodes"]
-}
-
-resource "kubernetes_secret" "simonet-node-preauth" {
-  metadata {
-    name      = "node-ts-auth"
-    namespace = "simonet"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.simonet-nodes.key
-  }
-}
-
-resource "headscale_pre_auth_key" "simonet-subnet-router" {
-  user           = headscale_user.simonet.id
-  time_to_expire = "520w"
-  reusable       = true
-  acl_tags       = ["tag:simonet", "tag:simonet-subnet-router"]
-}
-
-resource "kubernetes_secret" "simonet-subnet-router-preauth" {
-  metadata {
-    name      = "subnet-router-ts-auth"
-    namespace = "simonet"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.simonet-subnet-router.key
   }
 }

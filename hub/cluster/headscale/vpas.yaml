@@ -26,13 +26,3 @@ spec:
           name: headscale-generic
         updatePolicy:
           updateMode: Auto
-    subnet-router:
-      apiVersion: autoscaling.k8s.io/v1
-      kind: VerticalPodAutoscaler
-      spec:
-        targetRef:
-          apiVersion: apps/v1
-          kind: StatefulSet
-          name: subnet-router
-        updatePolicy:
-          updateMode: Auto

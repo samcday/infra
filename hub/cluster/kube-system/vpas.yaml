@@ -106,26 +106,6 @@ spec:
           name: snapshot-controller
         updatePolicy:
           updateMode: Auto
-    tailscale:
-      apiVersion: autoscaling.k8s.io/v1
-      kind: VerticalPodAutoscaler
-      spec:
-        targetRef:
-          apiVersion: apps/v1
-          kind: DaemonSet
-          name: tailscale
-        updatePolicy:
-          updateMode: Auto
-    tailscale-node-controller:
-      apiVersion: autoscaling.k8s.io/v1
-      kind: VerticalPodAutoscaler
-      spec:
-        targetRef:
-          apiVersion: apps/v1
-          kind: DaemonSet
-          name: tailscale-node-controller
-        updatePolicy:
-          updateMode: Auto
     vpa-vertical-pod-autoscaler-admission-controller:
       apiVersion: autoscaling.k8s.io/v1
       kind: VerticalPodAutoscaler

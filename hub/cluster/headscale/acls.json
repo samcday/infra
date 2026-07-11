@@ -6,29 +6,8 @@
                 "sam@"
             ],
             "dst": [
-                "*:*"
-            ]
-        },
-        {
-            "action": "accept",
-            "src": [
-                "tag:hub-subnet-router"
-            ],
-            "dst": [
-                "10.0.1.0/24:*",
-                "10.0.2.0/24:*",
-                "172.30.0.0/16:*",
-                "172.31.0.0/16:*",
-                "tag:hub-subnet-router:*"
-            ]
-        },
-        // Allow simonet to access apiserver+bootie deployed for it in hub cluster.
-        {
-            "action": "accept",
-            "src": ["tag:simonet"],
-            "dst": [
-                "10.0.2.252/30:*",
-                "tag:hub-subnet-router:*"
+                "tag:cloud-cluster-apiserver:6443",
+                "tag:edge-au-east-apiserver:6443"
             ]
         },
         // Allow cloud-cluster nodes to access their apiserver
@@ -47,36 +26,12 @@
             ]
         }
     ],
-    "autoApprovers": {
-        "routes": {
-            "10.0.1.0/24": [
-                "tag:hub-subnet-router"
-            ],
-            "10.0.2.0/24": [
-                "tag:hub-subnet-router"
-            ],
-            "10.0.6.0/24": [
-                "tag:simonet"
-            ],
-            "172.30.0.0/16": [
-                "tag:hub-subnet-router"
-            ],
-            "172.31.0.0/16": [
-                "tag:hub-subnet-router"
-            ]
-        }
-    },
     "tagOwners": {
-        "tag:hub-subnet-router": [],
         "tag:cloud-cluster-apiserver": [],
         "tag:cloud-cluster-metrics-write": [],
         "tag:cloud-cluster-wasmcloud-nats": [],
         "tag:cloud-cluster-node": [],
         "tag:edge-au-east-apiserver": [],
-        "tag:edge-au-east-node": [],
-        "tag:simonet": [],
-        "tag:simonet-nodes": [],
-        "tag:simonet-router": [],
-        "tag:simonet-subnet-router": []
+        "tag:edge-au-east-node": []
     }
 }
