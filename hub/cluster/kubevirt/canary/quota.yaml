@@ -8,8 +8,8 @@ spec:
     count/datavolumes.cdi.kubevirt.io: "1"
     count/virtualmachineinstances.kubevirt.io: "1"
     count/virtualmachines.kubevirt.io: "1"
-    persistentvolumeclaims: "2"
+    persistentvolumeclaims: "3"
     pods: "3"
     requests.cpu: "2"
     requests.memory: 2Gi
-    requests.storage: 10Gi
+    requests.storage: 15Gi

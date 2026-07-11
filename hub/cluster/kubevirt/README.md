@@ -31,9 +31,9 @@ rook-ceph -----------------------+
 - Only nodes labelled `samcday.com/kubevirt=true` run VM compute pods. The
   root control-plane/etcd nodes are not opted in.
 - The VM receives 1 GiB of guest memory and at most one vCPU. Namespace quota
-  allows one VM, one DataVolume, its 4 GiB persistent disk, and the temporary
-  CDI scratch PVC needed while converting the qcow2 image. Scratch is deleted
-  after import; the namespace storage ceiling is 10 GiB.
+  allows one VM, one DataVolume, its 4 GiB persistent disk, and CDI's temporary
+  prime and scratch PVCs while converting the qcow2 image. The temporary
+  claims are deleted after import; the namespace storage ceiling is 15 GiB.
 - Its only network is KubeVirt masquerade over the pod network. There is no
   Service, direct-LAN attachment, host device, Multus network, or GPU grant.
 - The disk explicitly uses `ceph-block`; it does not depend on the hub's
