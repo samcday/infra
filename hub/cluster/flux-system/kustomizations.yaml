@@ -107,6 +107,73 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/kube-system
+    cdi-operator:
+      spec:
+        path: hub/cluster/kubevirt/cdi-operator
+        timeout: 10m
+        wait: true
+    cdi:
+      spec:
+        dependsOn: [name: cdi-operator]
+        healthCheckExprs:
+          - apiVersion: cdi.kubevirt.io/v1beta1
+            kind: CDI
+            current: has(status.phase) && status.phase == 'Deployed'
+            failed: has(status.phase) && status.phase == 'Error'
+        healthChecks:
+          - apiVersion: cdi.kubevirt.io/v1beta1
+            kind: CDI
+            name: cdi
+        path: hub/cluster/kubevirt/cdi
+        timeout: 15m
+    kubevirt-operator:
+      spec:
+        path: hub/cluster/kubevirt/operator
+        timeout: 10m
+        wait: true
+    kubevirt:
+      spec:
+        dependsOn:
+          - name: kubevirt-operator
+          - name: monitoring
+        healthCheckExprs:
+          - apiVersion: kubevirt.io/v1
+            kind: KubeVirt
+            current: >-
+              has(status.phase) && status.phase == 'Deployed' &&
+              has(status.conditions) &&
+              status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+            failed: >-
+              has(status.conditions) &&
+              status.conditions.exists(c, c.type == 'Degraded' && c.status == 'True')
+        healthChecks:
+          - apiVersion: kubevirt.io/v1
+            kind: KubeVirt
+            name: kubevirt
+            namespace: kubevirt
+        path: hub/cluster/kubevirt/instance
+        timeout: 15m
+    kubevirt-canary:
+      spec:
+        dependsOn:
+          - name: cdi
+          - name: kubevirt
+          - name: rook-ceph
+        healthCheckExprs:
+          - apiVersion: kubevirt.io/v1
+            kind: VirtualMachine
+            current: has(status.ready) && status.ready
+            failed: >-
+              has(status.printableStatus) && status.printableStatus in
+              ['CrashLoopBackOff', 'ErrorUnschedulable', 'ErrImagePull',
+              'ImagePullBackOff', 'ErrorPvcNotFound', 'DataVolumeError']
+        healthChecks:
+          - apiVersion: kubevirt.io/v1
+            kind: VirtualMachine
+            name: arch-canary
+            namespace: kubevirt-canary
+        path: hub/cluster/kubevirt/canary
+        timeout: 30m
     monitoring:
       spec:
         dependsOn:

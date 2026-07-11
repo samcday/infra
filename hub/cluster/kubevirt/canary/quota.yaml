@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kubevirt-canary
+  namespace: kubevirt-canary
+spec:
+  hard:
+    count/datavolumes.cdi.kubevirt.io: "1"
+    count/virtualmachineinstances.kubevirt.io: "1"
+    count/virtualmachines.kubevirt.io: "1"
+    persistentvolumeclaims: "2"
+    pods: "3"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    requests.storage: 10Gi

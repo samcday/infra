@@ -1,0 +1,33 @@
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  imagePullPolicy: IfNotPresent
+  infra:
+    nodePlacement:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+          operator: Exists
+  monitorAccount: kube-prometheus-stack-prometheus
+  monitorNamespace: monitoring
+  serviceMonitorNamespace: monitoring
+  uninstallStrategy: BlockUninstallIfWorkloadsExist
+  workloads:
+    nodePlacement:
+      nodeSelector:
+        samcday.com/kubevirt: "true"
+  configuration:
+    developerConfiguration:
+      featureGates:
+        - NodeRestriction
+      useEmulation: false
+    network:
+      defaultNetworkInterface: masquerade
+      permitBridgeInterfaceOnPodNetwork: false
+  # Upgrade KubeVirt's control plane, but never restart running VMIs implicitly.
+  workloadUpdateStrategy: {}

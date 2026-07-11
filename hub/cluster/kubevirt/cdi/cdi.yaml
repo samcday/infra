@@ -1,0 +1,21 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: CDI
+metadata:
+  name: cdi
+spec:
+  config:
+    featureGates:
+      - HonorWaitForFirstConsumer
+      - WebhookPvcRendering
+    scratchSpaceStorageClass: ceph-block
+  imagePullPolicy: IfNotPresent
+  infra:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+    tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+        operator: Exists
+  workload:
+    nodeSelector:
+      samcday.com/kubevirt: "true"
