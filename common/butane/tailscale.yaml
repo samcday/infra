@@ -22,7 +22,7 @@ systemd:
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        ExecStart=tailscale up --login-server=https://headscale.tail22d0a0.ts.net --accept-routes --advertise-routes=${ADVERTISE_ROUTES} --auth-key=file:/etc/ts-authkey
+        ExecStart=tailscale up --login-server=https://headscale.tail22d0a0.ts.net --auth-key=file:/etc/ts-authkey
         Restart=on-failure
         RestartSec=10s
 

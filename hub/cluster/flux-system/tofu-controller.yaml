@@ -47,7 +47,6 @@ spec:
           - flux-system
           - headscale
           - kube-system
-          - simonet
 ---
 apiVersion: v1
 kind: ConfigMap

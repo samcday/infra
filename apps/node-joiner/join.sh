@@ -29,7 +29,7 @@ set -euo pipefail
 # which Ubuntu 24.04 reliably trips. Treat any exit as "wait complete".
 cloud-init status --wait || true
 
-tailscale up --accept-routes --login-server=${HEADSCALE_URL} --auth-key=${TS_AUTH_KEY}
+tailscale up --login-server=${HEADSCALE_URL} --auth-key=${TS_AUTH_KEY}
 
 # kubelet's --resolv-conf on this image points at /run/systemd/resolve/resolv.conf,
 # which lists upstream DNS directly and bypasses systemd-resolved's per-domain
