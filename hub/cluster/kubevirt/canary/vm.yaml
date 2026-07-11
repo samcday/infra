@@ -20,7 +20,7 @@ spec:
             requests:
               storage: 4Gi
           storageClassName: ceph-block
-          volumeMode: Block
+          volumeMode: Filesystem
   runStrategy: Always
   template:
     metadata:
