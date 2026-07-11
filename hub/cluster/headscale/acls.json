@@ -6,8 +6,7 @@
                 "sam@"
             ],
             "dst": [
-                "tag:cloud-cluster-apiserver:6443",
-                "tag:edge-au-east-apiserver:6443"
+                "*:*"
             ]
         },
         // Allow cloud-cluster nodes to access their apiserver
