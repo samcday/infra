@@ -123,17 +123,6 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/rook-ceph
-    simonet:
-      spec:
-        path: hub/cluster/simonet
-    simonet-butane:
-      spec:
-        path: simonet/butane
-        targetNamespace: simonet
-    simonet-butane-common:
-      spec:
-        path: common/butane
-        targetNamespace: simonet
     syncthing:
       spec:
         dependsOn: [name: gateway-api]
