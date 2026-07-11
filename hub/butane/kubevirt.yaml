@@ -1,0 +1,11 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/sysctl.d/90-kubevirt.conf
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          # KubeVirt virt-handler uses several certificate and device watches.
+          fs.inotify.max_user_instances = 1024
