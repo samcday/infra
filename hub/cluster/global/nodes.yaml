@@ -11,7 +11,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
-    samcday.com/ceph-mon: "true"
+    samcday.com/ceph-mon: "false"
     samcday.com/mac: 6c-4b-90-2d-cd-18
     topology.kubernetes.io/zone: az1
 spec:
@@ -31,7 +31,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
-    samcday.com/ceph-mon: "true"
+    samcday.com/ceph-mon: "false"
     samcday.com/mac: 00-23-24-b9-6d-75
     topology.kubernetes.io/zone: az1
 spec:
@@ -51,7 +51,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
-    samcday.com/ceph-mon: "true"
+    samcday.com/ceph-mon: "false"
     samcday.com/mac: 6c-4b-90-3d-02-ee
     topology.kubernetes.io/zone: az1
 spec:
