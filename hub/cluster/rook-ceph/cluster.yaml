@@ -15,7 +15,13 @@ spec:
       version: v1.17.7
   dependsOn:
     - name: operator
+  install:
+    remediation:
+      retries: 3
   interval: 1h
+  upgrade:
+    remediation:
+      retries: 3
   # postRenderers:
   #   - kustomize:
   #       patches:

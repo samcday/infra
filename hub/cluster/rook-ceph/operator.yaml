@@ -13,7 +13,13 @@ spec:
         name: rook-release
         namespace: flux-system
       version: v1.17.7
+  install:
+    remediation:
+      retries: 3
   interval: 1h
+  upgrade:
+    remediation:
+      retries: 3
   values:
     # https://github.com/rook/rook/blob/release-1.17/deploy/charts/rook-ceph/values.yaml
     csi:
