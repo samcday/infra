@@ -7,32 +7,165 @@ spec:
   groups:
     - name: HubControlPlane
       rules:
+        # This histogram has 1s and 5s buckets but no 3s bucket. Use exact
+        # bucket subtraction instead of interpolated quantiles, and require
+        # both an absolute request rate and a ratio to suppress sparse noise.
         - alert: HubEtcdClientLatencyHigh
           expr: |
-            histogram_quantile(
-              0.99,
-              sum by (instance, le) (
-                rate(etcd_request_duration_seconds_bucket{cluster="hub"}[5m])
+            (
+              clamp_min(
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="+Inf"
+                  }[5m])
+                )
+                  -
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="1.0"
+                  }[5m])
+                ),
+                0
+              ) > 0.05
+            )
+            and on (instance)
+            (
+              clamp_min(
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="+Inf"
+                  }[5m])
+                )
+                  -
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="1.0"
+                  }[5m])
+                ),
+                0
               )
-            ) > 1
+                /
+              sum by (instance) (
+                rate(etcd_request_duration_seconds_bucket{
+                  cluster="hub", le="+Inf"
+                }[5m])
+              ) > 0.005
+            )
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: Hub API server {{ $labels.instance }} has etcd request p99 latency above one second.
+            summary: >-
+              More than fifteen hub API server {{ $labels.instance }} etcd
+              requests per five minutes, and over 0.5% of them, have exceeded
+              one second.
         - alert: HubEtcdClientLatencyCritical
           expr: |
-            histogram_quantile(
-              0.99,
-              sum by (instance, le) (
-                rate(etcd_request_duration_seconds_bucket{cluster="hub"}[5m])
+            (
+              clamp_min(
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="+Inf"
+                  }[5m])
+                )
+                  -
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="5.0"
+                  }[5m])
+                ),
+                0
+              ) > 0.01
+            )
+            and on (instance)
+            (
+              clamp_min(
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="+Inf"
+                  }[5m])
+                )
+                  -
+                sum by (instance) (
+                  rate(etcd_request_duration_seconds_bucket{
+                    cluster="hub", le="5.0"
+                  }[5m])
+                ),
+                0
               )
-            ) > 3
-          for: 2m
+                /
+              sum by (instance) (
+                rate(etcd_request_duration_seconds_bucket{
+                  cluster="hub", le="+Inf"
+                }[5m])
+              ) > 0.001
+            )
+          for: 10m
           labels:
             severity: critical
           annotations:
-            summary: Hub API server {{ $labels.instance }} has etcd request p99 latency above three seconds.
+            summary: >-
+              More than three hub API server {{ $labels.instance }} etcd
+              requests per five minutes, and over 0.1% of them, have exceeded
+              five seconds continuously for ten minutes.
+        - alert: HubEtcdFailedProposals
+          expr: |
+            sum by (instance) (
+              increase(etcd_server_proposals_failed_total{
+                cluster="hub", job="kube-etcd"
+              }[15m])
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Hub etcd member {{ $labels.instance }} has recorded more than
+              five failed consensus proposals in fifteen minutes.
+        - alert: HubEtcdHeartbeatFailures
+          expr: |
+            sum by (instance) (
+              increase(etcd_server_heartbeat_send_failures_total{
+                cluster="hub", job="kube-etcd"
+              }[15m])
+            ) > 10
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Hub etcd leader {{ $labels.instance }} has recorded more than
+              ten heartbeat send failures in fifteen minutes.
+        - alert: HubEtcdSlowApplies
+          expr: |
+            (
+              sum by (instance) (
+                rate(etcd_server_slow_apply_total{
+                  cluster="hub", job="kube-etcd"
+                }[15m])
+              ) > 0.1
+            )
+            and on (instance)
+            (
+              sum by (instance) (
+                rate(etcd_server_slow_apply_total{
+                  cluster="hub", job="kube-etcd"
+                }[15m])
+              )
+                /
+              sum by (instance) (
+                rate(etcd_server_proposals_committed_total{
+                  cluster="hub", job="kube-etcd"
+                }[15m])
+              ) > 0.005
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Hub etcd member {{ $labels.instance }} is recording over 0.1
+              slow applies per second, exceeding 0.5% of committed proposals.
         - alert: HubEtcdMetricsMissing
           expr: (count(up{job="kube-etcd"} == 1) or vector(0)) < 3
           for: 5m
