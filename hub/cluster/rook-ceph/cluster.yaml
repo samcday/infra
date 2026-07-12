@@ -119,7 +119,9 @@ spec:
             memory: 512Mi
           requests:
             cpu: ~
-            memory: 512Mi
+            # Rook's upstream default is ample for the observed 1-3Mi working
+            # set while retaining the existing 512Mi runtime ceiling.
+            memory: 100Mi
         mgr: *resources
         mgr-sidecar: *resources
         mon: *resources
