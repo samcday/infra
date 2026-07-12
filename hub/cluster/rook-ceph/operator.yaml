@@ -148,12 +148,14 @@ spec:
               memory: 32Mi
             limits:
               memory: 256Mi
-      pluginTolerations: &cptoler
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-      provisionerTolerations: *cptoler
+      pluginNodeAffinity: node-role.kubernetes.io/worker=true
+      pluginTolerations: []
+      provisionerNodeAffinity: node-role.kubernetes.io/worker=true
+      provisionerTolerations: []
     monitoring:
       enabled: true
+    nodeSelector:
+      node-role.kubernetes.io/worker: "true"
     resources:
       limits:
         cpu: ~
