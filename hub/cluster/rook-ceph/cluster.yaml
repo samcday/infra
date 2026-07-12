@@ -92,14 +92,17 @@ spec:
                     - key: node-role.kubernetes.io/control-plane
                       operator: DoesNotExist
         # Monitor data is node-local hostPath storage. Move these only through
-        # a staged, one-member-at-a-time migration with quorum checks.
+        # a staged, one-member-at-a-time migration with quorum checks. The
+        # eligibility label lets us exclude exactly one old host at a time.
         mon:
           nodeAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
               nodeSelectorTerms:
                 - matchExpressions:
-                    - key: node-role.kubernetes.io/control-plane
-                      operator: Exists
+                    - key: samcday.com/ceph-mon
+                      operator: In
+                      values:
+                        - "true"
           tolerations:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
