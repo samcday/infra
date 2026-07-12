@@ -76,20 +76,27 @@ spec:
       mon:
         count: 3
       placement:
-        # schedule mgrs+mons on control-plane nodes
+        # Managers do not participate in Ceph quorum or the OSD data path.
+        # Keep their host I/O off the disks shared with hub etcd.
         mgr:
-          nodeAffinity: &cpaff
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: node-role.kubernetes.io/control-plane
+                      operator: DoesNotExist
+        # Monitor data is node-local hostPath storage. Move these only through
+        # a staged, one-member-at-a-time migration with quorum checks.
+        mon:
+          nodeAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
               nodeSelectorTerms:
                 - matchExpressions:
                     - key: node-role.kubernetes.io/control-plane
                       operator: Exists
-          tolerations: &cptol
+          tolerations:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
-        mon:
-          nodeAffinity: *cpaff
-          tolerations: *cptol
         # schedule OSDs on everything *except* control-plane nodes
         osd:
           nodeAffinity:
