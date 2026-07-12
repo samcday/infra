@@ -11,6 +11,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
+    samcday.com/ceph-mon: "true"
     samcday.com/mac: 6c-4b-90-2d-cd-18
     topology.kubernetes.io/zone: az1
 spec:
@@ -30,6 +31,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
+    samcday.com/ceph-mon: "true"
     samcday.com/mac: 00-23-24-b9-6d-75
     topology.kubernetes.io/zone: az1
 spec:
@@ -49,6 +51,7 @@ metadata:
   labels:
     node-role.kubernetes.io/control-plane: "true"
     node-role.kubernetes.io/etcd: "true"
+    samcday.com/ceph-mon: "true"
     samcday.com/mac: 6c-4b-90-3d-02-ee
     topology.kubernetes.io/zone: az1
 spec:
@@ -67,6 +70,7 @@ metadata:
     samcday.com/boot-profiles: kubevirt
   labels:
     node-role.kubernetes.io/worker: "true"
+    samcday.com/ceph-mon: "true"
     samcday.com/kubevirt: "true"
     samcday.com/mac: 6c-4b-90-4d-e0-39
     samcday.com/serial: S4FD5815
@@ -82,6 +86,7 @@ metadata:
     samcday.com/boot-profiles: kubevirt
   labels:
     node-role.kubernetes.io/worker: "true"
+    samcday.com/ceph-mon: "true"
     samcday.com/kubevirt: "true"
     samcday.com/mac: 6c-4b-90-46-c3-1a
     samcday.com/serial: PC0SKFA6
@@ -95,3 +100,4 @@ metadata:
     kustomize.toolkit.fluxcd.io/ssa: merge
   labels:
     node-role.kubernetes.io/worker: "true"
+    samcday.com/ceph-mon: "true"
