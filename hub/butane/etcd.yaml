@@ -50,7 +50,7 @@ systemd:
             RestartSec=5s
             ExecStartPre=-podman kill etcd
             ExecStartPre=-podman rm etcd
-            ExecStart=podman run --name etcd --blkio-weight=100 --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
+            ExecStart=podman run --name etcd --blkio-weight=1000 --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
                 /usr/local/bin/etcd \
                     --name %H.hub.internal \
                     --initial-cluster-state=${CLUSTER_STATE} \
@@ -95,7 +95,7 @@ sops:
             V0dwNTVwQzg1L0QwQys0TUsvUVoxRnMKTbpCjOfbsngE9XmSYsXZqonqX/PYjOOx
             sHAp1uZ8QeBdBtvBCMsaq5SyDtGnxsfyAVu23LsLy+lKMJX8nY3jZA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-07-12T05:30:02Z"
-    mac: ENC[AES256_GCM,data:mzcOwRHQu+en0iYkbnQitOAt/fwU8jXWqj5OiJTpLmK03eZlVaEcPKm9W78cZYuFUBIztpIhIJpyIsZcBGPX7ard7ErtFqfdIRySZQpvMmb8L8f9amVNGizuYkqutA0xtKijdSj5KfeTFUDqZj/hwyp3UOe+q+KwSRlvftAn7Dk=,iv:NhyIeZ7+5XucuR4jf8wcTXUDWIw6kQi/dPyyoS1t6o8=,tag:tBgfr4fw5bLNgOsuCYeYvA==,type:str]
+    lastmodified: "2026-07-12T05:46:07Z"
+    mac: ENC[AES256_GCM,data:b/dky4P5r7Hf1YG/w7/8nPbK8KLdxASDqyYcT387z4EA4mEjvgCw0eSIc9Hp9TwDBSJP7UKFGfblOj8DJYTXhhDkUo+exJ2sW+Jhd+w2oSuCPAsmNz1JwoBNN7QuEUusCI3LPNstAnjkHQ09H3t/mGVm1uGg5a81JCznyYBdqWU=,iv:jCPsfzaDKPemZ+4AmrKAl5GKN5DBok0Rn3pzUpDdhXw=,tag:up/4LcZqAJFJbp59cgO9cQ==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.9.4
