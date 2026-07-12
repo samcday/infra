@@ -2,3 +2,14 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - vendor/v1.64.0/cdi-operator.yaml
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: cdi-operator
+      namespace: cdi
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector/node-role.kubernetes.io~1worker
+        value: "true"
