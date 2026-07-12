@@ -63,7 +63,7 @@ spec:
     livenessProbe:
       httpGet: ~
     nodeSelector:
-      node-role.kubernetes.io/control-plane: "true"
+      node-role.kubernetes.io/worker: "true"
     podAnnotations:
       reloader.stakater.com/auto: "true"
     readinessProbe: ~
@@ -73,6 +73,3 @@ spec:
       annotations:
         external-dns.alpha.kubernetes.io/hostname: bootie.hub.samcday.com
       loadBalancerClass: io.cilium/bgp-control-plane
-    tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
