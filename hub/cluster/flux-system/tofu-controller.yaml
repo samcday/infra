@@ -24,6 +24,14 @@ spec:
       retries: -1
   values:
     # https://github.com/flux-iac/tofu-controller/blob/main/charts/tofu-controller/values.yaml
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: flux-system-tofu-controller
+                app.kubernetes.io/name: tofu-controller
+            topologyKey: kubernetes.io/hostname
     allowBreakTheGlass: true
     allowCrossNamespaceRefs: true
     # branchPlanner:
@@ -35,6 +43,8 @@ spec:
     eventsAddress: http://notification-controller.flux-system.svc.cluster.hub.internal./
     image:
       tag: v0.16.0-rc.5
+    nodeSelector:
+      node-role.kubernetes.io/worker: "true"
     replicaCount: 2
     runner:
       grpc:
