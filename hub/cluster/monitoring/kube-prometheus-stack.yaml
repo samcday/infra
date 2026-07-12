@@ -50,6 +50,18 @@ spec:
         relabelings:
           - replacement: hub
             targetLabel: cluster
+    kubeEtcd:
+      endpoints:
+        - 10.0.1.10
+        - 10.0.1.11
+        - 10.0.1.12
+      service:
+        port: 2379
+        targetPort: 2379
+      serviceMonitor:
+        # The direct ServiceMonitor uses cert-manager Secret references so the
+        # Prometheus operator manages the TLS assets without static file paths.
+        enabled: false
     # Using Cilium kube-proxy replacement
     kubeProxy:
       enabled: false
@@ -81,15 +93,40 @@ spec:
         externalLabels:
           cluster: hub
         externalUrl: https://prometheus.hub.samcday.com
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: node-role.kubernetes.io/control-plane
+                      operator: DoesNotExist
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values: [prometheus]
+                      - key: prometheus
+                        operator: In
+                        values: [kube-prometheus-stack-prometheus]
+                  topologyKey: kubernetes.io/hostname
+                weight: 100
         podMonitorSelectorNilUsesHelmValues: false
         probeSelectorNilUsesHelmValues: false
         replicaExternalLabelName: __replica__
-        replicas: 2
+        # Keep monitoring off the etcd hosts. Worker request headroom currently
+        # fits one replica; restore HA after capacity is freed or added.
+        replicas: 1
         resources:
           requests:
             memory: 4Gi
-        retention: 1d
-        retentionSize: 1GB
+        # Keep enough local history to demonstrate whether the containment
+        # changes improve tail latency. This remains ephemeral until durable
+        # monitoring storage is provisioned outside the control-plane disks.
+        retention: 7d
+        retentionSize: 5GB
         ruleSelectorNilUsesHelmValues: false
         serviceMonitorSelectorNilUsesHelmValues: false
     # https://github.com/prometheus-community/helm-charts/blob/main/charts/prometheus-node-exporter/values.yaml

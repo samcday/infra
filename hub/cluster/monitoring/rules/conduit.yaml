@@ -10,15 +10,21 @@ spec:
         - alert: ConduitUnavailable
           expr: kube_deployment_status_replicas_available{namespace="conduit",deployment="conduit-generic"} < 1
           for: 10m
+          labels:
+            severity: critical
           annotations:
             summary: conduit/conduit-generic has no available replicas for more than ten minutes.
         - alert: ConduitIdentityCheckStale
           expr: time() - kube_cronjob_status_last_successful_time{namespace="conduit",cronjob="conduit-identity-check"} > 2700
           for: 10m
+          labels:
+            severity: warning
           annotations:
             summary: Conduit identity check CronJob has not succeeded in over forty-five minutes.
         - alert: ConduitPVCNotBound
           expr: max(kube_persistentvolumeclaim_status_phase{namespace="conduit",persistentvolumeclaim="conduit-generic",phase="Bound"}) < 1
           for: 10m
+          labels:
+            severity: critical
           annotations:
             summary: conduit/conduit-generic PVC is not Bound.

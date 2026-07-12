@@ -4,10 +4,15 @@ namespace: monitoring
 resources:
   - ../../../.kustomize-config
   - dms.yaml
+  - etcd.yaml
   - gateway-api.yaml
   - grafana.yaml
   - karma.yaml
   - kube-prometheus-stack.yaml
+  - kube-vip.yaml
+  - pagerduty-secret.yaml
+  - pagerduty.yaml
   - rules/conduit.yaml
   - rules/flux.yaml
+  - rules/hub-control-plane.yaml
   - vpas.yaml

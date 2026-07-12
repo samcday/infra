@@ -1,0 +1,102 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hub-control-plane
+  namespace: monitoring
+spec:
+  groups:
+    - name: HubControlPlane
+      rules:
+        - alert: HubEtcdClientLatencyHigh
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (instance, le) (
+                rate(etcd_request_duration_seconds_bucket{cluster="hub"}[5m])
+              )
+            ) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hub API server {{ $labels.instance }} has etcd request p99 latency above one second.
+        - alert: HubEtcdClientLatencyCritical
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (instance, le) (
+                rate(etcd_request_duration_seconds_bucket{cluster="hub"}[5m])
+              )
+            ) > 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Hub API server {{ $labels.instance }} has etcd request p99 latency above three seconds.
+        - alert: HubEtcdMetricsMissing
+          expr: (count(up{job="kube-etcd"} == 1) or vector(0)) < 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Prometheus can scrape fewer than three hub etcd members.
+        - alert: HubControlPlaneIOPressure
+          expr: |
+            rate(node_pressure_io_stalled_seconds_total{instance=~"hub-az1-cp[123]"}[5m]) > 0.05
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hub control-plane node {{ $labels.instance }} is fully stalled on I/O over 5% of the time.
+        - alert: HubControlPlaneIOPressureCritical
+          expr: |
+            rate(node_pressure_io_stalled_seconds_total{instance=~"hub-az1-cp[123]"}[5m]) > 0.20
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Hub control-plane node {{ $labels.instance }} is fully stalled on I/O over 20% of the time.
+        - alert: KubeVIPRestarting
+          expr: |
+            sum(
+              increase(
+                kube_pod_container_status_restarts_total{
+                  namespace="kube-system",
+                  container="kube-vip"
+                }[10m]
+              )
+            ) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: kube-vip restarted during the last ten minutes; the hub API VIP may have flapped.
+        - alert: KubeVIPLeaseStale
+          expr: |
+            time() - (
+              max(
+                kube_lease_renew_time{
+                  namespace="kube-system",
+                  lease="plndr-cp-lock"
+                }
+              ) or vector(0)
+            ) > 90
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: The kube-vip leader lease has not been renewed for over ninety seconds.
+        - alert: KubeVIPMetricsMissing
+          expr: |
+            (
+              count(
+                up{
+                  namespace="kube-system",
+                  service="kube-vip-metrics"
+                } == 1
+              ) or vector(0)
+            ) < 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Prometheus can scrape fewer than three kube-vip instances.

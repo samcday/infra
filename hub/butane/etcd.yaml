@@ -41,9 +41,16 @@ systemd:
 
             [Service]
             Environment=CLUSTER_STATE=existing
+            # The etcd process runs in a Podman-managed libpod scope, so its
+            # block-I/O weight is set on the container below rather than this
+            # service cgroup. BFQ is active on the control-plane hosts.
+            IOSchedulingClass=best-effort
+            IOSchedulingPriority=0
+            Restart=always
+            RestartSec=5s
             ExecStartPre=-podman kill etcd
             ExecStartPre=-podman rm etcd
-            ExecStart=podman run --name etcd --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
+            ExecStart=podman run --name etcd --blkio-weight=100 --volume /var/lib/etcd:/var/lib/etcd:z --net=host quay.io/coreos/etcd:v3.6.4 \
                 /usr/local/bin/etcd \
                     --name %H.hub.internal \
                     --initial-cluster-state=${CLUSTER_STATE} \
@@ -69,10 +76,6 @@ systemd:
             [Install]
             WantedBy=multi-user.target
 sops:
-    kms: []
-    gcp_kms: []
-    azure_kv: []
-    hc_vault: []
     age:
         - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
           enc: |
@@ -92,8 +95,7 @@ sops:
             V0dwNTVwQzg1L0QwQys0TUsvUVoxRnMKTbpCjOfbsngE9XmSYsXZqonqX/PYjOOx
             sHAp1uZ8QeBdBtvBCMsaq5SyDtGnxsfyAVu23LsLy+lKMJX8nY3jZA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-12T03:19:55Z"
-    mac: ENC[AES256_GCM,data:pKysax0Hl0uo2A7pt7w/sBwJ5CWF87PMfGX3KfKvX4+EMLdcesewVOo/ObGKiTZlbPXcRi3CSgKBo00XyLrCmpNaY6O9q+zLuaZ+dxssTCJKoI4AiQQwDCI3XB/hKIo+1gyg2lONERHVP3+zccQIlLFf52B8icAauxqYFCu7mhg=,iv:q+r8ZKNU7CsMKkwvFdjfEEg5iXxbNdP3szcXfRni2z4=,tag:z6t0VzhT9FzrV4rQn0sBCQ==,type:str]
-    pgp: []
+    lastmodified: "2026-07-12T05:30:02Z"
+    mac: ENC[AES256_GCM,data:mzcOwRHQu+en0iYkbnQitOAt/fwU8jXWqj5OiJTpLmK03eZlVaEcPKm9W78cZYuFUBIztpIhIJpyIsZcBGPX7ard7ErtFqfdIRySZQpvMmb8L8f9amVNGizuYkqutA0xtKijdSj5KfeTFUDqZj/hwyp3UOe+q+KwSRlvftAn7Dk=,iv:NhyIeZ7+5XucuR4jf8wcTXUDWIw6kQi/dPyyoS1t6o8=,tag:tBgfr4fw5bLNgOsuCYeYvA==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.9.4

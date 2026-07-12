@@ -235,11 +235,11 @@ storage:
                         - name: vip_leasename
                           value: plndr-cp-lock
                         - name: vip_leaseduration
-                          value: "5"
+                          value: "30"
                         - name: vip_renewdeadline
-                          value: "3"
+                          value: "20"
                         - name: vip_retryperiod
-                          value: "1"
+                          value: "5"
                         - name: address
                           value: 10.0.1.254
                         - name: prometheus_server
@@ -283,10 +283,6 @@ systemd:
                 Environment=K3S_TOKEN_FILE=/etc/rancher/k3s/server.token
                 Environment=K3S_AGENT_TOKEN_FILE=/etc/rancher/k3s/agent.token
 sops:
-    kms: []
-    gcp_kms: []
-    azure_kv: []
-    hc_vault: []
     age:
         - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
           enc: |
@@ -306,8 +302,7 @@ sops:
             RWk1RTFKbnJYbDB4dFVDbEN3L2Y5ekEKHM/TJ7sOoF0suHwMO0c9LNje1MB2fLBB
             2itbB4Xs2G3cbWl+Ft2qrNI8kyejAzjB/P47/+Veyu5o7qc+lrrkHQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-02T04:44:08Z"
-    mac: ENC[AES256_GCM,data:Ao0lD9YHmIwS5oKLZ0NpFmsS83R6zNQ2lUrL9VTCwzC/EV+smJTXUC0ArIjb5XvNbSoG6LQNjRthVZJZwOy1XZJgY6dcEo4pnLsiP7KXPSGb7UAmGxE5iWfzNMu/rGJ1AK2sFeSk2zH60mjFuVDRCUTfjuHPR6PRsZaI0PVjEpg=,iv:Nc5W+fkae7GHe02pxZNFt80L2bqUBwrrd5KRUFj3tZk=,tag:DXOmq6A5t7b+XbyUH2Jmsg==,type:str]
-    pgp: []
+    lastmodified: "2026-07-12T05:15:27Z"
+    mac: ENC[AES256_GCM,data:hnvGKTKeLPk9yS0aoF+bHno8yghJm3UcPQ49xFW2D+zwxJSZ9133F6aw6yQSoV4s/hYvGd/YZGfrKZq0eJHb5M8gIgvsUT8nW1HbO4tPLkykQHLL3R3zZANWLrbkmJDcC5nj85z5MT1XbG7x9G1S2Jo28wi0XuBA2bADlObrqeI=,iv:buL7S3+CUaVt+XwIPDlaR81qVNMDanP5JiNfEFcW3P0=,tag:dfQCrpun5eSqvbALpuro/w==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.9.4

@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-vip
+  namespace: monitoring
+spec:
+  endpoints:
+    - interval: 15s
+      port: http-metrics
+      relabelings:
+        - replacement: hub
+          targetLabel: cluster
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-vip-ds

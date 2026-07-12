@@ -177,6 +177,7 @@ spec:
     monitoring:
       spec:
         dependsOn:
+          - name: cert-manager
           - name: gateway-api
           - name: prometheus-operator
         path: hub/cluster/monitoring
