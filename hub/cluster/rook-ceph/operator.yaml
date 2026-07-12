@@ -17,41 +17,44 @@ spec:
   values:
     # https://github.com/rook/rook/blob/release-1.17/deploy/charts/rook-ceph/values.yaml
     csi:
+      # Live working sets on 2026-07-12 were 20-50Mi per node plugin and
+      # 58-80Mi per provisioner pod. Keep the existing limits while reserving
+      # enough headroom above observed use for CSI bursts and upgrades.
       csiCephFSProvisionerResource: |
         - name : csi-provisioner
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-resizer
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-attacher
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-snapshotter
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-cephfsplugin
           resource:
             requests:
-              memory: 512Mi
+              memory: 128Mi
             limits:
               memory: 1Gi
         - name : liveness-prometheus
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
 
@@ -61,19 +64,19 @@ spec:
         - name : driver-registrar
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-cephfsplugin
           resource:
             requests:
-              memory: 512Mi
+              memory: 128Mi
             limits:
               memory: 1Gi
         - name : liveness-prometheus
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
 
@@ -81,62 +84,62 @@ spec:
         - name : csi-provisioner
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-resizer
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-attacher
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-snapshotter
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-rbdplugin
           resource:
             requests:
-              memory: 512Mi
+              memory: 128Mi
             limits:
               memory: 1Gi
         - name : csi-omap-generator
           resource:
             requests:
-              memory: 512Mi
+              memory: 128Mi
             limits:
               memory: 1Gi
         - name : liveness-prometheus
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
       csiRBDPluginResource: |
         - name : driver-registrar
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
         - name : csi-rbdplugin
           resource:
             requests:
-              memory: 512Mi
+              memory: 128Mi
             limits:
               memory: 1Gi
         - name : liveness-prometheus
           resource:
             requests:
-              memory: 128Mi
+              memory: 32Mi
             limits:
               memory: 256Mi
       pluginTolerations: &cptoler
