@@ -80,7 +80,17 @@ spec:
       dashboard:
         ssl: false
       mon:
+        allowMultiplePerNode: false
         count: 3
+        # Monitor persistence must not depend on the Ceph cluster whose
+        # quorum it protects. local-path binds one independent root-disk PVC
+        # per eligible worker and lets Rook migrate hostPath mons sequentially.
+        volumeClaimTemplate:
+          spec:
+            storageClassName: local-path
+            resources:
+              requests:
+                storage: 10Gi
       placement:
         # Managers do not participate in Ceph quorum or the OSD data path.
         # Keep their host I/O off the disks shared with hub etcd.
@@ -103,9 +113,6 @@ spec:
                       operator: In
                       values:
                         - "true"
-          tolerations:
-            - key: node-role.kubernetes.io/control-plane
-              operator: Exists
         # schedule OSDs on everything *except* control-plane nodes
         osd:
           nodeAffinity:
