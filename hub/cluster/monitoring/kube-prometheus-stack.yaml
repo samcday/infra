@@ -100,19 +100,6 @@ spec:
                 - matchExpressions:
                     - key: node-role.kubernetes.io/control-plane
                       operator: DoesNotExist
-          podAntiAffinity:
-            preferredDuringSchedulingIgnoredDuringExecution:
-              - podAffinityTerm:
-                  labelSelector:
-                    matchExpressions:
-                      - key: app.kubernetes.io/name
-                        operator: In
-                        values: [prometheus]
-                      - key: prometheus
-                        operator: In
-                        values: [kube-prometheus-stack-prometheus]
-                  topologyKey: kubernetes.io/hostname
-                weight: 100
         podMonitorSelectorNilUsesHelmValues: false
         probeSelectorNilUsesHelmValues: false
         replicaExternalLabelName: __replica__
