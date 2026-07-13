@@ -46,6 +46,12 @@ two named fastboot resources is normally available. Labgrid has no first-class
 ADB driver; acquire the place before using ADB directly on `steamdeck` so the
 out-of-band command still respects the lease.
 
+Labgrid cannot prevent unrelated host processes from opening the same device.
+The Deck currently has a transient `frankensargo-uart.service` writing a live
+UART log; stop that service before using `console uart`, otherwise the two
+readers will split console bytes. Treat direct fastboot and ADB processes the
+same way: hold the place first, and do not leave them running after release.
+
 The coordinator uses insecure gRPC, with Headscale encryption and ACLs as its
 security boundary. Sam's Headscale user can reach the coordinator; it is not
 published on the public Internet or the separate SaaS Tailscale tailnet.
