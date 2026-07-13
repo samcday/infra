@@ -20,7 +20,8 @@ using SSH forwarding for exported resources.
 
 `scripts/labgrid-client` runs the pinned official client image with host
 networking, a stable client identity, Sam's SSH key, and the frankensargo tool
-configuration. Start with:
+configuration. It derives the coordinator IP from local Tailscale peer state
+when the host's MagicDNS integration is unhealthy. Start with:
 
 ```bash
 scripts/labgrid-client resources

@@ -4,6 +4,22 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
 image="docker.io/labgrid/client:v26.0@sha256:af4bc3d2ef2930682135ba591ed09048043494b50ead25978d6f5626f46c81d3"
+coordinator="${LG_COORDINATOR:-}"
+
+if [[ -z "${coordinator}" ]]; then
+  coordinator_ip=""
+  if command -v tailscale >/dev/null && command -v jq >/dev/null; then
+    if coordinator_ip="$(
+      tailscale status --json 2>/dev/null |
+        jq -r '[.Peer[] | select(.HostName == "labgrid-coordinator") | .TailscaleIPs[] | select(contains(":") | not)][0] // empty' 2>/dev/null
+    )"; then
+      :
+    else
+      coordinator_ip=""
+    fi
+  fi
+  coordinator="${coordinator_ip:-labgrid-coordinator.tailnet.hub.samcday.com}:20408"
+fi
 
 if [[ ! -d "${HOME}/.ssh" ]]; then
   echo "${HOME}/.ssh is required for exporter access" >&2
@@ -14,7 +30,7 @@ podman_args=(
   --rm
   --network=host
   --security-opt=label=disable
-  --env "LG_COORDINATOR=${LG_COORDINATOR:-labgrid-coordinator.tailnet.hub.samcday.com:20408}"
+  --env "LG_COORDINATOR=${coordinator}"
   --env "LG_HOSTNAME=${LG_HOSTNAME:-$(hostname -s)}"
   --env "LG_USERNAME=${LG_USERNAME:-${USER:-$(id -un)}}"
   --volume "${HOME}/.ssh:/ssh:ro"
