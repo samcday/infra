@@ -31,6 +31,7 @@
         "tag:cloud-cluster-wasmcloud-nats": [],
         "tag:cloud-cluster-node": [],
         "tag:edge-au-east-apiserver": [],
-        "tag:edge-au-east-node": []
+        "tag:edge-au-east-node": [],
+        "tag:labgrid-coordinator": []
     }
 }

@@ -1,0 +1,18 @@
+[Unit]
+Description=labgrid exporter for frankensargo
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=LG_COORDINATOR=labgrid-coordinator.tailnet.hub.samcday.com:20408
+ExecStartPre=-/usr/bin/podman rm --force frankensargo-labgrid-exporter
+ExecStart=/usr/bin/systemd-inhibit --what=sleep --mode=block --why=frankensargo-labgrid /usr/bin/podman run --rm --name=frankensargo-labgrid-exporter --hostname=steamdeck.tailnet.hub.samcday.com --network=host --privileged --group-add=keep-groups --security-opt=label=disable --read-only --tmpfs=/tmp:rw,nosuid,nodev --volume=/dev:/dev --volume=/run/udev:/run/udev:ro --volume=/var/cache/labgrid:/var/cache/labgrid --volume=%h/.config/labgrid/frankensargo.yaml:/opt/conf/exporter.yaml:ro --env=LG_COORDINATOR --pull=never --entrypoint=/entrypoint.sh docker.io/labgrid/exporter:v26.0@sha256:80ccee11dd4780fb1dfad5bbab93013ab00323a8d0c3905b370e9283fffe2749 --name steamdeck --hostname steamdeck.tailnet.hub.samcday.com --isolated
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

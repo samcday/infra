@@ -1,0 +1,9 @@
+Host steamdeck.tailnet.hub.samcday.com
+    HostName 100.64.0.8
+    HostKeyAlias 100.64.0.8
+    User deck
+    IdentityFile /ssh/id_ed25519
+    IdentitiesOnly yes
+    PasswordAuthentication no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /ssh/known_hosts

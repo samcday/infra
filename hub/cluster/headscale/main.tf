@@ -98,6 +98,14 @@ resource "headscale_pre_auth_key" "edge_au_east_nodes" {
   acl_tags       = ["tag:edge-au-east-node"]
 }
 
+resource "headscale_pre_auth_key" "labgrid_coordinator" {
+  user           = headscale_user.hub.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:labgrid-coordinator"]
+}
+
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
   metadata {
     name      = "node-ts-auth"
@@ -161,5 +169,16 @@ resource "kubernetes_secret" "edge_au_east_node_preauth" {
 
   data = {
     key = headscale_pre_auth_key.edge_au_east_nodes.key
+  }
+}
+
+resource "kubernetes_secret" "labgrid_coordinator_preauth" {
+  metadata {
+    name      = "labgrid-ts-auth"
+    namespace = "labgrid"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.labgrid_coordinator.key
   }
 }

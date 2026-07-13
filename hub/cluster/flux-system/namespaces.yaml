@@ -30,6 +30,7 @@ spec:
     headscale:
     ilumbaclusta:
     ingress-nginx:
+    labgrid:
     monitoring:
     openebs:
     prometheus-operator:

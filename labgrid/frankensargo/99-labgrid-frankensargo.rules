@@ -1,0 +1,3 @@
+# Stable access for the lingering deck user, independent of an active seat.
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="4ee0", GROUP="uucp", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d6b", ATTR{idProduct}=="0104", GROUP="uucp", MODE="0660", TAG+="uaccess"

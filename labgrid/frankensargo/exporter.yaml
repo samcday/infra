@@ -1,0 +1,33 @@
+frankensargo:
+  location: steamdeck-dock
+
+  ## Both FT232 adapters in the lab report the same cloned serial. The fixed
+  ## dock port is therefore the authoritative selector for this UART.
+  uart:
+    cls: USBSerialPort
+    match:
+      ID_PATH: pci-0000:04:00.3-platform-xhci-hcd.2.auto-usb-0:1.2:1.0
+      ID_VENDOR_ID: "0403"
+      ID_MODEL_ID: "6001"
+      ID_SERIAL_SHORT: A50285BI
+    speed: 115200
+
+  pocketboot-fastboot:
+    cls: AndroidUSBFastboot
+    match:
+      ID_PATH: pci-0000:04:00.3-platform-xhci-hcd.2.auto-usb-0:1.3
+      ID_VENDOR_ID: "1d6b"
+      ID_MODEL_ID: "0104"
+      ID_SERIAL_SHORT: 99NAY1AZG1
+    usb_vendor_id: "1d6b"
+    usb_product_id: "0104"
+
+  abl-fastboot:
+    cls: AndroidUSBFastboot
+    match:
+      ID_PATH: pci-0000:04:00.3-platform-xhci-hcd.2.auto-usb-0:1.3
+      ID_VENDOR_ID: "18d1"
+      ID_MODEL_ID: "4ee0"
+      ID_SERIAL_SHORT: 99NAY1AZG1
+    usb_vendor_id: "18d1"
+    usb_product_id: "4ee0"

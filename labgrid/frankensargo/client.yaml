@@ -1,0 +1,3 @@
+tools:
+  # The client invokes this path over SSH on the exporter host.
+  fastboot: /home/deck/.local/share/frankensargo-lab/fastboot
