@@ -73,6 +73,17 @@ system before power-off.
 The FCOS live environment may lack optional tools such as `smartctl`; the
 report calls that out explicitly, and the missing SMART capture remains a
 separate disk-admission gate rather than being silently treated as success.
+Identity evidence is similarly explicit: the report records the DMI product
+UUID, chassis serial and asset tag, each NIC's current sysfs address beside its
+`ethtool -P` permanent address, TPM2 properties and allocated PCR banks,
+current PCR values, and public metadata for existing standard EK-certificate
+NV indices and persistent objects. When an EK-certificate index already exists,
+it also reads that certificate and records its subject, issuer, serial,
+validity, and SHA-256 fingerprint. Every unavailable tool, absent object, and
+failed query gets a visible evidence-status marker. The collector never creates
+an EK, persists a TPM object, writes TPM NV, or enrolls a secret; an absent EK
+public/certificate record remains a later admission issue rather than license
+to mutate the candidate during discovery.
 
 This ISO never installs or writes a target disk. Do not confuse it with the
 three later node-specific, confirmation-gated installer images described
@@ -137,8 +148,10 @@ The local-console ceremony is deliberate:
    and leave only the admitted SATA target installed.
 3. Boot the USB device in UEFI mode. The pre-install gate must accept usable
    TPM2, a UTC clock inside the embedded etcd certificate validity window, the
-   exact static IP/MAC, a 64 GiB-or-larger whole SATA disk, and the router's
-   exact seven-payload manifest. Confirm the displayed node name,
+   exact static IP and a usable globally administered unicast MAC, the same
+   MAC as both the NIC's current address and `ethtool -P` permanent address, a
+   64 GiB-or-larger whole SATA disk, and the router's exact seven-payload
+   manifest. Confirm the displayed node name,
    complete stable disk by-id, disk model/serial, IP, and wired MAC.
 4. Type the full device-specific confirmation only after physically comparing
    those values with the chassis label and inventory record.
@@ -176,11 +189,13 @@ After inventory admission and Ignition rendering, supply the three exact SATA
 by-id paths as shown by `scripts/build-fabric-node-isos --help`. The helper
 verifies the ISO checksum and Fedora signature, refuses paths inside Git,
 refuses unstable or non-ATA destinations, extracts the expected permanent MAC
-plus hostname and static IP from each Ignition, and embeds a pre-install network,
-TPM2, router-asset, disk-size, and console challenge containing the full
-node-specific disk identity. The live ISO disables CoreOS' automatic reboot and
-its post-install hook powers off only after successful installation. Do not
-improvise an unattended
+plus hostname and static IP from each Ignition, rejects locally administered,
+multicast, and all-zero expected MACs, and embeds a pre-install network, TPM2,
+router-asset, disk-size, and console challenge containing the full node-specific
+disk identity. At boot that gate uses `ethtool -P` and requires the admitted
+permanent MAC and current interface address to agree. The live ISO disables
+CoreOS' automatic reboot and its post-install hook powers off only after
+successful installation. Do not improvise an unattended
 `coreos-installer` command or substitute a destination such as `/dev/sda`.
 
 The public FCOS ISO cache defaults to `_build/fabric/installer`. Use

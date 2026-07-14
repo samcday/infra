@@ -448,6 +448,10 @@ for index in "${!nodes[@]}"; do
     echo "invalid wired MAC recovered from $ignition" >&2
     exit 1
   }
+  [[ ${mac:1:1} == [048c] && $mac != 00:00:00:00:00:00 ]] || {
+    echo "wired MAC recovered from $ignition is not a usable globally administered unicast address: $mac" >&2
+    exit 1
+  }
   mapfile -t address_records < <(awk -F= '$1 == "address1" { print $2 }' "$network_keyfile")
   ((${#address_records[@]} == 1)) || {
     echo "expected one static IPv4 record in $ignition, found ${#address_records[@]}" >&2
@@ -502,6 +506,9 @@ printf 'Destination: %s\n' "\$target"
 printf 'Wired MAC:   %s\n' "\$expected_mac"
 printf 'Static IP:   %s\n\n' "\$expected_cidr"
 
+[[ \$expected_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ &&
+   \${expected_mac:1:1} == [048c] && \$expected_mac != 00:00:00:00:00:00 ]] ||
+  fail 'embedded expected MAC is not a usable globally administered unicast address'
 [[ -d /sys/firmware/efi/efivars ]] || fail 'installer was not booted in UEFI mode'
 [[ -c /dev/tpmrm0 ]] || fail 'TPM2 resource-manager device /dev/tpmrm0 is absent'
 [[ \$(cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null) == 2 ]] ||
@@ -536,15 +543,27 @@ while IFS= read -r block_path; do
   fi
 done < <(lsblk -nrpo NAME -- "\$resolved")
 
+command -v ethtool >/dev/null || fail 'ethtool is unavailable; permanent NIC identity cannot be verified'
 interface=
-for address_file in /sys/class/net/*/address; do
-  if [[ \$(<"\$address_file") == "\$expected_mac" ]]; then
-    [[ -z \$interface ]] || fail 'expected MAC appears on multiple interfaces'
-    interface=\${address_file%/address}
-    interface=\${interface##*/}
+for interface_path in /sys/class/net/*; do
+  candidate_interface=\${interface_path##*/}
+  [[ \$candidate_interface == lo ]] && continue
+  permanent_record=\$(LC_ALL=C ethtool -P "\$candidate_interface" 2>/dev/null) || continue
+  permanent_record=\${permanent_record,,}
+  if [[ \$permanent_record =~ ^permanent[[:space:]]+address:[[:space:]]+(([0-9a-f]{2}:){5}[0-9a-f]{2})$ &&
+        \${BASH_REMATCH[1]} == "\$expected_mac" ]]; then
+    [[ -z \$interface ]] || fail 'expected permanent MAC appears on multiple interfaces'
+    interface=\$candidate_interface
   fi
 done
-[[ -n \$interface ]] || fail 'expected permanent wired MAC is absent'
+[[ -n \$interface ]] ||
+  fail 'expected permanent wired MAC is absent or cannot be read with ethtool -P'
+[[ -r /sys/class/net/\$interface/address ]] ||
+  fail "current MAC for \$interface is absent or unreadable"
+current_mac=\$(<"/sys/class/net/\$interface/address")
+current_mac=\${current_mac,,}
+[[ \$current_mac == "\$expected_mac" ]] ||
+  fail "permanent MAC matched \$interface, but its current address is \$current_mac"
 ip -4 -o address show dev "\$interface" |
   awk '{ print \$4 }' | grep -Fxq "\$expected_cidr" ||
   fail "expected static address is not active on \$interface"

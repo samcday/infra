@@ -90,6 +90,30 @@ sysupgrade image on an MBR/FAT32 stick and rename it exactly:
 openwrt-mediatek-filogic-openwrt_one-squashfs-sysupgrade.itb
 ```
 
+Prepare that stick with the guarded helper rather than partitioning or copying
+it by hand. Its default invocation is read-only and prints the exact
+device-specific confirmation required for the destructive pass:
+
+```sh
+scripts/prepare-fabric-router-firmware-usb \
+  --image /dev/shm/fabric-router-current-image/openwrt-25.12.5-mediatek-filogic-openwrt_one-squashfs-sysupgrade.itb \
+  --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0
+```
+
+The helper verifies the mode-0600 artifact against `sysupgrade-sha256`, accepts
+only a stable removable USB whole-disk identity with a hardware serial, and
+refuses mounted, held, read-only, non-USB, non-removable, partition, and system
+disks. Physically compare its reported model, serial, size, and by-id path, then
+copy the printed `sudo ... --apply --confirm ...` command exactly. Apply creates
+one bootable FAT32 LBA partition in a DOS/MBR table, labels it `OPENWRT_FW`,
+copies only the required reset-button filename, and unmounts before remounting
+read-only to verify both the sole-file invariant and reviewed hash. It flushes
+and leaves the device unmounted. Do not use `/dev/sdX`, weaken the removable
+check, or reuse a stick that has ever held a secret fabric node installer. The
+prepared firmware stick is itself secret-classified: the image contains the
+decrypted fabric operator configuration. Keep it attended during the physical
+flash and either retain it as protected recovery media or erase it afterward.
+
 With power removed, insert the stick into the Type-A port, hold the rear Reset
 button, apply power, and release Reset when all LEDs go dark. Wait for the
 normal green indication before reconnecting. The OpenWrt One has one Type-A

@@ -14,13 +14,15 @@ more valuable as worker failure domains and tested cold spares. Five voters are
 only justified by a requirement to survive two simultaneous physical-node
 failures and five genuinely independent machines.
 
-The provisional consensus hardware is two Lenovo ThinkCentre M710q systems
-with Pentium CPUs and one ThinkCentre M715q with an AMD PRO CPU. Fit each with
-at least 8 GiB RAM and one admitted SATA SSD. Mixed CPU vendors do not affect
-etcd quorum; stable wired networking, memory health, temperature, and
-synchronous disk latency do. Machine types, CPU models, NICs, TPMs, firmware,
-MACs, RAM, and disk identities remain inventory inputs rather than manifest
-assumptions.
+The selected provisional consensus hardware is three Lenovo ThinkCentre M710q
+systems with Intel Core i3 CPUs. Fit each with at least 8 GiB RAM and one
+admitted SATA SSD. Each chassis is expected to expose TPM 2.0, but the model
+name is not proof: presence, enabled state, usable capabilities, and firmware
+posture remain per-machine inventory and admission gates. Stable wired
+networking, memory health, temperature, and synchronous disk latency matter
+more to etcd than matching CPU SKUs. Machine types, exact CPU models, NICs,
+TPMs, firmware, MACs, RAM, and disk identities remain inventory inputs rather
+than manifest assumptions.
 
 The three nodes are sacred. Their permanent allow-list is etcd, the K3s API
 server/controller-manager/scheduler, kube-vip, Flannel, kube-proxy,

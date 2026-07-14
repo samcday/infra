@@ -1,0 +1,678 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+umask 077
+export LC_ALL=C
+
+usage() {
+  cat <<'EOF'
+Prepare an OpenWrt One reset-button firmware USB for the fabric router.
+
+Dry-run inspection (the default):
+  scripts/prepare-fabric-router-firmware-usb \
+    --image /dev/shm/fabric-router-current-image/openwrt-VERSION-mediatek-filogic-openwrt_one-squashfs-sysupgrade.itb \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0
+
+Destructive execution (copy the exact confirmation from the dry run):
+  sudo scripts/prepare-fabric-router-firmware-usb \
+    --image /dev/shm/fabric-router-current-image/openwrt-VERSION-mediatek-filogic-openwrt_one-squashfs-sysupgrade.itb \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0 \
+    --apply --confirm 'WRITE-FABRIC-ROUTER-FIRMWARE:...'
+
+Options:
+  --image PATH    Mode-0600 reviewed fabric router sysupgrade artifact.
+  --device PATH   Exact /dev/disk/by-id/usb-* whole-disk symlink.
+  --apply         Replace the partition table and populate the firmware USB.
+  --confirm TEXT  Exact image- and device-specific text printed by the dry run.
+  -h, --help      Show this help.
+
+The default is a read-only dry run: it verifies the protected host artifact
+against fabric/router/sysupgrade-sha256 and inspects the selected USB without
+writing it. The artifact must be a single-link regular file outside this Git
+worktree, mode 0600, in a non-symlinked mode-0700 directory owned by the same
+user and group. The device must be a removable USB whole disk with a non-empty
+hardware serial. The helper never guesses a device and never prompts.
+
+Apply creates one bootable FAT32 LBA partition in a DOS/MBR partition table,
+labels the filesystem OPENWRT_FW, and copies only the reviewed image under the
+exact OpenWrt One reset-button filename. It then unmounts, remounts read-only,
+verifies the sole file and its hash, flushes, and unmounts. Partitioning is not
+media sanitization. The resulting stick is secret-classified because the
+firmware contains decrypted fabric configuration; keep it attended and erase
+or physically retain it after flashing. Never reuse fabric installer media.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+image=
+device=
+confirmation_arg=
+apply=false
+image_seen=false
+device_seen=false
+confirmation_seen=false
+
+while (($#)); do
+  case $1 in
+    --image)
+      (($# >= 2)) || die '--image requires a path'
+      $image_seen && die '--image may only be specified once'
+      image=$2
+      image_seen=true
+      shift 2
+      ;;
+    --device)
+      (($# >= 2)) || die '--device requires a path'
+      $device_seen && die '--device may only be specified once'
+      device=$2
+      device_seen=true
+      shift 2
+      ;;
+    --apply)
+      $apply && die '--apply may only be specified once'
+      apply=true
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires text'
+      $confirmation_seen && die '--confirm may only be specified once'
+      confirmation_arg=$2
+      confirmation_seen=true
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+$image_seen || {
+  usage >&2
+  die '--image is required'
+}
+$device_seen || {
+  usage >&2
+  die '--device is required'
+}
+$apply || ! $confirmation_seen || die '--confirm is only accepted with --apply'
+
+for command in awk basename dirname findmnt git lsblk readlink realpath sha256sum stat; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel) || die 'cannot locate the Git worktree'
+repo_root=$(realpath -e -- "$repo_root")
+checksum_record=$repo_root/fabric/router/sysupgrade-sha256
+firmware_media_name=openwrt-mediatek-filogic-openwrt_one-squashfs-sysupgrade.itb
+
+[[ -e $checksum_record ]] || die "reviewed sysupgrade checksum is missing: $checksum_record"
+[[ ! -L $checksum_record && -f $checksum_record ]] || {
+  die 'reviewed sysupgrade checksum must be a regular file, not a symlink'
+}
+mapfile -t checksum_lines < "$checksum_record"
+[[ ${#checksum_lines[@]} -eq 1 ]] || die 'reviewed sysupgrade checksum must contain exactly one line'
+checksum_line=${checksum_lines[0]}
+expected_sha256=${checksum_line:0:64}
+[[ $expected_sha256 =~ ^[0-9a-f]{64}$ ]] || {
+  die 'reviewed sysupgrade checksum does not start with a lowercase SHA-256'
+}
+expected_image_basename=${checksum_line:66}
+[[ $checksum_line == "$expected_sha256  $expected_image_basename" ]] || {
+  die 'reviewed sysupgrade checksum must be one standard <hash>  <basename> record'
+}
+[[ $expected_image_basename =~ ^openwrt-[0-9][A-Za-z0-9._-]*-mediatek-filogic-openwrt_one-squashfs-sysupgrade\.itb$ ]] || {
+  die 'reviewed sysupgrade checksum names an unexpected artifact'
+}
+
+[[ -e $image ]] || die "fabric router sysupgrade artifact does not exist: $image"
+[[ ! -L $image && -f $image ]] || die 'sysupgrade artifact must be a regular file, not a symlink'
+image_path=$(realpath -e -- "$image") || die "cannot resolve sysupgrade artifact: $image"
+[[ $image == "$image_path" ]] || {
+  die 'sysupgrade artifact must be supplied as its canonical absolute path without symlink components'
+}
+case $image_path in
+  "$repo_root" | "$repo_root"/*)
+    die "refusing a secret-bearing sysupgrade artifact inside Git: $image_path"
+    ;;
+esac
+image_basename=${image_path##*/}
+[[ $image_basename == "$expected_image_basename" ]] || {
+  die "sysupgrade artifact basename does not match $checksum_record"
+}
+
+image_parent=${image_path%/*}
+[[ -d $image_parent && ! -L $image_parent ]] || {
+  die 'sysupgrade artifact parent must be a real directory, not a symlink'
+}
+[[ $(stat -Lc '%a' -- "$image_parent") == 700 ]] || {
+  die 'sysupgrade artifact parent directory mode must be exactly 0700'
+}
+[[ $(stat -Lc '%a' -- "$image_path") == 600 ]] || {
+  die 'sysupgrade artifact mode must be exactly 0600'
+}
+[[ $(stat -Lc '%F:%h' -- "$image_path") == 'regular file:1' ]] || {
+  die 'sysupgrade artifact must be a single-link regular file'
+}
+[[ $(stat -Lc '%u:%g' -- "$image_parent") == "$(stat -Lc '%u:%g' -- "$image_path")" ]] || {
+  die 'sysupgrade artifact and its protected parent must have the same owner and group'
+}
+
+# Hold the validated artifact inode open through the copy. This prevents a
+# rename of the host path from substituting different bytes after confirmation.
+exec {image_fd}< "$image_path"
+image_fd_path=/proc/$$/fd/$image_fd
+[[ $(stat -Lc '%a:%F:%h' -- "$image_fd_path") == '600:regular file:1' ]] || {
+  die 'opened sysupgrade artifact is not a mode-0600, single-link regular file'
+}
+[[ $(stat -Lc '%d:%i' -- "$image_fd_path") == "$(stat -Lc '%d:%i' -- "$image_path")" ]] || {
+  die 'sysupgrade artifact changed while it was being opened'
+}
+image_size=$(stat -Lc '%s' -- "$image_fd_path")
+[[ $image_size =~ ^[0-9]+$ && $image_size -gt 0 ]] || die 'sysupgrade artifact has an invalid size'
+((image_size < 4294967295)) || die 'sysupgrade artifact exceeds the FAT32 single-file size limit'
+actual_sha256=$(sha256sum -- "$image_fd_path" | awk '{print $1}')
+[[ $actual_sha256 == "$expected_sha256" ]] || {
+  die "sysupgrade artifact does not match the reviewed SHA-256 in $checksum_record"
+}
+
+# Only accept a literal, stable USB whole-disk by-id identity. A kernel name,
+# partition symlink, or generic by-id alias is not an acceptable substitute.
+[[ $device =~ ^/dev/disk/by-id/usb-[A-Za-z0-9._:+-]+$ ]] || {
+  die '--device must be one stable /dev/disk/by-id/usb-* whole-disk identity'
+}
+[[ $device != *-part[0-9]* ]] || die '--device must be a whole disk, not a partition'
+[[ -L $device ]] || die "device is not a by-id symlink: $device"
+
+reject_system_disk() {
+  local source
+  local ancestor
+  local source_output
+  local ancestor_output
+  local mount_target
+
+  # Fedora CoreOS may expose composefs at / while the durable backing disk is
+  # visible at /sysroot, /var, or /var/home. Enumerate every mounted source and
+  # explicitly revisit the important durable mount targets; never trust only
+  # findmnt's answer for `/`.
+  source_output=$(findmnt -rn -o SOURCE) || die 'cannot enumerate mounted system sources'
+  for mount_target in / /sysroot /boot /boot/efi /var /var/home /home; do
+    [[ -e $mount_target ]] || continue
+    source=$(findmnt -nro SOURCE -T "$mount_target") || {
+      die "cannot identify the mounted source backing $mount_target"
+    }
+    [[ -n $source ]] && source_output+=$'\n'$source
+  done
+
+  while IFS= read -r source; do
+    source=${source%%\[*}
+    [[ $source == /dev/* && -e $source ]] || continue
+    ancestor_output=$(lsblk -snrpo PATH -- "$source") || {
+      die "cannot trace the physical disk backing system source: $source"
+    }
+    while IFS= read -r ancestor; do
+      ancestor=$(readlink -e -- "$ancestor" 2>/dev/null || true)
+      [[ -n $ancestor ]] || continue
+      [[ $ancestor != "$real_device" ]] || die 'refusing a disk that backs the running system'
+    done <<< "$ancestor_output"
+  done <<< "$source_output"
+}
+
+inspect_device() {
+  local device_type
+  local child_type
+  local node
+  local node_real
+  local kernel_name
+  local holder
+  local mounted_output
+  local child_types_output
+  local target_nodes_output
+  local -a mounted_lines
+  local -a target_nodes
+
+  [[ -L $device ]] || die "device by-id symlink disappeared: $device"
+  real_device=$(realpath -e -- "$device") || die "cannot resolve device: $device"
+  [[ $real_device == /dev/* && -b $real_device ]] || {
+    die "by-id path does not resolve to a block device: $device"
+  }
+
+  device_type=$(lsblk --nodeps -dnro TYPE -- "$real_device" | awk '{$1=$1; print}')
+  [[ $device_type == disk ]] || die 'by-id path is not an unambiguous whole disk'
+
+  transport=$(lsblk --nodeps -dnro TRAN -- "$real_device" | awk '{$1=$1; print}')
+  [[ $transport == usb ]] || die "device transport is not USB: ${transport:-unknown}"
+  removable=$(lsblk --nodeps -dnro RM -- "$real_device" | awk '{$1=$1; print}')
+  [[ $removable == 1 ]] || die 'refusing a USB device whose kernel removable bit is not 1'
+  read_only=$(lsblk --nodeps -dnro RO -- "$real_device" | awk '{$1=$1; print}')
+  [[ $read_only == 0 ]] || die 'refusing a read-only block device'
+
+  size_bytes=$(lsblk --nodeps -bdnro SIZE -- "$real_device" | awk '{$1=$1; print}')
+  size_human=$(lsblk --nodeps -dnro SIZE -- "$real_device" | awk '{$1=$1; print}')
+  model=$(lsblk --nodeps -dnro MODEL -- "$real_device" | awk '{$1=$1; print}')
+  serial=$(lsblk --nodeps -dnro SERIAL -- "$real_device" | awk '{$1=$1; print}')
+  major_minor=$(lsblk --nodeps -dnro MAJ:MIN -- "$real_device" | awk '{$1=$1; print}')
+  [[ $size_bytes =~ ^[0-9]+$ && $size_bytes -gt 0 ]] || die 'could not determine device size'
+  [[ -n $serial ]] || die 'firmware media requires a USB device with a non-empty hardware serial'
+  [[ $major_minor =~ ^[0-9]+:[0-9]+$ ]] || die 'could not determine device major:minor identity'
+  node_identity=$(stat -Lc '%d:%i:%t:%T' -- "$real_device")
+
+  reject_system_disk
+
+  mounted_output=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$real_device") || {
+    die 'cannot inspect target mountpoints and active swap'
+  }
+  mapfile -t mounted_lines < <(printf '%s\n' "$mounted_output" | awk 'NF > 1')
+  if ((${#mounted_lines[@]})); then
+    printf 'Mounted or active target descendants:\n' >&2
+    printf '  %s\n' "${mounted_lines[@]}" >&2
+    die 'refusing a disk with mounted filesystems or active swap'
+  fi
+
+  child_types_output=$(lsblk -nrpo TYPE -- "$real_device") || die 'cannot inspect target descendants'
+  [[ -n $child_types_output ]] || die 'target block-device tree is empty'
+  while IFS= read -r child_type; do
+    case $child_type in
+      disk|part) ;;
+      *) die "refusing active mapped/RAID descendant of type: $child_type" ;;
+    esac
+  done <<< "$child_types_output"
+
+  target_nodes_output=$(lsblk -nrpo PATH -- "$real_device") || die 'cannot enumerate target block-device nodes'
+  [[ -n $target_nodes_output ]] || die 'target block-device node list is empty'
+  mapfile -t target_nodes <<< "$target_nodes_output"
+  for node in "${target_nodes[@]}"; do
+    node_real=$(readlink -e -- "$node" 2>/dev/null || true)
+    [[ -n $node_real ]] || continue
+    kernel_name=${node_real#/dev/}
+    for holder in "/sys/class/block/$kernel_name/holders/"*; do
+      [[ -e $holder ]] || continue
+      die "refusing device with an active holder: $node_real -> $(basename -- "$holder")"
+    done
+  done
+}
+
+inspect_device
+minimum_device_bytes=$((image_size + 64 * 1024 * 1024))
+((size_bytes >= minimum_device_bytes)) || {
+  die "USB device is too small: need at least $minimum_device_bytes bytes; device is $size_bytes bytes"
+}
+
+initial_real_device=$real_device
+initial_node_identity=$node_identity
+initial_size_bytes=$size_bytes
+initial_model=$model
+initial_serial=$serial
+initial_major_minor=$major_minor
+expected_confirmation="WRITE-FABRIC-ROUTER-FIRMWARE:$device:$size_bytes:$serial:$expected_sha256"
+
+printf '\nFabric router firmware USB plan:\n'
+printf '  image:       %s\n' "$image_path"
+printf '  image bytes: %s\n' "$image_size"
+printf '  checksum:    %s (%s)\n' "$expected_sha256" "$checksum_record"
+printf '  stable ID:   %s\n' "$device"
+printf '  kernel path: %s\n' "$real_device"
+printf '  model:       %s\n' "${model:-unknown}"
+printf '  serial:      %s\n' "$serial"
+printf '  device size: %s (%s bytes)\n' "$size_human" "$size_bytes"
+printf '  transport:   %s; removable bit: %s\n' "$transport" "$removable"
+printf '  operation:   replace with DOS/MBR + one bootable FAT32 LBA partition labeled OPENWRT_FW\n'
+printf '  sole file:   %s\n' "$firmware_media_name"
+
+if ! $apply; then
+  printf '\nDRY RUN ONLY: no block-device writes were made.\n'
+  printf 'After physically rechecking the model, serial, size, and by-id path, run:\n  sudo %q --image %q --device %q --apply --confirm %q\n' \
+    "$0" "$image_path" "$device" "$expected_confirmation"
+  exit 0
+fi
+
+[[ $EUID -eq 0 ]] || die '--apply must be run as root'
+[[ $confirmation_arg == "$expected_confirmation" ]] || {
+  die 'confirmation does not exactly match this image and device; run the dry run again'
+}
+
+for command in blkid blockdev find flock install mkfs.fat mount sfdisk sync udevadm umount; do
+  need_command "$command"
+done
+
+mount_dir=
+mounted_by_us=false
+entries_file=
+
+cleanup() {
+  local cleanup_status=$?
+
+  trap - EXIT INT TERM
+  if $mounted_by_us && [[ -n $mount_dir ]]; then
+    if ! umount -- "$mount_dir"; then
+      printf 'ERROR: could not unmount %s; do not unplug the target device\n' "$mount_dir" >&2
+      cleanup_status=1
+    fi
+  fi
+  if [[ -n $mount_dir ]] && ! rmdir -- "$mount_dir" 2>/dev/null; then
+    printf 'WARNING: inspection mount directory remains: %s\n' "$mount_dir" >&2
+  fi
+  [[ -z $entries_file ]] || rm -f -- "$entries_file"
+  exit "$cleanup_status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+[[ -d /run/lock && ! -L /run/lock ]] || die '/run/lock must be a real directory'
+[[ $(stat -Lc '%u' -- /run/lock) == 0 ]] || die '/run/lock must be owned by root'
+lock_directory_mode=$(stat -Lc '%a' -- /run/lock)
+[[ $lock_directory_mode =~ ^[0-7]{3,4}$ ]] || die '/run/lock has an invalid mode'
+(( (8#$lock_directory_mode & 8#022) == 0 )) || {
+  die '/run/lock must not be group- or world-writable'
+}
+lock_name=${major_minor/:/-}
+device_lock=/run/lock/fabric-router-firmware-usb-$lock_name.lock
+[[ ! -L $device_lock ]] || die "refusing symlinked device lock: $device_lock"
+exec {device_lock_fd}>> "$device_lock"
+device_lock_fd_path=/proc/$$/fd/$device_lock_fd
+[[ ! -L $device_lock ]] || die "device lock became a symlink: $device_lock"
+[[ $(stat -Lc '%d:%i' -- "$device_lock_fd_path") == "$(stat -Lc '%d:%i' -- "$device_lock")" ]] || {
+  die 'device lock path changed while it was being opened'
+}
+[[ -f $device_lock_fd_path ]] || die 'device lock is not a regular file'
+[[ $(stat -Lc '%u:%a:%h' -- "$device_lock_fd_path") == '0:600:1' ]] || {
+  die 'device lock must be a root-owned, mode-0600, single-link regular file'
+}
+flock -n "$device_lock_fd" || die "another apply operation holds the lock for $real_device"
+
+# Revalidate both source and target immediately before opening the target for
+# its first destructive write.
+[[ $(stat -Lc '%d:%i' -- "$image_fd_path") == "$(stat -Lc '%d:%i' -- "$image_path")" ]] || {
+  die 'sysupgrade artifact path now names a different file'
+}
+[[ $(sha256sum -- "$image_fd_path" | awk '{print $1}') == "$expected_sha256" ]] || {
+  die 'sysupgrade artifact changed after initial validation'
+}
+
+inspect_device
+[[ $real_device == "$initial_real_device" ]] || die 'stable by-id path now resolves to a different kernel device'
+[[ $node_identity == "$initial_node_identity" ]] || die 'block-device node changed after inspection'
+[[ $major_minor == "$initial_major_minor" ]] || die 'block-device major:minor identity changed after inspection'
+[[ $size_bytes == "$initial_size_bytes" ]] || die 'device size changed after inspection'
+[[ $model == "$initial_model" ]] || die 'device model changed after inspection'
+[[ $serial == "$initial_serial" ]] || die 'device serial changed after inspection'
+[[ $(blockdev --getro "$real_device") == 0 ]] || die 'device became read-only after inspection'
+[[ $(blockdev --getsize64 "$real_device") == "$size_bytes" ]] || {
+  die 'block-device size disagrees with the inspected size'
+}
+
+# Pin the target descriptor before the first write. Subsequent whole-disk
+# operations use this descriptor, while the stable path and sysfs identity are
+# rechecked around every destructive phase.
+exec {target_fd}<> "$real_device" || die "cannot open validated USB device: $real_device"
+target_fd_path=/proc/$$/fd/$target_fd
+[[ -b $target_fd_path ]] || die 'opened USB target is no longer a block device'
+device_path_identity=$(stat -Lc '%d:%i:%t:%T' -- "$target_fd_path")
+[[ $device_path_identity == "$initial_node_identity" ]] || {
+  die 'opened USB device does not match the inspected block-device inode'
+}
+target_device_hex=$(stat -Lc '%t:%T' -- "$target_fd_path")
+IFS=: read -r target_major_hex target_minor_hex <<< "$target_device_hex"
+[[ $target_major_hex =~ ^[0-9a-f]+$ && $target_minor_hex =~ ^[0-9a-f]+$ ]] || {
+  die 'target descriptor has an invalid kernel device number'
+}
+target_device_number="$((16#$target_major_hex)):$((16#$target_minor_hex))"
+target_sysfs=$(readlink -e -- "/sys/dev/block/$target_device_number") || {
+  die 'target descriptor has no kernel sysfs identity'
+}
+[[ $(<"$target_sysfs/dev") == "$target_device_number" ]] || {
+  die 'target sysfs identity does not match the opened descriptor'
+}
+
+assert_target_identity() {
+  local phase=$1
+  local current_serial
+  local current_size
+  local resolved
+
+  resolved=$(realpath -e -- "$device") || die "$phase: stable by-id path disappeared"
+  [[ $resolved == "$initial_real_device" ]] || die "$phase: stable by-id path resolves to a different device"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$initial_real_device") == "$device_path_identity" ]] || {
+    die "$phase: kernel target pathname changed identity"
+  }
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$target_fd_path") == "$device_path_identity" ]] || {
+    die "$phase: opened target descriptor changed identity"
+  }
+  [[ $(readlink -e -- "/sys/dev/block/$target_device_number") == "$target_sysfs" ]] || {
+    die "$phase: kernel target sysfs identity changed"
+  }
+  current_size=$(blockdev --getsize64 "$target_fd_path") || {
+    die "$phase: could not read size through the pinned target descriptor"
+  }
+  [[ $current_size == "$initial_size_bytes" ]] || die "$phase: device size changed after inspection"
+  current_serial=$(lsblk --nodeps -dnro SERIAL -- "$target_fd_path" | awk '{$1=$1; print}') || {
+    die "$phase: could not read serial through the pinned target descriptor"
+  }
+  [[ $current_serial == "$initial_serial" ]] || die "$phase: device serial changed after inspection"
+  [[ $(blockdev --getro "$target_fd_path") == 0 ]] || die "$phase: target became read-only"
+}
+
+assert_no_target_activity() {
+  local phase=$1
+  local child_type
+  local holders_dir
+  local holder
+  local active_mounts
+  local child_types
+
+  active_mounts=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$target_fd_path" | awk 'NF > 1') || {
+    die "$phase: could not inspect target mounts and active swap"
+  }
+  [[ -z $active_mounts ]] || {
+    printf 'Target became mounted or active:\n%s\n' "$active_mounts" >&2
+    die "$phase: refusing to continue with an active target"
+  }
+  child_types=$(lsblk -nrpo TYPE -- "$target_fd_path") || {
+    die "$phase: could not inspect target descendants"
+  }
+  [[ -n $child_types ]] || die "$phase: target descendant query returned no data"
+  while IFS= read -r child_type; do
+    case $child_type in
+      disk|part) ;;
+      *) die "$phase: target has an active mapped/RAID descendant: $child_type" ;;
+    esac
+  done <<< "$child_types"
+  for holders_dir in "$target_sysfs/holders" "$target_sysfs"/*/holders; do
+    [[ -d $holders_dir ]] || continue
+    for holder in "$holders_dir/"*; do
+      [[ -e $holder ]] || continue
+      die "$phase: target has an active holder: $holders_dir -> $(basename -- "$holder")"
+    done
+  done
+}
+
+assert_target_identity 'pre-write recheck'
+assert_no_target_activity 'pre-write recheck'
+
+printf '\nDestroying and preparing %s (%s)\n' "$device" "$real_device"
+sfdisk --wipe=always --wipe-partitions=always -- "$target_fd_path" <<'EOF'
+label: dos
+type=c, bootable
+EOF
+assert_target_identity 'after partition-table write'
+blockdev --rereadpt "$target_fd_path"
+udevadm settle
+assert_target_identity 'after kernel partition-table reread'
+assert_no_target_activity 'after kernel partition-table reread'
+
+partition_sysfs=
+for _ in {1..20}; do
+  partitions=()
+  for candidate in "$target_sysfs"/*; do
+    [[ -f $candidate/partition && -f $candidate/dev && -f $candidate/uevent ]] || continue
+    partitions+=("$candidate")
+  done
+  if [[ ${#partitions[@]} -eq 1 ]]; then
+    partition_sysfs=${partitions[0]}
+    break
+  fi
+  sleep 0.25
+done
+[[ -n $partition_sysfs ]] || die 'the single new partition did not appear beneath the pinned target'
+
+read -r partition_device_number < "$partition_sysfs/dev" || {
+  die 'could not read the new partition device number'
+}
+[[ $partition_device_number =~ ^[0-9]+:[0-9]+$ ]] || {
+  die 'new partition has an invalid kernel device number'
+}
+partition_device_name=$(awk -F= '$1 == "DEVNAME" { print $2 }' "$partition_sysfs/uevent") || {
+  die 'could not read the new partition device name'
+}
+[[ $partition_device_name =~ ^[A-Za-z0-9._-]+$ ]] || {
+  die 'new partition has an unsafe kernel device name'
+}
+partition=/dev/$partition_device_name
+[[ -b $partition ]] || die 'new partition device node is absent'
+
+partition_path_identity=$(stat -Lc '%d:%i:%t:%T' -- "$partition")
+exec {partition_fd}<> "$partition"
+partition_fd_path=/proc/$$/fd/$partition_fd
+[[ -b $partition_fd_path ]] || die 'opened partition descriptor is not a block device'
+[[ $(stat -Lc '%d:%i:%t:%T' -- "$partition_fd_path") == "$partition_path_identity" ]] || {
+  die 'partition pathname changed while its descriptor was being opened'
+}
+partition_device_hex=$(stat -Lc '%t:%T' -- "$partition_fd_path")
+IFS=: read -r partition_major_hex partition_minor_hex <<< "$partition_device_hex"
+[[ $partition_major_hex =~ ^[0-9a-f]+$ && $partition_minor_hex =~ ^[0-9a-f]+$ ]] || {
+  die 'partition descriptor has an invalid kernel device number'
+}
+opened_partition_device_number="$((16#$partition_major_hex)):$((16#$partition_minor_hex))"
+[[ $opened_partition_device_number == "$partition_device_number" ]] || {
+  die 'partition descriptor does not match the partition beneath the pinned target'
+}
+
+assert_partition_identity() {
+  local phase=$1
+
+  assert_target_identity "$phase"
+  [[ -f $partition_sysfs/partition && -f $partition_sysfs/dev ]] || {
+    die "$phase: pinned partition disappeared from sysfs"
+  }
+  [[ $(<"$partition_sysfs/dev") == "$partition_device_number" ]] || {
+    die "$phase: pinned partition changed kernel identity"
+  }
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$partition_fd_path") == "$partition_path_identity" ]] || {
+    die "$phase: opened partition descriptor changed identity"
+  }
+  [[ -b $partition ]] || die "$phase: partition device node disappeared"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$partition") == "$partition_path_identity" ]] || {
+    die "$phase: partition device pathname changed identity"
+  }
+}
+
+partition_dump=$(sfdisk --dump "$target_fd_path") || die 'could not read back the new DOS partition table'
+[[ $(printf '%s\n' "$partition_dump" | awk '$0 == "label: dos" { count++ } END { print count + 0 }') == 1 ]] || {
+  die 'partition-table readback is not DOS/MBR'
+}
+[[ $(printf '%s\n' "$partition_dump" | awk '/:[[:space:]]+start=/ { count++ } END { print count + 0 }') == 1 ]] || {
+  die 'partition-table readback does not contain exactly one partition'
+}
+printf '%s\n' "$partition_dump" | awk '
+  /:[[:space:]]+start=/ && /type=(c|0c)(,|$)/ && /bootable/ { valid++ }
+  END { exit(valid == 1 ? 0 : 1) }
+' || die 'sole MBR partition is not bootable FAT32 LBA type 0x0c'
+
+assert_partition_identity 'before filesystem creation'
+mkfs.fat -F 32 -n OPENWRT_FW -- "$partition_fd_path"
+udevadm settle
+assert_partition_identity 'after filesystem creation'
+[[ $(blkid -p -s TYPE -o value -- "$partition_fd_path") == vfat ]] || {
+  die 'new filesystem is not FAT32/vfat'
+}
+[[ $(blkid -p -s LABEL -o value -- "$partition_fd_path") == OPENWRT_FW ]] || {
+  die 'new filesystem label is not OPENWRT_FW'
+}
+
+# A desktop automounter may react as soon as the new filesystem appears.
+assert_no_target_activity 'after filesystem creation'
+
+mount_dir=$(mktemp -d)
+assert_partition_identity 'before writable mount'
+mount --no-canonicalize --internal-only --types vfat \
+  --options rw,nosuid,nodev,noexec,umask=0077 \
+  --source "$partition_fd_path" --target "$mount_dir"
+mounted_by_us=true
+install -m 0600 -- "$image_fd_path" "$mount_dir/$firmware_media_name"
+sync -- "$mount_dir"
+[[ $(sha256sum -- "$mount_dir/$firmware_media_name" | awk '{print $1}') == "$expected_sha256" ]] || {
+  die 'firmware hash mismatch after writable copy'
+}
+
+umount -- "$mount_dir"
+mounted_by_us=false
+blockdev --flushbufs "$partition_fd_path"
+blockdev --flushbufs "$target_fd_path"
+sync
+udevadm settle
+assert_partition_identity 'before read-only verification mount'
+assert_no_target_activity 'before read-only verification mount'
+
+mount --no-canonicalize --internal-only --types vfat \
+  --options ro,nosuid,nodev,noexec,umask=0077 \
+  --source "$partition_fd_path" --target "$mount_dir"
+mounted_by_us=true
+mount_info=$(findmnt -rn -T "$mount_dir" -o FSTYPE,OPTIONS) || {
+  die 'cannot inspect the verification mount'
+}
+mount_fstype=${mount_info%% *}
+mount_options=${mount_info#* }
+[[ $mount_fstype == vfat ]] || die 'verification mount is not vfat'
+case ,$mount_options, in
+  *,ro,*) ;;
+  *) die 'verification mount is not read-only' ;;
+esac
+
+entries_file=$(mktemp)
+find "$mount_dir" -mindepth 1 -printf '%P\0' > "$entries_file" || {
+  die 'cannot enumerate the verification filesystem'
+}
+mapfile -d '' -t media_entries < "$entries_file"
+[[ ${#media_entries[@]} -eq 1 && ${media_entries[0]} == "$firmware_media_name" ]] || {
+  printf 'Unexpected firmware media entries:\n' >&2
+  printf '  %q\n' "${media_entries[@]}" >&2
+  die "verification filesystem must contain only $firmware_media_name"
+}
+[[ -f $mount_dir/$firmware_media_name && ! -L $mount_dir/$firmware_media_name ]] || {
+  die 'sole verification entry is not the expected regular firmware file'
+}
+readback_sha256=$(sha256sum -- "$mount_dir/$firmware_media_name" | awk '{print $1}')
+[[ $readback_sha256 == "$expected_sha256" ]] || {
+  die "read-only firmware hash mismatch: expected $expected_sha256; got $readback_sha256"
+}
+
+umount -- "$mount_dir"
+mounted_by_us=false
+rmdir -- "$mount_dir"
+mount_dir=
+rm -f -- "$entries_file"
+entries_file=
+blockdev --flushbufs "$partition_fd_path"
+blockdev --flushbufs "$target_fd_path"
+sync
+udevadm settle
+assert_partition_identity 'final verification'
+assert_no_target_activity 'final verification'
+
+printf '\nPrepared and read-only verified %s successfully.\n' "$device"
+printf 'It is unmounted and safe to unplug after the OS reports no pending device activity.\n'
+printf 'The sole file is %s with SHA-256 %s.\n' "$firmware_media_name" "$expected_sha256"

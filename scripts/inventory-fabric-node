@@ -54,6 +54,127 @@ have() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Identity evidence is more useful when a missing tool, inaccessible device, or
+# failed query cannot be mistaken for an empty successful capture. Keep the
+# most recent result in globals so TPM handle discovery can decide whether it
+# is safe to query an object or NV index that is already present.
+captured_evidence_output=
+captured_evidence_status=0
+capture_evidence_result() {
+    local allow_empty=$1
+    local label=$2
+    local status
+    shift 2
+
+    printf '\n### evidence: %s\n' "$label"
+    printf '$'
+    printf ' %q' "$@"
+    printf '\n'
+    captured_evidence_output=$("$@" 2>&1)
+    status=$?
+    captured_evidence_status=$status
+    [[ -z $captured_evidence_output ]] || printf '%s\n' "$captured_evidence_output"
+    if ((status != 0)); then
+        printf '! evidence-status: failed (exit %s)\n' "$status"
+    elif [[ -z ${captured_evidence_output//[[:space:]]/} ]] && [[ $allow_empty != true ]]; then
+        captured_evidence_status=125
+        printf '! evidence-status: failed (command returned no evidence)\n'
+    elif [[ -z ${captured_evidence_output//[[:space:]]/} ]]; then
+        printf '! evidence-status: captured (empty result)\n'
+    else
+        printf '! evidence-status: captured\n'
+    fi
+}
+
+capture_evidence() {
+    capture_evidence_result false "$@"
+}
+
+capture_evidence_allow_empty() {
+    capture_evidence_result true "$@"
+}
+
+unavailable_evidence() {
+    local label=$1
+    local reason=$2
+
+    captured_evidence_output=
+    captured_evidence_status=126
+    printf '\n### evidence: %s\n' "$label"
+    printf '! evidence-status: unavailable (%s)\n' "$reason"
+}
+
+root_capture_evidence() {
+    local label=$1
+    shift
+
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        capture_evidence "$label" "$@"
+    elif have sudo && sudo -n true >/dev/null 2>&1; then
+        capture_evidence "$label" sudo -n "$@"
+    else
+        unavailable_evidence "$label" 'root privileges are unavailable'
+    fi
+}
+
+root_capture_evidence_allow_empty() {
+    local label=$1
+    shift
+
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        capture_evidence_allow_empty "$label" "$@"
+    elif have sudo && sudo -n true >/dev/null 2>&1; then
+        capture_evidence_allow_empty "$label" sudo -n "$@"
+    else
+        unavailable_evidence "$label" 'root privileges are unavailable'
+    fi
+}
+
+read_existing_ek_certificate_details() {
+    local index=$1
+
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        tpm2_nvread "$index"
+    else
+        sudo -n tpm2_nvread "$index"
+    fi | openssl x509 -inform DER -noout \
+        -subject -issuer -serial -dates -fingerprint -sha256
+}
+
+capture_existing_ek_certificate_details() {
+    local label=$1
+    local index=$2
+
+    if ! have tpm2_nvread; then
+        unavailable_evidence "$label" 'the index exists but tpm2_nvread is unavailable'
+    elif ! have openssl; then
+        unavailable_evidence "$label" 'the index exists but openssl is unavailable'
+    elif [[ ${EUID:-$(id -u)} -ne 0 ]] &&
+        (! have sudo || ! sudo -n true >/dev/null 2>&1); then
+        unavailable_evidence "$label" 'root privileges are unavailable'
+    else
+        capture_evidence "$label" read_existing_ek_certificate_details "$index"
+    fi
+}
+
+dmi_identity_evidence() {
+    local label=$1
+    local sysfs_name=$2
+    local dmidecode_selector=$3
+    local sysfs_path=/sys/class/dmi/id/$sysfs_name
+
+    if [[ -r $sysfs_path ]]; then
+        capture_evidence "$label (Linux DMI sysfs)" cat "$sysfs_path"
+    elif have dmidecode; then
+        root_capture_evidence "$label (dmidecode)" \
+            dmidecode --string "$dmidecode_selector"
+    elif [[ -e $sysfs_path ]]; then
+        unavailable_evidence "$label" "$sysfs_path is unreadable and dmidecode is unavailable"
+    else
+        unavailable_evidence "$label" 'neither Linux DMI sysfs nor dmidecode is available'
+    fi
+}
+
 root_run() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
         run "$@"
@@ -79,6 +200,9 @@ if have hwclock; then
 fi
 
 section "system identity"
+dmi_identity_evidence "DMI product UUID" product_uuid system-uuid
+dmi_identity_evidence "DMI chassis serial" chassis_serial chassis-serial-number
+dmi_identity_evidence "DMI chassis asset tag" chassis_asset_tag chassis-asset-tag
 if have dmidecode; then
     root_run dmidecode --string system-manufacturer
     root_run dmidecode --string system-product-name
@@ -101,10 +225,17 @@ run ip route show
 for nic in /sys/class/net/*; do
     nic=${nic##*/}
     [[ $nic == lo ]] && continue
+    if [[ -r /sys/class/net/$nic/address ]]; then
+        capture_evidence "NIC $nic current address" cat "/sys/class/net/$nic/address"
+    else
+        unavailable_evidence "NIC $nic current address" 'the sysfs address is absent or unreadable'
+    fi
     if have ethtool; then
-        run ethtool -P "$nic"
+        capture_evidence "NIC $nic permanent address" ethtool -P "$nic"
         run ethtool "$nic"
         root_run ethtool -S "$nic"
+    else
+        unavailable_evidence "NIC $nic permanent address" 'ethtool is unavailable'
     fi
 done
 
@@ -166,12 +297,86 @@ if have systemd-cryptenroll; then
     root_run systemd-cryptenroll --tpm2-device=list
 fi
 if have tpm2_getcap; then
-    root_run tpm2_getcap properties-fixed
+    root_capture_evidence "TPM2 fixed properties" tpm2_getcap properties-fixed
+    root_capture_evidence "TPM2 algorithms" tpm2_getcap algorithms
+    root_capture_evidence "TPM2 allocated PCR banks" tpm2_getcap pcrs
+    root_capture_evidence_allow_empty "TPM2 persistent handles" tpm2_getcap handles-persistent
+    persistent_handles=$captured_evidence_output
+    persistent_handles_status=$captured_evidence_status
+    root_capture_evidence_allow_empty "TPM2 NV indices" tpm2_getcap handles-nv-index
+    nv_handles=$captured_evidence_output
+    nv_handles_status=$captured_evidence_status
 else
-    printf '\n! tpm2_getcap unavailable; functional TPM2 capability/PCR capture remains an admission gate\n'
+    unavailable_evidence "TPM2 fixed properties" 'tpm2_getcap is unavailable'
+    unavailable_evidence "TPM2 algorithms" 'tpm2_getcap is unavailable'
+    unavailable_evidence "TPM2 allocated PCR banks" 'tpm2_getcap is unavailable'
+    unavailable_evidence "TPM2 persistent handles" 'tpm2_getcap is unavailable'
+    persistent_handles=
+    persistent_handles_status=126
+    unavailable_evidence "TPM2 NV indices" 'tpm2_getcap is unavailable'
+    nv_handles=
+    nv_handles_status=126
 fi
+
+# Read only public areas that already exist. Do not create an EK, load a
+# primary object, persist a handle, write NV, or enroll anything during
+# inventory. The standard EK certificate NV indices are stronger evidence than
+# a guessed persistent-handle convention, so report their public metadata when
+# firmware exposes them and mark their absence explicitly.
+for ek_index in 0x1c00002 0x1c0000a; do
+    case $ek_index in
+        0x1c00002) ek_description='RSA EK certificate NV index' ;;
+        0x1c0000a) ek_description='ECC EK certificate NV index' ;;
+    esac
+    if ((nv_handles_status == 0)) &&
+        grep -Eiq "^[[:space:]]*-[[:space:]]+${ek_index}[[:space:]]*$" <<< "$nv_handles"; then
+        if have tpm2_nvreadpublic; then
+            root_capture_evidence "TPM2 $ek_description $ek_index public metadata" \
+                tpm2_nvreadpublic "$ek_index"
+        else
+            unavailable_evidence "TPM2 $ek_description $ek_index public metadata" \
+                'the index exists but tpm2_nvreadpublic is unavailable'
+        fi
+        capture_existing_ek_certificate_details \
+            "TPM2 $ek_description $ek_index certificate details" "$ek_index"
+    elif ((nv_handles_status == 0)); then
+        unavailable_evidence "TPM2 $ek_description $ek_index public metadata" \
+            'the standard EK certificate NV index is not present'
+        unavailable_evidence "TPM2 $ek_description $ek_index certificate details" \
+            'the standard EK certificate NV index is not present'
+    else
+        unavailable_evidence "TPM2 $ek_description $ek_index public metadata" \
+            'TPM2 NV-index discovery did not succeed'
+        unavailable_evidence "TPM2 $ek_description $ek_index certificate details" \
+            'TPM2 NV-index discovery did not succeed'
+    fi
+done
+
+if ((persistent_handles_status == 0)); then
+    mapfile -t existing_persistent_handles < <(
+        awk '/^[[:space:]]*-[[:space:]]+0x[[:xdigit:]]+[[:space:]]*$/ { print $2 }' \
+            <<< "$persistent_handles"
+    )
+else
+    existing_persistent_handles=()
+fi
+if ((${#existing_persistent_handles[@]} == 0)); then
+    unavailable_evidence "TPM2 existing persistent public areas" \
+        'no existing persistent handle was reported; no EK object was created for inventory'
+elif have tpm2_readpublic; then
+    for persistent_handle in "${existing_persistent_handles[@]}"; do
+        root_capture_evidence "TPM2 existing persistent public area $persistent_handle" \
+            tpm2_readpublic --object-context "$persistent_handle"
+    done
+else
+    unavailable_evidence "TPM2 existing persistent public areas" \
+        'persistent handles exist but tpm2_readpublic is unavailable'
+fi
+
 if have tpm2_pcrread; then
-    root_run tpm2_pcrread
+    root_capture_evidence "TPM2 current PCR values" tpm2_pcrread
+else
+    unavailable_evidence "TPM2 current PCR values" 'tpm2_pcrread is unavailable'
 fi
 run sh -c 'for f in /sys/class/tpm/tpm*/{tpm_version_major,caps}; do test -e "$f" && { printf "%s: " "$f"; cat "$f"; }; done'
 if have bootctl; then
