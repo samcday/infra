@@ -62,9 +62,13 @@ is a well-instrumented single-site root, not multi-site disaster tolerance.
 
 The initial consensus Ignitions are rendered on a trusted machine from
 `fabric/butane/bootstrap.sh`, written outside the Git worktree, and carried to
-the three machines offline. Each file contains that member's etcd private key,
-cluster tokens, and LUKS recovery material. It is mode `0600` secret material,
-not an HTTP/PXE profile and not a Kubernetes Secret.
+the three machines offline. After one candidate has a reviewed final inventory
+capture, `--node fabric-az1-cp1` (or the matching cp2/cp3 name) renders only
+that node and requires only its corresponding `FABRIC_CP*_MAC`. Omitting
+`--node` preserves the original all-three render and requires all three MACs.
+Each file contains that member's etcd private key, cluster tokens, and LUKS
+recovery material. It is mode `0600` secret material, not an HTTP/PXE profile
+and not a Kubernetes Secret.
 
 Bootie and DHCP/TFTP PXE are disabled for this phase. Hardware discovery first
 uses one separately built, non-installing `fabric-inventory-live.iso`. It has
@@ -73,13 +77,23 @@ and uses temporary static address `10.66.0.100/24` with no gateway or DNS. Boot
 only one candidate at that address at a time. Initial installation then uses
 the pinned Fedora CoreOS 44.20260621.3.1 x86_64 live ISO and three separately
 customized images, each containing exactly one node's offline Ignition and its
-physically verified stable `/dev/disk/by-id/ata-*` destination. Never use
-`/dev/sdX`. The same physical thumb drive may be used for inventory first and
-then rewritten between individual nodes, but a multi-node image containing all
-three Ignitions is forbidden. Once the first secret installer is written, the
-entire device remains secret-classified and may never return to inventory or
-general use: the writer verifies the ISO-length prefix but cannot sanitize
-trailing bytes or flash-controller remapped cells.
+physically verified stable `/dev/disk/by-id/ata-*` destination. A node may be
+manufactured independently with
+`scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
+(or the corresponding supported cp2/cp3 pair); omitting `--node` preserves the
+all-three build.
+Never use `/dev/sdX`. The same physical thumb drive may be used for inventory
+first and then rewritten between individual nodes, but a multi-node image
+containing all three Ignitions is forbidden. Once the first secret installer
+is written, the entire device remains secret-classified and may never return
+to inventory or general use: the writer verifies the ISO-length prefix but
+cannot sanitize trailing bytes or flash-controller remapped cells.
+
+Selected-node rendering and media creation do not define a one-member cluster.
+Every node retains the fixed three-member etcd initial-cluster map and
+`initial-cluster-state=new`. One installed voter alone cannot form etcd quorum,
+and therefore cannot make the K3s API available; bring up at least two declared
+members together without rewriting the membership around the first node.
 
 Sam is the local console and remote hands: attach the USB HDMI adapter and
 keyboard, disconnect every non-target internal disk, and select the USB device
@@ -392,17 +406,19 @@ For each candidate mini PC:
    that directory. If SSH is unavailable, the local console remains the
    recovery path; do not improvise routing or advertise this subnet through
    Tailscale.
-5. Power the candidate off, remove the USB, label the chassis with its candidate
-   number, wired MAC, system serial, SATA serial, and switch port, then repeat
-   with the next machine. Never boot two inventory candidates concurrently;
-   they intentionally share `10.66.0.100`.
-6. Return all three captures for review. Do not wipe, partition, benchmark, or
-   install yet.
+5. Power the candidate off, remove the USB, and label the chassis with its
+   candidate number, wired MAC, system serial, SATA serial, and switch port.
+   Repeat with the next machine when ready, but never boot two inventory
+   candidates concurrently; they intentionally share `10.66.0.100`.
+6. Return each capture for review. Do not wipe, partition, benchmark, or install
+   that node from its initial discovery capture.
 7. After every firmware, UEFI, TPM, RTC, memory, NIC, and disk change or
    qualification step is complete, boot the inventory media again and save a
    new capture and checksum without overwriting the discovery capture. Only
-   this reviewed final capture may supply the MAC, stable disk by-id, and other
-   node-specific installer inputs.
+   this reviewed final capture may supply that node's MAC, stable disk by-id,
+   and other installer inputs. Once it is reviewed, that node's Ignition and
+   installer may be manufactured with `--node` without waiting for final
+   captures from the other two candidates.
 
 The dedicated image executes the same collector that can be run manually from
 another trusted live environment when needed:
@@ -588,20 +604,25 @@ Zincati remains disabled until this cadence and rollback evidence exist.
    available.
 4. Build and verify the non-installing inventory ISO, write it with its distinct
    inventory-media confirmation, then mediate one candidate boot and capture at
-   a time. Finish firmware/UEFI/TPM/RTC settings, select the three SATA devices,
-   and pass memory, SMART-long, thermal, Ethernet, flush/write-cache, and
-   destructive synchronous-write qualification with explicit authorization.
-   Recapture every candidate afterward; only the reviewed final captures may
-   feed installer MAC and disk values.
-5. Generate independent fabric PKI/secrets and render the three sensitive
-   Ignitions and per-node customized FCOS ISOs to trusted storage outside Git.
-   Use `scripts/write-fabric-installer-usb` and its device-specific confirmation
-   to reimage the installer thumb drive for exactly one node at a time. With
-   only its selected SATA disk attached, locally verify the displayed node,
-   static IP, TPM2, router manifest, and full disk by-id, then install. The live
+   a time. Finish firmware/UEFI/TPM/RTC settings, select each SATA device, and
+   pass memory, SMART-long, thermal, Ethernet, flush/write-cache, and destructive
+   synchronous-write qualification with explicit authorization. Recapture each
+   candidate afterward; only that node's reviewed final capture may feed its
+   installer MAC and disk values, but it need not wait for the other captures.
+5. Generate independent fabric PKI/secrets. Render and build one node at a time;
+   for example, use `fabric/butane/bootstrap.sh --node fabric-az1-cp1` and
+   `scripts/build-fabric-node-isos --node fabric-az1-cp1 --cp1-disk ...` for
+   cp1. Retain the legacy all-three mode by omitting `--node` after all inputs
+   are available. Keep the sensitive Ignitions and per-node customized FCOS
+   ISOs on trusted storage outside Git. Use
+   `scripts/write-fabric-installer-usb` and its device-specific confirmation to
+   reimage the installer thumb drive for exactly one node at a time. With only
+   its selected SATA disk attached, locally verify the displayed node, static
+   IP, TPM2, router manifest, and full disk by-id, then install. The live
    installer powers off on success; remove the USB, boot the SATA disk, and
    expect one later automatic reboot while the pinned K3s SELinux policy becomes
-   active.
+   active. A first voter may be installed independently, but it will not provide
+   etcd quorum or a K3s API until a second declared voter is online.
 6. Bring up at least two declared members together, then the third. Verify
    three healthy members, one leader, no alarms, the 2 GiB quota, API VIP
    failover, and all three K3s servers. Flux is intentionally absent.

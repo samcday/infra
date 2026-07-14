@@ -11,16 +11,21 @@ trap 'rm -rf -- "$workdir"' EXIT
 cp -a -- "$script_dir/files" "$workdir/files"
 
 nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
+mac_variables=(FABRIC_CP1_MAC FABRIC_CP2_MAC FABRIC_CP3_MAC)
 common_profiles=(base firewall time etcd control-plane node-exporter observer-agent)
 check_only=false
+selected_node=
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  FABRIC_CP1_MAC=aa:bb:cc:dd:ee:01 \
-  FABRIC_CP2_MAC=aa:bb:cc:dd:ee:02 \
-  FABRIC_CP3_MAC=aa:bb:cc:dd:ee:03 \
+  FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
+  FABRIC_CP2_MAC="$CP2_INVENTORY_MAC" \
+  FABRIC_CP3_MAC="$CP3_INVENTORY_MAC" \
     ./bootstrap.sh OUTPUT_DIRECTORY
+
+  FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
+    ./bootstrap.sh --node fabric-az1-cp1 OUTPUT_DIRECTORY
 
   ./bootstrap.sh --check
 
@@ -38,6 +43,22 @@ case $# in
     else
       output_dir=$1
     fi
+    ;;
+  3)
+    if [[ $1 != --node ]]; then
+      usage
+      exit 2
+    fi
+    selected_node=$2
+    output_dir=$3
+    case $selected_node in
+      fabric-az1-cp1 | fabric-az1-cp2 | fabric-az1-cp3) ;;
+      *)
+        echo "unknown fabric consensus node: $selected_node" >&2
+        usage
+        exit 2
+        ;;
+    esac
     ;;
   *)
     usage
@@ -102,26 +123,44 @@ validate_mac() {
     echo "$name is multicast and cannot identify a node NIC: $mac" >&2
     exit 1
   fi
+  if (( (16#$first_octet & 2) != 0 )); then
+    echo "$name is locally administered and cannot identify a node NIC: $mac" >&2
+    exit 1
+  fi
 }
 
+declare -A node_macs=()
 if $check_only; then
-  cp1_mac=02:00:00:00:00:10
-  cp2_mac=02:00:00:00:00:11
-  cp3_mac=02:00:00:00:00:12
+  check_macs=(00:00:5E:00:53:10 00:00:5E:00:53:11 00:00:5E:00:53:12)
+  for index in "${!nodes[@]}"; do
+    node=${nodes[$index]}
+    mac_variable=${mac_variables[$index]}
+    validate_mac "$mac_variable check identity" "${check_macs[$index]}"
+    node_macs[$node]=${check_macs[$index]}
+  done
 else
-  : "${FABRIC_CP1_MAC:?set FABRIC_CP1_MAC from the inventory output}"
-  : "${FABRIC_CP2_MAC:?set FABRIC_CP2_MAC from the inventory output}"
-  : "${FABRIC_CP3_MAC:?set FABRIC_CP3_MAC from the inventory output}"
-  cp1_mac=${FABRIC_CP1_MAC^^}
-  cp2_mac=${FABRIC_CP2_MAC^^}
-  cp3_mac=${FABRIC_CP3_MAC^^}
+  for index in "${!nodes[@]}"; do
+    node=${nodes[$index]}
+    mac_variable=${mac_variables[$index]}
+    if [[ -n $selected_node && $node != "$selected_node" ]]; then
+      continue
+    fi
+    if [[ ! -v $mac_variable || -z ${!mac_variable} ]]; then
+      echo "set $mac_variable from the inventory output" >&2
+      exit 1
+    fi
+    mac=${!mac_variable}
+    mac=${mac^^}
+    validate_mac "$mac_variable" "$mac"
+    node_macs[$node]=$mac
+  done
+
 fi
 
-validate_mac FABRIC_CP1_MAC "$cp1_mac"
-validate_mac FABRIC_CP2_MAC "$cp2_mac"
-validate_mac FABRIC_CP3_MAC "$cp3_mac"
-
-if [[ $cp1_mac == "$cp2_mac" || $cp1_mac == "$cp3_mac" || $cp2_mac == "$cp3_mac" ]]; then
+if [[ -z $selected_node &&
+      (${node_macs[${nodes[0]}]} == "${node_macs[${nodes[1]}]}" ||
+       ${node_macs[${nodes[0]}]} == "${node_macs[${nodes[2]}]}" ||
+       ${node_macs[${nodes[1]}]} == "${node_macs[${nodes[2]}]}") ]]; then
   echo "the three consensus nodes must have distinct permanent wired MAC addresses" >&2
   exit 1
 fi
@@ -145,18 +184,17 @@ if ! grep -Fq 'Environment=CLUSTER_STATE=new' "$workdir/etcd.yaml"; then
   echo "etcd.yaml no longer declares the fresh-cluster state; refusing bootstrap" >&2
   exit 1
 fi
+expected_initial_cluster='--initial-cluster=fabric-az1-cp1=https://fabric-az1-cp1.fabric.internal:2380,fabric-az1-cp2=https://fabric-az1-cp2.fabric.internal:2380,fabric-az1-cp3=https://fabric-az1-cp3.fabric.internal:2380'
+initial_cluster_records=$(grep -Fc -- "$expected_initial_cluster" "$workdir/etcd.yaml" || true)
+if [[ $initial_cluster_records -ne 1 ]]; then
+  echo "etcd.yaml must retain the fixed three-member initial cluster map" >&2
+  exit 1
+fi
 
 recovery_key_hashes=$workdir/recovery-key-hashes
 : > "$recovery_key_hashes"
 
-for index in "${!nodes[@]}"; do
-  node=${nodes[$index]}
-  case $index in
-    0) mac=$cp1_mac ;;
-    1) mac=$cp2_mac ;;
-    2) mac=$cp3_mac ;;
-  esac
-
+for node in "${nodes[@]}"; do
   decrypt_profile "$script_dir/$node.yaml" "$workdir/$node.yaml"
   mapfile -t recovery_keys < <(yq -r '
     .storage.luks[].key_file.inline,
@@ -173,13 +211,41 @@ for index in "${!nodes[@]}"; do
     }
     printf '%s' "$recovery_key" | sha256sum | awk '{ print $1 }' >> "$recovery_key_hashes"
   done
-  sed -i "s/@FABRIC_NODE_MAC@/$mac/g" "$workdir/$node.yaml"
-  butane --strict --files-dir "$workdir" --output "$workdir/$node.ign" "$workdir/$node.yaml"
-
-  if ! $check_only && grep -R -E -q 'FABRIC_REPLACE_|@FABRIC_NODE_MAC@' "$workdir"; then
-    echo "unresolved secret or hardware placeholder remains while rendering $node" >&2
+  mac_placeholder_count=$(awk '{ count += gsub(/@FABRIC_NODE_MAC@/, "") } END { print count + 0 }' "$workdir/$node.yaml")
+  if [[ $mac_placeholder_count -ne 1 ]]; then
+    echo "$node must carry exactly one wired MAC placeholder" >&2
     exit 1
   fi
+done
+
+[[ $(wc -l < "$recovery_key_hashes") -eq 9 &&
+   $(sort -u "$recovery_key_hashes" | wc -l) -eq 9 ]] || {
+  echo 'the nine root, etcd, and var recovery keys must all be distinct' >&2
+  exit 1
+}
+
+if ! $check_only && grep -E -q 'FABRIC_REPLACE_' "$workdir"/*.yaml; then
+  echo "unresolved secret placeholder remains in the bootstrap profiles" >&2
+  exit 1
+fi
+
+render_nodes=("${nodes[@]}")
+if [[ -n $selected_node ]]; then
+  render_nodes=("$selected_node")
+fi
+
+for node in "${render_nodes[@]}"; do
+  cp -- "$workdir/$node.yaml" "$workdir/$node-render.yaml"
+  sed -i "s/@FABRIC_NODE_MAC@/${node_macs[$node]}/g" "$workdir/$node-render.yaml"
+  if grep -q '@FABRIC_NODE_MAC@' "$workdir/$node-render.yaml"; then
+    echo "unresolved hardware placeholder remains while rendering $node" >&2
+    exit 1
+  fi
+  if ! $check_only && grep -q 'FABRIC_REPLACE_' "$workdir/$node-render.yaml"; then
+    echo "unresolved secret placeholder remains while rendering $node" >&2
+    exit 1
+  fi
+  butane --strict --files-dir "$workdir" --output "$workdir/$node.ign" "$workdir/$node-render.yaml"
 
   cat >"$workdir/$node-final.yaml" <<EOF
 variant: fcos
@@ -204,14 +270,8 @@ EOF
   fi
 done
 
-[[ $(wc -l < "$recovery_key_hashes") -eq 9 &&
-   $(sort -u "$recovery_key_hashes" | wc -l) -eq 9 ]] || {
-  echo 'the nine root, etcd, and var recovery keys must all be distinct' >&2
-  exit 1
-}
-
 if ! $check_only; then
-  for node in "${nodes[@]}"; do
+  for node in "${render_nodes[@]}"; do
     destination=$output_dir/$node.ign
     if [[ -e $destination ]]; then
       echo "refusing to overwrite existing output: $destination" >&2
@@ -221,12 +281,16 @@ if ! $check_only; then
 
   mkdir -p -- "$output_dir"
   chmod 0700 -- "$output_dir"
-  for node in "${nodes[@]}"; do
+  for node in "${render_nodes[@]}"; do
     destination=$output_dir/$node.ign
     install -m 0600 "$workdir/$node-final.ign" "$destination"
     sha256sum "$destination"
   done
 
-  echo "wrote three sensitive bootstrap Ignitions to $output_dir" >&2
+  if [[ -n $selected_node ]]; then
+    echo "wrote the sensitive bootstrap Ignition for $selected_node to $output_dir" >&2
+  else
+    echo "wrote three sensitive bootstrap Ignitions to $output_dir" >&2
+  fi
   echo "boot at least two members together; all three declare initial-cluster-state=new" >&2
 fi

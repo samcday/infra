@@ -102,25 +102,46 @@ usable Ignition:
 kubectl kustomize fabric/butane >/dev/null
 ```
 
+`--check` substitutes distinct, globally administered test MACs while it
+validates the merge structure, but it does not write or publish Ignition
+output. Those structural check identities are never used by normal mode.
+
 After inventory has confirmed the intended SATA target and permanent wired
-MAC for all three machines, render into a directory outside the repository:
+MAC for one machine, that node can be rendered independently into a directory
+outside the repository:
 
 ```sh
-FABRIC_CP1_MAC=aa:bb:cc:dd:ee:01 \
-FABRIC_CP2_MAC=aa:bb:cc:dd:ee:02 \
-FABRIC_CP3_MAC=aa:bb:cc:dd:ee:03 \
+FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
+  ./fabric/butane/bootstrap.sh --node fabric-az1-cp1 \
+  /secure/path/fabric-bootstrap
+```
+
+Selected-node mode requires only that node's corresponding `FABRIC_CP*_MAC`
+variable and publishes only its Ignition. It still decrypts and validates all
+nine recovery keys and merges the same fixed three-member etcd map. This is a
+manufacturing convenience, not a single-member cluster mode: the resulting
+member still declares `initial-cluster-state=new` and must not be started as a
+lone cluster.
+
+The original all-member mode remains available after inventory has confirmed
+the permanent wired MAC for all three machines:
+
+```sh
+FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
+FABRIC_CP2_MAC="$CP2_INVENTORY_MAC" \
+FABRIC_CP3_MAC="$CP3_INVENTORY_MAC" \
   ./fabric/butane/bootstrap.sh /secure/path/fabric-bootstrap
 ```
 
 The renderer refuses plaintext secret-bearing profiles, unresolved
-placeholders, multicast or duplicate MACs, output paths inside the Git
-worktree, and existing output files. It forces the output directory to mode
-`0700`; its Ignition files contain private keys and remain mode `0600` on
-trusted storage. Decryption and merge work occurs only in a verified tmpfs
-directory; deletion on an SSD or CoW filesystem is not treated as secure
-erasure. The initial three consensus machines must use these
-offline-rendered Ignitions; do not load the consensus profiles into online
-Bootie.
+placeholders, locally administered or multicast MACs, duplicate MACs in
+all-member mode, output paths inside the Git worktree, and existing output
+files. It forces the output directory to mode `0700`; its Ignition files
+contain private keys and remain mode `0600` on trusted storage. Decryption and
+merge work occurs only in a verified tmpfs directory; deletion on an SSD or
+CoW filesystem is not treated as secure erasure. The initial three consensus
+machines must use these offline-rendered Ignitions; do not load the consensus
+profiles into online Bootie.
 
 The Ignitions fetch only pinned public assets from the router USB-backed
 `/static/` endpoint: `k3s`, its matching air-gap images and installer, the

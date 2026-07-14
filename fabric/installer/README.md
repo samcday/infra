@@ -86,8 +86,7 @@ public/certificate record remains a later admission issue rather than license
 to mutate the candidate during discovery.
 
 This ISO never installs or writes a target disk. Do not confuse it with the
-three later node-specific, confirmation-gated installer images described
-below.
+later node-specific, confirmation-gated installer images described below.
 
 The initial three consensus nodes use local Fedora CoreOS ISO media, not PXE
 or Bootie. `fcos-live-iso.txt` pins the exact official x86_64 live ISO, its
@@ -130,12 +129,13 @@ Choose a USB thumb drive that exposes a non-empty hardware serial and keep its
 physical label with the ceremony record. The writer refuses every media write,
 including inventory media, on a serial-less device.
 
-Do not generate installation media until firmware, UEFI, TPM, RTC, memory,
-NIC, and disk changes and qualification are complete and all three candidates
-have been recaptured. Preserve the initial discovery captures separately. Only
-the reviewed final captures may assign exact SATA devices and permanent wired
-MAC addresses to node names. Disconnect every NVMe and non-target SATA disk
-before booting an armed installer.
+Do not generate a node's installation media until its firmware, UEFI, TPM,
+RTC, memory, NIC, and disk changes and qualification are complete and that
+candidate has a reviewed final recapture. It is not necessary to wait for the
+other two candidates before manufacturing this node's media. Preserve every
+initial discovery capture separately. Only a node's reviewed final capture may
+assign its exact SATA device and permanent wired MAC address. Disconnect every
+NVMe and non-target SATA disk before booting an armed installer.
 
 The local-console ceremony is deliberate:
 
@@ -174,6 +174,37 @@ not inspect final Ignitions, bind real MAC/disk identities, download the FCOS
 ISO, or build installer media. Those hardware- and secret-bound checks run in
 normal mode only, after the inventory and offline Ignitions exist.
 
+After `fabric-az1-cp1` has a reviewed final capture, render only its Ignition
+using the permanent wired MAC from that capture:
+
+```sh
+FABRIC_CP1_MAC=aa:bb:cc:dd:ee:01 \
+  ./fabric/butane/bootstrap.sh --node fabric-az1-cp1 \
+  /secure/fabric-bootstrap
+```
+
+Selected-node mode requires only the matching `FABRIC_CP*_MAC` and publishes
+only that node's Ignition. Build only its installer with the matching disk
+option and the exact stable ATA identity from the same capture:
+
+```sh
+scripts/build-fabric-node-isos \
+  --node fabric-az1-cp1 \
+  --ignition-dir /secure/fabric-bootstrap \
+  --output-dir /secure/fabric-installers \
+  --cache-dir /secure/fabric-installer-cache \
+  --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE
+```
+
+The original all-three mode remains available: omit `--node`, provide all
+three `FABRIC_CP*_MAC` variables when rendering, and provide `--cp1-disk`,
+`--cp2-disk`, and `--cp3-disk` when building. Selected-node mode changes only
+which secret artifact is manufactured. Every Ignition retains the fixed
+declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
+`initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
+so the K3s API cannot become available until at least one other declared
+member is brought up with it.
+
 After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs
 before and is required by `coreos-installer.service`, that the post-install
@@ -185,8 +216,9 @@ prompt. The required confirmation is the separately verified pre-install
 unit, and a failed or missing unit prevents the installer service from
 starting.
 
-After inventory admission and Ignition rendering, supply the three exact SATA
-by-id paths as shown by `scripts/build-fabric-node-isos --help`. The helper
+After inventory admission and Ignition rendering, supply the selected node's
+exact SATA by-id path, or all three paths in legacy all-member mode, as shown
+by `scripts/build-fabric-node-isos --help`. The helper
 verifies the ISO checksum and Fedora signature, refuses paths inside Git,
 refuses unstable or non-ATA destinations, extracts the expected permanent MAC
 plus hostname and static IP from each Ignition, rejects locally administered,
@@ -200,11 +232,11 @@ successful installation. Do not improvise an unattended
 
 The public FCOS ISO cache defaults to `_build/fabric/installer`. Use
 `--cache-dir /secure/fabric-installer-cache` when the checkout filesystem does
-not have enough space. Keep the cache and the three secret installer outputs on
-a trusted filesystem with roughly 8 GiB free; only the Ignitions, customized
-ISOs, and their sidecars are secret-bearing. Transient decoded Ignition and
-certificate work is restricted to verified tmpfs; the builder requires at
-least 64 MiB free there.
+not have enough space. Keep the cache and the eventual secret installer
+outputs on a trusted filesystem with roughly 8 GiB free; only the Ignitions,
+customized ISOs, and their sidecars are secret-bearing. Transient decoded
+Ignition and certificate work is restricted to verified tmpfs; the builder
+requires at least 64 MiB free there.
 
 The builder writes a mode-`0600` `<installer>.iso.sha256` beside every ISO.
 Inspect a candidate USB disk without changing it first:

@@ -21,6 +21,8 @@ router_asset_url=http://10.66.0.1/static
 expected_asset_count=7
 
 check_only=false
+selected_node=
+selected_node_seen=false
 ignition_dir=
 output_dir=
 cache_dir=
@@ -34,6 +36,13 @@ Usage:
   build-fabric-node-isos --check
 
   build-fabric-node-isos \
+    --node fabric-az1-cp1 \
+    --ignition-dir /secure/fabric-bootstrap \
+    --output-dir /secure/fabric-installers \
+    --cache-dir /secure/fabric-installer-cache \
+    --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE
+
+  build-fabric-node-isos \
     --ignition-dir /secure/fabric-bootstrap \
     --output-dir /secure/fabric-installers \
     --cache-dir /secure/fabric-installer-cache \
@@ -42,9 +51,12 @@ Usage:
     --cp3-disk /dev/disk/by-id/ata-EXACT_CP3_DEVICE
 
 Normal mode downloads and verifies the pinned Fedora CoreOS live ISO, then
-builds three separate, secret-bearing, confirmation-gated installer ISOs.
-Every disk path must come from reviewed inventory.  Booting an ISO and typing
-its exact confirmation will destroy that ISO's configured destination disk.
+builds either one selected node ISO or all three separate, secret-bearing,
+confirmation-gated installer ISOs. Every disk path must come from reviewed
+inventory. Booting an ISO and typing its exact confirmation will destroy that
+ISO's configured destination disk. A selected first voter still uses the
+declared three-member etcd map and cannot form quorum until a second declared
+member is ready.
 The optional cache directory stores only the public FCOS ISO and signature; it
 defaults to _build/fabric/installer inside the checkout.
 
@@ -213,6 +225,13 @@ while (($#)); do
       check_only=true
       shift
       ;;
+    --node)
+      (($# >= 2)) || { echo '--node requires a value' >&2; exit 2; }
+      ! $selected_node_seen || { echo '--node may only be specified once' >&2; exit 2; }
+      selected_node=$2
+      selected_node_seen=true
+      shift 2
+      ;;
     --ignition-dir)
       (($# >= 2)) || { echo '--ignition-dir requires a value' >&2; exit 2; }
       ignition_dir=$2
@@ -306,7 +325,9 @@ actual_fingerprint=$(gpg --quiet --homedir "$workdir/gnupg" --batch --show-keys 
 }
 
 if $check_only; then
-  [[ -z $ignition_dir && -z $output_dir && -z $cache_dir && -z $cp1_disk && -z $cp2_disk && -z $cp3_disk ]] || {
+  ! $selected_node_seen &&
+    [[ -z $ignition_dir && -z $output_dir && -z $cache_dir &&
+     -z $cp1_disk && -z $cp2_disk && -z $cp3_disk ]] || {
     echo '--check cannot be combined with build arguments' >&2
     exit 2
   }
@@ -315,7 +336,7 @@ if $check_only; then
   exit 0
 fi
 
-[[ -n $ignition_dir && -n $output_dir && -n $cp1_disk && -n $cp2_disk && -n $cp3_disk ]] || {
+[[ -n $ignition_dir && -n $output_dir ]] || {
   usage
   exit 2
 }
@@ -332,17 +353,54 @@ for directory in "$ignition_dir" "$output_dir"; do
   esac
 done
 
-disks=("$cp1_disk" "$cp2_disk" "$cp3_disk")
+if $selected_node_seen; then
+  case $selected_node in
+    fabric-az1-cp1)
+      [[ -n $cp1_disk && -z $cp2_disk && -z $cp3_disk ]] || {
+        echo '--node fabric-az1-cp1 requires only --cp1-disk' >&2
+        exit 2
+      }
+      disks=("$cp1_disk")
+      ;;
+    fabric-az1-cp2)
+      [[ -z $cp1_disk && -n $cp2_disk && -z $cp3_disk ]] || {
+        echo '--node fabric-az1-cp2 requires only --cp2-disk' >&2
+        exit 2
+      }
+      disks=("$cp2_disk")
+      ;;
+    fabric-az1-cp3)
+      [[ -z $cp1_disk && -z $cp2_disk && -n $cp3_disk ]] || {
+        echo '--node fabric-az1-cp3 requires only --cp3-disk' >&2
+        exit 2
+      }
+      disks=("$cp3_disk")
+      ;;
+    *)
+      echo "unsupported fabric node: $selected_node" >&2
+      exit 2
+      ;;
+  esac
+  build_nodes=("$selected_node")
+else
+  [[ -n $cp1_disk && -n $cp2_disk && -n $cp3_disk ]] || {
+    usage
+    exit 2
+  }
+  build_nodes=("${nodes[@]}")
+  disks=("$cp1_disk" "$cp2_disk" "$cp3_disk")
+  [[ $cp1_disk != "$cp2_disk" && $cp1_disk != "$cp3_disk" && $cp2_disk != "$cp3_disk" ]] || {
+    echo 'the three installer destinations must be distinct stable disk identities' >&2
+    exit 1
+  }
+fi
+
 for disk in "${disks[@]}"; do
   [[ $disk =~ ^/dev/disk/by-id/ata-[A-Za-z0-9._:+-]+$ ]] || {
     echo "refusing non-ATA or unstable installer destination: $disk" >&2
     exit 1
   }
 done
-[[ $cp1_disk != "$cp2_disk" && $cp1_disk != "$cp3_disk" && $cp2_disk != "$cp3_disk" ]] || {
-  echo 'the three installer destinations must be distinct stable disk identities' >&2
-  exit 1
-}
 
 mkdir -p -- "$cache_dir"
 iso=$cache_dir/$iso_filename
@@ -372,7 +430,7 @@ flock -u "$cache_lock_fd"
 mkdir -p -- "$output_dir"
 chmod 0700 -- "$output_dir"
 
-for node in "${nodes[@]}"; do
+for node in "${build_nodes[@]}"; do
   output=$output_dir/$node-installer.iso
   checksum=$output.sha256
   [[ ! -e $output && ! -e $output.tmp && ! -e $checksum && ! -e $checksum.tmp ]] || {
@@ -385,8 +443,8 @@ asset_manifest_b64=$(base64 --wrap=0 "$expected_asset_manifest")
 mapfile -t asset_names < <(awk '{ print $2 }' "$expected_asset_manifest")
 printf -v asset_names_shell '%q ' "${asset_names[@]}"
 
-for index in "${!nodes[@]}"; do
-  node=${nodes[$index]}
+for index in "${!build_nodes[@]}"; do
+  node=${build_nodes[$index]}
   disk=${disks[$index]}
   ignition=$ignition_dir/$node.ign
   output=$output_dir/$node-installer.iso
@@ -457,7 +515,12 @@ for index in "${!nodes[@]}"; do
     echo "expected one static IPv4 record in $ignition, found ${#address_records[@]}" >&2
     exit 1
   }
-  expected_ip=10.66.0.$((index + 10))
+  node_number=${node##*cp}
+  [[ $node_number =~ ^[123]$ ]] || {
+    echo "cannot derive fabric address from node name: $node" >&2
+    exit 1
+  }
+  expected_ip=10.66.0.$((node_number + 9))
   expected_cidr=$expected_ip/24
   [[ ${address_records[0]} == "$expected_cidr,10.66.0.1" ]] || {
     echo "Ignition static address does not match $node: ${address_records[0]}" >&2
@@ -808,4 +871,4 @@ EOF
   printf '%s  %s\n' "$output_sha256" "$output"
 done
 
-echo "wrote three confirmation-gated secret installer ISOs to $output_dir" >&2
+echo "wrote ${#build_nodes[@]} confirmation-gated secret installer ISO(s) to $output_dir" >&2
