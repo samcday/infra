@@ -8,6 +8,8 @@ frr-zebra
 kmod-usb-net-cdc-ether
 kmod-usb-net-cdc-ncm
 luci
+dropbear
+odhcpd-ipv6only
 prometheus-node-exporter-lua
 tailscale
 tang

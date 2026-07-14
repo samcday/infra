@@ -144,6 +144,12 @@ set dhcp.lan.ignore='1'
 delete dhcp.lan.start
 delete dhcp.lan.limit
 delete dhcp.lan.leasetime
+set dhcp.lan.dhcpv4='disabled'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+set dhcp.lan.ndp='disabled'
+delete dhcp.lan.ra_slaac
+delete dhcp.lan.ra_flags
 commit dhcp
 EOI
 
@@ -153,5 +159,6 @@ fw4 check
 service firewall restart
 service network restart
 service dnsmasq restart
+service odhcpd stop 2>/dev/null || true
 service sysntpd restart
 service uhttpd restart

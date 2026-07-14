@@ -1,0 +1,910 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+readonly router_address=10.66.0.1
+readonly observer_address=10.66.0.2
+readonly observer_subnet=10.66.0.0/24
+readonly observer_namespace=fabric-observer
+readonly -a expected_dns_names=(
+  fabric-az1-cp1.fabric.internal
+  fabric-az1-cp2.fabric.internal
+  fabric-az1-cp3.fabric.internal
+  api.fabric.internal
+)
+readonly -a expected_dns_answers=(
+  10.66.0.10
+  10.66.0.11
+  10.66.0.12
+  10.66.0.254
+)
+
+usage() {
+  cat <<'EOF'
+Read-only commissioning snapshot for the fabric OpenWrt One.
+
+Run this only inside the already-admitted observer namespace:
+
+  sudo fabric/observer/fabric-observer-netns verify
+  sudo ip netns exec fabric-observer \
+    scripts/verify-fabric-router \
+      --serial-ed25519-fingerprint SHA256:BASE64_FINGERPRINT \
+      --identity /var/home/sam/.ssh/id_ed25519
+
+The fingerprint must be copied from the attended USB-C serial console before
+this command is run. On the router console, obtain it with:
+
+  ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub
+
+Options:
+  --serial-ed25519-fingerprint VALUE  Required serial-console fingerprint.
+  --identity FILE                    Required private key for router SSH.
+  -h, --help                         Show this help.
+
+The verifier scans only the router's ED25519 host key and compares it with the
+serial-console fingerprint before its first SSH connection. Evidence and the
+strict known_hosts file are retained in a mode-0700 tmpfs directory outside
+Git. No persistent router configuration or local routing state is changed;
+the probes necessarily touch transient logs, counters, and DNS caches.
+
+This is not the attended source-role traffic matrix and it does not reboot the
+router. Those remain separate gates after this snapshot passes.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+valid_ed25519_fingerprint() {
+  [[ $1 =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+}
+
+serial_fingerprint=
+identity_file=
+
+while (($#)); do
+  case $1 in
+    --serial-ed25519-fingerprint)
+      (($# >= 2)) || die '--serial-ed25519-fingerprint requires a value'
+      [[ -z $serial_fingerprint ]] ||
+        die '--serial-ed25519-fingerprint may only be specified once'
+      serial_fingerprint=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity requires a path'
+      [[ -z $identity_file ]] || die '--identity may only be specified once'
+      identity_file=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $serial_fingerprint ]] || {
+  usage >&2
+  die '--serial-ed25519-fingerprint is required'
+}
+valid_ed25519_fingerprint "$serial_fingerprint" ||
+  die 'serial fingerprint must be one complete SHA256 ED25519 fingerprint'
+
+for command in awk cat chmod cmp curl dig find grep ip readlink realpath sed \
+  sha256sum sort ssh ssh-keygen ssh-keyscan stat wc chronyd; do
+  need_command "$command"
+done
+
+[[ -n $identity_file ]] || die '--identity is required'
+[[ -f $identity_file && ! -L $identity_file && -r $identity_file ]] ||
+  die 'SSH identity must be a readable regular, non-symlink file'
+identity_file=$(realpath -e -- "$identity_file") ||
+  die 'could not resolve SSH identity'
+[[ $(stat -Lc '%a:%F:%h' -- "$identity_file") == '600:regular file:1' ]] ||
+  die 'SSH identity must be a mode-0600, single-link regular file'
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(realpath -- "$script_dir/..")
+manifest=$repo_root/fabric/router/data-files.txt
+cache_dir=$repo_root/_build/data
+remove_packages_file=$repo_root/fabric/router/remove-packages
+
+[[ -f $manifest && ! -L $manifest ]] || die "payload manifest is missing: $manifest"
+[[ -d $cache_dir ]] ||
+  die "payload cache is missing: $cache_dir (build the fabric router first)"
+[[ -f $remove_packages_file && ! -L $remove_packages_file ]] ||
+  die "removed-package policy is missing: $remove_packages_file"
+
+# The named namespace identity, lack of broad routes, and exact source address
+# are all checked before touching the router. A failed public probe alone would
+# be ambiguous, so route-level assertions are mandatory as well.
+namespace_identity=$(ip netns identify "$$") ||
+  die 'could not identify the current network namespace'
+[[ $namespace_identity == "$observer_namespace" ]] ||
+  die "run inside the $observer_namespace network namespace"
+
+ipv4_defaults=$(ip -o -4 route show table all default) ||
+  die 'could not inspect IPv4 default routes'
+ipv6_defaults=$(ip -o -6 route show table all default) ||
+  die 'could not inspect IPv6 default routes'
+[[ -z $ipv4_defaults ]] || die 'observer namespace has an IPv4 default route'
+[[ -z $ipv6_defaults ]] || die 'observer namespace has an IPv6 default route'
+
+mapfile -t global_ipv4 < <(ip -o -4 address show scope global)
+[[ ${#global_ipv4[@]} -eq 1 ]] ||
+  die 'observer namespace must have exactly one global IPv4 address'
+[[ ${global_ipv4[0]} == *" inet $observer_address/24 "* ]] ||
+  die "observer namespace does not own only $observer_address/24"
+[[ -z $(ip -o -6 address show scope global) ]] ||
+  die 'observer namespace unexpectedly has a global IPv6 address'
+
+router_route=$(ip -o -4 route get "$router_address") ||
+  die 'observer namespace has no route to the router'
+[[ $router_route == *" src $observer_address"* ]] ||
+  die "route to the router does not select source $observer_address"
+[[ $router_route != *' via '* ]] ||
+  die 'observer-to-router route unexpectedly uses a gateway'
+[[ -n $(ip -o -4 route show table all exact "$observer_subnet") ]] ||
+  die "observer namespace lacks the connected $observer_subnet route"
+
+if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+  die 'observer namespace has an IPv4 route to a public address'
+fi
+if ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+  die 'observer namespace has an IPv6 route to a public address'
+fi
+
+# shellcheck source=scripts/lib/fabric-secure-tempdir.sh
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+evidence_dir=$(fabric_secure_tmpdir fabric-router-verify 1048576) ||
+  die 'could not create protected tmpfs evidence directory'
+chmod 0700 -- "$evidence_dir"
+
+complete=false
+finish() {
+  local status=$?
+  trap - EXIT INT TERM
+  if ! $complete; then
+    printf 'Verification did not complete; protected partial evidence remains at %s\n' \
+      "$evidence_dir" >&2
+  fi
+  exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+expected_shasums=$evidence_dir/expected-SHASUMS.txt
+expected_records=$evidence_dir/expected-assets.tsv
+remote_records=$evidence_dir/router-assets.tsv
+remote_shasums=$evidence_dir/router-SHASUMS.txt
+known_hosts=$evidence_dir/known_hosts
+scan_stderr=$evidence_dir/keyscan.stderr
+snapshot=$evidence_dir/router-snapshot.txt
+nft_snapshot=$evidence_dir/nft-ruleset.txt
+stable_invariants=$evidence_dir/stable-invariants.txt
+stable_invariants_sha256=$evidence_dir/stable-invariants.sha256
+
+declare -a payloads=()
+declare -A seen_payloads=()
+declare -a forbidden_packages=()
+
+while IFS= read -r filename; do
+  [[ -n $filename ]] || continue
+  IFS= read -r url || die "missing URL for payload: $filename"
+  IFS= read -r expected_sha || die "missing SHA256 for payload: $filename"
+  separator=
+  IFS= read -r separator || true
+
+  [[ $filename =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    die "unsafe payload filename: $filename"
+  [[ -n $url ]] || die "empty URL for payload: $filename"
+  [[ $expected_sha =~ ^[0-9a-f]{64}$ ]] ||
+    die "invalid SHA256 for payload: $filename"
+  [[ -z ${seen_payloads[$filename]:-} ]] ||
+    die "duplicate payload filename: $filename"
+  [[ -z $separator ]] ||
+    die "expected a blank manifest separator after payload: $filename"
+  [[ -f $cache_dir/$filename && ! -L $cache_dir/$filename ]] ||
+    die "cached payload is missing or unsafe: $cache_dir/$filename"
+
+  actual_sha=$(sha256sum -- "$cache_dir/$filename") ||
+    die "could not hash cached payload: $filename"
+  actual_sha=${actual_sha%% *}
+  [[ $actual_sha == "$expected_sha" ]] ||
+    die "cached payload does not match the local manifest: $filename"
+
+  seen_payloads[$filename]=1
+  payloads+=("$filename")
+  printf '%s  %s\n' "$expected_sha" "$filename" >> "$expected_shasums"
+  printf '%s\t%s\n' "$filename" "$expected_sha" >> "$expected_records"
+done < "$manifest"
+
+((${#payloads[@]} > 0)) || die 'local payload manifest contains no records'
+
+while IFS= read -r package || [[ -n $package ]]; do
+  [[ -z $package || $package == \#* ]] && continue
+  [[ $package =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]*$ ]] ||
+    die "unsafe removed-package record: $package"
+  forbidden_packages+=("$package")
+done < "$remove_packages_file"
+((${#forbidden_packages[@]} > 0)) || die 'removed-package policy is empty'
+
+manifest_sha=$(sha256sum -- "$expected_shasums") ||
+  die 'could not hash the locally derived SHASUMS.txt'
+manifest_sha=${manifest_sha%% *}
+printf 'SHASUMS.txt\t%s\n' "$manifest_sha" >> "$expected_records"
+LC_ALL=C sort -o "$expected_records" "$expected_records"
+chmod 0600 -- "$expected_shasums" "$expected_records"
+
+# ssh-keyscan is unauthenticated evidence only. Accept exactly one ED25519 key,
+# derive its fingerprint locally, and refuse the first SSH unless it matches the
+# value observed independently on the serial console.
+if ! ssh-keyscan -4 -T 5 -t ed25519 "$router_address" \
+    > "$known_hosts" 2> "$scan_stderr"; then
+  die 'ED25519 router host-key scan failed'
+fi
+chmod 0600 -- "$known_hosts" "$scan_stderr"
+
+mapfile -t scanned_keys < <(grep -Ev '^[[:space:]]*(#|$)' "$known_hosts")
+[[ ${#scanned_keys[@]} -eq 1 ]] ||
+  die "expected exactly one scanned ED25519 host key; found ${#scanned_keys[@]}"
+read -r scanned_host scanned_type scanned_key extra <<< "${scanned_keys[0]}"
+[[ $scanned_host == "$router_address" && $scanned_type == ssh-ed25519 &&
+   -n $scanned_key && -z ${extra:-} ]] ||
+  die 'host-key scan returned an unexpected host or key type'
+
+scanned_fingerprint=$(ssh-keygen -E sha256 -lf "$known_hosts" | awk 'NR == 1 { print $2 }')
+valid_ed25519_fingerprint "$scanned_fingerprint" ||
+  die 'could not derive one valid ED25519 fingerprint from the scan'
+[[ $scanned_fingerprint == "$serial_fingerprint" ]] ||
+  die 'scanned ED25519 key does not match the serial-console fingerprint'
+
+ssh_options=(
+  -F none
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=yes
+  -o HostKeyAlgorithms=ssh-ed25519
+  -o UpdateHostKeys=no
+  -o AddressFamily=inet
+  -o GlobalKnownHostsFile=/dev/null
+  -o "UserKnownHostsFile=$known_hosts"
+  -o KnownHostsCommand=none
+  -o ForwardAgent=no
+  -o ClearAllForwardings=yes
+  -o ProxyCommand=none
+  -o ProxyJump=none
+  -o ControlMaster=no
+  -o ControlPath=none
+  -o IdentityAgent=none
+  -o IdentitiesOnly=yes
+  -o PasswordAuthentication=no
+  -o KbdInteractiveAuthentication=no
+  -o PreferredAuthentications=publickey
+  -o RequestTTY=no
+  -o PermitLocalCommand=no
+  -o ConnectTimeout=5
+  -o LogLevel=ERROR
+  -i "$identity_file"
+)
+
+strict_ssh() {
+  # Every remote command below is a literal reviewed argument vector. The
+  # client-side expansion is intentional; no remote command accepts input.
+  # shellcheck disable=SC2029
+  ssh "${ssh_options[@]}" "root@$router_address" "$@"
+}
+
+# This is deliberately a targeted allowlist. In particular, never dump the
+# wireless UCI package: it contains the SAE key after first boot.
+strict_ssh /bin/sh -s -- "${forbidden_packages[@]}" > "$snapshot" <<'REMOTE_SNAPSHOT'
+set -eu
+umask 077
+
+fail() {
+  printf 'remote assertion failed: %s\n' "$*" >&2
+  exit 1
+}
+
+assert_uci() {
+  key=$1
+  wanted=$2
+  actual=$(uci -q get "$key") || fail "missing UCI key $key"
+  [ "$actual" = "$wanted" ] || fail "unexpected value for $key"
+  printf 'UCI %s=%s\n' "$key" "$actual"
+}
+
+assert_uci_absent() {
+  key=$1
+  if uci -q get "$key" >/dev/null 2>&1; then
+    fail "UCI key must be absent: $key"
+  fi
+  printf 'UCI_ABSENT %s\n' "$key"
+}
+
+sections_of_type() {
+  uci -q show firewall |
+    sed -n "s/^firewall\.\([^.=]*\)=$1$/\1/p"
+}
+
+zone_by_name() {
+  uci -q show firewall |
+    sed -n "s/^firewall\.\([^.=]*\)\.name='$1'$/\1/p"
+}
+
+assert_section_count() {
+  type=$1
+  wanted=$2
+  count=$(sections_of_type "$type" | awk 'NF { count++ } END { print count + 0 }')
+  [ "$count" -eq "$wanted" ] || fail "unexpected firewall $type section count"
+  printf 'FIREWALL_SECTION_COUNT %s=%s\n' "$type" "$count"
+}
+
+firewall_option_keys() {
+  section=$1
+  prefix="firewall.$section."
+  uci -q show firewall |
+    while IFS= read -r line; do
+      case $line in
+        "$prefix"*=*)
+          option=${line#"$prefix"}
+          printf '%s\n' "${option%%=*}"
+          ;;
+      esac
+    done |
+    sort
+}
+
+assert_firewall_option_keys() {
+  section=$1
+  allowed=$2
+  actual=$(firewall_option_keys "$section")
+  wanted=$(printf '%s\n' "$allowed" | tr ' ' '\n' | sort)
+  [ "$actual" = "$wanted" ] ||
+    fail "unexpected option set in firewall section $section"
+  printf 'FIREWALL_OPTION_KEYS %s=%s\n' "$section" \
+    "$(printf '%s' "$actual" | tr '\n' ',')"
+}
+
+network_sections_of_type() {
+  uci -q show network |
+    sed -n "s/^network\.\([^.=]*\)=$1$/\1/p"
+}
+
+network_device_by_name() {
+  uci -q show network |
+    sed -n "s/^network\.\([^.=]*\)\.name='$1'$/\1/p"
+}
+
+has_mount_option() {
+  case ,$1, in
+    *,$2,*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+[ -r /tmp/sysinfo/board_name ] || fail 'board name is unavailable'
+IFS= read -r board_name < /tmp/sysinfo/board_name
+[ "$board_name" = 'openwrt,one' ] || fail 'unexpected router board'
+[ -r /proc/sys/kernel/random/boot_id ] || fail 'kernel boot ID is unavailable'
+IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+case $boot_id in
+  ????????-????-????-????-????????????) ;;
+  *) fail 'kernel boot ID has an unexpected format' ;;
+esac
+
+# Treat the release file as untrusted data. Never source router-controlled text
+# in this root shell merely to read one field.
+[ -f /etc/openwrt_release ] && [ ! -L /etc/openwrt_release ] ||
+  fail 'OpenWrt release record is missing or unsafe'
+release=$(sed -n "s/^DISTRIB_RELEASE='\([0-9][0-9.]*\)'$/\1/p" \
+  /etc/openwrt_release)
+[ "$release" = '25.12.5' ] || fail 'unexpected OpenWrt release'
+printf 'BOARD_NAME=%s\nOPENWRT_RELEASE=%s\nBOOT_ID=%s\n' \
+  "$board_name" "$release" "$boot_id"
+
+[ -d /etc/uci-defaults ] || fail '/etc/uci-defaults is missing'
+remaining_defaults=$(find /etc/uci-defaults -mindepth 1 -maxdepth 1 -type f -print)
+[ -z "$remaining_defaults" ] || fail 'a first-boot UCI default script remains unconsumed'
+printf 'FIRSTBOOT_DEFAULTS=consumed\n'
+
+assert_uci network.lan.ipaddr 10.66.0.1
+assert_uci network.lan.netmask 255.255.255.0
+assert_uci network.lan.device br-lan
+assert_uci network.lan.proto static
+assert_uci_absent network.lan.ip6assign
+assert_uci_absent network.lan.disabled
+assert_uci_absent network.lan.gateway
+assert_uci network.wan.proto dhcp
+assert_uci network.wan.device eth0
+assert_uci_absent network.wan.disabled
+assert_uci network.wan6.disabled 1
+assert_uci network.wan6.device eth0
+
+actual_network_interfaces=$(network_sections_of_type interface)
+expected_network_interfaces='loopback
+lan
+wan
+wan6'
+[ "$actual_network_interfaces" = "$expected_network_interfaces" ] ||
+  fail 'network interface set or ordering differs from the reviewed policy'
+bridge_device=$(network_device_by_name br-lan)
+[ "$(printf '%s\n' "$bridge_device" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+  fail 'expected exactly one br-lan device section'
+assert_uci "network.$bridge_device.type" bridge
+assert_uci "network.$bridge_device.ports" eth1
+[ "$(network_sections_of_type device)" = "$bridge_device" ] ||
+  fail 'unexpected additional network device section'
+for unexpected_network_type in bridge-vlan rule route route6 switch switch_vlan; do
+  [ -z "$(network_sections_of_type "$unexpected_network_type")" ] ||
+    fail "unexpected network section type: $unexpected_network_type"
+done
+[ -d /sys/class/net/br-lan/brif ] || fail 'live br-lan bridge is unavailable'
+[ -e /sys/class/net/br-lan/brif/eth1 ] || fail 'LAN eth1 is absent from br-lan'
+[ ! -e /sys/class/net/br-lan/brif/eth0 ] || fail 'WAN eth0 is in the LAN bridge'
+wireless_bridge_ports=0
+for bridge_port_path in /sys/class/net/br-lan/brif/*; do
+  [ -e "$bridge_port_path" ] || continue
+  bridge_port=${bridge_port_path##*/}
+  [ "$bridge_port" = eth1 ] && continue
+  [ -e "/sys/class/net/$bridge_port/phy80211" ] ||
+    fail "unexpected non-wireless br-lan port: $bridge_port"
+  iw dev "$bridge_port" info | grep -F 'ssid fabric-observer' >/dev/null ||
+    fail 'live wireless bridge port is not the fabric observer AP'
+  wireless_bridge_ports=$((wireless_bridge_ports + 1))
+done
+[ "$wireless_bridge_ports" -eq 1 ] ||
+  fail 'expected exactly one live fabric observer AP in br-lan'
+live_lan_address=$(ip -o -4 address show dev br-lan scope global)
+[ "$(printf '%s\n' "$live_lan_address" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+  fail 'live br-lan has an unexpected number of global IPv4 addresses'
+case $live_lan_address in
+  *" inet 10.66.0.1/24 "*) ;;
+  *) fail 'live br-lan lacks the exact fabric router address' ;;
+esac
+[ -z "$(ip -o -6 address show dev br-lan scope global)" ] ||
+  fail 'live br-lan unexpectedly has a global IPv6 address'
+printf 'NETWORK_TOPOLOGY=br-lan:eth1-plus-one-operator-ap,wan:eth0\n'
+
+assert_uci dhcp.lan.ignore 1
+assert_uci dhcp.lan.dhcpv4 disabled
+assert_uci dhcp.lan.dhcpv6 disabled
+assert_uci dhcp.lan.ra disabled
+assert_uci dhcp.lan.ndp disabled
+assert_uci_absent dhcp.lan.start
+assert_uci_absent dhcp.lan.limit
+assert_uci_absent dhcp.lan.leasetime
+assert_uci_absent dhcp.lan.ra_slaac
+assert_uci_absent dhcp.lan.ra_flags
+
+assert_uci system.ntp.enabled 1
+assert_uci system.ntp.enable_server 1
+assert_uci system.ntp.use_dhcp 0
+assert_uci system.ntp.server \
+  '0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org'
+assert_uci dhcp.@dnsmasq[0].local /fabric.internal/
+assert_uci dhcp.@dnsmasq[0].domain fabric.internal
+assert_uci dhcp.@dnsmasq[0].localservice 1
+assert_uci dhcp.@dnsmasq[0].address \
+  '/fabric-az1-cp1.fabric.internal/10.66.0.10 /fabric-az1-cp2.fabric.internal/10.66.0.11 /fabric-az1-cp3.fabric.internal/10.66.0.12 /api.fabric.internal/10.66.0.254'
+assert_uci uhttpd.main.listen_http 10.66.0.1:80
+assert_uci_absent uhttpd.main.listen_https
+assert_uci_absent uhttpd.main.lua_prefix
+assert_uci uhttpd.main.no_dirlists 1
+
+assert_uci fstab.mount_storage.target /mnt/data
+assert_uci fstab.mount_storage.label data
+assert_uci fstab.mount_storage.fstype ext4
+assert_uci fstab.mount_storage.options ro,nodev,nosuid,noexec,noatime
+assert_uci fstab.mount_storage.enabled 1
+assert_uci fstab.mount_storage.enabled_fsck 0
+
+mount_count=$(awk '$2 == "/mnt/data" { count++ } END { print count + 0 }' /proc/mounts)
+[ "$mount_count" -eq 1 ] || fail 'expected exactly one /mnt/data mount'
+mount_source=$(awk '$2 == "/mnt/data" { print $1 }' /proc/mounts)
+mount_type=$(awk '$2 == "/mnt/data" { print $3 }' /proc/mounts)
+mount_options=$(awk '$2 == "/mnt/data" { print $4 }' /proc/mounts)
+[ "$mount_type" = ext4 ] || fail '/mnt/data is not ext4'
+for required_option in ro nodev nosuid noexec noatime; do
+  has_mount_option "$mount_options" "$required_option" ||
+    fail "/mnt/data lacks $required_option"
+done
+has_mount_option "$mount_options" rw && fail '/mnt/data is writable'
+[ -d /mnt/data/www ] && [ ! -L /mnt/data/www ] ||
+  fail '/mnt/data/www is not a real directory'
+[ "$(readlink -f /www/static)" = /mnt/data/www ] ||
+  fail '/www/static does not resolve to the data volume'
+printf 'DATA_MOUNT source=%s type=%s options=%s\n' \
+  "$mount_source" "$mount_type" "$mount_options"
+
+assert_section_count defaults 1
+assert_section_count zone 2
+assert_section_count rule 7
+assert_section_count forwarding 0
+assert_section_count redirect 0
+assert_section_count nat 0
+assert_section_count include 0
+firewall_section_count=$(uci -q show firewall |
+  awk -F= '$1 ~ /^firewall\.[^.]+$/ { count++ } END { print count + 0 }')
+[ "$firewall_section_count" -eq 10 ] ||
+  fail 'firewall contains an unexpected section type'
+
+defaults_section=$(sections_of_type defaults)
+lan_zone=$(zone_by_name lan)
+wan_zone=$(zone_by_name wan)
+[ "$(printf '%s\n' "$defaults_section" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+  fail 'expected exactly one firewall defaults section'
+[ "$(printf '%s\n' "$lan_zone" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+  fail 'expected exactly one LAN firewall zone'
+[ "$(printf '%s\n' "$wan_zone" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+  fail 'expected exactly one WAN firewall zone'
+
+assert_firewall_option_keys "$defaults_section" 'forward input output syn_flood'
+assert_firewall_option_keys "$lan_zone" 'forward input name network output'
+assert_firewall_option_keys "$wan_zone" \
+  'forward input masq masq_src mtu_fix name network output'
+
+assert_uci firewall.@defaults[0].input REJECT
+assert_uci firewall.@defaults[0].output ACCEPT
+assert_uci firewall.@defaults[0].forward REJECT
+assert_uci firewall.@defaults[0].syn_flood 1
+assert_uci_absent firewall.@defaults[0].disable_ipv6
+assert_uci "firewall.$lan_zone.input" REJECT
+assert_uci "firewall.$lan_zone.output" ACCEPT
+assert_uci "firewall.$lan_zone.forward" REJECT
+assert_uci "firewall.$lan_zone.network" lan
+assert_uci "firewall.$wan_zone.input" REJECT
+assert_uci "firewall.$wan_zone.output" ACCEPT
+assert_uci "firewall.$wan_zone.forward" REJECT
+assert_uci "firewall.$wan_zone.network" 'wan wan6'
+assert_uci "firewall.$wan_zone.masq" 1
+assert_uci "firewall.$wan_zone.mtu_fix" 1
+assert_uci "firewall.$wan_zone.masq_src" \
+  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+
+expected_rules='fabric_wan_dhcp_reply
+fabric_block_private
+fabric_root_egress
+fabric_router_dns
+fabric_router_ntp
+fabric_router_http
+fabric_router_ssh'
+actual_rules=$(sections_of_type rule)
+[ "$actual_rules" = "$expected_rules" ] ||
+  fail 'firewall rule set or ordering differs from the reviewed policy'
+printf 'FIREWALL_RULE_ORDER=%s\n' "$(printf '%s' "$actual_rules" | tr '\n' ',')"
+
+assert_firewall_option_keys fabric_wan_dhcp_reply \
+  'dest_port family name proto src src_port target'
+assert_firewall_option_keys fabric_block_private \
+  'dest dest_ip name proto src target'
+assert_firewall_option_keys fabric_root_egress \
+  'dest name proto src src_ip target'
+for service_rule in dns ntp http ssh; do
+  assert_firewall_option_keys "fabric_router_$service_rule" \
+    'dest_port name proto src src_ip target'
+done
+
+assert_uci firewall.fabric_wan_dhcp_reply.name Allow-WAN-DHCPv4-replies
+assert_uci firewall.fabric_wan_dhcp_reply.src wan
+assert_uci firewall.fabric_wan_dhcp_reply.family ipv4
+assert_uci firewall.fabric_wan_dhcp_reply.proto udp
+assert_uci firewall.fabric_wan_dhcp_reply.src_port 67
+assert_uci firewall.fabric_wan_dhcp_reply.dest_port 68
+assert_uci firewall.fabric_wan_dhcp_reply.target ACCEPT
+
+assert_uci firewall.fabric_block_private.name Block-fabric-to-private-WAN
+assert_uci firewall.fabric_block_private.src lan
+assert_uci firewall.fabric_block_private.dest wan
+assert_uci firewall.fabric_block_private.proto all
+assert_uci firewall.fabric_block_private.dest_ip \
+  '10.0.0.0/8 100.64.0.0/10 172.16.0.0/12 192.168.0.0/16'
+assert_uci firewall.fabric_block_private.target REJECT
+
+assert_uci firewall.fabric_root_egress.name Allow-roots-to-public-WAN
+assert_uci firewall.fabric_root_egress.src lan
+assert_uci firewall.fabric_root_egress.dest wan
+assert_uci firewall.fabric_root_egress.src_ip \
+  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+assert_uci firewall.fabric_root_egress.proto all
+assert_uci firewall.fabric_root_egress.target ACCEPT
+
+service_sources='10.66.0.2/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+for service_rule in dns ntp http; do
+  assert_uci "firewall.fabric_router_$service_rule.src" lan
+  assert_uci "firewall.fabric_router_$service_rule.src_ip" "$service_sources"
+  assert_uci "firewall.fabric_router_$service_rule.target" ACCEPT
+done
+assert_uci firewall.fabric_router_dns.name Allow-fabric-router-DNS
+assert_uci firewall.fabric_router_dns.proto 'tcp udp'
+assert_uci firewall.fabric_router_dns.dest_port 53
+assert_uci firewall.fabric_router_ntp.name Allow-fabric-router-NTP
+assert_uci firewall.fabric_router_ntp.proto udp
+assert_uci firewall.fabric_router_ntp.dest_port 123
+assert_uci firewall.fabric_router_http.name Allow-fabric-router-HTTP
+assert_uci firewall.fabric_router_http.proto tcp
+assert_uci firewall.fabric_router_http.dest_port 80
+assert_uci firewall.fabric_router_ssh.name Allow-observer-to-fabric-router-SSH
+assert_uci firewall.fabric_router_ssh.src lan
+assert_uci firewall.fabric_router_ssh.src_ip 10.66.0.2/32
+assert_uci firewall.fabric_router_ssh.proto tcp
+assert_uci firewall.fabric_router_ssh.dest_port 22
+assert_uci firewall.fabric_router_ssh.target ACCEPT
+
+fw4 check >/dev/null || fail 'fw4 rejected the current configuration'
+live_fw4=$(nft list table inet fw4) || fail 'live inet fw4 table is absent'
+for live_chain in input_lan forward_lan input_wan forward_wan srcnat_wan; do
+  nft list chain inet fw4 "$live_chain" >/dev/null 2>&1 ||
+    fail "live fw4 chain is absent: $live_chain"
+done
+for live_rule_name in \
+  Allow-WAN-DHCPv4-replies \
+  Block-fabric-to-private-WAN \
+  Allow-roots-to-public-WAN \
+  Allow-fabric-router-DNS \
+  Allow-fabric-router-NTP \
+  Allow-fabric-router-HTTP \
+  Allow-observer-to-fabric-router-SSH; do
+  printf '%s\n' "$live_fw4" | grep -F "$live_rule_name" >/dev/null ||
+    fail "reviewed rule is absent from the live fw4 table: $live_rule_name"
+done
+printf 'FIREWALL_RUNTIME=fw4-check-live-table-and-reviewed-rules-pass\n'
+
+installed_packages=$(apk info) || fail 'could not enumerate installed packages'
+for forbidden_package in "$@"; do
+  if printf '%s\n' "$installed_packages" | grep -Fqx "$forbidden_package"; then
+    fail "removed package is installed: $forbidden_package"
+  fi
+done
+if printf '%s\n' "$installed_packages" |
+    grep -Eq '^(dropbear|frr|luci|odhcpd|prometheus-node-exporter-lua|tailscale|tang)(-|$)'; then
+  fail 'a forbidden package family is installed'
+fi
+for forbidden_command in dropbear odhcpd tailscale tangd vtysh; do
+  command -v "$forbidden_command" >/dev/null 2>&1 &&
+    fail "forbidden command is present: $forbidden_command"
+done
+[ ! -e /etc/init.d/dropbear ] && [ ! -e /etc/config/dropbear ] ||
+  fail 'dropbear service/configuration remains'
+[ ! -e /etc/init.d/odhcpd ] || fail 'odhcpd init service remains'
+for forbidden_path in \
+  /etc/hotplug.d/iface/90-tailscale-up \
+  /etc/hotplug.d/usb/01-cdc-eth \
+  /etc/hotplug.d/usb/01-iphone-eth \
+  /etc/frr/daemons; do
+  [ ! -e "$forbidden_path" ] || fail "forbidden escape hook remains: $forbidden_path"
+done
+pidof dropbear >/dev/null 2>&1 && fail 'dropbear process is running'
+pidof odhcpd >/dev/null 2>&1 && fail 'odhcpd process is running'
+pidof odhcp6c >/dev/null 2>&1 && fail 'WAN DHCPv6 client is running'
+pidof tailscaled >/dev/null 2>&1 && fail 'tailscaled process is running'
+pidof sshd >/dev/null 2>&1 || fail 'OpenSSH server is not running'
+
+listeners=$(netstat -lntup) || fail 'could not enumerate listening sockets'
+if printf '%s\n' "$listeners" | grep -Eqi 'dropbear|odhcpd'; then
+  fail 'dropbear or odhcpd owns a listening socket'
+fi
+printf 'PACKAGES_BEGIN\n%s\nPACKAGES_END\n' "$installed_packages"
+printf 'REMOVED_PACKAGES=absent\n'
+printf 'LISTENERS_BEGIN\n%s\nLISTENERS_END\n' "$listeners"
+printf 'ENABLED_SERVICES_BEGIN\n'
+for service_link in /etc/rc.d/S*; do
+  [ -e "$service_link" ] || continue
+  basename "$service_link"
+done
+printf 'ENABLED_SERVICES_END\n'
+
+sshd_effective=$(sshd -T) || fail 'could not inspect effective sshd policy'
+for sshd_setting in \
+  'passwordauthentication no' \
+  'kbdinteractiveauthentication no' \
+  'allowagentforwarding no' \
+  'allowtcpforwarding no' \
+  'disableforwarding yes' \
+  'gatewayports no' \
+  'permittunnel no' \
+  'x11forwarding no'; do
+  printf '%s\n' "$sshd_effective" | grep -Fqx "$sshd_setting" ||
+    fail "effective sshd policy lacks: $sshd_setting"
+done
+printf '%s\n' "$sshd_effective" | grep -Eq '^permitrootlogin (prohibit-password|without-password)$' ||
+  fail 'root SSH is not restricted to non-password authentication'
+printf 'SSHD_POLICY=key-only-no-forwarding\n'
+
+# Query only explicitly safe wireless fields. The section-type lookups do not
+# read the option values, and the key is never emitted into this snapshot.
+[ "$(uci -q get wireless.fabric_operator)" = wifi-iface ] ||
+  fail 'fabric operator Wi-Fi interface is missing'
+[ "$(uci -q get wireless.@wifi-iface[0])" = wifi-iface ] ||
+  fail 'fabric operator Wi-Fi interface is not the sole first interface'
+if uci -q get wireless.@wifi-iface[1] >/dev/null 2>&1; then
+  fail 'unexpected additional Wi-Fi interface'
+fi
+[ ! -e /etc/fabric/operator-wifi-psk ] ||
+  fail 'standalone operator Wi-Fi PSK was not removed after first boot'
+[ -f /etc/config/wireless ] && [ ! -L /etc/config/wireless ] ||
+  fail 'wireless UCI database is missing or unsafe'
+[ "$(stat -c '%u:%a' /etc/config/wireless)" = 0:600 ] ||
+  fail 'wireless UCI database is not root-owned mode 0600'
+operator_radio=$(uci -q get wireless.fabric_operator.device) ||
+  fail 'operator Wi-Fi radio reference is missing'
+case $operator_radio in
+  *[!A-Za-z0-9_]*|'') fail 'operator Wi-Fi radio name is unsafe' ;;
+esac
+[ "$(uci -q get "wireless.$operator_radio")" = wifi-device ] ||
+  fail 'operator Wi-Fi radio is not a wifi-device'
+assert_uci "wireless.$operator_radio.band" 5g
+assert_uci "wireless.$operator_radio.country" AU
+assert_uci "wireless.$operator_radio.channel" 36
+assert_uci "wireless.$operator_radio.htmode" HE20
+assert_uci "wireless.$operator_radio.txpower" 10
+assert_uci "wireless.$operator_radio.disabled" 0
+assert_uci wireless.fabric_operator.network lan
+assert_uci wireless.fabric_operator.mode ap
+assert_uci wireless.fabric_operator.ssid fabric-observer
+assert_uci wireless.fabric_operator.encryption sae
+assert_uci wireless.fabric_operator.ieee80211w 2
+assert_uci wireless.fabric_operator.sae_pwe 2
+assert_uci wireless.fabric_operator.isolate 1
+assert_uci wireless.fabric_operator.maxassoc 1
+assert_uci wireless.fabric_operator.macfilter allow
+assert_uci wireless.fabric_operator.maclist d8:80:83:81:cb:f7
+assert_uci wireless.fabric_operator.wps_pushbutton 0
+assert_uci wireless.fabric_operator.disabled 0
+printf 'SNAPSHOT_ASSERTIONS=pass\n'
+REMOTE_SNAPSHOT
+chmod 0600 -- "$snapshot"
+
+awk '
+  /^(BOARD_NAME|OPENWRT_RELEASE|FIRSTBOOT_DEFAULTS|NETWORK_TOPOLOGY|UCI |UCI_ABSENT |DATA_MOUNT |FIREWALL_|REMOVED_PACKAGES|SSHD_POLICY|SNAPSHOT_ASSERTIONS)/ {
+    print
+    next
+  }
+  $0 == "PACKAGES_BEGIN" || $0 == "ENABLED_SERVICES_BEGIN" {
+    retained_block = 1
+  }
+  retained_block { print }
+  $0 == "PACKAGES_END" || $0 == "ENABLED_SERVICES_END" {
+    retained_block = 0
+  }
+' "$snapshot" | LC_ALL=C sort > "$stable_invariants"
+[[ -s $stable_invariants ]] || die 'stable router invariant set is empty'
+stable_sha=$(sha256sum -- "$stable_invariants") ||
+  die 'could not hash stable router invariants'
+stable_sha=${stable_sha%% *}
+printf '%s  stable-invariants.txt\n' "$stable_sha" > "$stable_invariants_sha256"
+chmod 0600 -- "$stable_invariants" "$stable_invariants_sha256"
+
+router_boot_id=$(sed -n 's/^BOOT_ID=//p' "$snapshot")
+[[ $router_boot_id =~ ^[0-9A-Fa-f-]{36}$ ]] ||
+  die 'snapshot does not contain one valid router boot ID'
+
+strict_ssh nft list ruleset > "$nft_snapshot"
+[[ -s $nft_snapshot ]] || die 'live nftables snapshot is empty'
+chmod 0600 -- "$nft_snapshot"
+
+strict_ssh /bin/sh -s > "$remote_records" <<'REMOTE_ASSETS'
+set -eu
+export LC_ALL=C
+cd /mnt/data/www
+found_asset=false
+for path in ./* ./.[!.]* ./..?*; do
+  [ -e "$path" ] || [ -L "$path" ] || continue
+  found_asset=true
+  filename=${path#./}
+  case $filename in
+    *[!A-Za-z0-9._-]*|'')
+      printf 'unsafe router asset filename\n' >&2
+      exit 1
+      ;;
+  esac
+  [ -f "$filename" ] && [ ! -L "$filename" ] || {
+    printf 'router asset is not a regular non-symlink file: %s\n' "$filename" >&2
+    exit 1
+  }
+  digest=$(sha256sum "$filename") || exit 1
+  digest=${digest%% *}
+  printf '%s\t%s\n' "$filename" "$digest"
+done
+$found_asset || {
+  printf 'router asset directory is empty\n' >&2
+  exit 1
+}
+REMOTE_ASSETS
+chmod 0600 -- "$remote_records"
+
+LC_ALL=C sort -o "$remote_records" "$remote_records"
+cmp --silent -- "$expected_records" "$remote_records" ||
+  die 'router asset membership or bytes differ from the locally derived manifest'
+
+strict_ssh exec cat /mnt/data/www/SHASUMS.txt > "$remote_shasums"
+chmod 0600 -- "$remote_shasums"
+cmp --silent -- "$expected_shasums" "$remote_shasums" ||
+  die 'router SHASUMS.txt differs from the locally derived manifest'
+
+for ((dns_index = 0; dns_index < ${#expected_dns_names[@]}; dns_index++)); do
+  expected_dns_name=${expected_dns_names[$dns_index]}
+  expected_dns_answer=${expected_dns_answers[$dns_index]}
+  dns_udp=$(dig -r +short +time=3 +tries=1 \
+    "@$router_address" "$expected_dns_name" A) ||
+    die "router UDP DNS query failed: $expected_dns_name"
+  [[ $dns_udp == "$expected_dns_answer" ]] ||
+    die "router UDP DNS answer for $expected_dns_name is not exactly $expected_dns_answer"
+  dns_tcp=$(dig -r +tcp +short +time=3 +tries=1 \
+    "@$router_address" "$expected_dns_name" A) ||
+    die "router TCP DNS query failed: $expected_dns_name"
+  [[ $dns_tcp == "$expected_dns_answer" ]] ||
+    die "router TCP DNS answer for $expected_dns_name is not exactly $expected_dns_answer"
+  printf 'DNS UDP/TCP %s -> %s: PASS\n' "$expected_dns_name" "$expected_dns_answer"
+done
+
+ntp_sample=$evidence_dir/ntp-sample.txt
+if ! chronyd -Q -t 10 -f /dev/null "server $router_address iburst" \
+    > "$ntp_sample" 2>&1; then
+  chmod 0600 -- "$ntp_sample"
+  die 'router NTP sample failed'
+fi
+chmod 0600 -- "$ntp_sample"
+
+printf 'NTP sample from %s: PASS\n' "$router_address"
+printf 'Streaming and hashing %d HTTP assets from the router:\n' \
+  "$(wc -l < "$expected_records")"
+while IFS=$'\t' read -r filename expected_sha; do
+  [[ -n $filename && $expected_sha =~ ^[0-9a-f]{64}$ ]] ||
+    die 'internal expected HTTP asset record is invalid'
+  http_status_file=$evidence_dir/http-$filename.status
+  http_sha=$(
+    curl --disable --fail --silent --show-error \
+      --proto '=http' --proto-redir '=http' --noproxy '*' \
+      --connect-timeout 5 --max-time 1800 \
+      --write-out '%{stderr}HTTP_STATUS=%{http_code}\n' \
+      "http://$router_address/static/$filename" 2> "$http_status_file" |
+      sha256sum
+  ) || die "HTTP retrieval failed for pinned asset: $filename"
+  chmod 0600 -- "$http_status_file"
+  [[ $(< "$http_status_file") == HTTP_STATUS=200 ]] ||
+    die "HTTP status is not exactly 200 for pinned asset: $filename"
+  http_sha=${http_sha%% *}
+  [[ $http_sha == "$expected_sha" ]] ||
+    die "HTTP bytes differ from the local manifest: $filename"
+  printf '  %s: PASS\n' "$filename"
+done < "$expected_records"
+
+# This active negative probe is supplementary to the mandatory route checks
+# above. Explicitly bypass proxy environment variables so a shared pathname
+# socket or inherited proxy cannot turn success into a false network result.
+if curl --disable --fail --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 3 http://1.1.1.1/ \
+    >/dev/null 2> "$evidence_dir/public-probe.stderr"; then
+  die 'observer namespace unexpectedly reached a public IPv4 endpoint'
+fi
+chmod 0600 -- "$evidence_dir/public-probe.stderr"
+
+printf '%s\n' \
+  'result=pass' \
+  "router=$router_address" \
+  "observer=$observer_address" \
+  "serial_ed25519_fingerprint=$serial_fingerprint" \
+  "boot_id=$router_boot_id" \
+  "stable_invariants_sha256=$stable_sha" \
+  'snapshot_gate=complete' \
+  'attended_source_role_matrix=not_run_separate_gate' \
+  'reboot_persistence_comparison=not_run_separate_gate' \
+  > "$evidence_dir/scope.txt"
+chmod 0600 -- "$evidence_dir/scope.txt"
+
+complete=true
+printf '\nFabric router read-only commissioning snapshot: PASS\n'
+printf 'Protected evidence: %s\n' "$evidence_dir"
+printf 'Separate attended gates still required:\n'
+printf '  - source-role traffic matrix (.2, .10-.12, .20, and WAN)\n'
+printf '  - reboot persistence and stable-invariant/host-key comparison\n'

@@ -45,20 +45,24 @@ The image deliberately:
 - blocks the three roots from reaching RFC1918 or Tailscale/CGNAT
   `100.64.0.0/10` destinations through the WAN, while granting public egress
   only to their three static addresses;
-- permits key-only router SSH from observer `10.66.0.2` and no other LAN
-  source; password authentication is disabled;
+- permits key-only OpenSSH from observer `10.66.0.2` and no other LAN source;
+  password authentication and every SSH forwarding mode are disabled, and
+  Dropbear is absent;
 - permits router DNS, NTP, and pinned-asset HTTP only from the observer and
   three roots;
-- disables LAN DHCP; the router, observer, and consensus nodes use reviewed
-  static addresses, while worker addressing waits for a separate VLAN/subnet;
+- disables LAN DHCPv4, DHCPv6, router advertisements, and NDP proxying; the
+  `odhcpd` server is absent, and the router, observer, and consensus nodes use
+  reviewed static addresses while worker addressing waits for a separate
+  VLAN/subnet;
 - leaves DHCP/TFTP PXE disabled until a worker-only, authenticated provisioner
   exists; the unused iPXE binaries are absent and the initial consensus
   Ignitions are carried offline.
 
-The fabric overlay also subtracts common Tailscale, Tang, FRR, iPhone tether,
-generic USB-Ethernet hotplug hooks, and the matching CDC USB-network drivers at
-image-build time. Those packages and escape-path hooks are absent, not merely
-inactive; USB storage remains for the pinned asset device.
+The fabric overlay also subtracts common Tailscale, Tang, FRR, Dropbear,
+`odhcpd`, iPhone tether, generic USB-Ethernet hotplug hooks, and the matching
+CDC USB-network drivers at image-build time. Those packages and escape-path
+hooks are absent, not merely inactive; USB storage remains for the pinned asset
+device.
 LuCI and the unused router Prometheus exporter are force-removed; bare `uhttpd`
 binds only `10.66.0.1:80` and serves the pinned public files beneath `/static/`
 with directory listings disabled and no web administration surface.
@@ -154,68 +158,71 @@ interface with source `10.66.0.2`, while `ip -4 route get 1.1.1.1` must fail.
 The SOPS-managed passphrase must be supplied without printing it or placing it
 in shell history.
 
-Capture the router host key from the observer namespace, compare its
-fingerprint with the attended USB-C serial console, then check that the
-committed policy actually completed:
+After first boot completes without a failed `uci-defaults` script, obtain the
+router's ED25519 host-key fingerprint from the attended USB-C serial console:
 
 ```sh
-ssh-keyscan -T 5 -t ed25519 10.66.0.1 > fabric-router.known_hosts
-ssh -o UserKnownHostsFile=./fabric-router.known_hosts \
-  -o StrictHostKeyChecking=yes root@10.66.0.1 '
-    set -eu
-    test "$(uci -q get dhcp.lan.ignore)" = 1
-    test "$(uci -q get system.ntp.enabled)" = 1
-    test "$(uci -q get system.ntp.enable_server)" = 1
-    ! command -v tailscale
-    command -v apk >/dev/null
-    installed=$(apk info)
-    ! printf "%s\n" "$installed" |
-      grep -Eq "^(luci|prometheus-node-exporter-lua|tailscale|tang)(-|$)"
-    nft list ruleset
-  '
+ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-Then verify DNS, an NTP sample, the data mount, and every cached byte from
-`.2`. The `chronyd -Q` command uses an empty configuration so it measures only
-the explicitly named router source and does not collide with the laptop's
-normal daemon:
+Copy that complete `SHA256:...` value exactly. Do not enroll a key obtained only
+with `ssh-keyscan`: the scan is unauthenticated until it matches the serial
+fingerprint. From the desktop root namespace, re-verify the complete observer
+boundary, then run the read-only commissioning snapshot inside it:
 
 ```sh
-dig +short @10.66.0.1 fabric-az1-cp1.fabric.internal A
-chronyd -Q -t 10 -f /dev/null 'server 10.66.0.1 iburst'
-curl --fail --head http://10.66.0.1/static/k3s
-ssh -o UserKnownHostsFile=./fabric-router.known_hosts \
-  -o StrictHostKeyChecking=yes root@10.66.0.1 \
-  'mount | grep "on /mnt/data " && (cd /mnt/data/www && sha256sum -c SHASUMS.txt)'
+sudo fabric/observer/fabric-observer-netns verify
+sudo ip netns exec fabric-observer \
+  scripts/verify-fabric-router \
+    --serial-ed25519-fingerprint 'SHA256:VALUE_FROM_SERIAL' \
+    --identity /var/home/sam/.ssh/id_ed25519
 ```
 
-The DNS answer must be exactly `10.66.0.10`, and chrony must report a usable
-sample. Fit and verify a CR1220 in the OpenWrt One RTC holder before the
-whole-domain loss test. The roots use `10.66.0.1` as their only configured NTP
-source; after they synchronize once, loss of the router or WAN leaves them on
-their own RTCs and chrony drift state and does not enter the etcd peer reconnect
-path.
+The verifier refuses its first SSH connection until the scanned ED25519 key
+matches the serial fingerprint. It uses only that host key and the named
+mode-`0600` identity, asserts the reviewed UCI/package/service/firewall/mount
+state without reading the wireless key, and retains protected evidence in
+tmpfs. It derives the seven-file asset manifest locally, checks exact remote
+membership and bytes, streams and hashes every HTTP response, requires exact
+answers for all four fabric DNS records over UDP and TCP, and obtains an NTP
+sample. It does not trust the router data stick's own `SHASUMS.txt` in
+isolation.
 
-Finally, while no real root is connected, temporarily replace the observer
-profile with `10.66.0.10/24`, gateway and DNS `10.66.0.1`. Prove a public HTTPS
-request and DNS lookup succeed, while TCP attempts to representative `10/8`,
-`172.16/12`, `192.168/16`, and `100.64/10` destinations are rejected. Restore
-`.2` immediately afterward. From `.2`, adding a temporary default route through
-`.1` must still not permit public forwarding. Record the exact commands and
-results with the router inventory. Also record that the upstream/home network
-has no route to `10.66.0.0/24` and no Tailscale subnet route advertises it. Do
-not attach a consensus node until this matrix and the pinned-asset checks pass.
+Fit and verify a CR1220 in the OpenWrt One RTC holder before the whole-domain
+loss test. The roots use `10.66.0.1` as their only configured NTP source; after
+they synchronize once, loss of the router or WAN leaves them on their own RTCs
+and chrony drift state and does not enter the etcd peer reconnect path.
+
+The source-role matrix remains a separate attended gate. Do not repurpose the
+fixed observer helper or add ad-hoc routes to its namespace. With no real root
+attached, a guarded, trap-restored procedure must exercise observer `.2`, each
+admitted root address `.10` through `.12`, an unauthorized `.20`, and a
+controlled WAN-side client. It must prove router-service source restrictions,
+observer and unauthorized forwarding denial, root public egress, private and
+CGNAT denial, and WAN-input denial using known-live destinations plus nftables
+counter deltas. After restoration, rerun both the namespace verifier and the
+read-only snapshot. Also record that the upstream/home network has no route to
+`10.66.0.0/24` and no Tailscale subnet route advertises it. This gate remains
+open until that evidence is captured; do not attach a consensus node first.
+
+Perform one attended reboot from the serial console and rerun the same snapshot
+with the same serial-pinned host-key fingerprint. Require a changed `BOOT_ID`
+and an identical `stable-invariants.sha256`, alongside the unchanged host key
+and asset evidence. A wired packet capture must also show no router
+advertisements or DHCPv6 responses; the IPv6-disabled observer namespace cannot
+prove their absence by itself.
 
 ## Prepare the data USB device
 
 The router image intentionally does not embed the K3s and etcd release
-payloads. OpenWrt mounts an ext4 filesystem labeled `data` at `/mnt/data`, and
-the built-in web server exposes `/mnt/data/www/` at `/static/`. The OpenWrt One's
+payloads. OpenWrt mounts an ext4 filesystem labeled `data` read-only with
+`nodev,nosuid,noexec,noatime` at `/mnt/data`, and the built-in web server exposes
+`/mnt/data/www/` at `/static/`. The OpenWrt One's
 USB device serves pinned `k3s`, its matching air-gap image archive and
 installer, a pinned kube-vip OCI archive, the CoreOS K3s SELinux policy RPM,
-the official etcd 3.6.13 archive, and node_exporter 1.11.1 referenced by the offline-rendered
-initial-consensus Ignitions. It
-never stores those Ignitions or their secrets. DHCP/TFTP PXE remains disabled.
+the official etcd 3.6.13 archive, and node_exporter 1.11.1 referenced by the
+offline-rendered initial-consensus Ignitions. It never stores those Ignitions or
+their secrets. DHCP/TFTP PXE remains disabled.
 
 Building the image resolves and verifies the pinned sources from
 `fabric/router/data-files.txt` into the shared `_build/data/` cache. Ordinary
