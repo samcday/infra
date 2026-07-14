@@ -453,7 +453,10 @@ write_supplicant_config() {
   [[ -n "$psk_fd" ]] || die 'internal error: SAE passphrase input is not open'
   install -d -m 0700 -- "$runtime_dir" "$supplicant_control"
   {
-    printf 'ctrl_interface=DIR=%s GROUP=0\n' "$supplicant_control"
+    # The directory is pre-created root:root 0700. Supplying GROUP=0 asks
+    # wpa_supplicant to grant group access and widens those permissions, which
+    # violates the root-only control boundary even though the group is root.
+    printf 'ctrl_interface=DIR=%s\n' "$supplicant_control"
     printf 'update_config=0\n'
     printf 'ap_scan=1\n'
     printf 'p2p_disabled=1\n'
@@ -950,7 +953,7 @@ do_setup() {
   printf '%s\n' "$nsswitch_contents" >"$netns_nsswitch_conf"
   chmod 0644 "$netns_nsswitch_conf"
 
-  if ! nmcli device disconnect "$wifi" >/dev/null; then
+  if ! nmcli device disconnect "$wifi" >/dev/null 2>&1; then
     local nm_state
     nm_state=$(nmcli -g GENERAL.STATE device show "$wifi") ||
       die "NetworkManager lost track of $wifi while releasing it"

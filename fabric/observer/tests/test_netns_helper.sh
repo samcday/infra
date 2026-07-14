@@ -30,6 +30,15 @@ fi
 grep -Fq '  (set -e; resume_restoration)' "$helper"
 grep -Fq '  restore_rc=$?' "$helper"
 
+# The control directory is pre-created root:root 0700. A GROUP directive makes
+# wpa_supplicant widen group access even for gid 0; root-only wpa_cli calls need
+# no group delegation.
+grep -Fq "    printf 'ctrl_interface=DIR=%s\\n' \"\$supplicant_control\"" "$helper"
+if grep -Eq "^[[:space:]]*printf ['\"]ctrl_interface=.*GROUP=" "$helper"; then
+  printf 'observer supplicant configuration delegates group access\n' >&2
+  exit 1
+fi
+
 # Observer setup/teardown and the attended router traffic matrix must serialize
 # on one root-only lock. Admission checks are repeated while this lock is held,
 # so a matrix cannot race setup into creating a competing 10.66.0.2 identity.
