@@ -73,7 +73,16 @@ set firewall.fabric_wan_dhcp_reply.src_port='67'
 set firewall.fabric_wan_dhcp_reply.dest_port='68'
 set firewall.fabric_wan_dhcp_reply.target='ACCEPT'
 
-# These rejects must precede the root-node Internet allow below. They prevent
+# Keep an explicit, named catch-all in front of the zone default so attended
+# probes can attribute rejected WAN input to its fw4 counter.
+set firewall.fabric_reject_other_wan_input='rule'
+set firewall.fabric_reject_other_wan_input.name='Reject-other-WAN-input'
+set firewall.fabric_reject_other_wan_input.src='wan'
+set firewall.fabric_reject_other_wan_input.family='ipv4'
+set firewall.fabric_reject_other_wan_input.proto='all'
+set firewall.fabric_reject_other_wan_input.target='REJECT'
+
+# This reject must precede the root-node Internet allow below. It prevents
 # the fabric from becoming an alternate path into home, hub, or Tailscale.
 set firewall.fabric_block_private='rule'
 set firewall.fabric_block_private.name='Block-fabric-to-private-WAN'
@@ -95,6 +104,22 @@ add_list firewall.fabric_root_egress.src_ip='10.66.0.11/32'
 add_list firewall.fabric_root_egress.src_ip='10.66.0.12/32'
 set firewall.fabric_root_egress.proto='all'
 set firewall.fabric_root_egress.target='ACCEPT'
+
+set firewall.fabric_reject_other_fabric_to_wan='rule'
+set firewall.fabric_reject_other_fabric_to_wan.name='Reject-other-fabric-to-WAN'
+set firewall.fabric_reject_other_fabric_to_wan.src='lan'
+set firewall.fabric_reject_other_fabric_to_wan.dest='wan'
+set firewall.fabric_reject_other_fabric_to_wan.family='ipv4'
+set firewall.fabric_reject_other_fabric_to_wan.proto='all'
+set firewall.fabric_reject_other_fabric_to_wan.target='REJECT'
+
+set firewall.fabric_reject_wan_to_fabric='rule'
+set firewall.fabric_reject_wan_to_fabric.name='Reject-WAN-to-fabric'
+set firewall.fabric_reject_wan_to_fabric.src='wan'
+set firewall.fabric_reject_wan_to_fabric.dest='lan'
+set firewall.fabric_reject_wan_to_fabric.family='ipv4'
+set firewall.fabric_reject_wan_to_fabric.proto='all'
+set firewall.fabric_reject_wan_to_fabric.target='REJECT'
 
 set firewall.fabric_router_dns='rule'
 set firewall.fabric_router_dns.name='Allow-fabric-router-DNS'
@@ -137,6 +162,13 @@ set firewall.fabric_router_ssh.src_ip='10.66.0.2/32'
 set firewall.fabric_router_ssh.proto='tcp'
 set firewall.fabric_router_ssh.dest_port='22'
 set firewall.fabric_router_ssh.target='ACCEPT'
+
+set firewall.fabric_reject_other_fabric_router_input='rule'
+set firewall.fabric_reject_other_fabric_router_input.name='Reject-other-fabric-router-input'
+set firewall.fabric_reject_other_fabric_router_input.src='lan'
+set firewall.fabric_reject_other_fabric_router_input.family='ipv4'
+set firewall.fabric_reject_other_fabric_router_input.proto='all'
+set firewall.fabric_reject_other_fabric_router_input.target='REJECT'
 
 commit firewall
 

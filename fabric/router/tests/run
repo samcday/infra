@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+
+repo_root=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
+cd -- "$repo_root"
+
+python3 -B -m unittest discover \
+  --start-directory fabric/router/tests \
+  --pattern 'test_*.py'

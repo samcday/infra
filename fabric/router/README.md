@@ -40,8 +40,9 @@ The image deliberately:
 - caps that SSID at one association, disables stock/additional SSIDs, WPS,
   IPv6 prefix delegation, FRR, Tailscale and Tang;
 - has no route advertisement or Tailscale-to-LAN forwarding;
-- gives both LAN and WAN reject-by-default input/forward policies, with no
-  WAN-to-LAN forwarding or inherited stock WAN exceptions;
+- gives both LAN and WAN reject-by-default input/forward policies, with named
+  IPv4 catch-all rejects for deterministic fw4 counters, no WAN-to-LAN
+  forwarding, and no inherited stock WAN exceptions;
 - blocks the three roots from reaching RFC1918 or Tailscale/CGNAT
   `100.64.0.0/10` destinations through the WAN, while granting public egress
   only to their three static addresses;
@@ -76,8 +77,12 @@ directly to the existing hub/home LAN, and do not add workers until the
 documented VLAN/firewall gate passes.
 
 The firewall overlay deletes every inherited rule, forwarding, redirect, NAT,
-and include before constructing this policy. Same-L2 root traffic bypasses the
-router and is constrained separately by the FCOS `fabric_guard` host table.
+and include before constructing this policy. Four explicit IPv4 catch-all
+rejects mirror the zone defaults so WAN input, fabric-to-WAN, WAN-to-fabric,
+and fabric router-input denials have named fw4 counters. IPv6 remains denied by
+the zone defaults and is checked separately by wired packet capture. Same-L2
+root traffic bypasses the router and is constrained separately by the FCOS
+`fabric_guard` host table.
 
 ## Initial install and recovery boundary
 
@@ -182,11 +187,14 @@ The verifier refuses its first SSH connection until the scanned ED25519 key
 matches the serial fingerprint. It uses only that host key and the named
 mode-`0600` identity, asserts the reviewed UCI/package/service/firewall/mount
 state without reading the wireless key, and retains protected evidence in
-tmpfs. It derives the seven-file asset manifest locally, checks exact remote
-membership and bytes, streams and hashes every HTTP response, requires exact
-answers for all four fabric DNS records over UDP and TCP, and obtains an NTP
-sample. It does not trust the router data stick's own `SHASUMS.txt` in
-isolation.
+tmpfs. The live firewall gate rejects extra nftables tables, executable
+automatic includes, and runtime fw4 UBus/include inputs; it also proves the
+reviewed IPv4 rules' exact chain, order, terminal accept/reject jump, and
+anonymous counter. It derives the seven-file asset manifest locally, checks
+exact remote membership and bytes, streams and hashes every HTTP response,
+requires exact answers for all four fabric DNS records over UDP and TCP, and
+obtains an NTP sample. It does not trust the router data stick's own
+`SHASUMS.txt` in isolation.
 
 Fit and verify a CR1220 in the OpenWrt One RTC holder before the whole-domain
 loss test. The roots use `10.66.0.1` as their only configured NTP source; after
@@ -199,9 +207,12 @@ attached, a guarded, trap-restored procedure must exercise observer `.2`, each
 admitted root address `.10` through `.12`, an unauthorized `.20`, and a
 controlled WAN-side client. It must prove router-service source restrictions,
 observer and unauthorized forwarding denial, root public egress, private and
-CGNAT denial, and WAN-input denial using known-live destinations plus nftables
-counter deltas. After restoration, rerun both the namespace verifier and the
-read-only snapshot. Also record that the upstream/home network has no route to
+CGNAT denial, WAN-input denial, and WAN-to-fabric denial using known-live
+destinations plus deltas on the corresponding named fw4 counters. Do not claim
+a separate masquerade counter: a successful active public probe together with
+an increased `Allow-roots-to-public-WAN` counter proves the permitted NAT path.
+After restoration, rerun both the namespace verifier and the read-only
+snapshot. Also record that the upstream/home network has no route to
 `10.66.0.0/24` and no Tailscale subnet route advertises it. This gate remains
 open until that evidence is captured; do not attach a consensus node first.
 

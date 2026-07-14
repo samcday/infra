@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""Compare selected nftables counters in two offline JSON snapshots."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import pathlib
+import re
+import sys
+from typing import Any, NoReturn
+
+
+SPEC_FIELDS = {"version", "rules", "require_increase", "require_unchanged"}
+SELECTOR_FIELDS = ("family", "table", "chain", "comment")
+SPEC_SELECTOR_FIELDS = set(SELECTOR_FIELDS) | {"expected_matches"}
+COUNTER_FIELDS = ("packets", "bytes")
+MAX_EXPECTED_MATCHES = 16
+MAX_UINT64 = (1 << 64) - 1
+LOGICAL_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+class ComparisonError(ValueError):
+    """The spec or an input snapshot is unsafe or malformed."""
+
+
+def _raise(message: str) -> NoReturn:
+    raise ComparisonError(message)
+
+
+def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        try:
+            key.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            _raise("JSON object key contains invalid Unicode")
+        if key in result:
+            _raise(f"duplicate JSON object key: {key!a}")
+        result[key] = value
+    return result
+
+
+def _validate_json_unicode(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                _raise("JSON string contains invalid Unicode")
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
+def load_json(path: pathlib.Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as source:
+            value = json.load(
+                source,
+                object_pairs_hook=_object_without_duplicate_keys,
+                parse_float=lambda _value: _raise(
+                    "floating-point JSON numbers are not accepted"
+                ),
+                parse_constant=lambda value: _raise(
+                    f"non-standard JSON constant: {value}"
+                ),
+            )
+        _validate_json_unicode(value)
+        return value
+    except ComparisonError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as error:
+        raise ComparisonError(f"could not read JSON file {path}: {error}") from error
+
+
+def _require_object(value: Any, description: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        _raise(f"{description} must be a JSON object")
+    return value
+
+
+def _require_exact_fields(
+    value: dict[str, Any], expected: set[str], description: str
+) -> None:
+    actual = set(value)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if missing:
+        _raise(f"{description} is missing fields: {', '.join(missing)}")
+    if unknown:
+        _raise(f"{description} has unknown fields: {', '.join(unknown)}")
+
+
+def validate_spec(value: Any) -> dict[str, Any]:
+    spec = _require_object(value, "spec")
+    _require_exact_fields(spec, SPEC_FIELDS, "spec")
+
+    if type(spec["version"]) is not int or spec["version"] != 1:
+        _raise("spec version must be the integer 1")
+
+    raw_rules = _require_object(spec["rules"], "spec rules")
+    if not raw_rules:
+        _raise("spec rules must not be empty")
+
+    rules: dict[str, dict[str, Any]] = {}
+    selectors: dict[tuple[str, str, str, str], str] = {}
+    for logical_name, raw_selector in raw_rules.items():
+        if not isinstance(logical_name, str) or not LOGICAL_NAME_RE.fullmatch(
+            logical_name
+        ):
+            _raise(
+                "every logical rule name must match "
+                "^[a-z][a-z0-9_-]*$"
+            )
+        selector = _require_object(
+            raw_selector, f"selector for logical rule {logical_name}"
+        )
+        _require_exact_fields(
+            selector,
+            SPEC_SELECTOR_FIELDS,
+            f"selector for logical rule {logical_name}",
+        )
+        for field in SELECTOR_FIELDS:
+            if not isinstance(selector[field], str) or not selector[field]:
+                _raise(
+                    f"selector field {field} for logical rule {logical_name} "
+                    "must be a non-empty string"
+                )
+        expected_matches = selector["expected_matches"]
+        if (
+            type(expected_matches) is not int
+            or expected_matches < 1
+            or expected_matches > MAX_EXPECTED_MATCHES
+        ):
+            _raise(
+                f"selector expected_matches for logical rule {logical_name} "
+                f"must be an integer from 1 through {MAX_EXPECTED_MATCHES}"
+            )
+        normalized: dict[str, Any] = {
+            field: selector[field] for field in SELECTOR_FIELDS
+        }
+        normalized["expected_matches"] = expected_matches
+        selector_key = tuple(normalized[field] for field in SELECTOR_FIELDS)
+        if selector_key in selectors:
+            _raise(
+                "logical rules may not reuse a selector: "
+                f"{selectors[selector_key]} and {logical_name}"
+            )
+        selectors[selector_key] = logical_name
+        rules[logical_name] = normalized
+
+    policies: dict[str, list[str]] = {}
+    for policy in ("require_increase", "require_unchanged"):
+        names = spec[policy]
+        if not isinstance(names, list):
+            _raise(f"spec {policy} must be a JSON array")
+        seen: set[str] = set()
+        normalized_names: list[str] = []
+        for name in names:
+            if not isinstance(name, str) or not name:
+                _raise(f"every name in {policy} must be a non-empty string")
+            if name in seen:
+                _raise(f"duplicate logical rule name in {policy}: {name}")
+            if name not in rules:
+                _raise(f"unknown logical rule name in {policy}: {name}")
+            seen.add(name)
+            normalized_names.append(name)
+        policies[policy] = normalized_names
+
+    increase = set(policies["require_increase"])
+    unchanged = set(policies["require_unchanged"])
+    overlap = sorted(increase & unchanged)
+    if overlap:
+        _raise(f"logical rules occur in both policies: {', '.join(overlap)}")
+    unassigned = sorted(set(rules) - increase - unchanged)
+    if unassigned:
+        _raise(f"logical rules have no counter policy: {', '.join(unassigned)}")
+
+    return {
+        "version": 1,
+        "rules": rules,
+        "require_increase": policies["require_increase"],
+        "require_unchanged": policies["require_unchanged"],
+    }
+
+
+def _snapshot_rules(value: Any, label: str) -> list[dict[str, Any]]:
+    snapshot = _require_object(value, f"{label} snapshot")
+    _require_exact_fields(snapshot, {"nftables"}, f"{label} snapshot")
+    nftables = snapshot.get("nftables")
+    if not isinstance(nftables, list):
+        _raise(f"{label} snapshot nftables must be a JSON array")
+
+    rules: list[dict[str, Any]] = []
+    for index, entry in enumerate(nftables):
+        if not isinstance(entry, dict):
+            _raise(f"{label} snapshot nftables entry {index} must be an object")
+        if "rule" not in entry:
+            continue
+        if set(entry) != {"rule"}:
+            _raise(
+                f"{label} snapshot nftables rule entry {index} has extra fields"
+            )
+        rule = entry["rule"]
+        if not isinstance(rule, dict):
+            _raise(f"{label} snapshot rule entry {index} must be an object")
+        rules.append(rule)
+    return rules
+
+
+def _semantic_sha256(rule: dict[str, Any], counter_index: int) -> str:
+    normalized = copy.deepcopy(rule)
+    counter = normalized["expr"][counter_index]["counter"]
+    counter["packets"] = 0
+    counter["bytes"] = 0
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _read_rule(
+    rule: dict[str, Any],
+    logical_name: str,
+    label: str,
+    match_number: int,
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {}
+    for field in SELECTOR_FIELDS:
+        if not isinstance(rule.get(field), str) or not rule[field]:
+            _raise(
+                f"{label} snapshot identity field {field} for logical rule "
+                f"{logical_name} match {match_number} must be a non-empty string"
+            )
+        identity[field] = rule[field]
+    handle = rule.get("handle")
+    if type(handle) is not int or handle < 0 or handle > MAX_UINT64:
+        _raise(
+            f"{label} snapshot handle for logical rule {logical_name} "
+            f"match {match_number} must be an unsigned 64-bit integer"
+        )
+    identity["handle"] = handle
+
+    expressions = rule.get("expr")
+    if not isinstance(expressions, list):
+        _raise(
+            f"{label} snapshot expr for logical rule {logical_name} must be an array"
+        )
+    for index, expression in enumerate(expressions):
+        if not isinstance(expression, dict):
+            _raise(
+                f"{label} snapshot expression {index} for logical rule "
+                f"{logical_name} must be an object"
+            )
+    counter_indexes = [
+        index for index, expression in enumerate(expressions) if "counter" in expression
+    ]
+    if len(counter_indexes) != 1:
+        _raise(
+            f"{label} snapshot logical rule {logical_name} has "
+            f"{len(counter_indexes)} counters; expected exactly one"
+        )
+    counter_index = counter_indexes[0]
+    counter_expression = expressions[counter_index]
+    if set(counter_expression) != {"counter"}:
+        _raise(
+            f"{label} snapshot counter expression for logical rule {logical_name} "
+            "has extra fields"
+        )
+    counter = counter_expression["counter"]
+    if not isinstance(counter, dict):
+        _raise(
+            f"{label} snapshot counter for logical rule {logical_name} "
+            "must be an object"
+        )
+    _require_exact_fields(
+        counter,
+        set(COUNTER_FIELDS),
+        f"{label} snapshot counter for logical rule {logical_name}",
+    )
+    for field in COUNTER_FIELDS:
+        if (
+            type(counter[field]) is not int
+            or counter[field] < 0
+            or counter[field] > MAX_UINT64
+        ):
+            _raise(
+                f"{label} snapshot counter {field} for logical rule {logical_name} "
+                "must be an unsigned 64-bit integer"
+            )
+
+    return {
+        "identity": identity,
+        "counter": {field: counter[field] for field in COUNTER_FIELDS},
+        "semantic_sha256": _semantic_sha256(rule, counter_index),
+    }
+
+
+def _read_selected_rules(
+    rules: list[dict[str, Any]],
+    selector: dict[str, Any],
+    logical_name: str,
+    label: str,
+) -> list[dict[str, Any]]:
+    matches = [
+        rule
+        for rule in rules
+        if all(rule.get(field) == selector[field] for field in SELECTOR_FIELDS)
+    ]
+    expected_matches = selector["expected_matches"]
+    if len(matches) != expected_matches:
+        _raise(
+            f"{label} snapshot has {len(matches)} matches for logical rule "
+            f"{logical_name}; expected exactly {expected_matches}"
+        )
+
+    selected = [
+        _read_rule(rule, logical_name, label, match_number)
+        for match_number, rule in enumerate(matches, start=1)
+    ]
+    selected.sort(key=lambda item: item["identity"]["handle"])
+    handles = [item["identity"]["handle"] for item in selected]
+    if len(handles) != len(set(handles)):
+        _raise(
+            f"{label} snapshot has duplicate handles for logical rule {logical_name}"
+        )
+    return selected
+
+
+def compare_snapshots(before: Any, after: Any, raw_spec: Any) -> list[dict[str, Any]]:
+    spec = validate_spec(raw_spec)
+    before_rules = _snapshot_rules(before, "before")
+    after_rules = _snapshot_rules(after, "after")
+    increase = set(spec["require_increase"])
+
+    results: list[dict[str, Any]] = []
+    for logical_name in sorted(spec["rules"]):
+        selector = spec["rules"][logical_name]
+        old_matches = _read_selected_rules(
+            before_rules, selector, logical_name, "before"
+        )
+        new_matches = _read_selected_rules(
+            after_rules, selector, logical_name, "after"
+        )
+        for old, new in zip(old_matches, new_matches, strict=True):
+            if old["identity"] != new["identity"]:
+                _raise(f"compiled rule identity changed for logical rule {logical_name}")
+            if old["semantic_sha256"] != new["semantic_sha256"]:
+                _raise(f"compiled rule semantics changed for logical rule {logical_name}")
+
+        if logical_name in increase:
+            policy = "require_increase"
+        else:
+            policy = "require_unchanged"
+
+        aggregate_before = {field: 0 for field in COUNTER_FIELDS}
+        aggregate_after = {field: 0 for field in COUNTER_FIELDS}
+        aggregate_delta = {field: 0 for field in COUNTER_FIELDS}
+        match_results: list[dict[str, Any]] = []
+        for old, new in zip(old_matches, new_matches, strict=True):
+            delta: dict[str, int] = {}
+            for field in COUNTER_FIELDS:
+                delta[field] = new["counter"][field] - old["counter"][field]
+                if delta[field] < 0:
+                    _raise(
+                        f"counter {field} decreased for logical rule {logical_name}"
+                    )
+                aggregate_before[field] += old["counter"][field]
+                aggregate_after[field] += new["counter"][field]
+                aggregate_delta[field] += delta[field]
+
+            if policy == "require_increase":
+                match_passed = all(delta[field] > 0 for field in COUNTER_FIELDS)
+            else:
+                match_passed = all(delta[field] == 0 for field in COUNTER_FIELDS)
+            match_results.append(
+                {
+                    "identity": old["identity"],
+                    "semantic_sha256": old["semantic_sha256"],
+                    "before": old["counter"],
+                    "after": new["counter"],
+                    "delta": delta,
+                    "result": "pass" if match_passed else "fail",
+                }
+            )
+
+        passed = all(match["result"] == "pass" for match in match_results)
+        results.append(
+            {
+                "logical_name": logical_name,
+                "before": aggregate_before,
+                "after": aggregate_after,
+                "delta": aggregate_delta,
+                "matches": match_results,
+                "policy": policy,
+                "result": "pass" if passed else "fail",
+            }
+        )
+    return results
+
+
+def _arguments(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare selected counters in two offline nftables JSON snapshots."
+    )
+    parser.add_argument("--before", required=True, type=pathlib.Path)
+    parser.add_argument("--after", required=True, type=pathlib.Path)
+    parser.add_argument("--spec", required=True, type=pathlib.Path)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = _arguments(argv)
+    try:
+        before = load_json(arguments.before)
+        after = load_json(arguments.after)
+        spec = load_json(arguments.spec)
+        results = compare_snapshots(before, after, spec)
+    except ComparisonError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    except (RecursionError, TypeError, UnicodeError, ValueError) as error:
+        print(
+            f"ERROR: unsafe JSON structure ({type(error).__name__})",
+            file=sys.stderr,
+        )
+        return 2
+
+    overall_result = (
+        "pass" if all(result["result"] == "pass" for result in results) else "fail"
+    )
+    json.dump(
+        {"version": 1, "result": overall_result, "results": results},
+        sys.stdout,
+        indent=2,
+        sort_keys=True,
+    )
+    sys.stdout.write("\n")
+    return 0 if overall_result == "pass" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

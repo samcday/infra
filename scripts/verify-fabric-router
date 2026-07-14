@@ -528,14 +528,14 @@ printf 'DATA_MOUNT source=%s type=%s options=%s\n' \
 
 assert_section_count defaults 1
 assert_section_count zone 2
-assert_section_count rule 7
+assert_section_count rule 11
 assert_section_count forwarding 0
 assert_section_count redirect 0
 assert_section_count nat 0
 assert_section_count include 0
 firewall_section_count=$(uci -q show firewall |
   awk -F= '$1 ~ /^firewall\.[^.]+$/ { count++ } END { print count + 0 }')
-[ "$firewall_section_count" -eq 10 ] ||
+[ "$firewall_section_count" -eq 14 ] ||
   fail 'firewall contains an unexpected section type'
 
 defaults_section=$(sections_of_type defaults)
@@ -572,12 +572,16 @@ assert_uci "firewall.$wan_zone.masq_src" \
   '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 
 expected_rules='fabric_wan_dhcp_reply
+fabric_reject_other_wan_input
 fabric_block_private
 fabric_root_egress
+fabric_reject_other_fabric_to_wan
+fabric_reject_wan_to_fabric
 fabric_router_dns
 fabric_router_ntp
 fabric_router_http
-fabric_router_ssh'
+fabric_router_ssh
+fabric_reject_other_fabric_router_input'
 actual_rules=$(sections_of_type rule)
 [ "$actual_rules" = "$expected_rules" ] ||
   fail 'firewall rule set or ordering differs from the reviewed policy'
@@ -593,6 +597,18 @@ for service_rule in dns ntp http ssh; do
   assert_firewall_option_keys "fabric_router_$service_rule" \
     'dest_port name proto src src_ip target'
 done
+for input_reject_rule in \
+  fabric_reject_other_wan_input \
+  fabric_reject_other_fabric_router_input; do
+  assert_firewall_option_keys "$input_reject_rule" \
+    'family name proto src target'
+done
+for forwarding_reject_rule in \
+  fabric_reject_other_fabric_to_wan \
+  fabric_reject_wan_to_fabric; do
+  assert_firewall_option_keys "$forwarding_reject_rule" \
+    'dest family name proto src target'
+done
 
 assert_uci firewall.fabric_wan_dhcp_reply.name Allow-WAN-DHCPv4-replies
 assert_uci firewall.fabric_wan_dhcp_reply.src wan
@@ -601,6 +617,12 @@ assert_uci firewall.fabric_wan_dhcp_reply.proto udp
 assert_uci firewall.fabric_wan_dhcp_reply.src_port 67
 assert_uci firewall.fabric_wan_dhcp_reply.dest_port 68
 assert_uci firewall.fabric_wan_dhcp_reply.target ACCEPT
+
+assert_uci firewall.fabric_reject_other_wan_input.name Reject-other-WAN-input
+assert_uci firewall.fabric_reject_other_wan_input.src wan
+assert_uci firewall.fabric_reject_other_wan_input.family ipv4
+assert_uci firewall.fabric_reject_other_wan_input.proto all
+assert_uci firewall.fabric_reject_other_wan_input.target REJECT
 
 assert_uci firewall.fabric_block_private.name Block-fabric-to-private-WAN
 assert_uci firewall.fabric_block_private.src lan
@@ -617,6 +639,21 @@ assert_uci firewall.fabric_root_egress.src_ip \
   '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 assert_uci firewall.fabric_root_egress.proto all
 assert_uci firewall.fabric_root_egress.target ACCEPT
+
+assert_uci firewall.fabric_reject_other_fabric_to_wan.name \
+  Reject-other-fabric-to-WAN
+assert_uci firewall.fabric_reject_other_fabric_to_wan.src lan
+assert_uci firewall.fabric_reject_other_fabric_to_wan.dest wan
+assert_uci firewall.fabric_reject_other_fabric_to_wan.family ipv4
+assert_uci firewall.fabric_reject_other_fabric_to_wan.proto all
+assert_uci firewall.fabric_reject_other_fabric_to_wan.target REJECT
+
+assert_uci firewall.fabric_reject_wan_to_fabric.name Reject-WAN-to-fabric
+assert_uci firewall.fabric_reject_wan_to_fabric.src wan
+assert_uci firewall.fabric_reject_wan_to_fabric.dest lan
+assert_uci firewall.fabric_reject_wan_to_fabric.family ipv4
+assert_uci firewall.fabric_reject_wan_to_fabric.proto all
+assert_uci firewall.fabric_reject_wan_to_fabric.target REJECT
 
 service_sources='10.66.0.2/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 for service_rule in dns ntp http; do
@@ -640,24 +677,184 @@ assert_uci firewall.fabric_router_ssh.proto tcp
 assert_uci firewall.fabric_router_ssh.dest_port 22
 assert_uci firewall.fabric_router_ssh.target ACCEPT
 
+assert_uci firewall.fabric_reject_other_fabric_router_input.name \
+  Reject-other-fabric-router-input
+assert_uci firewall.fabric_reject_other_fabric_router_input.src lan
+assert_uci firewall.fabric_reject_other_fabric_router_input.family ipv4
+assert_uci firewall.fabric_reject_other_fabric_router_input.proto all
+assert_uci firewall.fabric_reject_other_fabric_router_input.target REJECT
+
 fw4 check >/dev/null || fail 'fw4 rejected the current configuration'
 live_fw4=$(nft list table inet fw4) || fail 'live inet fw4 table is absent'
+live_nft_tables=$(nft list tables) || fail 'could not enumerate live nftables tables'
+[ "$live_nft_tables" = 'table inet fw4' ] ||
+  fail 'an unexpected live nftables table is present'
 for live_chain in input_lan forward_lan input_wan forward_wan srcnat_wan; do
   nft list chain inet fw4 "$live_chain" >/dev/null 2>&1 ||
     fail "live fw4 chain is absent: $live_chain"
 done
-for live_rule_name in \
-  Allow-WAN-DHCPv4-replies \
-  Block-fabric-to-private-WAN \
-  Allow-roots-to-public-WAN \
-  Allow-fabric-router-DNS \
-  Allow-fabric-router-NTP \
-  Allow-fabric-router-HTTP \
-  Allow-observer-to-fabric-router-SSH; do
-  printf '%s\n' "$live_fw4" | grep -F "$live_rule_name" >/dev/null ||
-    fail "reviewed rule is absent from the live fw4 table: $live_rule_name"
+
+[ -f /var/run/fw4.state ] && [ ! -L /var/run/fw4.state ] ||
+  fail 'live fw4 state is missing or unsafe'
+for state_field in ubus_rules includes; do
+  state_value=$(jsonfilter -i /var/run/fw4.state -e "@.$state_field") ||
+    fail "could not inspect live fw4 state field: $state_field"
+  state_value=$(printf '%s' "$state_value" | tr -d '[:space:]')
+  case $state_field:$state_value in
+    ubus_rules:'[]'|includes:'[]'|includes:null) ;;
+    *) fail "live fw4 state contains unexpected $state_field" ;;
+  esac
 done
-printf 'FIREWALL_RUNTIME=fw4-check-live-table-and-reviewed-rules-pass\n'
+
+# firewall4 always includes top-level /etc/nftables.d/*.nft files. Retain the
+# stock comment-only example, but reject any executable statement or any other
+# automatic include source. The runtime state checks above independently catch
+# UCI and /usr/share auto-includes actually loaded by fw4.
+[ -d /etc/nftables.d ] && [ -d /usr/share/nftables.d ] ||
+  fail 'pinned firewall4 nftables include directories are absent'
+etc_nft_files=$(find /etc/nftables.d -mindepth 1 -maxdepth 1 \
+  -name '*.nft' -print | LC_ALL=C sort)
+[ "$etc_nft_files" = '/etc/nftables.d/10-custom-filter-chains.nft' ] ||
+  fail 'unexpected top-level /etc nftables include membership'
+[ -f /etc/nftables.d/10-custom-filter-chains.nft ] &&
+  [ ! -L /etc/nftables.d/10-custom-filter-chains.nft ] ||
+  fail 'stock nftables include template is missing or unsafe'
+active_etc_nft=$(sed \
+  -e '/^[[:space:]]*#/d' \
+  -e '/^[[:space:]]*$/d' \
+  /etc/nftables.d/10-custom-filter-chains.nft)
+[ -z "$active_etc_nft" ] ||
+  fail 'stock /etc nftables include template contains an active statement'
+share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print)
+[ -z "$share_nft_files" ] ||
+  fail 'an unexpected /usr/share automatic nftables include is present'
+
+assert_live_fw4_rule() {
+  expected_chain=$1
+  live_rule_name=$2
+  expected_count=$3
+  expected_ipv4_match=$4
+  expected_verdict=$5
+  live_rule_marker="comment \"!fw4: $live_rule_name\""
+  matching_global_rules=$(printf '%s\n' "$live_fw4" |
+    grep -F "$live_rule_marker") ||
+    fail "reviewed rule is absent from the live fw4 table: $live_rule_name"
+  global_count=$(printf '%s\n' "$matching_global_rules" |
+    awk 'NF { count++ } END { print count + 0 }')
+  [ "$global_count" -eq "$expected_count" ] ||
+    fail "unexpected compiled-rule count for live fw4 rule: $live_rule_name"
+
+  live_chain_rules=$(nft -a list chain inet fw4 "$expected_chain") ||
+    fail "could not inspect live fw4 chain: $expected_chain"
+  matching_live_rules=$(printf '%s\n' "$live_chain_rules" |
+    grep -F "$live_rule_marker") ||
+    fail "reviewed rule is absent from expected live chain: $live_rule_name"
+  matching_count=$(printf '%s\n' "$matching_live_rules" |
+    awk 'NF { count++ } END { print count + 0 }')
+  [ "$matching_count" -eq "$expected_count" ] ||
+    fail "reviewed rule is in an unexpected live chain: $live_rule_name"
+  if printf '%s\n' "$matching_live_rules" |
+      grep -Ev 'counter packets [0-9]+ bytes [0-9]+' >/dev/null; then
+    fail "live fw4 rule lacks an anonymous packet/byte counter: $live_rule_name"
+  fi
+  if printf '%s\n' "$matching_live_rules" |
+      grep -Fv "$expected_ipv4_match" >/dev/null; then
+    fail "live fw4 rule lacks its expected IPv4 match: $live_rule_name"
+  fi
+  while IFS= read -r live_rule_line; do
+    normalized_live_rule=$(printf '%s\n' "$live_rule_line" | sed \
+      -e 's/^[[:space:]]*//' \
+      -e 's/[[:space:]][[:space:]]*/ /g' \
+      -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+      -e 's/ # handle [0-9][0-9]*$//')
+    case $normalized_live_rule in
+      *" counter $expected_verdict $live_rule_marker") ;;
+      *) fail "live fw4 rule has an unexpected verdict: $live_rule_name" ;;
+    esac
+  done <<EOF
+$matching_live_rules
+EOF
+  printf 'FIREWALL_LIVE_RULE chain=%s name=%s compiled=%s ipv4=%s verdict=%s counter=anonymous\n' \
+    "$expected_chain" "$live_rule_name" "$matching_count" \
+    "$expected_ipv4_match" "$expected_verdict"
+}
+
+assert_live_fw4_chain() {
+  expected_chain=$1
+  expected_rule_count=$2
+  expected_terminal=$3
+  expected_comment_order=$4
+  live_chain_rules=$(nft -a list chain inet fw4 "$expected_chain") ||
+    fail "could not inspect live fw4 chain shape: $expected_chain"
+  actual_rule_count=$(printf '%s\n' "$live_chain_rules" | awk \
+    -v wanted="$expected_chain" '
+      $1 == "chain" && $2 == wanted && $3 == "{" { in_chain = 1; next }
+      in_chain && $1 == "}" { in_chain = 0 }
+      in_chain && /# handle [0-9]+$/ { count++ }
+      END { print count + 0 }
+    ')
+  [ "$actual_rule_count" -eq "$expected_rule_count" ] ||
+    fail "live fw4 chain contains an unexpected rule: $expected_chain"
+  actual_terminal=$(printf '%s\n' "$live_chain_rules" | awk \
+    -v wanted="$expected_chain" '
+      $1 == "chain" && $2 == wanted && $3 == "{" { in_chain = 1; next }
+      in_chain && $1 == "}" { in_chain = 0 }
+      in_chain && /# handle [0-9]+$/ { terminal = $0 }
+      END { print terminal }
+    ' | sed \
+      -e 's/^[[:space:]]*//' \
+      -e 's/[[:space:]][[:space:]]*/ /g' \
+      -e 's/ # handle [0-9][0-9]*$//')
+  [ "$actual_terminal" = "$expected_terminal" ] ||
+    fail "live fw4 chain has an unexpected terminal verdict: $expected_chain"
+  actual_comment_order=$(printf '%s\n' "$live_chain_rules" |
+    sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+  [ "$actual_comment_order" = "$expected_comment_order" ] ||
+    fail "live fw4 chain rule order differs from policy: $expected_chain"
+  printf 'FIREWALL_LIVE_CHAIN name=%s rules=%s terminal=%s order=exact\n' \
+    "$expected_chain" "$actual_rule_count" "$actual_terminal"
+}
+
+assert_live_fw4_rule input_wan Allow-WAN-DHCPv4-replies 1 \
+  'meta nfproto ipv4' accept
+assert_live_fw4_rule input_wan Reject-other-WAN-input 1 \
+  'meta nfproto ipv4' 'jump handle_reject'
+assert_live_fw4_rule forward_lan Block-fabric-to-private-WAN 1 \
+  'ip daddr' 'jump reject_to_wan'
+assert_live_fw4_rule forward_lan Allow-roots-to-public-WAN 1 \
+  'ip saddr' 'jump accept_to_wan'
+assert_live_fw4_rule forward_lan Reject-other-fabric-to-WAN 1 \
+  'meta nfproto ipv4' 'jump reject_to_wan'
+assert_live_fw4_rule forward_wan Reject-WAN-to-fabric 1 \
+  'meta nfproto ipv4' 'jump reject_to_lan'
+assert_live_fw4_rule input_lan Allow-fabric-router-DNS 2 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-fabric-router-NTP 1 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-fabric-router-HTTP 1 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-observer-to-fabric-router-SSH 1 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Reject-other-fabric-router-input 1 \
+  'meta nfproto ipv4' 'jump handle_reject'
+
+assert_live_fw4_chain input_wan 3 'jump reject_from_wan' \
+  'Allow-WAN-DHCPv4-replies
+Reject-other-WAN-input'
+assert_live_fw4_chain forward_lan 4 'jump reject_to_lan' \
+  'Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Reject-other-fabric-to-WAN'
+assert_live_fw4_chain forward_wan 2 'jump reject_to_wan' \
+  'Reject-WAN-to-fabric'
+assert_live_fw4_chain input_lan 7 'jump reject_from_lan' \
+  'Allow-fabric-router-DNS
+Allow-fabric-router-DNS
+Allow-fabric-router-NTP
+Allow-fabric-router-HTTP
+Allow-observer-to-fabric-router-SSH
+Reject-other-fabric-router-input'
+printf 'FIREWALL_RUNTIME=fw4-state-includes-empty-live-tables-chains-order-ipv4-verdicts-and-counters-pass\n'
 
 installed_packages=$(apk info) || fail 'could not enumerate installed packages'
 for forbidden_package in "$@"; do
