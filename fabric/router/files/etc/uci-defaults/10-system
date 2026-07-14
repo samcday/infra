@@ -27,6 +27,7 @@ commit network
 set dhcp.@dnsmasq[0].local='/fabric.internal/'
 set dhcp.@dnsmasq[0].domain='fabric.internal'
 set dhcp.@dnsmasq[0].localservice='1'
+delete dhcp.@dnsmasq[0].address
 add_list dhcp.@dnsmasq[0].address='/fabric-az1-cp1.fabric.internal/10.66.0.10'
 add_list dhcp.@dnsmasq[0].address='/fabric-az1-cp2.fabric.internal/10.66.0.11'
 add_list dhcp.@dnsmasq[0].address='/fabric-az1-cp3.fabric.internal/10.66.0.12'
