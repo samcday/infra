@@ -185,12 +185,8 @@ delete dhcp.lan.ra_flags
 commit dhcp
 EOI
 
-# Do not let a bad generated ruleset or failed reload leave the router in the
-# permissive ImageBuilder default state.
+# Reject a bad generated ruleset before OpenWrt's boot hook consumes this
+# default. The boot service runs these defaults before network-facing services
+# start and calls reload_config after all defaults, so starting/restarting
+# services here is both premature and a source of false first-boot failures.
 fw4 check
-service firewall restart
-service network restart
-service dnsmasq restart
-service odhcpd stop 2>/dev/null || true
-service sysntpd restart
-service uhttpd restart

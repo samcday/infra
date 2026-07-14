@@ -417,6 +417,17 @@ remaining_defaults=$(find /etc/uci-defaults -mindepth 1 -maxdepth 1 -type f -pri
 [ -z "$remaining_defaults" ] || fail 'a first-boot UCI default script remains unconsumed'
 printf 'FIRSTBOOT_DEFAULTS=consumed\n'
 
+root_password_field=$(awk -F: '
+  $1 == "root" { print $2; found = 1 }
+  END { if (!found) exit 1 }
+' /etc/shadow) || fail 'root password field is unavailable'
+case $root_password_field in
+  \$6\$?*) ;;
+  *) fail 'root password is not a non-empty SHA-512 crypt value' ;;
+esac
+unset root_password_field
+printf 'ROOT_PASSWORD=nonempty-sha512-crypt\n'
+
 assert_uci network.lan.ipaddr 10.66.0.1
 assert_uci network.lan.netmask 255.255.255.0
 assert_uci network.lan.device br-lan
@@ -857,6 +868,14 @@ Reject-other-fabric-router-input'
 printf 'FIREWALL_RUNTIME=fw4-state-includes-empty-live-tables-chains-order-ipv4-verdicts-and-counters-pass\n'
 
 installed_packages=$(apk info) || fail 'could not enumerate installed packages'
+for required_package in coreutils-stat shadow-chpasswd; do
+  printf '%s\n' "$installed_packages" | grep -Fqx "$required_package" ||
+    fail "required package is absent: $required_package"
+done
+command -v stat >/dev/null 2>&1 || fail 'required stat command is absent'
+[ -f /usr/sbin/chpasswd ] && [ ! -L /usr/sbin/chpasswd ] &&
+  [ -x /usr/sbin/chpasswd ] ||
+  fail 'required /usr/sbin/chpasswd executable is absent or unsafe'
 for forbidden_package in "$@"; do
   if printf '%s\n' "$installed_packages" | grep -Fqx "$forbidden_package"; then
     fail "removed package is installed: $forbidden_package"

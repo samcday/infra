@@ -1,3 +1,8 @@
 # The fabric router serves only pinned public assets. Keep the HTTP daemon but
 # force-remove the LuCI administration surface inherited from common/router.
+# First-boot policy deliberately uses exact owner/mode checks plus shadow's
+# encrypted-password input. Neither command is present in the target's reduced
+# BusyBox build, so keep their split packages explicit.
+coreutils-stat
+shadow-chpasswd
 uhttpd
