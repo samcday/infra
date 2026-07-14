@@ -1,0 +1,1069 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 077
+
+readonly namespace=fabric-observer
+readonly expected_wifi_mac=d8:80:83:81:cb:f7
+readonly observer_address=10.66.0.2/24
+readonly observer_subnet=10.66.0.0/24
+readonly observer_ssid=fabric-observer
+readonly psk_input_dir=/run/fabric-observer-input
+readonly required_psk_file=$psk_input_dir/sae-password
+readonly runtime_dir=/run/fabric-observer
+readonly state_file=$runtime_dir/state
+readonly state_temp=$runtime_dir/state.new
+readonly supplicant_config=$runtime_dir/wpa_supplicant.conf
+readonly supplicant_pid=$runtime_dir/wpa_supplicant.pid
+readonly supplicant_control=$runtime_dir/wpa-control
+readonly netns_config_dir=/etc/netns/$namespace
+readonly netns_resolv_conf=$netns_config_dir/resolv.conf
+readonly netns_nsswitch_conf=$netns_config_dir/nsswitch.conf
+readonly resolv_conf_line='# fabric-observer intentionally has no DNS configuration'
+readonly nsswitch_contents=$'passwd: files\ngroup: files\nshadow: files\ngshadow: files\nhosts: files\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\nnetgroup: files\nautomount: files\naliases: files'
+
+usage() {
+  cat <<'EOF'
+Create, inspect, verify, or remove sam-desktop's isolated fabric observer WLAN.
+
+Read-only admission check:
+  sudo fabric/observer/fabric-observer-netns check \
+    --uplink ETHERNET_IFACE --wifi WIFI_IFACE [--psk-file ROOT_ONLY_FILE]
+
+Attended setup (copy the exact confirmation printed by check):
+  sudo fabric/observer/fabric-observer-netns setup \
+    --uplink ETHERNET_IFACE --wifi WIFI_IFACE \
+    --psk-file ROOT_ONLY_FILE --confirm SETUP:...
+
+Runtime verification:
+  sudo fabric/observer/fabric-observer-netns verify
+
+Attended teardown (the exact confirmation is intentionally fixed):
+  sudo fabric/observer/fabric-observer-netns teardown \
+    --confirm TEARDOWN:fabric-observer
+
+The helper never decrypts a secret. The setup input must be a root-owned,
+non-symlink, mode-0600 file containing exactly the router's 48-character
+lowercase hexadecimal SAE passphrase, with at most one trailing newline.
+The passphrase is never accepted as an argument or environment variable.
+
+Setup is refused unless the named non-Wi-Fi uplink has carrier and owns the
+sole IPv4 default route across the root namespace's routing tables. Any ordinary IPv6
+default must use that same uplink. The complete Wi-Fi PHY is moved into the
+namespace; no veth, bridge, DHCP, gateway, configured IP DNS, IPv6, default
+route, NAT, or Tailscale device is created. This trusted-operator boundary is
+not a process sandbox: pathname AF_UNIX and system D-Bus remain shared.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*"
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+require_root_namespace() {
+  local current_ns init_ns
+  current_ns=$(readlink -- /proc/self/ns/net) || die 'cannot identify the current network namespace'
+  init_ns=$(readlink -- /proc/1/ns/net) || die 'cannot identify the initial network namespace'
+  [[ "$current_ns" == "$init_ns" ]] || die 'run this helper from the initial/root network namespace'
+}
+
+require_root() {
+  ((EUID == 0)) || die 'this operation must run as root'
+  require_root_namespace
+}
+
+valid_interface_name() {
+  [[ "$1" =~ ^[[:alnum:]_.:-]{1,15}$ && "$1" != lo ]]
+}
+
+validate_interface_name() {
+  valid_interface_name "$2" || die "$1 is not a safe non-loopback interface name: $2"
+}
+
+namespace_exists() {
+  local output
+  output=$(ip netns list) || die 'cannot enumerate named network namespaces'
+  awk -v wanted="$namespace" '$1 == wanted { found = 1 } END { exit !found }' <<<"$output"
+}
+
+interface_is_wireless() {
+  [[ -e "/sys/class/net/$1/phy80211" ]]
+}
+
+permanent_mac() {
+  local output
+  output=$(ethtool -P "$1") || die "could not read the permanent MAC of $1"
+  output=${output#Permanent address: }
+  output=${output,,}
+  [[ "$output" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+    die "ethtool returned an invalid permanent MAC for $1"
+  printf '%s\n' "$output"
+}
+
+wifi_phy() {
+  local target
+  target=$(readlink -e -- "/sys/class/net/$1/phy80211") ||
+    die "cannot identify the Wi-Fi PHY for $1"
+  basename -- "$target"
+}
+
+phy_netdevs() {
+  local candidate candidate_phy target_phy
+  target_phy=$(readlink -e -- "/sys/class/ieee80211/$1") ||
+    die "cannot resolve Wi-Fi PHY $1"
+  for candidate in /sys/class/net/*; do
+    [[ -e "$candidate/phy80211" ]] || continue
+    candidate_phy=$(readlink -e -- "$candidate/phy80211") || continue
+    [[ "$candidate_phy" == "$target_phy" ]] || continue
+    basename -- "$candidate"
+  done
+}
+
+parse_phy_wdevs() {
+  local phy=$1
+  awk -v target="phy#${phy#phy}" '
+    /^phy#/ {
+      active = ($1 == target)
+      next
+    }
+    active && $1 == "Unnamed/non-netdev" && $2 == "interface" {
+      name = "<unnamed>"
+      address = ""
+      next
+    }
+    active && $1 == "Interface" {
+      name = $2
+      address = ""
+      next
+    }
+    active && $1 == "addr" {
+      address = tolower($2)
+      next
+    }
+    active && $1 == "type" {
+      print name "|" $2 "|" address
+      name = ""
+      address = ""
+    }
+  '
+}
+
+root_phy_wdevs() {
+  local output
+  output=$(iw dev) || die 'could not inspect root Wi-Fi wdevs'
+  parse_phy_wdevs "$1" <<<"$output"
+}
+
+namespace_phy_wdevs() {
+  local output
+  output=$(ip netns exec "$namespace" iw dev) || die 'could not inspect observer Wi-Fi wdevs'
+  parse_phy_wdevs "$1" <<<"$output"
+}
+
+validate_admission_wdevs() {
+  local phy=$1 wifi=$2 record name type address
+  local seen_wifi=0 seen_p2p=0 count=0
+  while IFS='|' read -r name type address; do
+    [[ -n "$name" ]] || continue
+    ((count += 1))
+    record="$name|$type|$address"
+    case "$name|$type" in
+      "$wifi|managed")
+        [[ "$address" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+          die "admitted Wi-Fi wdev has an invalid address: $record"
+        ((seen_wifi += 1))
+        ;;
+      '<unnamed>|P2P-device')
+        [[ "$address" == "$expected_wifi_mac" ]] ||
+          die "pre-release P2P wdev has an unexpected address: $record"
+        ((seen_p2p += 1))
+        ;;
+      *) die "unaccounted wdev on $phy before admission: $record" ;;
+    esac
+  done < <(root_phy_wdevs "$phy")
+  [[ $seen_wifi -eq 1 && $seen_p2p -le 1 && $count -eq $((seen_wifi + seen_p2p)) ]] ||
+    die "$phy must contain exactly $wifi/managed and at most NetworkManager's known P2P wdev"
+}
+
+strict_wdev_records() {
+  local wifi=$1
+  local expected="$wifi|managed|$expected_wifi_mac"
+  local output=$2
+  [[ "$output" == "$expected" ]]
+}
+
+strict_root_wdev_shape() {
+  local output
+  output=$(root_phy_wdevs "$1") || return 1
+  strict_wdev_records "$2" "$output"
+}
+
+strict_namespace_wdev_shape() {
+  local output
+  output=$(namespace_phy_wdevs "$1") || return 1
+  strict_wdev_records "$2" "$output"
+}
+
+route_devices() {
+  awk '{ for (field = 1; field <= NF; field++) if ($field == "dev") print $(field + 1) }'
+}
+
+default_route_is_single_path() {
+  local uplink=$1 route=$2
+  local -a devices=()
+  [[ "$route" != *' nexthop '* ]] || return 1
+  mapfile -t devices < <(route_devices <<<"$route")
+  [[ ${#devices[@]} -eq 1 && ${devices[0]} == "$uplink" ]]
+}
+
+ordinary_defaults() {
+  local family=$1 output
+  output=$(ip -o "-$family" route show table all default) ||
+    die "could not inspect IPv${family} default routes"
+  printf '%s' "$output"
+}
+
+validate_root_uplink() {
+  local uplink=$1 carrier ipv4_output ipv6_output route exact_fabric
+  local -a ipv4_defaults=() ipv6_defaults=()
+
+  validate_interface_name uplink "$uplink"
+  [[ -e "/sys/class/net/$uplink" ]] || die "uplink does not exist: $uplink"
+  ! interface_is_wireless "$uplink" || die "uplink must be a separate non-Wi-Fi interface: $uplink"
+  [[ -e "/sys/class/net/$uplink/device" ]] ||
+    die "uplink must be a physical interface, not a virtual link: $uplink"
+  [[ $(<"/sys/class/net/$uplink/type") == 1 ]] ||
+    die "uplink is not an Ethernet-like physical interface: $uplink"
+
+  carrier=$(<"/sys/class/net/$uplink/carrier") || die "cannot read carrier for $uplink"
+  [[ "$carrier" == 1 ]] || die "uplink has no carrier: $uplink"
+
+  ipv4_output=$(ordinary_defaults 4)
+  mapfile -t ipv4_defaults < <(printf '%s' "$ipv4_output")
+  [[ ${#ipv4_defaults[@]} -eq 1 ]] ||
+    die "root namespace must have exactly one ordinary IPv4 default route; found ${#ipv4_defaults[@]}"
+  default_route_is_single_path "$uplink" "${ipv4_defaults[0]}" ||
+    die "the sole ordinary IPv4 default route must contain exactly one device, $uplink"
+
+  ipv6_output=$(ordinary_defaults 6)
+  mapfile -t ipv6_defaults < <(printf '%s' "$ipv6_output")
+  ((${#ipv6_defaults[@]} <= 1)) ||
+    die "root namespace has more than one ordinary IPv6 default route"
+  for route in "${ipv6_defaults[@]}"; do
+    default_route_is_single_path "$uplink" "$route" ||
+      die "an ordinary IPv6 default route must contain exactly one device, $uplink"
+  done
+
+  exact_fabric=$(ip -o -4 route show table all exact "$observer_subnet") ||
+    die 'could not inspect the root route to the fabric subnet'
+  [[ -z "$exact_fabric" ]] ||
+    die "root namespace already has a route for $observer_subnet in a policy-routing table"
+}
+
+validate_wifi_admission() {
+  local wifi=$1 phy actual_mac managed
+  local -a netdevs=()
+
+  validate_interface_name wifi "$wifi"
+  [[ -e "/sys/class/net/$wifi" ]] || die "Wi-Fi interface does not exist: $wifi"
+  interface_is_wireless "$wifi" || die "interface is not a Wi-Fi interface: $wifi"
+
+  actual_mac=$(permanent_mac "$wifi")
+  [[ "$actual_mac" == "$expected_wifi_mac" ]] ||
+    die "permanent Wi-Fi MAC is $actual_mac, expected $expected_wifi_mac"
+
+  phy=$(wifi_phy "$wifi")
+  mapfile -t netdevs < <(phy_netdevs "$phy")
+  [[ ${#netdevs[@]} -eq 1 && ${netdevs[0]} == "$wifi" ]] ||
+    die "Wi-Fi PHY $phy must expose exactly the admitted netdev $wifi"
+  validate_admission_wdevs "$phy" "$wifi"
+
+  managed=$(nmcli -g GENERAL.NM-MANAGED device show "$wifi") ||
+    die "NetworkManager cannot inspect $wifi"
+  [[ "$managed" == yes ]] || die "NetworkManager does not currently manage $wifi"
+
+  printf '%s\n' "$phy"
+}
+
+psk_fd=
+
+close_psk() {
+  if [[ -n "$psk_fd" ]]; then
+    exec {psk_fd}<&-
+    psk_fd=
+  fi
+}
+
+open_and_validate_psk() {
+  local path=$1 path_identity fd_identity owner_mode size fd_metadata canonical
+  [[ -n "$path" ]] || die '--psk-file is required for setup'
+  [[ "$path" == "$required_psk_file" ]] ||
+    die "SAE passphrase input must use the exact trusted path: $required_psk_file"
+  [[ -d "$psk_input_dir" && ! -L "$psk_input_dir" ]] ||
+    die "trusted SAE input directory is missing or unsafe: $psk_input_dir"
+  [[ $(stat -Lc '%u:%a' -- "$psk_input_dir") == 0:700 ]] ||
+    die 'trusted SAE input directory must be root-owned mode 0700'
+  [[ -f "$path" && ! -L "$path" ]] ||
+    die 'SAE passphrase input must be a regular, non-symlink file'
+  canonical=$(readlink -e -- "$path") || die 'cannot canonicalize SAE passphrase input'
+  [[ "$canonical" == "$required_psk_file" ]] ||
+    die 'SAE passphrase input traverses a symlink or unexpected parent path'
+
+  owner_mode=$(stat -Lc '%u:%a' -- "$path") || die 'cannot stat SAE passphrase input'
+  [[ "$owner_mode" == 0:600 ]] ||
+    die 'SAE passphrase input must be root-owned mode 0600'
+  [[ $(stat -Lc '%h' -- "$path") == 1 ]] ||
+    die 'SAE passphrase input must have exactly one hard link'
+
+  path_identity=$(stat -Lc '%d:%i' -- "$path") || die 'cannot identify SAE passphrase input'
+  exec {psk_fd}<"$path" || die 'cannot open SAE passphrase input'
+  fd_identity=$(stat -Lc '%d:%i' -- "/proc/self/fd/$psk_fd") ||
+    die 'cannot identify opened SAE passphrase input'
+  [[ "$fd_identity" == "$path_identity" ]] || die 'SAE passphrase input changed while opening it'
+  fd_metadata=$(stat -Lc '%F:%u:%a:%h' -- "/proc/self/fd/$psk_fd") ||
+    die 'cannot inspect opened SAE passphrase input metadata'
+  [[ "$fd_metadata" == 'regular file:0:600:1' ]] ||
+    die 'opened SAE passphrase input must itself be a root-owned mode-0600 single-link regular file'
+
+  size=$(stat -Lc '%s' -- "/proc/self/fd/$psk_fd") || die 'cannot size SAE passphrase input'
+  [[ "$size" == 48 || "$size" == 49 ]] ||
+    die 'SAE passphrase input must contain exactly 48 characters and an optional newline'
+  LC_ALL=C grep -qx '[0-9a-f]\{48\}' "/proc/self/fd/$psk_fd" ||
+    die 'SAE passphrase input must be exactly 48 lowercase hexadecimal characters'
+}
+
+validate_admission() {
+  local uplink=$1 wifi=$2 psk_file=${3:-} phy
+  [[ "$uplink" != "$wifi" ]] || die 'uplink and Wi-Fi interfaces must be different'
+  ! namespace_exists || die "network namespace already exists: $namespace"
+  [[ ! -e "$runtime_dir" ]] || die "runtime state already exists: $runtime_dir"
+  [[ ! -e "$netns_config_dir" ]] || die "network namespace configuration already exists: $netns_config_dir"
+  validate_root_uplink "$uplink"
+  phy=$(validate_wifi_admission "$wifi")
+  if [[ -n "$psk_file" ]]; then
+    open_and_validate_psk "$psk_file"
+    close_psk
+  fi
+  printf '%s\n' "$phy"
+}
+
+write_state() {
+  local phase=$1 uplink=$2 wifi=$3 phy=$4
+  {
+    printf 'version=1\n'
+    printf 'phase=%s\n' "$phase"
+    printf 'uplink=%s\n' "$uplink"
+    printf 'wifi=%s\n' "$wifi"
+    printf 'phy=%s\n' "$phy"
+  } >"$state_temp"
+  chmod 0600 "$state_temp"
+  mv -f -- "$state_temp" "$state_file"
+}
+
+state_phase=
+state_uplink=
+state_wifi=
+state_phy=
+
+read_state() {
+  local key value
+  local version='' seen_version='' seen_phase='' seen_uplink='' seen_wifi='' seen_phy=''
+  [[ -d "$runtime_dir" && ! -L "$runtime_dir" ]] ||
+    die "runtime directory is missing or unsafe: $runtime_dir"
+  [[ $(stat -Lc '%u:%a' -- "$runtime_dir") == 0:700 ]] ||
+    die 'fabric observer runtime directory must be root-owned mode 0700'
+  [[ -f "$state_file" && ! -L "$state_file" ]] || die "state file is missing or unsafe: $state_file"
+  [[ $(stat -Lc '%u:%a' -- "$state_file") == 0:600 ]] ||
+    die 'fabric observer state must be root-owned mode 0600'
+
+  while IFS='=' read -r key value; do
+    case "$key" in
+      version) [[ -z "$seen_version" ]] || die 'duplicate version in state'; version=$value; seen_version=1 ;;
+      phase) [[ -z "$seen_phase" ]] || die 'duplicate phase in state'; state_phase=$value; seen_phase=1 ;;
+      uplink) [[ -z "$seen_uplink" ]] || die 'duplicate uplink in state'; state_uplink=$value; seen_uplink=1 ;;
+      wifi) [[ -z "$seen_wifi" ]] || die 'duplicate wifi in state'; state_wifi=$value; seen_wifi=1 ;;
+      phy) [[ -z "$seen_phy" ]] || die 'duplicate phy in state'; state_phy=$value; seen_phy=1 ;;
+      '') die 'blank line in state' ;;
+      *) die "unexpected key in state: $key" ;;
+    esac
+  done <"$state_file"
+
+  [[ "$version" == 1 && -n "$seen_phase" && -n "$seen_uplink" && -n "$seen_wifi" && -n "$seen_phy" ]] ||
+    die 'fabric observer state is incomplete or has an unsupported version'
+  case "$state_phase" in
+    setting-up|active|restoring-phy|phy-in-root|cleanup) ;;
+    *) die 'invalid phase in state' ;;
+  esac
+  validate_interface_name 'state uplink' "$state_uplink"
+  validate_interface_name 'state wifi' "$state_wifi"
+  [[ "$state_phy" =~ ^phy[0-9]+$ ]] || die "unsafe PHY name in state: $state_phy"
+}
+
+write_supplicant_config() {
+  [[ -n "$psk_fd" ]] || die 'internal error: SAE passphrase input is not open'
+  install -d -m 0700 -- "$runtime_dir" "$supplicant_control"
+  {
+    printf 'ctrl_interface=DIR=%s GROUP=0\n' "$supplicant_control"
+    printf 'update_config=0\n'
+    printf 'ap_scan=1\n'
+    printf 'p2p_disabled=1\n'
+    printf 'network={\n'
+    printf '    ssid="%s"\n' "$observer_ssid"
+    printf '    scan_ssid=1\n'
+    printf '    key_mgmt=SAE\n'
+    awk '{ printf "    sae_password=\"%s\"\n", $0 }' <&"$psk_fd"
+    printf '    ieee80211w=2\n'
+    printf '    pairwise=CCMP\n'
+    printf '    group=CCMP\n'
+    printf '}\n'
+  } >"$supplicant_config"
+  chmod 0600 "$supplicant_config"
+  close_psk
+}
+
+persist_phase() {
+  write_state "$1" "$state_uplink" "$state_wifi" "$state_phy"
+  state_phase=$1
+}
+
+root_phy_present() {
+  iw phy "$state_phy" info >/dev/null 2>&1
+}
+
+namespace_phy_present() {
+  namespace_exists && ip netns exec "$namespace" iw phy "$state_phy" info >/dev/null 2>&1
+}
+
+wait_for_root_wifi_and_nm() {
+  local attempt
+  for ((attempt = 1; attempt <= 40; attempt++)); do
+    if [[ -e "/sys/class/net/$state_wifi" ]] &&
+      nmcli -g GENERAL.DEVICE device show "$state_wifi" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+wait_for_nm_policy() {
+  local attempt managed autoconnect
+  for ((attempt = 1; attempt <= 40; attempt++)); do
+    managed=$(nmcli -g GENERAL.NM-MANAGED device show "$state_wifi" 2>/dev/null || true)
+    autoconnect=$(nmcli -g GENERAL.AUTOCONNECT device show "$state_wifi" 2>/dev/null || true)
+    if [[ "$managed" == yes && "$autoconnect" == no ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+namespace_only_loopback() {
+  local output
+  namespace_exists || return 1
+  output=$(ip netns exec "$namespace" ip -o link show 2>/dev/null) || return 1
+  [[ $(awk -F': ' '{name=$2; sub(/@.*/, "", name); print name}' <<<"$output") == lo ]]
+}
+
+namespace_has_no_processes() {
+  local output
+  namespace_exists || return 0
+  output=$(ip netns pids "$namespace") || return 1
+  [[ -z "$output" ]]
+}
+
+wait_for_namespace_processes_to_exit() {
+  local attempt
+  for ((attempt = 1; attempt <= 40; attempt++)); do
+    namespace_has_no_processes && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+remove_netns_config_strict() {
+  local entry
+  [[ -e "$netns_config_dir" ]] || return 0
+  [[ -d "$netns_config_dir" && ! -L "$netns_config_dir" ]] || return 1
+  [[ $(stat -Lc '%u:%a' -- "$netns_config_dir") == 0:755 ]] || return 1
+  for entry in "$netns_resolv_conf" "$netns_nsswitch_conf"; do
+    [[ -e "$entry" ]] || continue
+    [[ -f "$entry" && ! -L "$entry" ]] || return 1
+    rm -f -- "$entry" || return 1
+  done
+  [[ -z $(find "$netns_config_dir" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
+  rmdir -- "$netns_config_dir" || return 1
+  [[ ! -e "$netns_config_dir" ]]
+}
+
+remove_runtime_payload_strict() {
+  local entry unexpected
+  [[ -d "$runtime_dir" && ! -L "$runtime_dir" ]] || return 1
+  [[ $(stat -Lc '%u:%a' -- "$runtime_dir") == 0:700 ]] || return 1
+  for entry in "$supplicant_pid" "$supplicant_config" "$state_temp"; do
+    [[ -e "$entry" ]] || continue
+    [[ -f "$entry" && ! -L "$entry" ]] || return 1
+    rm -f -- "$entry" || return 1
+  done
+  if [[ -e "$supplicant_control" ]]; then
+    [[ -d "$supplicant_control" && ! -L "$supplicant_control" ]] || return 1
+    find "$supplicant_control" -mindepth 1 -maxdepth 1 -type s -delete || return 1
+    [[ -z $(find "$supplicant_control" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
+    rmdir -- "$supplicant_control" || return 1
+  fi
+  unexpected=$(find "$runtime_dir" -mindepth 1 -maxdepth 1 ! -name state -print -quit) || return 1
+  [[ -z "$unexpected" ]]
+}
+
+process_is_tracked_supplicant() {
+  local pid=$1 observer_ns pid_ns cmdline
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/comm" ]] || return 1
+  namespace_exists || return 1
+  observer_ns=$(ip netns exec "$namespace" readlink -- /proc/self/ns/net 2>/dev/null) || return 1
+  pid_ns=$(readlink -- "/proc/$pid/ns/net" 2>/dev/null) || return 1
+  cmdline=$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null) || return 1
+  [[ "$pid_ns" == "$observer_ns" ]] &&
+    [[ $(<"/proc/$pid/comm") == wpa_supplicant ]] &&
+    grep -Fxq -- "$supplicant_config" <<<"$cmdline" &&
+    grep -Fxq -- "$state_wifi" <<<"$cmdline"
+}
+
+validate_namespace_processes_for_teardown() {
+  local output tracked_pid
+  local -a pids=()
+  output=$(ip netns pids "$namespace") || die 'cannot enumerate observer namespace processes'
+  mapfile -t pids < <(printf '%s' "$output")
+  ((${#pids[@]} <= 1)) ||
+    die 'observer namespace has extra processes; stop Prometheus, shells, SSH, and probes before teardown'
+  ((${#pids[@]} == 1)) || return 0
+
+  [[ -f "$supplicant_pid" && ! -L "$supplicant_pid" ]] ||
+    die 'observer namespace has a process but the tracked wpa_supplicant PID file is unsafe or missing'
+  read -r tracked_pid <"$supplicant_pid" || die 'cannot read tracked wpa_supplicant PID'
+  if [[ "${pids[0]}" != "$tracked_pid" ]] || ! process_is_tracked_supplicant "$tracked_pid"; then
+    die 'observer namespace contains a process other than the exact tracked wpa_supplicant'
+  fi
+}
+
+stop_supplicant_best_effort() {
+  local pid=''
+  if namespace_exists; then
+    ip netns exec "$namespace" wpa_cli -p "$supplicant_control" -i "$state_wifi" terminate \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$supplicant_pid" ]]; then
+    read -r pid <"$supplicant_pid" || true
+    if process_is_tracked_supplicant "$pid"; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  fi
+}
+
+finish_restoration_cleanup() {
+  root_phy_present || die 'cleanup phase cannot find the PHY in the root namespace'
+  wait_for_root_wifi_and_nm || die 'cleanup phase cannot prove NetworkManager registered the restored Wi-Fi device'
+  [[ $(permanent_mac "$state_wifi") == "$expected_wifi_mac" ]] ||
+    die 'cleanup phase found an unexpected permanent Wi-Fi MAC'
+  nmcli device set "$state_wifi" autoconnect no
+  nmcli device set "$state_wifi" managed yes
+  wait_for_nm_policy || die 'cleanup phase requires NetworkManager managed=yes and autoconnect=no'
+
+  if namespace_exists; then
+    ! namespace_phy_present || die 'cleanup phase still sees the Wi-Fi PHY in the observer namespace'
+    namespace_has_no_processes || die 'cleanup phase found a process in the observer namespace'
+    namespace_only_loopback || die 'cleanup phase requires the observer namespace to contain only loopback'
+    ip netns delete "$namespace" || die 'could not delete the empty observer namespace'
+    ! namespace_exists || die 'observer namespace still exists after deletion'
+  fi
+
+  remove_netns_config_strict ||
+    die 'could not remove the exact observer /etc/netns files; recovery state retained'
+  remove_runtime_payload_strict ||
+    die 'could not remove the exact observer runtime payload; recovery state retained'
+
+  # State is deliberately the final known file removed. If the final directory
+  # removal fails, recreate cleanup state so teardown remains resumable.
+  rm -f -- "$state_file" || die 'could not remove completed recovery state'
+  if ! rmdir -- "$runtime_dir"; then
+    write_state cleanup "$state_uplink" "$state_wifi" "$state_phy" || true
+    die 'restoration succeeded but runtime-directory cleanup failed; cleanup state was retained'
+  fi
+}
+
+resume_restoration() {
+  local root_location namespace_location actual_mac
+  read_state
+
+  while :; do
+    case "$state_phase" in
+      setting-up|active|restoring-phy)
+        root_location=false
+        namespace_location=false
+        root_phy_present && root_location=true
+        namespace_phy_present && namespace_location=true
+        if $root_location && $namespace_location; then
+          die 'the tracked Wi-Fi PHY appears in both root and observer namespaces'
+        fi
+        if $root_location; then
+          persist_phase phy-in-root
+          continue
+        fi
+        $namespace_location ||
+          die "phase $state_phase cannot locate the tracked Wi-Fi PHY; state retained"
+
+        validate_namespace_links
+        strict_namespace_wdev_shape "$state_phy" "$state_wifi" ||
+          die 'refusing to restore a PHY with an unaccounted or P2P wdev'
+        actual_mac=$(ip netns exec "$namespace" ethtool -P "$state_wifi" |
+          sed -n 's/^Permanent address: //p')
+        actual_mac=${actual_mac,,}
+        [[ "$actual_mac" == "$expected_wifi_mac" ]] ||
+          die 'refusing to restore a PHY with an unexpected permanent MAC'
+        validate_namespace_processes_for_teardown
+        persist_phase restoring-phy
+        stop_supplicant_best_effort
+        wait_for_namespace_processes_to_exit ||
+          die 'observer namespace process did not exit; PHY remains isolated and state retained'
+        namespace_has_no_processes ||
+          die 'observer namespace acquired a process before PHY restoration; state retained'
+        ip netns exec "$namespace" ip -4 address flush dev "$state_wifi"
+        ip netns exec "$namespace" ip link set dev "$state_wifi" down
+        ip netns exec "$namespace" iw phy "$state_phy" set netns 1
+        persist_phase phy-in-root
+        ;;
+
+      phy-in-root)
+        if ! root_phy_present; then
+          if namespace_phy_present; then
+            persist_phase restoring-phy
+            continue
+          fi
+          die 'PHY is not yet visible in root; phy-in-root recovery state retained'
+        fi
+        wait_for_root_wifi_and_nm ||
+          die 'PHY returned to root but NetworkManager has not registered the expected interface; state retained'
+        [[ $(permanent_mac "$state_wifi") == "$expected_wifi_mac" ]] ||
+          die 'restored Wi-Fi interface has an unexpected permanent MAC; state retained'
+        nmcli device set "$state_wifi" autoconnect no
+        nmcli device set "$state_wifi" managed yes
+        wait_for_nm_policy ||
+          die 'NetworkManager did not reach managed=yes, autoconnect=no; phy-in-root state retained'
+        persist_phase cleanup
+        ;;
+
+      cleanup)
+        finish_restoration_cleanup
+        return 0
+        ;;
+    esac
+  done
+}
+
+rollback_setup() {
+  local status=$? retained_phase=unknown restore_rc
+  trap - EXIT INT TERM
+  set +e
+  close_psk
+  if [[ ! -f "$state_file" ]]; then
+    write_state setting-up "$state_uplink" "$state_wifi" "$state_phy" 2>/dev/null || true
+  fi
+  (set -e; resume_restoration)
+  restore_rc=$?
+  if ((restore_rc == 0)); then
+    printf 'ERROR: setup failed; PHY, NetworkManager control, and namespace cleanup were all restored.\n' >&2
+  else
+    if [[ -f "$state_file" && ! -L "$state_file" ]]; then
+      retained_phase=$(sed -n 's/^phase=//p' "$state_file" 2>/dev/null || true)
+      [[ -n "$retained_phase" ]] || retained_phase=unknown
+    fi
+    printf 'ERROR: setup failed; recovery phase %s remains at %s.\n' "$retained_phase" "$state_file" >&2
+    printf 'ERROR: rerun guarded teardown with --confirm TEARDOWN:%s.\n' "$namespace" >&2
+  fi
+  exit "$status"
+}
+
+wait_for_association() {
+  local wifi=$1 attempt status
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    status=$(ip netns exec "$namespace" \
+      wpa_cli -p "$supplicant_control" -i "$wifi" status 2>/dev/null || true)
+    if grep -qx 'wpa_state=COMPLETED' <<<"$status" &&
+       grep -qx "ssid=$observer_ssid" <<<"$status" &&
+       grep -qx 'key_mgmt=SAE' <<<"$status" &&
+       grep -qx "address=$expected_wifi_mac" <<<"${status,,}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "WPA3-SAE association with $observer_ssid did not complete within 30 seconds"
+}
+
+validate_namespace_links() {
+  local output name
+  local seen_lo=0 seen_wifi=0 count=0
+  output=$(ip netns exec "$namespace" ip -o link show) || die 'cannot inspect observer namespace links'
+  while IFS= read -r name; do
+    name=${name%%@*}
+    ((count += 1))
+    case "$name" in
+      lo) ((seen_lo += 1)) ;;
+      "$state_wifi") ((seen_wifi += 1)) ;;
+      *) die "unexpected interface in observer namespace: $name" ;;
+    esac
+  done < <(awk -F': ' '{print $2}' <<<"$output")
+  [[ $count -eq 2 && $seen_lo -eq 1 && $seen_wifi -eq 1 ]] ||
+    die 'observer namespace must contain exactly loopback and the admitted Wi-Fi interface'
+}
+
+validate_resolver_boundary() {
+  local contents namespace_contents
+  [[ -d "$netns_config_dir" && ! -L "$netns_config_dir" ]] ||
+    die 'observer namespace configuration directory is missing or unsafe'
+  [[ $(stat -Lc '%u:%a' -- "$netns_config_dir") == 0:755 ]] ||
+    die 'observer namespace configuration directory must be root-owned mode 0755'
+  [[ -f "$netns_resolv_conf" && ! -L "$netns_resolv_conf" ]] ||
+    die 'observer namespace resolver override is missing or unsafe'
+  [[ $(stat -Lc '%u:%a' -- "$netns_resolv_conf") == 0:644 ]] ||
+    die 'observer namespace resolver override must be root-owned mode 0644'
+  contents=$(<"$netns_resolv_conf")
+  [[ "$contents" == "$resolv_conf_line" ]] ||
+    die 'observer namespace resolver override has unexpected content'
+  [[ -f "$netns_nsswitch_conf" && ! -L "$netns_nsswitch_conf" ]] ||
+    die 'observer namespace NSS override is missing or unsafe'
+  [[ $(stat -Lc '%u:%a' -- "$netns_nsswitch_conf") == 0:644 ]] ||
+    die 'observer namespace NSS override must be root-owned mode 0644'
+  contents=$(<"$netns_nsswitch_conf")
+  [[ "$contents" == "$nsswitch_contents" ]] ||
+    die 'observer namespace NSS override has unexpected content'
+
+  namespace_contents=$(ip netns exec "$namespace" cat /etc/nsswitch.conf) ||
+    die 'cannot inspect the NSS policy actually mounted in the observer namespace'
+  [[ "$namespace_contents" == "$nsswitch_contents" ]] ||
+    die 'observer namespace did not receive the files-only NSS policy'
+  if ip netns exec "$namespace" getent ahostsv4 example.com >/dev/null 2>&1; then
+    die 'conventional hostname resolution escaped the observer namespace DNS boundary'
+  fi
+}
+
+validate_runtime_boundary() {
+  [[ -f "$supplicant_config" && ! -L "$supplicant_config" ]] ||
+    die 'observer WPA configuration is missing or unsafe'
+  [[ $(stat -Lc '%u:%a' -- "$supplicant_config") == 0:600 ]] ||
+    die 'observer WPA configuration must be root-owned mode 0600'
+  [[ -d "$supplicant_control" && ! -L "$supplicant_control" ]] ||
+    die 'observer WPA control directory is missing or unsafe'
+  [[ $(stat -Lc '%u:%a' -- "$supplicant_control") == 0:700 ]] ||
+    die 'observer WPA control directory must be root-owned mode 0700'
+}
+
+verify_active() {
+  local address_output route_output expected_routes ipv6_routes status actual_mac forwarding ipv6_forwarding root_phy ruleset
+  local rules4 rules6 sysctl_value key
+  local -a addresses=()
+
+  read_state
+  [[ "$state_phase" == active ]] || die "observer namespace is not active (phase: $state_phase)"
+  namespace_exists || die "network namespace is missing: $namespace"
+  validate_root_uplink "$state_uplink"
+  [[ ! -e "/sys/class/net/$state_wifi" ]] || die 'Wi-Fi interface leaked back into the root namespace'
+  if root_phy=$(iw phy "$state_phy" info 2>/dev/null); then
+    [[ -z "$root_phy" ]] || die 'Wi-Fi PHY is still visible in the root namespace'
+  fi
+
+  validate_namespace_links
+  validate_resolver_boundary
+  validate_runtime_boundary
+  ip netns exec "$namespace" iw phy "$state_phy" info >/dev/null ||
+    die 'expected Wi-Fi PHY is not in the observer namespace'
+  strict_namespace_wdev_shape "$state_phy" "$state_wifi" ||
+    die 'observer PHY contains an unexpected or P2P wdev'
+  actual_mac=$(ip netns exec "$namespace" ethtool -P "$state_wifi" | sed -n 's/^Permanent address: //p')
+  actual_mac=${actual_mac,,}
+  [[ "$actual_mac" == "$expected_wifi_mac" ]] || die 'observer Wi-Fi permanent MAC changed unexpectedly'
+
+  status=$(ip netns exec "$namespace" \
+    wpa_cli -p "$supplicant_control" -i "$state_wifi" status) ||
+    die 'cannot query observer WPA supplicant'
+  grep -qx 'wpa_state=COMPLETED' <<<"$status" || die 'observer Wi-Fi is not associated'
+  grep -qx "ssid=$observer_ssid" <<<"$status" || die 'observer Wi-Fi is associated with the wrong SSID'
+  grep -qx 'key_mgmt=SAE' <<<"$status" || die 'observer Wi-Fi is not using SAE'
+  grep -qx "address=$expected_wifi_mac" <<<"${status,,}" || die 'observer Wi-Fi is not using the admitted MAC'
+
+  address_output=$(ip netns exec "$namespace" ip -o -4 address show dev "$state_wifi" scope global)
+  mapfile -t addresses < <(awk '{print $4}' <<<"$address_output")
+  [[ ${#addresses[@]} -eq 1 && ${addresses[0]} == "$observer_address" ]] ||
+    die "observer Wi-Fi must have only $observer_address"
+  [[ -z $(ip netns exec "$namespace" ip -o -6 address show) ]] ||
+    die 'IPv6 address exists in observer namespace'
+
+  route_output=$(ip netns exec "$namespace" ip -o -4 route show table all |
+    sed 's/[[:space:]]*$//')
+  expected_routes=$(printf '%s\n' \
+    "$observer_subnet dev $state_wifi proto kernel scope link src 10.66.0.2" \
+    "local 10.66.0.2 dev $state_wifi table local proto kernel scope host src 10.66.0.2" \
+    "broadcast 10.66.0.255 dev $state_wifi table local proto kernel scope link src 10.66.0.2" \
+    'local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1' \
+    'local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1' \
+    'broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1')
+  [[ "$route_output" == "$expected_routes" ]] ||
+    die 'observer namespace IPv4 routes do not match the exact connected/local allowlist'
+  ipv6_routes=$(ip netns exec "$namespace" ip -o -6 route show table all)
+  [[ -z "$ipv6_routes" ]] || die 'IPv6 route exists in observer namespace'
+
+  rules4=$(ip netns exec "$namespace" ip -o -4 rule show | awk '{$1=$1; print}')
+  [[ "$rules4" == $'0: from all lookup local\n32766: from all lookup main\n32767: from all lookup default' ]] ||
+    die 'observer namespace has unexpected IPv4 policy-routing rules'
+  rules6=$(ip netns exec "$namespace" ip -o -6 rule show | awk '{$1=$1; print}')
+  [[ "$rules6" == $'0: from all lookup local\n32766: from all lookup main' ]] ||
+    die 'observer namespace has unexpected IPv6 policy-routing rules'
+  ip netns exec "$namespace" ip -4 route get 10.66.0.1 | grep -q \
+    "dev $state_wifi .*src 10.66.0.2" || die 'fabric router route does not select the observer Wi-Fi and address'
+  if ip netns exec "$namespace" ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+    die 'observer namespace unexpectedly has a route to the public Internet'
+  fi
+
+  forwarding=$(ip netns exec "$namespace" sysctl -n net.ipv4.ip_forward)
+  ipv6_forwarding=$(ip netns exec "$namespace" sysctl -n net.ipv6.conf.all.forwarding)
+  [[ "$forwarding" == 0 && "$ipv6_forwarding" == 0 ]] ||
+    die 'forwarding is enabled in observer namespace'
+  for key in \
+    net.ipv4.conf.all.forwarding \
+    net.ipv4.conf.default.forwarding \
+    "net.ipv4.conf.$state_wifi.forwarding" \
+    net.ipv4.conf.all.proxy_arp \
+    net.ipv4.conf.default.proxy_arp \
+    "net.ipv4.conf.$state_wifi.proxy_arp" \
+    net.ipv6.conf.all.forwarding \
+    net.ipv6.conf.default.forwarding; do
+    sysctl_value=$(ip netns exec "$namespace" sysctl -n "$key") ||
+      die "cannot inspect observer namespace sysctl: $key"
+    [[ "$sysctl_value" == 0 ]] || die "observer namespace sysctl must be zero: $key"
+  done
+  for key in \
+    net.ipv6.conf.all.disable_ipv6 \
+    net.ipv6.conf.default.disable_ipv6 \
+    net.ipv6.conf.lo.disable_ipv6 \
+    "net.ipv6.conf.$state_wifi.disable_ipv6"; do
+    sysctl_value=$(ip netns exec "$namespace" sysctl -n "$key") ||
+      die "cannot inspect observer namespace sysctl: $key"
+    [[ "$sysctl_value" == 1 ]] || die "observer namespace sysctl must be one: $key"
+  done
+  ruleset=$(ip netns exec "$namespace" nft list ruleset) ||
+    die 'cannot inspect observer namespace packet-filter state'
+  [[ -z "$ruleset" ]] || die 'observer namespace unexpectedly contains packet-filter or NAT state'
+}
+
+do_check() {
+  local uplink=$1 wifi=$2 psk_file=$3 phy confirmation
+  phy=$(validate_admission "$uplink" "$wifi" "$psk_file")
+  confirmation="SETUP:$namespace:$uplink:$wifi:$phy"
+  note "Admission check passed:"
+  note "  home uplink: $uplink (carrier present; sole ordinary IPv4 default)"
+  note "  observer PHY: $phy ($wifi; permanent MAC $expected_wifi_mac)"
+  if [[ -n "$psk_file" ]]; then
+    note '  SAE input: root-owned mode 0600; format valid (contents not printed)'
+  else
+    note '  SAE input: not checked (setup will require --psk-file)'
+  fi
+  note 'No state was changed.'
+  note "Setup confirmation: $confirmation"
+}
+
+do_setup() {
+  local uplink=$1 wifi=$2 psk_file=$3 confirmation=$4 phy expected_confirmation
+  require_root
+  [[ -n "$psk_file" ]] || die '--psk-file is required for setup'
+  phy=$(validate_admission "$uplink" "$wifi" "$psk_file")
+  expected_confirmation="SETUP:$namespace:$uplink:$wifi:$phy"
+  [[ "$confirmation" == "$expected_confirmation" ]] ||
+    die "confirmation mismatch; run check and copy its exact SETUP confirmation"
+
+  # Reopen the credential only after every read-only admission gate and the
+  # exact attended confirmation have passed. It remains on an inherited file
+  # descriptor and is never placed in argv or the environment.
+  open_and_validate_psk "$psk_file"
+  install -d -m 0700 -- "$runtime_dir"
+  state_uplink=$uplink
+  state_wifi=$wifi
+  state_phy=$phy
+  trap rollback_setup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  write_state setting-up "$uplink" "$wifi" "$phy"
+  write_supplicant_config
+
+  install -d -m 0755 -- "$netns_config_dir"
+  printf '%s\n' "$resolv_conf_line" >"$netns_resolv_conf"
+  chmod 0644 "$netns_resolv_conf"
+  printf '%s\n' "$nsswitch_contents" >"$netns_nsswitch_conf"
+  chmod 0644 "$netns_nsswitch_conf"
+
+  if ! nmcli device disconnect "$wifi" >/dev/null; then
+    local nm_state
+    nm_state=$(nmcli -g GENERAL.STATE device show "$wifi") ||
+      die "NetworkManager lost track of $wifi while releasing it"
+    [[ ${nm_state%% *} == 30 ]] ||
+      die "NetworkManager could not disconnect $wifi (state: $nm_state)"
+  fi
+  nmcli device set "$wifi" managed no
+  validate_root_uplink "$uplink"
+  ip link set dev "$wifi" down
+  ip link set dev "$wifi" address "$expected_wifi_mac"
+
+  local -a netdevs=()
+  mapfile -t netdevs < <(phy_netdevs "$phy")
+  [[ ${#netdevs[@]} -eq 1 && ${netdevs[0]} == "$wifi" ]] ||
+    die "Wi-Fi PHY changed shape after NetworkManager release; refusing to move it"
+  local wdev_attempt
+  for ((wdev_attempt = 1; wdev_attempt <= 20; wdev_attempt++)); do
+    strict_root_wdev_shape "$phy" "$wifi" && break
+    sleep 0.25
+  done
+  strict_root_wdev_shape "$phy" "$wifi" ||
+    die 'NetworkManager did not remove its P2P wdev; refusing to move an unaccounted wdev'
+
+  ip netns add "$namespace"
+  iw phy "$phy" set netns name "$namespace"
+  [[ ! -e "/sys/class/net/$wifi" ]] || die 'Wi-Fi interface remained visible in root namespace after PHY move'
+  ip netns exec "$namespace" ip link set lo up
+  ip netns exec "$namespace" sysctl -qw net.ipv4.ip_forward=0
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.forwarding=0
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.forwarding=0
+  ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.forwarding=0"
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.proxy_arp=0
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.proxy_arp=0
+  ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.proxy_arp=0"
+  ip netns exec "$namespace" sysctl -qw net.ipv6.conf.all.forwarding=0
+  ip netns exec "$namespace" sysctl -qw net.ipv6.conf.default.forwarding=0
+  ip netns exec "$namespace" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+  ip netns exec "$namespace" sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  ip netns exec "$namespace" sysctl -qw net.ipv6.conf.lo.disable_ipv6=1
+  ip netns exec "$namespace" sysctl -qw "net.ipv6.conf.$wifi.disable_ipv6=1"
+  ip netns exec "$namespace" ip link set dev "$wifi" down
+  ip netns exec "$namespace" ip link set dev "$wifi" address "$expected_wifi_mac"
+  strict_namespace_wdev_shape "$phy" "$wifi" ||
+    die 'Wi-Fi PHY changed wdev shape while moving into the observer namespace'
+  ip netns exec "$namespace" ip link set dev "$wifi" up
+  ip netns exec "$namespace" wpa_supplicant -B -D nl80211 -i "$wifi" \
+    -c "$supplicant_config" -P "$supplicant_pid"
+  wait_for_association "$wifi"
+  ip netns exec "$namespace" ip -4 address add "$observer_address" dev "$wifi"
+
+  write_state active "$uplink" "$wifi" "$phy"
+  verify_active
+  trap - EXIT INT TERM
+  note "Observer namespace is active and verified."
+  note "Run fabric operations with: sudo ip netns exec $namespace COMMAND ..."
+  note "Teardown confirmation: TEARDOWN:$namespace"
+}
+
+do_teardown() {
+  local confirmation=$1
+  require_root
+  read_state
+  [[ "$confirmation" == "TEARDOWN:$namespace" ]] ||
+    die "confirmation mismatch; expected TEARDOWN:$namespace"
+  resume_restoration
+
+  note "Restored $state_wifi and its complete PHY to the root namespace."
+  note 'NetworkManager controls it again with device autoconnect disabled.'
+}
+
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+  return 0
+fi
+
+action=${1:-}
+[[ -n "$action" ]] || { usage >&2; exit 2; }
+shift
+
+uplink=
+wifi=
+psk_file=
+confirmation=
+
+while (($#)); do
+  case "$1" in
+    --uplink)
+      (($# >= 2)) || die '--uplink requires an interface name'
+      [[ -z "$uplink" ]] || die '--uplink may only be specified once'
+      uplink=$2
+      shift 2
+      ;;
+    --wifi)
+      (($# >= 2)) || die '--wifi requires an interface name'
+      [[ -z "$wifi" ]] || die '--wifi may only be specified once'
+      wifi=$2
+      shift 2
+      ;;
+    --psk-file)
+      (($# >= 2)) || die '--psk-file requires a path'
+      [[ -z "$psk_file" ]] || die '--psk-file may only be specified once'
+      psk_file=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires text'
+      [[ -z "$confirmation" ]] || die '--confirm may only be specified once'
+      confirmation=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in awk basename cat ethtool getent grep ip iw nmcli readlink sed stat; do
+  need_command "$command"
+done
+
+case "$action" in
+  check)
+    [[ -n "$uplink" && -n "$wifi" ]] || die 'check requires --uplink and --wifi'
+    [[ -z "$confirmation" ]] || die 'check does not accept --confirm'
+    require_root
+    do_check "$uplink" "$wifi" "$psk_file"
+    ;;
+  setup)
+    [[ -n "$uplink" && -n "$wifi" ]] || die 'setup requires --uplink and --wifi'
+    [[ -n "$confirmation" ]] || die 'setup requires --confirm from a passing check'
+    for command in find install mv nft sleep sysctl tr wpa_cli wpa_supplicant; do
+      need_command "$command"
+    done
+    do_setup "$uplink" "$wifi" "$psk_file" "$confirmation"
+    ;;
+  verify)
+    [[ -z "$uplink$wifi$psk_file$confirmation" ]] || die 'verify accepts no options'
+    for command in nft sysctl wpa_cli; do need_command "$command"; done
+    require_root
+    verify_active
+    note 'Observer namespace verification passed.'
+    ;;
+  teardown)
+    [[ -z "$uplink$wifi$psk_file" ]] || die 'teardown accepts only --confirm'
+    [[ -n "$confirmation" ]] || die 'teardown requires --confirm'
+    for command in find mv sleep tr wpa_cli; do need_command "$command"; done
+    do_teardown "$confirmation"
+    ;;
+  help)
+    [[ -z "$uplink$wifi$psk_file$confirmation" ]] || die 'help accepts no options'
+    usage
+    ;;
+  *)
+    usage >&2
+    die "unknown action: $action"
+    ;;
+esac

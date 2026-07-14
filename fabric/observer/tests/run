@@ -4,6 +4,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 cd -- "$(dirname -- "$0")/.."
 python3 -B -m unittest discover --start-directory tests --pattern 'test_*.py'
+./tests/test_netns_helper.sh
 
 if command -v promtool >/dev/null; then
   work=$(mktemp -d)

@@ -31,14 +31,25 @@ associate it only with the router's low-power WPA3-SAE `fabric-observer` SSID,
 and assign `10.66.0.2/24` there.
 
 The observer namespace has only loopback and that Wi-Fi interface. It receives
-no veth, macvlan, bridge, gateway, DHCP, DNS, IPv6, default route, Tailscale
-device, connection sharing, NAT, or proxy ARP. This structural boundary remains
-closed even when unrelated host workloads require `net.ipv4.ip_forward=1` in
-the root namespace. Do not replace it with an ordinary dual-homed
-NetworkManager profile plus hopeful firewall state.
+no veth, macvlan, bridge, gateway, DHCP, configured IP DNS, IPv6, default
+route, Tailscale device, connection sharing, NAT, or proxy ARP. Its per-netns
+`nsswitch.conf` permits only local files for conventional libc hostname
+resolution, and verification proves a public name does not resolve through
+`getent`. This structural network boundary remains closed even when unrelated
+host workloads require `net.ipv4.ip_forward=1` in the root namespace.
+
+This is a trusted operator/monitoring path, not a sandbox for untrusted
+processes. A network namespace does not isolate the host filesystem, pathname
+AF_UNIX sockets, or system D-Bus. A deliberately invoked `resolvectl` can still
+reach the host resolver through those shared paths. Run only the reviewed SSH,
+curl, Prometheus, and collector processes here; adding a mount namespace that
+masks host service sockets is a separate hardening step. Do not replace the
+network boundary with an ordinary dual-homed NetworkManager profile plus
+hopeful firewall state.
 
 Run SSH, SCP, Prometheus, the API/Lease collector, and all admission probes with
-`ip netns exec fabric-observer`. Start Prometheus with the explicit namespace
+`ip netns exec fabric-observer`; these are trusted commands under the residual
+host-filesystem boundary above. Start Prometheus with the explicit namespace
 loopback listener `--web.listen-address=127.0.0.1:9090`; do not add a veth just
 to expose its UI. Copy retained data through an attended stop-and-export step
 after disconnecting the fabric radio.
@@ -48,6 +59,79 @@ only default route uses the home Ethernet interface. Supply the SOPS-managed
 SAE passphrase without printing it or placing it in shell history, and force
 the admitted permanent Wi-Fi MAC rather than NetworkManager's randomized home
 profile MAC. Before starting the soak, verify:
+
+The repository helper makes that boundary reproducible and fail-closed. It
+does not decrypt credentials, accept the SAE passphrase in an argument or
+environment variable, create a veth, or alter the host during its `check`
+action. First prepare the decrypted 48-character passphrase through the
+approved attended SOPS workflow at the exact path
+`/run/fabric-observer-input/sae-password`. Its non-symlink parent must be
+root-owned mode `0700`, and the single-link file must be root-owned mode `0600`.
+Do not put the secret in the command line, shell history, Git worktree, or a
+persistent filesystem. Then run the read-only gate with explicit interface
+names:
+
+```sh
+sudo ./fabric-observer-netns check \
+  --uplink eno1 \
+  --wifi wlp95s0 \
+  --psk-file /run/fabric-observer-input/sae-password
+```
+
+`check` must report wired carrier, exactly one ordinary IPv4 default across all
+root policy-routing tables through that non-Wi-Fi uplink, the admitted permanent MAC
+`d8:80:83:81:cb:f7`, and a valid root-only credential. It deliberately refuses
+the current unsafe shape if Wi-Fi still owns the home default or Ethernet has
+no carrier. Copy its device-specific `SETUP:` confirmation into the attended
+setup command only after reviewing those facts:
+
+```sh
+sudo ./fabric-observer-netns setup \
+  --uplink eno1 \
+  --wifi wlp95s0 \
+  --psk-file /run/fabric-observer-input/sae-password \
+  --confirm 'SETUP:fabric-observer:eno1:wlp95s0:phy0'
+```
+
+The PHY name in that example is illustrative; copy the exact value printed by
+`check`. Setup releases Wi-Fi from NetworkManager, checks the wired default
+again, fixes the admitted MAC, and moves the complete PHY into the namespace.
+It uses a root-only wpa_supplicant configuration on `/run`, associates with
+WPA3-SAE and mandatory management-frame protection, assigns only
+`10.66.0.2/24`, installs an empty per-namespace resolver plus a files-only NSS
+policy, and then runs a full verification. A failed partial setup runs the same
+resumable restoration machine as teardown. It persists
+`restoring-phy`, `phy-in-root`, or `cleanup` before each irreversible boundary
+and retains that precise phase until root PHY presence, NetworkManager
+registration with `managed=yes` and `autoconnect=no`, namespace deletion, and
+configuration cleanup have all been proven.
+
+Re-run the non-mutating runtime assertions at any point:
+
+```sh
+sudo ./fabric-observer-netns verify
+```
+
+When the attended fabric session is over, remove it with the explicit guard:
+
+```sh
+sudo ./fabric-observer-netns teardown \
+  --confirm 'TEARDOWN:fabric-observer'
+```
+
+Teardown refuses an unexpected namespace shape, stops the dedicated
+wpa_supplicant, flushes the static address, returns the whole PHY to the root
+namespace, and hands it back to NetworkManager. Stop Prometheus, SSH sessions,
+shells, and one-shot probes first: teardown enumerates namespace PIDs and
+refuses to proceed if anything other than its exact tracked wpa_supplicant is
+still present. It does not explicitly connect a saved home profile; normal
+NetworkManager control is restored with device autoconnect disabled, and the
+operator decides when to reconnect it. Remove the separate credential input
+file and its empty parent directory after teardown; the helper removes only
+its own runtime copy.
+
+The manual commands below remain useful as independent evidence rather than a
+replacement for the helper's checks:
 
 ```sh
 ip -4 route show default
