@@ -1,0 +1,7 @@
+{
+  "CN": "fabric-observer",
+  "key": {
+    "algo": "rsa",
+    "size": 3072
+  }
+}

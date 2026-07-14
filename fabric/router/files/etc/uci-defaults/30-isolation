@@ -1,0 +1,157 @@
+# BusyBox ash supports pipefail; ShellCheck's generic POSIX mode does not know
+# that target-specific extension.
+# shellcheck disable=SC3040
+set -uexo pipefail
+
+die() {
+    echo "ERROR: $*" >&2
+    logger -t fabric-firewall "ERROR: $*"
+    exit 1
+}
+
+sections_of_type() {
+    uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)=$1$/\1/p"
+}
+
+zone_by_name() {
+    uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$1'$/\1/p"
+}
+
+# The stock image uses anonymous zones and rules. Resolve the zones by name,
+# then require the exact topology this overlay was reviewed against instead of
+# relying on positional @zone indexes that can silently change between images.
+lan_zone=$(zone_by_name lan)
+wan_zone=$(zone_by_name wan)
+[ "$(sections_of_type defaults | wc -l)" -eq 1 ] ||
+    die 'expected exactly one firewall defaults section'
+[ "$(printf '%s\n' "$lan_zone" | sed '/^$/d' | wc -l)" -eq 1 ] ||
+    die 'expected exactly one lan firewall zone'
+[ "$(printf '%s\n' "$wan_zone" | sed '/^$/d' | wc -l)" -eq 1 ] ||
+    die 'expected exactly one wan firewall zone'
+[ "$(sections_of_type zone | wc -l)" -eq 2 ] ||
+    die 'refusing an image with firewall zones other than lan and wan'
+
+# Delete every stock policy exception and forwarding before adding the small,
+# ordered root-cluster policy below. Re-query the first anonymous section after
+# each deletion because UCI renumbers anonymous sections immediately.
+for section_type in rule forwarding redirect nat include; do
+    while :; do
+        section=$(sections_of_type "$section_type" | sed -n '1p')
+        [ -n "$section" ] || break
+        uci -q delete "firewall.${section}"
+    done
+done
+
+uci -q batch <<EOI
+set firewall.@defaults[0].input='REJECT'
+set firewall.@defaults[0].output='ACCEPT'
+set firewall.@defaults[0].forward='REJECT'
+delete firewall.@defaults[0].disable_ipv6
+
+set firewall.${lan_zone}.input='REJECT'
+set firewall.${lan_zone}.output='ACCEPT'
+set firewall.${lan_zone}.forward='REJECT'
+
+set firewall.${wan_zone}.input='REJECT'
+set firewall.${wan_zone}.output='ACCEPT'
+set firewall.${wan_zone}.forward='REJECT'
+set firewall.${wan_zone}.masq='1'
+set firewall.${wan_zone}.mtu_fix='1'
+delete firewall.${wan_zone}.masq_src
+add_list firewall.${wan_zone}.masq_src='10.66.0.10/32'
+add_list firewall.${wan_zone}.masq_src='10.66.0.11/32'
+add_list firewall.${wan_zone}.masq_src='10.66.0.12/32'
+
+# WAN is an IPv4 DHCP client. This is the sole WAN-input exception; the stock
+# ping, IGMP, DHCPv6, MLD, ICMPv6, IPsec ESP and UDP/500 rules stay deleted.
+set firewall.fabric_wan_dhcp_reply='rule'
+set firewall.fabric_wan_dhcp_reply.name='Allow-WAN-DHCPv4-replies'
+set firewall.fabric_wan_dhcp_reply.src='wan'
+set firewall.fabric_wan_dhcp_reply.family='ipv4'
+set firewall.fabric_wan_dhcp_reply.proto='udp'
+set firewall.fabric_wan_dhcp_reply.src_port='67'
+set firewall.fabric_wan_dhcp_reply.dest_port='68'
+set firewall.fabric_wan_dhcp_reply.target='ACCEPT'
+
+# These rejects must precede the root-node Internet allow below. They prevent
+# the fabric from becoming an alternate path into home, hub, or Tailscale.
+set firewall.fabric_block_private='rule'
+set firewall.fabric_block_private.name='Block-fabric-to-private-WAN'
+set firewall.fabric_block_private.src='lan'
+set firewall.fabric_block_private.dest='wan'
+set firewall.fabric_block_private.proto='all'
+add_list firewall.fabric_block_private.dest_ip='10.0.0.0/8'
+add_list firewall.fabric_block_private.dest_ip='100.64.0.0/10'
+add_list firewall.fabric_block_private.dest_ip='172.16.0.0/12'
+add_list firewall.fabric_block_private.dest_ip='192.168.0.0/16'
+set firewall.fabric_block_private.target='REJECT'
+
+set firewall.fabric_root_egress='rule'
+set firewall.fabric_root_egress.name='Allow-roots-to-public-WAN'
+set firewall.fabric_root_egress.src='lan'
+set firewall.fabric_root_egress.dest='wan'
+add_list firewall.fabric_root_egress.src_ip='10.66.0.10/32'
+add_list firewall.fabric_root_egress.src_ip='10.66.0.11/32'
+add_list firewall.fabric_root_egress.src_ip='10.66.0.12/32'
+set firewall.fabric_root_egress.proto='all'
+set firewall.fabric_root_egress.target='ACCEPT'
+
+set firewall.fabric_router_dns='rule'
+set firewall.fabric_router_dns.name='Allow-fabric-router-DNS'
+set firewall.fabric_router_dns.src='lan'
+add_list firewall.fabric_router_dns.src_ip='10.66.0.2/32'
+add_list firewall.fabric_router_dns.src_ip='10.66.0.10/32'
+add_list firewall.fabric_router_dns.src_ip='10.66.0.11/32'
+add_list firewall.fabric_router_dns.src_ip='10.66.0.12/32'
+add_list firewall.fabric_router_dns.proto='tcp'
+add_list firewall.fabric_router_dns.proto='udp'
+set firewall.fabric_router_dns.dest_port='53'
+set firewall.fabric_router_dns.target='ACCEPT'
+
+set firewall.fabric_router_ntp='rule'
+set firewall.fabric_router_ntp.name='Allow-fabric-router-NTP'
+set firewall.fabric_router_ntp.src='lan'
+add_list firewall.fabric_router_ntp.src_ip='10.66.0.2/32'
+add_list firewall.fabric_router_ntp.src_ip='10.66.0.10/32'
+add_list firewall.fabric_router_ntp.src_ip='10.66.0.11/32'
+add_list firewall.fabric_router_ntp.src_ip='10.66.0.12/32'
+set firewall.fabric_router_ntp.proto='udp'
+set firewall.fabric_router_ntp.dest_port='123'
+set firewall.fabric_router_ntp.target='ACCEPT'
+
+set firewall.fabric_router_http='rule'
+set firewall.fabric_router_http.name='Allow-fabric-router-HTTP'
+set firewall.fabric_router_http.src='lan'
+add_list firewall.fabric_router_http.src_ip='10.66.0.2/32'
+add_list firewall.fabric_router_http.src_ip='10.66.0.10/32'
+add_list firewall.fabric_router_http.src_ip='10.66.0.11/32'
+add_list firewall.fabric_router_http.src_ip='10.66.0.12/32'
+set firewall.fabric_router_http.proto='tcp'
+set firewall.fabric_router_http.dest_port='80'
+set firewall.fabric_router_http.target='ACCEPT'
+
+set firewall.fabric_router_ssh='rule'
+set firewall.fabric_router_ssh.name='Allow-observer-to-fabric-router-SSH'
+set firewall.fabric_router_ssh.src='lan'
+set firewall.fabric_router_ssh.src_ip='10.66.0.2/32'
+set firewall.fabric_router_ssh.proto='tcp'
+set firewall.fabric_router_ssh.dest_port='22'
+set firewall.fabric_router_ssh.target='ACCEPT'
+
+commit firewall
+
+set dhcp.lan.ignore='1'
+delete dhcp.lan.start
+delete dhcp.lan.limit
+delete dhcp.lan.leasetime
+commit dhcp
+EOI
+
+# Do not let a bad generated ruleset or failed reload leave the router in the
+# permissive ImageBuilder default state.
+fw4 check
+service firewall restart
+service network restart
+service dnsmasq restart
+service sysntpd restart
+service uhttpd restart

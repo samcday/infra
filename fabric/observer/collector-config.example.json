@@ -1,0 +1,11 @@
+{
+  "interval_seconds": 15,
+  "request_timeout_seconds": 3,
+  "listen_address": "127.0.0.1",
+  "listen_port": 19101,
+  "kubernetes": {
+    "ca_file": "/var/lib/fabric-observer/credentials/kubernetes/ca.crt",
+    "cert_file": "/var/lib/fabric-observer/credentials/kubernetes/client.pem",
+    "key_file": "/var/lib/fabric-observer/credentials/kubernetes/client-key.pem"
+  }
+}

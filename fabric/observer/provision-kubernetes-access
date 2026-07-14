@@ -1,0 +1,513 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Issue or revoke a short-lived, uniquely named Kubernetes observer credential.
+
+Issue a requested 54-hour client certificate into a new directory on trusted
+encrypted storage. This creates and approves one Kubernetes CSR and creates two
+bindings for its unique CN; it never exports an admin credential or CA key:
+
+  provision-kubernetes-access \
+    --issue \
+    --root-address 10.66.0.10 \
+    --output-dir /secure/fabric-soak/kubernetes \
+    --confirm ISSUE:fabric-observer-kubernetes:54h
+
+Revoke its unique bindings and delete the CSR after the soak:
+
+  provision-kubernetes-access \
+    --revoke \
+    --root-address 10.66.0.10 \
+    --credential-dir /secure/fabric-soak/kubernetes \
+    --confirm REVOKE:fabric-observer-kubernetes
+
+The private key is generated directly on the output filesystem and never
+leaves it. Only the public CSR and public RBAC manifests cross the attended SSH
+session. The root's admin kubeconfig, client CA key, and serving CA key never
+leave that root. Never put the credential directory in this repository or an
+evidence archive.
+EOF
+}
+
+die() {
+  echo "provision-kubernetes-access: $*" >&2
+  exit 1
+}
+
+action=
+root_address=
+output_dir=
+credential_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --issue | --revoke)
+      [[ -z $action ]] || die 'choose exactly one of --issue or --revoke'
+      action=${1#--}
+      shift
+      ;;
+    --root-address)
+      (($# >= 2)) || die '--root-address requires a value'
+      root_address=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      output_dir=$2
+      shift 2
+      ;;
+    --credential-dir)
+      (($# >= 2)) || die '--credential-dir requires a value'
+      credential_dir=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n $action ]] || { usage >&2; exit 2; }
+[[ $root_address == 10.66.0.10 || $root_address == 10.66.0.11 ||
+  $root_address == 10.66.0.12 ]] ||
+  die '--root-address must be one of the three fixed fabric root addresses'
+
+for command in base64 curl date git jq openssl realpath ssh stat; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+access_manifest=$script_dir/access.yaml
+[[ -f $access_manifest && ! -L $access_manifest ]] ||
+  die "missing access manifest: $access_manifest"
+
+ssh_root() {
+  ssh \
+    -o BatchMode=yes \
+    -o ClearAllForwardings=yes \
+    -o ConnectTimeout=5 \
+    -o ForwardAgent=no \
+    -o PermitLocalCommand=no \
+    -o ProxyCommand=none \
+    -o ProxyJump=none \
+    -o RequestTTY=no \
+    -o StrictHostKeyChecking=yes \
+    "sam@$root_address" \
+    "$@"
+}
+
+root_kubectl() {
+  ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml \
+    --request-timeout=10s \
+    "$@"
+}
+
+root_public_file() {
+  local path=$1
+  ssh_root sudo --non-interactive /usr/bin/base64 --wrap=0 -- "$path"
+}
+
+validate_external_directory() {
+  local candidate=$1
+  candidate=$(realpath -m -- "$candidate")
+  case $candidate in
+    "$repo_root" | "$repo_root"/*)
+      die 'credential storage must be outside the Git worktree'
+      ;;
+  esac
+  printf '%s\n' "$candidate"
+}
+
+case $action in
+  issue)
+    [[ $confirmation == ISSUE:fabric-observer-kubernetes:54h ]] ||
+      die 'exact --confirm ISSUE:fabric-observer-kubernetes:54h is required'
+    [[ -n $output_dir ]] || die '--output-dir is required with --issue'
+    [[ -z $credential_dir ]] || die '--credential-dir is not accepted with --issue'
+    output_dir=$(validate_external_directory "$output_dir")
+    [[ ! -e $output_dir && ! -L $output_dir ]] ||
+      die 'credential output directory already exists; use a new directory'
+    output_parent=$(dirname -- "$output_dir")
+    [[ -d $output_parent && ! -L $output_parent ]] ||
+      die 'credential output parent must be an existing non-symlink directory'
+
+    umask 077
+    work=$(mktemp -d "$output_parent/.fabric-kube-observer.XXXXXX")
+    identity=fabric-observer-$(openssl rand -hex 16)
+    [[ $identity =~ ^fabric-observer-[0-9a-f]{32}$ ]] ||
+      die 'generated observer identity has an invalid shape'
+    csr_name=$identity
+    role_binding=$identity
+    cluster_role_binding=$identity
+    cleanup_cluster=false
+    cleanup() {
+      rm -rf -- "$work"
+      if [[ $cleanup_cluster == true ]]; then
+        root_kubectl delete clusterrolebinding "$cluster_role_binding" \
+          --ignore-not-found >/dev/null 2>&1 || true
+        root_kubectl delete rolebinding "$role_binding" --namespace kube-system \
+          --ignore-not-found >/dev/null 2>&1 || true
+        root_kubectl delete certificateSigningRequest "$csr_name" \
+          --ignore-not-found >/dev/null 2>&1 || true
+      fi
+    }
+    trap cleanup EXIT
+
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+      -out "$work/client-key.pem" 2>/dev/null
+    openssl req -new -sha256 \
+      -key "$work/client-key.pem" \
+      -subj "/CN=$identity" \
+      -out "$work/client.csr"
+    [[ $(openssl req -in "$work/client.csr" -noout -subject -nameopt RFC2253) == \
+      "subject=CN=$identity" ]] || die 'generated CSR has an unexpected subject'
+    if openssl req -in "$work/client.csr" -noout -text |
+      grep -Fq 'X509v3 Subject Alternative Name'; then
+      die 'generated CSR unexpectedly requests subjectAltName'
+    fi
+    csr_request=$(base64 --wrap=0 < "$work/client.csr")
+
+    jq -n \
+      --arg name "$csr_name" \
+      --arg request "$csr_request" \
+      '{
+        apiVersion: "certificates.k8s.io/v1",
+        kind: "CertificateSigningRequest",
+        metadata: {
+          name: $name,
+          labels: {"fabric.samcday.com/purpose": "soak-observer"}
+        },
+        spec: {
+          request: $request,
+          signerName: "kubernetes.io/kube-apiserver-client",
+          expirationSeconds: 194400,
+          usages: ["client auth"]
+        }
+      }' > "$work/csr.json"
+    unset csr_request
+
+    [[ $(root_kubectl get --raw=/readyz) == ok ]] ||
+      die 'selected root cannot reach its local Kubernetes API readiness endpoint'
+    root_kubectl apply --server-side \
+      --field-manager=fabric-observer-bootstrap \
+      --filename=- < "$access_manifest" >/dev/null
+    root_kubectl create --filename=- < "$work/csr.json" >/dev/null
+    cleanup_cluster=true
+    root_kubectl certificate approve "$csr_name" >/dev/null
+
+    certificate=
+    for _attempt in {1..30}; do
+      certificate=$(root_kubectl get certificateSigningRequest "$csr_name" \
+        --output=json | jq -er '.status.certificate // empty') || true
+      [[ -n $certificate ]] && break
+      sleep 1
+    done
+    [[ -n $certificate ]] || die 'the Kubernetes client signer did not issue the observer certificate'
+    printf '%s' "$certificate" | base64 --decode > "$work/client.pem" ||
+      die 'the issued observer certificate could not be decoded'
+    unset certificate
+
+    root_public_file /var/lib/rancher/k3s/server/tls/server-ca.crt |
+      base64 --decode > "$work/ca.crt" ||
+      die 'could not retrieve the public Kubernetes serving CA'
+    root_public_file /var/lib/rancher/k3s/server/tls/client-ca.crt |
+      base64 --decode > "$work/client-ca.crt" ||
+      die 'could not retrieve the public Kubernetes client CA'
+
+    openssl x509 -in "$work/ca.crt" -noout -subject >/dev/null ||
+      die 'root serving CA is not an X.509 certificate'
+    openssl verify -CAfile "$work/client-ca.crt" "$work/client.pem" >/dev/null ||
+      die 'issued client certificate does not verify against the root client CA'
+    [[ $(openssl x509 -in "$work/client.pem" -noout -subject -nameopt RFC2253) == \
+      "subject=CN=$identity" ]] || die 'issued client certificate has an unexpected subject or group'
+    if openssl x509 -in "$work/client.pem" -noout -text |
+      grep -Fq 'X509v3 Subject Alternative Name'; then
+      die 'issued client certificate unexpectedly contains subjectAltName'
+    fi
+    eku=$(openssl x509 -in "$work/client.pem" -noout -ext extendedKeyUsage |
+      tr -d '[:space:]')
+    [[ $eku == X509v3ExtendedKeyUsage:TLSWebClientAuthentication ]] ||
+      die 'issued client certificate EKU is not exactly clientAuth'
+    certificate_key=$(openssl x509 -in "$work/client.pem" -pubkey -noout |
+      openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+    private_key=$(openssl pkey -in "$work/client-key.pem" -pubout -outform DER 2>/dev/null |
+      sha256sum | awk '{print $1}')
+    [[ $certificate_key == "$private_key" ]] ||
+      die 'issued client certificate does not match the locally generated private key'
+
+    not_before_text=$(openssl x509 -in "$work/client.pem" -noout -startdate)
+    not_after_text=$(openssl x509 -in "$work/client.pem" -noout -enddate)
+    not_before=$(date --utc --date="${not_before_text#notBefore=}" +%s) ||
+      die 'could not parse client certificate start time'
+    not_after=$(date --utc --date="${not_after_text#notAfter=}" +%s) ||
+      die 'could not parse client certificate expiry time'
+    now=$(date --utc +%s)
+    lifetime=$((not_after - not_before))
+    remaining=$((not_after - now))
+    (( lifetime >= 190800 && lifetime <= 198000 )) ||
+      die "Kubernetes signer did not honor the bounded 54-hour lifetime (actual ${lifetime}s)"
+    (( remaining >= 187200 && remaining <= 198000 )) ||
+      die "issued credential does not have the expected bounded remaining lifetime (${remaining}s)"
+
+    jq -n \
+      --arg identity "$identity" \
+      --arg csr "$csr_name" \
+      --arg role_binding "$role_binding" \
+      --arg cluster_role_binding "$cluster_role_binding" \
+      --argjson not_after "$not_after" \
+      '{
+        schema: 1,
+        identity: $identity,
+        csr: $csr,
+        roleBinding: $role_binding,
+        clusterRoleBinding: $cluster_role_binding,
+        notAfterTimestampSeconds: $not_after
+      }' > "$work/identity.json"
+
+    jq -n \
+      --arg name "$cluster_role_binding" \
+      --arg identity "$identity" \
+      '{
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "ClusterRoleBinding",
+        metadata: {
+          name: $name,
+          labels: {
+            "fabric.samcday.com/purpose": "soak-observer",
+            "fabric.samcday.com/session": $identity
+          }
+        },
+        roleRef: {
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "ClusterRole",
+          name: "fabric-observer-readyz"
+        },
+        subjects: [{
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "User",
+          name: $identity
+        }]
+      }' > "$work/cluster-role-binding.json"
+    jq -n \
+      --arg name "$role_binding" \
+      --arg identity "$identity" \
+      '{
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "RoleBinding",
+        metadata: {
+          name: $name,
+          namespace: "kube-system",
+          labels: {
+            "fabric.samcday.com/purpose": "soak-observer",
+            "fabric.samcday.com/session": $identity
+          }
+        },
+        roleRef: {
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "Role",
+          name: "fabric-observer-kube-vip-lease"
+        },
+        subjects: [{
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "User",
+          name: $identity
+        }]
+      }' > "$work/role-binding.json"
+    root_kubectl create --filename=- < "$work/cluster-role-binding.json" >/dev/null
+    root_kubectl create --filename=- < "$work/role-binding.json" >/dev/null
+
+    observer_get() {
+      local url=$1
+      curl \
+        --fail \
+        --noproxy '*' \
+        --silent \
+        --show-error \
+        --max-time 5 \
+        --proto '=https' \
+        --tlsv1.2 \
+        --cacert "$work/ca.crt" \
+        --cert "$work/client.pem" \
+        --key "$work/client-key.pem" \
+        --header 'Accept: application/json, text/plain;q=0.9' \
+        "$url"
+    }
+    [[ $(observer_get https://10.66.0.254:6443/readyz) == ok ]] ||
+      die 'issued observer cannot read API readiness through the VIP'
+    lease_name=$(observer_get \
+      https://10.66.0.254:6443/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/plndr-cp-lock |
+      jq -er '.metadata.name') ||
+      die 'issued observer cannot read the fixed kube-vip Lease'
+    [[ $lease_name == plndr-cp-lock ]] || die 'observer read the wrong Lease'
+
+    root_kubectl auth can-i --quiet get /readyz \
+      --as="$identity" --as-group=system:authenticated ||
+      die 'observer impersonation check denies /readyz'
+    root_kubectl auth can-i --quiet \
+      get leases.coordination.k8s.io/plndr-cp-lock \
+      --namespace kube-system --as="$identity" \
+      --as-group=system:authenticated ||
+      die 'observer impersonation check denies the fixed Lease'
+    if root_kubectl auth can-i --quiet list leases.coordination.k8s.io \
+      --namespace kube-system --as="$identity" \
+      --as-group=system:authenticated; then
+      die 'observer unexpectedly can list Leases'
+    fi
+    if root_kubectl auth can-i --quiet get pods \
+      --namespace kube-system --as="$identity" \
+      --as-group=system:authenticated; then
+      die 'observer unexpectedly can read Pods'
+    fi
+    if root_kubectl auth can-i --quiet get secrets \
+      --namespace kube-system --as="$identity" \
+      --as-group=system:authenticated; then
+      die 'observer unexpectedly can read Secrets'
+    fi
+    if root_kubectl auth can-i --quiet create pods \
+      --namespace kube-system --as="$identity" \
+      --as-group=system:authenticated; then
+      die 'observer unexpectedly can create Pods'
+    fi
+
+    deny_can_i() {
+      local description=$1
+      shift
+      if root_kubectl auth can-i --quiet "$@" \
+        --as="$identity" --as-group=system:authenticated; then
+        die "observer unexpectedly can $description"
+      fi
+    }
+    deny_can_i 'GET another Lease' get \
+      leases.coordination.k8s.io/not-plndr-cp-lock --namespace kube-system
+    for verb in patch update delete; do
+      deny_can_i "$verb the kube-vip Lease" "$verb" \
+        leases.coordination.k8s.io/plndr-cp-lock --namespace kube-system
+    done
+    deny_can_i 'read Nodes' get nodes
+    deny_can_i 'read ConfigMaps' get configmaps --namespace kube-system
+    deny_can_i 'read apiserver metrics' get /metrics
+    deny_can_i 'create CSRs' create certificatesigningrequests.certificates.k8s.io
+    deny_can_i 'approve CSRs' update certificatesigningrequests.certificates.k8s.io \
+      --subresource=approval
+    deny_can_i 'create ClusterRoleBindings' create \
+      clusterrolebindings.rbac.authorization.k8s.io
+    deny_can_i 'bind ClusterRoles' bind clusterroles.rbac.authorization.k8s.io
+    deny_can_i 'escalate ClusterRoles' escalate clusterroles.rbac.authorization.k8s.io
+    deny_can_i 'impersonate users' impersonate users
+    deny_can_i 'mint ServiceAccount tokens' create serviceaccounts \
+      --namespace kube-system --subresource=token
+
+    for forbidden_path in \
+      /api/v1/namespaces/kube-system/pods \
+      /api/v1/namespaces/kube-system/secrets \
+      /api/v1/nodes \
+      /apis/certificates.k8s.io/v1/certificatesigningrequests \
+      /apis/rbac.authorization.k8s.io/v1/clusterrolebindings \
+      /apis/coordination.k8s.io/v1/namespaces/kube-system/leases \
+      /apis/coordination.k8s.io/v1/namespaces/kube-system/leases/not-plndr-cp-lock \
+      /metrics; do
+      status=$(curl \
+        --noproxy '*' \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        --max-time 5 \
+        --proto '=https' \
+        --tlsv1.2 \
+        --cacert "$work/ca.crt" \
+        --cert "$work/client.pem" \
+        --key "$work/client-key.pem" \
+        "https://10.66.0.254:6443$forbidden_path") ||
+        die "negative API request failed before returning authorization status: $forbidden_path"
+      [[ $status == 403 ]] ||
+        die "observer unexpectedly received HTTP $status for forbidden path: $forbidden_path"
+    done
+
+    for address in 10.66.0.10 10.66.0.11 10.66.0.12; do
+      [[ $(observer_get "https://$address:6443/readyz") == ok ]] ||
+        die "issued observer cannot read API readiness directly through $address"
+    done
+
+    rm -f -- \
+      "$work/client.csr" \
+      "$work/client-ca.crt" \
+      "$work/csr.json" \
+      "$work/cluster-role-binding.json" \
+      "$work/role-binding.json"
+    chmod 0600 "$work/client-key.pem" "$work/identity.json"
+    chmod 0644 "$work/client.pem" "$work/ca.crt"
+    mv -- "$work" "$output_dir"
+    cleanup_cluster=false
+    trap - EXIT
+    echo "issued and verified $identity through $(date --utc --date="@$not_after" --iso-8601=seconds)" >&2
+    echo "credential directory: $output_dir" >&2
+    echo 'revoke its unique bindings immediately after the soak' >&2
+    ;;
+  revoke)
+    [[ $confirmation == REVOKE:fabric-observer-kubernetes ]] ||
+      die 'exact --confirm REVOKE:fabric-observer-kubernetes is required'
+    [[ -n $credential_dir ]] || die '--credential-dir is required with --revoke'
+    [[ -z $output_dir ]] || die '--output-dir is not accepted with --revoke'
+    credential_dir=$(validate_external_directory "$credential_dir")
+    metadata=$credential_dir/identity.json
+    [[ -f $metadata && ! -L $metadata ]] ||
+      die 'credential identity metadata is missing or is a symlink'
+    metadata_mode=$(stat -c '%a' -- "$metadata")
+    (( (8#$metadata_mode & 077) == 0 )) ||
+      die 'credential identity metadata must not be accessible to group or other users'
+    identity=$(jq -er '
+      select(.schema == 1) |
+      .identity |
+      select(test("^fabric-observer-[0-9a-f]{32}$"))
+    ' "$metadata") || die 'credential identity metadata is invalid'
+    csr_name=$(jq -er '.csr' "$metadata")
+    role_binding=$(jq -er '.roleBinding' "$metadata")
+    cluster_role_binding=$(jq -er '.clusterRoleBinding' "$metadata")
+    [[ $csr_name == "$identity" && $role_binding == "$identity" &&
+      $cluster_role_binding == "$identity" ]] ||
+      die 'credential identity metadata names do not match exactly'
+
+    root_kubectl delete clusterrolebinding "$cluster_role_binding" \
+      --ignore-not-found >/dev/null
+    root_kubectl delete rolebinding "$role_binding" --namespace kube-system \
+      --ignore-not-found >/dev/null
+    root_kubectl delete certificateSigningRequest "$csr_name" \
+      --ignore-not-found >/dev/null
+    for _attempt in {1..10}; do
+      status=$(curl \
+        --noproxy '*' \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        --max-time 5 \
+        --proto '=https' \
+        --tlsv1.2 \
+        --cacert "$credential_dir/ca.crt" \
+        --cert "$credential_dir/client.pem" \
+        --key "$credential_dir/client-key.pem" \
+        https://10.66.0.254:6443/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/plndr-cp-lock) ||
+        die 'post-revocation API proof failed before returning authorization status'
+      [[ $status == 403 ]] && break
+      sleep 1
+    done
+    [[ $status == 403 ]] ||
+      die "revoked observer still received HTTP $status for the named Lease"
+    echo "revoked the unique Kubernetes observer bindings and CSR for $identity" >&2
+    echo 'securely remove its private key after preserving non-secret soak evidence' >&2
+    ;;
+esac

@@ -1,0 +1,176 @@
+schema_version: 1
+record_id: fabric-root-power-domain-v1
+status: pending  # pending, assembly_qualified, rejected, or accepted
+
+boundary:
+  meter_model_marking: SM-732-A
+  downstream_devices:
+    - OpenWrt One USB-C power supply
+    - five-port switch power supply
+    - fabric-az1-cp1 power supply
+    - fabric-az1-cp2 power supply
+    - fabric-az1-cp3 power supply
+  excluded_devices:
+    - Matter controller and persistent recorder
+    - Wi-Fi access point or Thread border router
+    - operations laptop and charger
+    - workers, monitors, and unrelated loads
+
+physical_admission:
+  manufacturer: null
+  exact_model: null
+  serial: null
+  responsible_supplier: null
+  rcm_mark_present: null
+  approval_or_registration_reference: null
+  rated_voltage_v: null
+  rated_current_a: null
+  rated_power_w: null
+  physical_damage_absent: null
+  wall_fit_secure: null
+  abnormal_smell_absent: null
+  abnormal_post_load_heating_absent: null
+
+power_chain:
+  wall_outlet_rating_a: null
+  smart_plug_rating_a: null
+  extension_board_rating_a: null
+  extension_board_lead_rating_a: null
+  downstream_psus:
+    - device: OpenWrt One
+      label_input_rating: null
+      conservative_input_w: null
+      lead_rating_a: null
+    - device: five-port switch
+      label_input_rating: null
+      conservative_input_w: null
+      lead_rating_a: null
+    - device: fabric-az1-cp1
+      label_input_rating: null
+      conservative_input_w: null
+      lead_rating_a: null
+    - device: fabric-az1-cp2
+      label_input_rating: null
+      conservative_input_w: null
+      lead_rating_a: null
+    - device: fabric-az1-cp3
+      label_input_rating: null
+      conservative_input_w: null
+      lead_rating_a: null
+  aggregate_conservative_input_w: null
+  measured_peak_w: null
+  lowest_rated_chain_current_a: null
+  declared_minimum_headroom_percent: null
+  calculated_headroom_percent: null
+  aggregate_fits_lowest_rated_component: null
+  post_load_temperature_or_touch_evidence: null
+  all_chain_components_abnormal_heating_absent: null
+  all_chain_components_abnormal_smell_absent: null
+  direct_wall_connection: null
+  no_daisy_chained_boards_or_adapters: null
+  all_leads_admitted: null
+
+matter_identity:
+  transport: null  # wifi or thread
+  vendor_id: null
+  product_id: null
+  hardware_version: null
+  firmware_version: null
+  device_attestation_reference_or_digest: null
+  certification_url: null
+  exposed_clusters: []
+
+controller:
+  product: null
+  version: null
+  persistent_recorder: null
+  outside_measured_domain: null
+  outside_all_measured_clusters: null
+  available_while_measured_domain_off: null
+  domain_off_evidence: null
+  old_fabrics_removed: null
+  schedules_removed: null
+  local_automations_removed: null
+  automatic_power_cycling_disabled: null
+  voice_control_removed: null
+  vendor_cloud_actuation_removed: null
+  unattended_firmware_updates_disabled: null
+  local_overload_protection_preserved: null
+
+telemetry:
+  relay_entity: null
+  instantaneous_power_entity: null
+  instantaneous_power_unit: null
+  energy_source: null  # device_native or gap_aware_integrator
+  cumulative_energy_entity: null
+  cumulative_energy_unit: null
+  sampling_interval_seconds: null
+  cumulative_counter_monotonic: null
+  cumulative_counter_reset_behavior: null
+  telemetry_gap_behavior: null
+  recorder_retention: null
+  integrator:
+    product_and_version: null
+    configuration_reference: null
+    input_power_entity: null
+    gap_detection: null
+    missing_sample_policy: null
+    restart_and_reset_behavior: null
+    persistent_outside_measured_domain: null
+  sensor_only_export_to_hub: null
+  relay_control_exported_to_hub: false
+
+harmless_load_validation:
+  load_description: null
+  reference_method: null
+  declared_watts: null
+  started_at_rfc3339_with_offset: null
+  ended_at_rfc3339_with_offset: null
+  elapsed_hours: null
+  cumulative_start_reading: null
+  cumulative_end_reading: null
+  cumulative_reading_unit: null
+  counter_reset_during_run: null
+  expected_wh: null
+  observed_delta_wh: null
+  declared_tolerance_percent: 10
+  observed_error_percent: null
+  within_declared_tolerance: null
+
+failure_tests:
+  controller_loss_relay_remained_on: null
+  ap_or_border_router_loss_relay_remained_on: null
+  measured_domain_off_recorder_remained_available: null
+  relay_cycles_attempted: 0
+  relay_cycles_passed: 0
+  upstream_mains_cycles_attempted: 0
+  upstream_mains_cycles_passed: 0
+  restore_state_is_on: null
+  counter_continuity_across_relay_cycles: null
+  counter_continuity_across_controller_restart: null
+  counter_continuity_across_upstream_mains_loss: null
+
+standby_accounting:
+  upstream_reference_meter: null
+  plug_no_load_watts: null
+  plug_self_consumption_included_by_load_counter: null
+  accounting_adjustment: null
+
+cost_model:
+  tariff_currency: AUD
+  tariff_type: null  # flat or time_of_use
+  variable_tariff_per_kwh: null
+  tariff_schedule_reference: null
+  fixed_supply_charge_excluded: true
+
+relay_policy:
+  operational_relay_actuation_prohibited: true
+  relay_capable_hub_credential_prohibited: true
+  attended_prerequisite_gated_power_tests_only: true
+
+review:
+  reviewed_by: null
+  reviewed_at_rfc3339_with_offset: null
+  evidence_location: null
+  rejection_reason: null
+  notes: null

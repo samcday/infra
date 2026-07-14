@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$script_dir/../../../scripts/lib/fabric-secure-tempdir.sh"
+
+usage() {
+  cat <<'EOF'
+Verify or update the encrypted PKI copies embedded in fabric/butane.
+
+  ./sync-butane --check
+  ./sync-butane --apply --confirm SYNC:fabric-etcd-pki
+
+The apply operation changes only the twelve known PKI fields. It stages and
+round-trips every SOPS file before publishing any of them. Plaintext exists
+only in a mode-0700 directory on verified tmpfs.
+EOF
+}
+
+mode=
+confirmation=
+while (($#)); do
+  case $1 in
+    --check)
+      [[ -z $mode ]] || { echo 'choose exactly one mode' >&2; exit 2; }
+      mode=check
+      shift
+      ;;
+    --apply)
+      [[ -z $mode ]] || { echo 'choose exactly one mode' >&2; exit 2; }
+      mode=apply
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || { echo '--confirm requires a value' >&2; exit 2; }
+      confirmation=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n $mode ]] || { usage; exit 2; }
+if [[ $mode == apply ]]; then
+  [[ $confirmation == SYNC:fabric-etcd-pki ]] || {
+    echo 'exact --confirm SYNC:fabric-etcd-pki is required' >&2
+    exit 2
+  }
+else
+  [[ -z $confirmation ]] || { echo '--confirm is only valid with --apply' >&2; exit 2; }
+fi
+
+for command in butane cmp git install realpath sops tr yq; do
+  command -v "$command" >/dev/null || {
+    echo "missing required command: $command" >&2
+    exit 1
+  }
+done
+
+cd "$script_dir"
+umask 077
+work=$(fabric_secure_tmpdir fabric-etcd-pki-sync 16777216)
+trap 'rm -rf -- "$work"' EXIT
+repo_root=$(git rev-parse --show-toplevel)
+butane_dir=$(realpath ../../butane)
+staged=$work/staged
+mkdir -p "$work/pki" "$work/plain" "$staged"
+
+profiles=(
+  etcd.yaml
+  control-plane.yaml
+  fabric-az1-cp1.yaml
+  fabric-az1-cp2.yaml
+  fabric-az1-cp3.yaml
+  observer-agent.yaml
+)
+
+artifacts=(
+  ca.pem
+  fabric-root.pem
+  fabric-root-key.pem
+  fabric-az1-cp1.pem
+  fabric-az1-cp1-key.pem
+  fabric-az1-cp2.pem
+  fabric-az1-cp2-key.pem
+  fabric-az1-cp3.pem
+  fabric-az1-cp3-key.pem
+  fabric-observer.pem
+  fabric-observer-key.pem
+)
+
+for artifact in "${artifacts[@]}"; do
+  sops --decrypt --input-type json --output-type binary \
+    "$artifact.enc" > "$work/pki/$artifact"
+done
+
+for profile in "${profiles[@]}"; do
+  sops --decrypt "$butane_dir/$profile" > "$work/plain/$profile"
+done
+
+mapping=(
+  'etcd.yaml|/etc/etcd/pki/ca.pem|ca.pem'
+  'control-plane.yaml|/var/lib/rancher/k3s/server/etcd-ca.pem|ca.pem'
+  'control-plane.yaml|/var/lib/rancher/k3s/server/etcd-client.pem|fabric-root.pem'
+  'control-plane.yaml|/var/lib/rancher/k3s/server/etcd-client-key.pem|fabric-root-key.pem'
+  'fabric-az1-cp1.yaml|/etc/etcd/pki/peer.pem|fabric-az1-cp1.pem'
+  'fabric-az1-cp1.yaml|/etc/etcd/pki/peer-key.pem|fabric-az1-cp1-key.pem'
+  'fabric-az1-cp2.yaml|/etc/etcd/pki/peer.pem|fabric-az1-cp2.pem'
+  'fabric-az1-cp2.yaml|/etc/etcd/pki/peer-key.pem|fabric-az1-cp2-key.pem'
+  'fabric-az1-cp3.yaml|/etc/etcd/pki/peer.pem|fabric-az1-cp3.pem'
+  'fabric-az1-cp3.yaml|/etc/etcd/pki/peer-key.pem|fabric-az1-cp3-key.pem'
+  'observer-agent.yaml|/etc/etcd/pki/observer.pem|fabric-observer.pem'
+  'observer-agent.yaml|/etc/etcd/pki/observer-key.pem|fabric-observer-key.pem'
+)
+
+in_sync=true
+for record in "${mapping[@]}"; do
+  IFS='|' read -r profile target artifact <<< "$record"
+  TARGET=$target yq -e \
+    '([.storage.files[] | select(.path == strenv(TARGET))] | length) == 1' \
+    "$work/plain/$profile" >/dev/null
+
+  if ! cmp -s "$work/pki/$artifact" \
+    <(TARGET=$target yq -r -0 \
+      '.storage.files[] | select(.path == strenv(TARGET)) | .contents.inline' \
+      "$work/plain/$profile" | tr -d '\000'); then
+    in_sync=false
+    if [[ $mode == apply ]]; then
+      TARGET=$target PAYLOAD="$work/pki/$artifact" yq -i \
+        '(.storage.files[] | select(.path == strenv(TARGET)) | .contents.inline) = load_str(strenv(PAYLOAD))' \
+        "$work/plain/$profile"
+    else
+      echo "out of sync: $profile:$target != $artifact" >&2
+    fi
+  fi
+done
+
+if [[ $mode == check ]]; then
+  $in_sync || exit 1
+  echo 'fabric Butane PKI copies match canonical encrypted artifacts' >&2
+  exit 0
+fi
+
+for profile in "${profiles[@]}"; do
+  butane --strict --files-dir "$butane_dir" --check "$work/plain/$profile"
+  relative=$(realpath --relative-to="$repo_root" "$butane_dir/$profile")
+  sops --encrypt --filename-override "$relative" \
+    "$work/plain/$profile" > "$staged/$profile"
+
+  sops --decrypt "$staged/$profile" > "$work/roundtrip-$profile"
+  yq -o=json -I=0 "$work/plain/$profile" > "$work/expected-$profile.json"
+  yq -o=json -I=0 "$work/roundtrip-$profile" > "$work/actual-$profile.json"
+  cmp "$work/expected-$profile.json" "$work/actual-$profile.json"
+
+  original_encrypted=$(grep -o 'ENC\[' "$butane_dir/$profile" | wc -l)
+  staged_encrypted=$(grep -o 'ENC\[' "$staged/$profile" | wc -l)
+  [[ $staged_encrypted == "$original_encrypted" ]] || {
+    echo "encrypted field count changed in staged $profile" >&2
+    exit 1
+  }
+  if grep -Eq 'BEGIN (OPENSSH|RSA|EC|PRIVATE) .*KEY|AGE-SECRET-KEY-' "$staged/$profile"; then
+    echo "plaintext private material remains in staged $profile" >&2
+    exit 1
+  fi
+done
+
+for profile in "${profiles[@]}"; do
+  install -m 0644 "$staged/$profile" "$butane_dir/$profile"
+done
+
+./sync-butane --check

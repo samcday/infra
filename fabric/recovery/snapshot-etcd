@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+readonly required_version=3.6.13
+readonly confirmation_text=SNAPSHOT:fabric-root-etcd
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+readonly script_dir
+readonly verifier=$script_dir/verify-etcd-snapshot
+
+usage() {
+  cat <<'EOF'
+Create and verify one fabric etcd snapshot on trusted storage outside Git.
+
+All paths and the one selected endpoint are deliberately explicit:
+
+  ./snapshot-etcd \
+    --endpoint https://10.66.0.10:2379 \
+    --cacert /secure/fabric-etcd-root/ca.pem \
+    --cert /secure/fabric-etcd-root/root.pem \
+    --key /secure/fabric-etcd-root/root-key.pem \
+    --etcdctl /secure/etcd-v3.6.13/etcdctl \
+    --etcdutl /secure/etcd-v3.6.13/etcdutl \
+    --output-dir /media/encrypted/fabric-etcd-snapshots \
+    --check
+
+Modes:
+  --check    Validate local tools, credentials, and destination only. It makes
+             no network connection and writes nothing.
+  --dry-run  The default. Perform --check and print the safe execution plan.
+             It makes no network connection and writes nothing.
+  --apply    Contact only the selected endpoint and create one new bundle.
+             Requires --confirm SNAPSHOT:fabric-root-etcd.
+
+The output directory must already exist, be an absolute canonical path outside
+every Git worktree, be owned by the caller, and have mode 0700. Credential
+files must share a mode-0700 directory and have mode 0400 or 0600. Existing
+snapshot bundles are never replaced.
+EOF
+}
+
+die() {
+  echo "snapshot-etcd: $*" >&2
+  exit 1
+}
+
+need_value() {
+  (($# >= 2)) || die "$1 requires a value"
+}
+
+canonical_file() {
+  local label=$1 input=$2 resolved
+  [[ $input == /* && $input != *$'\n'* ]] || die "$label must be an absolute path without newlines"
+  [[ -f $input && ! -L $input ]] || die "$label must be a regular file, not a symlink"
+  resolved=$(realpath -e -- "$input") || die "cannot resolve $label"
+  [[ $resolved == "$input" ]] || die "$label must be supplied as its canonical path"
+  printf '%s\n' "$resolved"
+}
+
+canonical_directory() {
+  local label=$1 input=$2 resolved
+  [[ $input == /* && $input != *$'\n'* ]] || die "$label must be an absolute path without newlines"
+  [[ -d $input && ! -L $input ]] || die "$label must be an existing directory, not a symlink"
+  resolved=$(realpath -e -- "$input") || die "cannot resolve $label"
+  [[ $resolved == "$input" ]] || die "$label must be supplied as its canonical path"
+  printf '%s\n' "$resolved"
+}
+
+assert_owned_mode() {
+  local label=$1 path=$2 expected=$3 actual_owner actual_mode
+  actual_owner=$(stat -c '%u' -- "$path")
+  actual_mode=$(stat -c '%a' -- "$path")
+  [[ $actual_owner == "$EUID" ]] || die "$label must be owned by uid $EUID"
+  [[ $actual_mode == "$expected" ]] || die "$label must have mode $expected (found $actual_mode)"
+}
+
+assert_secret_file() {
+  local label=$1 path=$2 actual_owner actual_mode
+  actual_owner=$(stat -c '%u' -- "$path")
+  actual_mode=$(stat -c '%a' -- "$path")
+  [[ $actual_owner == "$EUID" ]] || die "$label must be owned by uid $EUID"
+  [[ $actual_mode == 400 || $actual_mode == 600 ]] || {
+    die "$label must have mode 0400 or 0600 (found $actual_mode)"
+  }
+}
+
+in_git_worktree() {
+  local path=$1 cursor result
+  if command -v git >/dev/null 2>&1; then
+    result=$(git -C "$path" rev-parse --is-inside-work-tree 2>/dev/null || true)
+    [[ $result == true ]] && return 0
+  fi
+
+  cursor=$path
+  while :; do
+    [[ -e $cursor/.git ]] && return 0
+    [[ $cursor == / ]] && break
+    cursor=${cursor%/*}
+    [[ -n $cursor ]] || cursor=/
+  done
+  return 1
+}
+
+tool_version() {
+  local label=$1 path=$2 marker=$3 output version
+  [[ -x $path ]] || die "$label is not executable"
+  output=$("$path" version 2>&1) || die "$label version check failed"
+  version=$(awk -v marker="$marker" '$1 " " $2 == marker { print $3; exit }' <<<"$output")
+  [[ $version == "$required_version" ]] || {
+    die "$label $required_version is required (found ${version:-unknown})"
+  }
+  grep -Fxq 'API version: 3.6' <<<"$output" || die "$label must report API version 3.6"
+  printf '%s\n' "$version"
+}
+
+valid_endpoint() {
+  case $1 in
+    https://10.66.0.10:2379 | https://10.66.0.11:2379 | https://10.66.0.12:2379)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+mode=dry-run
+mode_seen=false
+endpoint=
+cacert=
+cert=
+key=
+etcdctl_path=
+etcdutl_path=
+output_dir=
+confirmation=
+
+while (($#)); do
+  case $1 in
+    --endpoint)
+      need_value "$@"
+      endpoint=$2
+      shift 2
+      ;;
+    --cacert)
+      need_value "$@"
+      cacert=$2
+      shift 2
+      ;;
+    --cert)
+      need_value "$@"
+      cert=$2
+      shift 2
+      ;;
+    --key)
+      need_value "$@"
+      key=$2
+      shift 2
+      ;;
+    --etcdctl)
+      need_value "$@"
+      etcdctl_path=$2
+      shift 2
+      ;;
+    --etcdutl)
+      need_value "$@"
+      etcdutl_path=$2
+      shift 2
+      ;;
+    --output-dir)
+      need_value "$@"
+      output_dir=$2
+      shift 2
+      ;;
+    --check | --dry-run | --apply)
+      $mode_seen && die 'choose only one of --check, --dry-run, or --apply'
+      mode=${1#--}
+      mode_seen=true
+      shift
+      ;;
+    --confirm)
+      need_value "$@"
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n $endpoint ]] || die 'missing required --endpoint'
+[[ -n $cacert ]] || die 'missing required --cacert'
+[[ -n $cert ]] || die 'missing required --cert'
+[[ -n $key ]] || die 'missing required --key'
+[[ -n $etcdctl_path ]] || die 'missing required --etcdctl'
+[[ -n $etcdutl_path ]] || die 'missing required --etcdutl'
+[[ -n $output_dir ]] || die 'missing required --output-dir'
+
+valid_endpoint "$endpoint" || {
+  die 'endpoint must select exactly one current fabric member at https://10.66.0.10:2379, .11:2379, or .12:2379'
+}
+[[ $endpoint != *,* ]] || die 'exactly one endpoint is permitted'
+
+for command in awk chmod cmp date dirname git grep jq mkdir openssl realpath rm sha256sum stat; do
+  command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
+done
+[[ -f $verifier && ! -L $verifier && -x $verifier ]] || die 'sibling verify-etcd-snapshot helper is missing or not executable'
+
+cacert=$(canonical_file 'CA certificate' "$cacert")
+cert=$(canonical_file 'client certificate' "$cert")
+key=$(canonical_file 'client private key' "$key")
+etcdctl_path=$(canonical_file 'etcdctl' "$etcdctl_path")
+etcdutl_path=$(canonical_file 'etcdutl' "$etcdutl_path")
+output_dir=$(canonical_directory 'output directory' "$output_dir")
+
+credentials_dir=$(dirname -- "$cacert")
+[[ $(dirname -- "$cert") == "$credentials_dir" && $(dirname -- "$key") == "$credentials_dir" ]] || {
+  die 'CA, client certificate, and client private key must share one secure directory'
+}
+assert_owned_mode 'credentials directory' "$credentials_dir" 700
+assert_secret_file 'CA certificate' "$cacert"
+assert_secret_file 'client certificate' "$cert"
+assert_secret_file 'client private key' "$key"
+assert_owned_mode 'output directory' "$output_dir" 700
+
+in_git_worktree "$credentials_dir" && die 'plaintext credentials must be outside every Git worktree'
+in_git_worktree "$output_dir" && die 'output directory must be outside every Git worktree'
+
+etcdctl_version=$(tool_version etcdctl "$etcdctl_path" 'etcdctl version:')
+etcdutl_version=$(tool_version etcdutl "$etcdutl_path" 'etcdutl version:')
+
+openssl verify -purpose sslclient -CAfile "$cacert" "$cert" >/dev/null 2>&1 || {
+  die 'client certificate is not a currently valid SSL client certificate under the supplied CA'
+}
+client_subject=$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 2>/dev/null) || {
+  die 'client certificate subject could not be read'
+}
+[[ $client_subject == subject=CN=root ]] || {
+  die 'client certificate must be the dedicated CN=root recovery identity'
+}
+cmp -s \
+  <(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null) \
+  <(openssl pkey -in "$key" -pubout 2>/dev/null) || {
+    die 'client certificate and private key do not match'
+  }
+
+if [[ $mode == check ]]; then
+  [[ -z $confirmation ]] || die '--confirm is valid only with --apply'
+  echo 'fabric etcd snapshot local checks passed; no network connection or files were created.'
+  exit 0
+fi
+
+if [[ $mode == dry-run ]]; then
+  [[ -z $confirmation ]] || die '--confirm is valid only with --apply'
+  cat <<EOF
+DRY RUN: no network connection or files were created.
+Selected endpoint: $endpoint
+Destination root: $output_dir
+Pinned tools: etcdctl $etcdctl_version; etcdutl $etcdutl_version
+Apply requires: --apply --confirm $confirmation_text
+EOF
+  exit 0
+fi
+
+[[ $confirmation == "$confirmation_text" ]] || {
+  die "--apply requires exact --confirm $confirmation_text"
+}
+
+# Do not let ambient etcd variables silently widen the endpoint set or replace
+# the explicit TLS identity.
+unset ETCDCTL_API ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY ETCDCTL_USER ETCDCTL_PASSWORD
+umask 077
+
+ctl=(
+  "$etcdctl_path"
+  "--endpoints=$endpoint"
+  "--cacert=$cacert"
+  "--cert=$cert"
+  "--key=$key"
+  --dial-timeout=5s
+)
+
+health_json=$(
+  "${ctl[@]}" --command-timeout=15s --write-out=json endpoint health
+) || die 'selected endpoint failed its health check; no snapshot bundle was created'
+jq -e --arg endpoint "$endpoint" '
+  type == "array" and length == 1 and
+  .[0].endpoint == $endpoint and .[0].health == true
+' <<<"$health_json" >/dev/null || {
+  die 'selected endpoint did not return one matching healthy result'
+}
+
+endpoint_status_json=$(
+  "${ctl[@]}" --command-timeout=15s --write-out=json endpoint status
+) || die 'selected endpoint failed its status check; no snapshot bundle was created'
+jq -e --arg endpoint "$endpoint" --arg version "$required_version" '
+  type == "array" and length == 1 and
+  .[0].Endpoint == $endpoint and
+  .[0].Status.version == $version and
+  .[0].Status.header.member_id > 0 and
+  .[0].Status.header.cluster_id > 0 and
+  .[0].Status.header.revision >= 1 and
+  .[0].Status.leader > 0 and
+  .[0].Status.raftAppliedIndex <= .[0].Status.raftIndex
+' <<<"$endpoint_status_json" >/dev/null || {
+  die "selected endpoint status is inconsistent, leaderless, or not server version $required_version"
+}
+
+created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+run_name=fabric-etcd-${created_at//[:-]/}
+run_dir=$output_dir/$run_name
+snapshot_path=$run_dir/snapshot.db
+complete=false
+created_run_dir=false
+
+cleanup() {
+  if ! $complete && $created_run_dir && [[ -n ${run_dir:-} && $run_dir == "$output_dir"/fabric-etcd-* && -d $run_dir ]]; then
+    rm -rf -- "$run_dir"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+mkdir --mode=0700 -- "$run_dir" || {
+  die "refusing to overwrite existing snapshot bundle: $run_dir"
+}
+created_run_dir=true
+
+if ! "${ctl[@]}" --command-timeout=10m snapshot save "$snapshot_path" >/dev/null; then
+  die 'snapshot save failed; the incomplete bundle will be removed'
+fi
+[[ -f $snapshot_path && ! -L $snapshot_path && -s $snapshot_path ]] || {
+  die 'snapshot save did not produce one non-empty regular file'
+}
+chmod 0600 -- "$snapshot_path"
+
+snapshot_status_json=$(
+  "$etcdutl_path" --write-out=json snapshot status "$snapshot_path"
+) || die 'etcdutl rejected the saved snapshot; the incomplete bundle will be removed'
+jq -e '
+  type == "object" and
+  (.hash | type) == "number" and .hash > 0 and
+  (.revision | type) == "number" and .revision >= 1 and
+  (.totalKey | type) == "number" and .totalKey >= 0 and
+  (.totalSize | type) == "number" and .totalSize > 0 and
+  (.version | type) == "string" and (.version | test("^3\\.6\\.[0-9]+$"))
+' <<<"$snapshot_status_json" >/dev/null || {
+  die 'etcdutl returned an incomplete snapshot status; the bundle will be removed'
+}
+
+printf '%s\n' "$health_json" >"$run_dir/endpoint-health.json"
+printf '%s\n' "$endpoint_status_json" >"$run_dir/endpoint-status.json"
+printf '%s\n' "$snapshot_status_json" >"$run_dir/snapshot-status.json"
+
+snapshot_sha256=$(sha256sum -- "$snapshot_path" | awk '{print $1}')
+ca_sha256=$(sha256sum -- "$cacert" | awk '{print $1}')
+client_cert_sha256=$(sha256sum -- "$cert" | awk '{print $1}')
+server_version=$(jq -r '.[0].Status.version' <<<"$endpoint_status_json")
+
+jq -n \
+  --arg created_at "$created_at" \
+  --arg endpoint "$endpoint" \
+  --arg expected_version "$required_version" \
+  --arg etcdctl_version "$etcdctl_version" \
+  --arg etcdutl_version "$etcdutl_version" \
+  --arg server_version "$server_version" \
+  --arg ca_sha256 "$ca_sha256" \
+  --arg client_cert_sha256 "$client_cert_sha256" \
+  --arg snapshot_sha256 "$snapshot_sha256" '
+  {
+    schema: "samcday.fabric.etcd-snapshot-evidence/v1",
+    created_at: $created_at,
+    endpoint: $endpoint,
+    expected_etcd_version: $expected_version,
+    tools: {
+      etcdctl: $etcdctl_version,
+      etcdutl: $etcdutl_version
+    },
+    server_version: $server_version,
+    tls: {
+      ca_sha256: $ca_sha256,
+      client_certificate_sha256: $client_cert_sha256
+    },
+    snapshot: {
+      file: "snapshot.db",
+      sha256: $snapshot_sha256,
+      status_file: "snapshot-status.json"
+    }
+  }
+' >"$run_dir/evidence.json"
+
+(
+  cd -- "$run_dir"
+  sha256sum -- \
+    snapshot.db \
+    endpoint-health.json \
+    endpoint-status.json \
+    snapshot-status.json \
+    evidence.json >SHA256SUMS
+)
+chmod 0600 -- "$run_dir"/*
+
+"$verifier" \
+  --bundle "$run_dir" \
+  --etcdutl "$etcdutl_path" \
+  --verify >/dev/null
+
+complete=true
+trap - EXIT HUP INT TERM
+printf 'Verified fabric etcd snapshot bundle: %s\n' "$run_dir"
+printf 'snapshot.db SHA-256: %s\n' "$snapshot_sha256"

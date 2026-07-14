@@ -1,0 +1,12 @@
+{
+  "CN": "fabric-etcd-ca",
+  "ca": {
+    "expiry": "87600h",
+    "pathlen": 0,
+    "pathlenzero": true
+  },
+  "key": {
+    "algo": "rsa",
+    "size": 3072
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "CN": "fabric-az1-cp1.fabric.internal",
+  "hosts": [
+    "fabric-az1-cp1",
+    "fabric-az1-cp1.fabric.internal",
+    "10.66.0.10",
+    "127.0.0.1",
+    "localhost"
+  ],
+  "key": {
+    "algo": "rsa",
+    "size": 3072
+  }
+}

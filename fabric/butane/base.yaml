@@ -1,0 +1,246 @@
+variant: fcos
+version: 1.5.0
+passwd:
+    users:
+        - name: sam
+          groups:
+            - adm
+            - wheel
+            - sudo
+            - systemd-journal
+          ssh_authorized_keys:
+            - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+storage:
+    directories:
+        - path: /etc/fabric
+          mode: 448
+        - path: /etc/rancher/k3s
+          mode: 448
+        - path: /var/lib/fabric/assets
+          mode: 493
+        - path: /var/lib/rancher/k3s/agent/images
+          mode: 493
+    files:
+        - path: /etc/hosts
+          overwrite: true
+          contents:
+            inline: |
+                127.0.0.1 localhost localhost.localdomain
+                ::1 localhost localhost.localdomain
+                10.66.0.10 fabric-az1-cp1.fabric.internal fabric-az1-cp1
+                10.66.0.11 fabric-az1-cp2.fabric.internal fabric-az1-cp2
+                10.66.0.12 fabric-az1-cp3.fabric.internal fabric-az1-cp3
+                10.66.0.254 api.fabric.internal
+        - path: /etc/rancher/k3s/agent.token
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:PGM3g6q5IBZD+M4y6+ZnCkiVoYiAgQxFinczB/L6JXxv+zZwEwhOUDc4/cE5rGi3tCrK4Ky9z18Hz4DLCYLQsxY=,iv:zMH1E3IHZ568AIoc7M60H70lukhous6yD9hKqvlXcU8=,tag:4Zlya88i543lSCGWkbQxCw==,type:str]
+        - path: /usr/local/sbin/enroll-fabric-root-recovery
+          overwrite: true
+          mode: 493
+          contents:
+            inline: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                umask 077
+
+                device=/dev/disk/by-partlabel/root
+                ignition_key=/etc/luks/root
+                recovery_key=/etc/fabric/root-recovery.key
+                marker=/var/lib/fabric/root-recovery-enrolled
+                marker_tmp=$marker.tmp.$$
+
+                cleanup() {
+                    rm -f -- "$marker_tmp"
+                }
+                trap cleanup EXIT
+
+                fail() {
+                    printf 'root recovery enrollment failed: %s\n' "$*" >&2
+                    exit 1
+                }
+
+                [[ -b $device ]] || fail "root LUKS device is absent: $device"
+                cryptsetup isLuks "$device" || fail 'root device is not LUKS'
+
+                if [[ -f $marker ]]; then
+                    if [[ -e $recovery_key ]]; then
+                        [[ $(stat -Lc '%u:%g:%a' "$recovery_key") == 0:0:600 ]] ||
+                            fail 'persisted recovery-key file has unsafe ownership or mode'
+                        cryptsetup open --test-passphrase \
+                            --key-file "$recovery_key" "$device" ||
+                            fail 'persisted recovery key is not enrolled'
+                        rm -f -- "$recovery_key"
+                        sync -f "${recovery_key%/*}"
+                    fi
+                    exit 0
+                fi
+
+                [[ $(stat -Lc '%u:%g:%a' "$ignition_key") == 0:0:600 ]] ||
+                    fail 'Ignition-generated root key is absent or has unsafe ownership or mode'
+                [[ $(stat -Lc '%u:%g:%a' "$recovery_key") == 0:0:600 ]] ||
+                    fail 'offline recovery-key file is absent or has unsafe ownership or mode'
+
+                if ! cryptsetup open --test-passphrase \
+                    --key-file "$recovery_key" "$device"; then
+                    cryptsetup luksAddKey --key-file "$ignition_key" \
+                        "$device" "$recovery_key"
+                fi
+                cryptsetup open --test-passphrase \
+                    --key-file "$recovery_key" "$device" ||
+                    fail 'offline recovery key did not unlock root after enrollment'
+
+                install -m 0600 /dev/null "$marker_tmp"
+                mv -f -- "$marker_tmp" "$marker"
+                sync -f "${marker%/*}"
+                rm -f -- "$recovery_key"
+                sync -f "${recovery_key%/*}"
+                echo 'verified and removed the installed copy of the root recovery key'
+        - path: /etc/zincati/config.d/90-disable.toml
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                [updates]
+                enabled = false
+        - path: /usr/local/bin/k3s
+          overwrite: true
+          mode: 493
+          contents:
+            source: http://10.66.0.1/static/k3s
+            verification:
+                hash: sha256-65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
+        - path: /usr/local/bin/install-k3s
+          overwrite: true
+          mode: 493
+          contents:
+            source: http://10.66.0.1/static/install-k3s
+            verification:
+                hash: sha256-46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad
+        - path: /var/lib/fabric/assets/etcd-v3.6.13-linux-amd64.tar.gz
+          overwrite: true
+          mode: 420
+          contents:
+            source: http://10.66.0.1/static/etcd-v3.6.13-linux-amd64.tar.gz
+            verification:
+                hash: sha256-b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465
+        - path: /var/lib/rancher/k3s/agent/images/k3s-airgap-images-amd64.tar.zst
+          overwrite: true
+          mode: 420
+          contents:
+            source: http://10.66.0.1/static/k3s-airgap-images-amd64.tar.zst
+            verification:
+                hash: sha256-da6a3b2dbd55cc368d930078ae8814ed22eb9c92247f7b9b46bf073445ff55b3
+        - path: /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
+          overwrite: true
+          mode: 420
+          contents:
+            source: http://10.66.0.1/static/k3s-selinux-1.6-1.coreos.noarch.rpm
+            verification:
+                hash: sha256-ff171703f71f8c2c987342267d674a9ee3b86bb2e5d4c7cbd4a3a4be3be386d3
+        - path: /var/lib/rancher/k3s/agent/images/kube-vip-v1.2.1-amd64.tar
+          overwrite: true
+          mode: 420
+          contents:
+            source: http://10.66.0.1/static/kube-vip-v1.2.1-amd64.tar
+            verification:
+                hash: sha256-0e03c6575d8b9fb9e6647c6af8e8a672bf9e15dea9d0e09536d9876facf4d44c
+systemd:
+    units:
+        - name: install-k3s.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Install and start the fabric K3s server
+            ConditionPathExists=!/etc/install-k3s.service.stamp
+            ConditionPathExists=/var/lib/fabric/k3s-selinux-ready
+            Wants=network-online.target
+            Requires=verify-k3s-selinux.service
+            After=network-online.target verify-k3s-selinux.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            TimeoutStartSec=0
+            Environment=INSTALL_K3S_SKIP_DOWNLOAD=true
+            Environment=INSTALL_K3S_SKIP_SELINUX_RPM=true
+            Environment=INSTALL_K3S_BIN_DIR=/usr/local/bin
+            ExecStart=/usr/local/bin/install-k3s
+            ExecStart=/usr/bin/touch /etc/install-k3s.service.stamp
+
+            [Install]
+            WantedBy=multi-user.target
+        - name: enroll-root-recovery-key.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Enroll the offline fabric root recovery key
+            After=local-fs.target
+            Before=verify-k3s-selinux.service etcd.service install-k3s.service
+            RequiresMountsFor=/var/lib/fabric
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/usr/local/sbin/enroll-fabric-root-recovery
+
+            [Install]
+            WantedBy=multi-user.target
+        - name: install-k3s-selinux.service
+          contents: |
+            [Unit]
+            Description=Layer the pinned K3s SELinux policy
+            ConditionPathExists=!/usr/share/selinux/packages/k3s.pp
+            RequiresMountsFor=/var/lib/fabric/assets
+            Requires=enroll-root-recovery-key.service
+            After=enroll-root-recovery-key.service
+            Before=verify-k3s-selinux.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            TimeoutStartSec=0
+            ExecStart=/usr/bin/rpm-ostree install --idempotent --reboot /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
+
+            [Install]
+            WantedBy=multi-user.target
+          enabled: true
+        - name: verify-k3s-selinux.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Verify the active K3s SELinux policy
+            Requires=enroll-root-recovery-key.service install-k3s-selinux.service
+            After=enroll-root-recovery-key.service install-k3s-selinux.service
+            Before=etcd.service install-k3s.service
+            RequiresMountsFor=/var/lib/fabric
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/usr/bin/rm -f /var/lib/fabric/k3s-selinux-ready
+            ExecStart=/usr/bin/test -s /usr/share/selinux/packages/k3s.pp
+            ExecStart=/usr/bin/sh -ceu '/usr/sbin/semodule -l | /usr/bin/grep -Eq "^k3s([[:space:]]|$)"'
+            ExecStart=/usr/sbin/restorecon -F /usr/local/bin/k3s
+            ExecStart=/usr/bin/touch /var/lib/fabric/k3s-selinux-ready
+
+            [Install]
+            WantedBy=multi-user.target
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBIbVV6dkZYSUk2VFhkbGZi
+            bEtyVVBVNlFKbGgrU3RNTUpialhmNk94VVNRCisyU3hncFI3dVB2UUoza2JMWnhi
+            R0dYR1YydTVkeHc5dXlIcGpOYWxmWTgKLS0tIEdMSXFidGZsRG9KRms0SGJScXNh
+            RW56UGZlelpueUhFZ2VCemh3UGVzMXcKpjjTGYCgH21UHls+jcG3dGIKZjKwdmB+
+            NxzfonJeicQUbUoRgiVnkOkVDjvRvrGxhp79u10g9savw0lJkO648Q==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-13T09:30:29Z"
+    mac: ENC[AES256_GCM,data:op6EPglK/zE4oPWP2B5P3rWIqUBr27Epcpz31pcS5/g6wfwkduAhkyrO5l5wagwojOe+sSOKBwiLD1+Nm0JVYhL+k2hVg/yThl1UPfBYFEw7LtMDCOcLkPUS0yXxp0queOcQxpXLHOLXkx3+sgyIwqTFYOhq6spUopjJD3bMcCo=,iv:JpT8CX535hCr7+X+ZLIwjjFl/9mDx9opKG6nlwQXmsk=,tag:IauWUQ+a6pVHGO9FGT7Mqg==,type:str]
+    encrypted_comment_regex: cryptme
+    version: 3.11.0

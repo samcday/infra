@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+readonly required_version=3.6.13
+readonly -a payloads=(
+  snapshot.db
+  endpoint-health.json
+  endpoint-status.json
+  snapshot-status.json
+  evidence.json
+)
+readonly -a bundle_files=("${payloads[@]}" SHA256SUMS)
+
+usage() {
+  cat <<'EOF'
+Verify a fabric etcd snapshot bundle without contacting a cluster.
+
+  ./verify-etcd-snapshot \
+    --bundle /media/encrypted/fabric-etcd-snapshots/fabric-etcd-YYYYMMDDTHHMMSSZ \
+    --etcdutl /secure/etcd-v3.6.13/etcdutl \
+    --check
+
+Modes:
+  --check   Validate the pinned tool, bundle structure, ownership, modes,
+            checksum-record shape, and evidence JSON. It does not hash the
+            snapshot or run etcdutl.
+  --verify  Recompute every SHA-256, run etcdutl snapshot status, and compare
+            that result with the recorded status. It has no network access and
+            writes nothing.
+EOF
+}
+
+die() {
+  echo "verify-etcd-snapshot: $*" >&2
+  exit 1
+}
+
+need_value() {
+  (($# >= 2)) || die "$1 requires a value"
+}
+
+canonical_file() {
+  local label=$1 input=$2 resolved
+  [[ $input == /* && $input != *$'\n'* ]] || die "$label must be an absolute path without newlines"
+  [[ -f $input && ! -L $input ]] || die "$label must be a regular file, not a symlink"
+  resolved=$(realpath -e -- "$input") || die "cannot resolve $label"
+  [[ $resolved == "$input" ]] || die "$label must be supplied as its canonical path"
+  printf '%s\n' "$resolved"
+}
+
+canonical_directory() {
+  local label=$1 input=$2 resolved
+  [[ $input == /* && $input != *$'\n'* ]] || die "$label must be an absolute path without newlines"
+  [[ -d $input && ! -L $input ]] || die "$label must be an existing directory, not a symlink"
+  resolved=$(realpath -e -- "$input") || die "cannot resolve $label"
+  [[ $resolved == "$input" ]] || die "$label must be supplied as its canonical path"
+  printf '%s\n' "$resolved"
+}
+
+in_git_worktree() {
+  local path=$1 cursor result
+  if command -v git >/dev/null 2>&1; then
+    result=$(git -C "$path" rev-parse --is-inside-work-tree 2>/dev/null || true)
+    [[ $result == true ]] && return 0
+  fi
+
+  cursor=$path
+  while :; do
+    [[ -e $cursor/.git ]] && return 0
+    [[ $cursor == / ]] && break
+    cursor=${cursor%/*}
+    [[ -n $cursor ]] || cursor=/
+  done
+  return 1
+}
+
+valid_endpoint() {
+  case $1 in
+    https://10.66.0.10:2379 | https://10.66.0.11:2379 | https://10.66.0.12:2379)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+mode=
+bundle=
+etcdutl_path=
+
+while (($#)); do
+  case $1 in
+    --bundle)
+      need_value "$@"
+      bundle=$2
+      shift 2
+      ;;
+    --etcdutl)
+      need_value "$@"
+      etcdutl_path=$2
+      shift 2
+      ;;
+    --check | --verify)
+      [[ -z $mode ]] || die 'choose only one of --check or --verify'
+      mode=${1#--}
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n $bundle ]] || die 'missing required --bundle'
+[[ -n $etcdutl_path ]] || die 'missing required --etcdutl'
+[[ -n $mode ]] || die 'choose exactly one of --check or --verify'
+
+for command in awk find git grep jq realpath sha256sum sort stat; do
+  command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
+done
+
+bundle=$(canonical_directory 'snapshot bundle' "$bundle")
+etcdutl_path=$(canonical_file 'etcdutl' "$etcdutl_path")
+in_git_worktree "$bundle" && die 'snapshot bundle must be outside every Git worktree'
+
+[[ $(stat -c '%u' -- "$bundle") == "$EUID" ]] || die "snapshot bundle must be owned by uid $EUID"
+[[ $(stat -c '%a' -- "$bundle") == 700 ]] || die 'snapshot bundle must have mode 0700'
+
+[[ -x $etcdutl_path ]] || die 'etcdutl is not executable'
+version_output=$("$etcdutl_path" version 2>&1) || die 'etcdutl version check failed'
+version=$(awk '$1 " " $2 == "etcdutl version:" { print $3; exit }' <<<"$version_output")
+[[ $version == "$required_version" ]] || {
+  die "etcdutl $required_version is required (found ${version:-unknown})"
+}
+grep -Fxq 'API version: 3.6' <<<"$version_output" || die 'etcdutl must report API version 3.6'
+
+mapfile -d '' actual_names < <(find "$bundle" -mindepth 1 -maxdepth 1 -printf '%f\0' | sort -z)
+mapfile -t expected_names < <(printf '%s\n' "${bundle_files[@]}" | sort)
+(( ${#actual_names[@]} == ${#expected_names[@]} )) || {
+  die "snapshot bundle must contain exactly ${#expected_names[@]} files"
+}
+for index in "${!expected_names[@]}"; do
+  [[ ${actual_names[index]} == "${expected_names[index]}" ]] || {
+    die 'snapshot bundle has missing or unexpected files'
+  }
+done
+
+for name in "${bundle_files[@]}"; do
+  path=$bundle/$name
+  [[ -f $path && ! -L $path ]] || die "$name must be a regular file, not a symlink"
+  [[ $(stat -c '%u' -- "$path") == "$EUID" ]] || die "$name must be owned by uid $EUID"
+  [[ $(stat -c '%a' -- "$path") == 600 ]] || die "$name must have mode 0600"
+  [[ -s $path ]] || die "$name must not be empty"
+done
+
+declare -A recorded_hashes=()
+while IFS= read -r line || [[ -n $line ]]; do
+  hash=${line%%  *}
+  name=${line#*  }
+  [[ $line == "$hash  $name" && $hash =~ ^[0-9a-f]{64}$ ]] || {
+    die 'SHA256SUMS contains a malformed record'
+  }
+  case $name in
+    snapshot.db | endpoint-health.json | endpoint-status.json | snapshot-status.json | evidence.json) ;;
+    *) die 'SHA256SUMS contains an unexpected or unsafe filename' ;;
+  esac
+  [[ -z ${recorded_hashes[$name]+set} ]] || die "SHA256SUMS repeats $name"
+  recorded_hashes[$name]=$hash
+done <"$bundle/SHA256SUMS"
+
+for name in "${payloads[@]}"; do
+  [[ -n ${recorded_hashes[$name]+set} ]] || die "SHA256SUMS is missing $name"
+done
+(( ${#recorded_hashes[@]} == ${#payloads[@]} )) || die 'SHA256SUMS has the wrong record count'
+
+for name in endpoint-health.json endpoint-status.json snapshot-status.json evidence.json; do
+  jq -e -s 'length == 1' "$bundle/$name" >/dev/null || {
+    die "$name must contain exactly one valid JSON value"
+  }
+done
+
+endpoint=$(jq -er '.endpoint | select(type == "string")' "$bundle/evidence.json") || {
+  die 'evidence.json has no valid selected endpoint'
+}
+valid_endpoint "$endpoint" || die 'evidence.json names an endpoint outside the current fabric member set'
+
+jq -e --arg endpoint "$endpoint" '
+  type == "array" and length == 1 and
+  .[0].endpoint == $endpoint and .[0].health == true
+' "$bundle/endpoint-health.json" >/dev/null || die 'recorded endpoint health is invalid or inconsistent'
+
+jq -e --arg endpoint "$endpoint" --arg version "$required_version" '
+  type == "array" and length == 1 and
+  .[0].Endpoint == $endpoint and
+  .[0].Status.version == $version and
+  .[0].Status.header.member_id > 0 and
+  .[0].Status.header.cluster_id > 0 and
+  .[0].Status.header.revision >= 1 and
+  .[0].Status.leader > 0 and
+  .[0].Status.raftAppliedIndex <= .[0].Status.raftIndex
+' "$bundle/endpoint-status.json" >/dev/null || die 'recorded endpoint status is invalid or inconsistent'
+
+jq -e --arg version "$required_version" --arg hash "${recorded_hashes[snapshot.db]}" '
+  .schema == "samcday.fabric.etcd-snapshot-evidence/v1" and
+  (.created_at | type) == "string" and
+  (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+  .expected_etcd_version == $version and
+  .tools.etcdctl == $version and
+  .tools.etcdutl == $version and
+  .server_version == $version and
+  (.tls.ca_sha256 | test("^[0-9a-f]{64}$")) and
+  (.tls.client_certificate_sha256 | test("^[0-9a-f]{64}$")) and
+  .snapshot.file == "snapshot.db" and
+  .snapshot.sha256 == $hash and
+  .snapshot.status_file == "snapshot-status.json"
+' "$bundle/evidence.json" >/dev/null || die 'evidence.json is incomplete or inconsistent'
+
+jq -e '
+  type == "object" and
+  (.hash | type) == "number" and .hash > 0 and
+  (.revision | type) == "number" and .revision >= 1 and
+  (.totalKey | type) == "number" and .totalKey >= 0 and
+  (.totalSize | type) == "number" and .totalSize > 0 and
+  (.version | type) == "string" and (.version | test("^3\\.6\\.[0-9]+$"))
+' "$bundle/snapshot-status.json" >/dev/null || die 'recorded snapshot status is incomplete'
+
+if [[ $mode == check ]]; then
+  echo 'snapshot bundle structure checks passed; snapshot bytes and etcdutl status were not verified.'
+  exit 0
+fi
+
+for name in "${payloads[@]}"; do
+  actual_hash=$(sha256sum -- "$bundle/$name" | awk '{print $1}')
+  [[ $actual_hash == "${recorded_hashes[$name]}" ]] || die "SHA-256 verification failed for $name"
+done
+
+current_status=$($etcdutl_path --write-out=json snapshot status "$bundle/snapshot.db") || {
+  die 'etcdutl rejected snapshot.db'
+}
+jq -e --argjson current "$current_status" '. == $current' "$bundle/snapshot-status.json" >/dev/null || {
+  die 'current etcdutl snapshot status differs from the recorded status'
+}
+
+printf 'Verified snapshot bundle: %s\n' "$bundle"
+printf 'snapshot.db SHA-256: %s\n' "${recorded_hashes[snapshot.db]}"

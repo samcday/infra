@@ -1,0 +1,80 @@
+---
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+  external_labels:
+    observer: fabric-pre-worker-laptop
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: fabric-etcd
+    scheme: http
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 10.66.0.10:2381
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp1
+      - targets:
+          - 10.66.0.11:2381
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp2
+      - targets:
+          - 10.66.0.12:2381
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp3
+
+  - job_name: fabric-kube-vip
+    scheme: http
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 10.66.0.10:2112
+        labels:
+          cluster: fabric-root
+          scrape_node: fabric-az1-cp1
+      - targets:
+          - 10.66.0.11:2112
+        labels:
+          cluster: fabric-root
+          scrape_node: fabric-az1-cp2
+      - targets:
+          - 10.66.0.12:2112
+        labels:
+          cluster: fabric-root
+          scrape_node: fabric-az1-cp3
+
+  - job_name: fabric-node
+    scheme: http
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 10.66.0.10:9100
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp1
+      - targets:
+          - 10.66.0.11:9100
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp2
+      - targets:
+          - 10.66.0.12:9100
+        labels:
+          cluster: fabric-root
+          node: fabric-az1-cp3
+
+  - job_name: fabric-observer
+    scheme: http
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:19101
+        labels:
+          cluster: fabric-root

@@ -3,6 +3,7 @@ kind: Kustomization
 secretGenerator:
   - name: butane-common
     files:
+      - discovery.yaml
       - fucksecurity.yaml
       - install.yaml
       - kubeadm-worker.yaml

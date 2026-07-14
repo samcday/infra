@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+secretGenerator:
+  - name: butane
+    files:
+      - base.yaml
+      - control-plane.yaml
+      - etcd.yaml
+      - firewall.yaml
+      - time.yaml
+      - fabric-az1-cp1.yaml
+      - fabric-az1-cp2.yaml
+      - fabric-az1-cp3.yaml
+      - node-exporter.yaml
+      - observer-agent.yaml
+      - files/collect-fabric-etcd-alarms
+    options:
+      disableNameSuffixHash: true
+  - name: butane-common
+    files:
+      - common/discovery.yaml
+    options:
+      disableNameSuffixHash: true

@@ -1,0 +1,3 @@
+# The fabric router serves only pinned public assets. Keep the HTTP daemon but
+# force-remove the LuCI administration surface inherited from common/router.
+uhttpd

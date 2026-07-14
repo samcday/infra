@@ -1,0 +1,20 @@
+variant: fcos
+version: 1.5.0
+passwd:
+  users:
+    - name: sam
+      groups:
+        - adm
+        - wheel
+        - sudo
+        - systemd-journal
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+storage:
+  files:
+    - path: /etc/zincati/config.d/90-disable.toml
+      overwrite: true
+      contents:
+        inline: |
+          [updates]
+          enabled = false

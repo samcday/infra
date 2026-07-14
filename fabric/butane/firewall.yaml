@@ -1,0 +1,228 @@
+variant: fcos
+version: 1.5.0
+storage:
+  directories:
+    - path: /etc/nftables
+      mode: 493
+  files:
+    - path: /etc/rancher/k3s/config.yaml.d/25-proxy-boundary.yaml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          # Keep the K3s userspace selection and service-proxy backend
+          # deterministic on FCOS. NodePorts are intentionally unreachable
+          # on sacred roots; future workers need their own reviewed policy.
+          prefer-bundled-bin: true
+          kube-proxy-arg:
+            - proxy-mode=iptables
+            - nodeport-addresses=127.0.0.0/8
+            - iptables-localhost-nodeports=false
+    - path: /etc/nftables/fabric-guard.nft
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          # Root-only phase-one policy. The consensus switch is a trusted
+          # physical admission boundary until a worker VLAN exists.
+          # Recreate only this owned table; never flush the host ruleset or
+          # modify tables and chains managed by K3s or kube-proxy.
+          destroy table inet fabric_guard
+
+          table inet fabric_guard {
+              set root_nodes_v4 {
+                  type ipv4_addr
+                  flags constant
+                  elements = { 10.66.0.10, 10.66.0.11, 10.66.0.12 }
+              }
+
+              set observer_v4 {
+                type ipv4_addr
+                flags constant
+                elements = { 10.66.0.2 }
+              }
+
+              # Empty and non-persistent by default. An attended root operator
+              # may insert only the observer address for at most fifteen minutes
+              # with the guarded helper below; nftables expires it automatically.
+              set etcd_maintenance_v4 {
+                type ipv4_addr
+                flags timeout
+                timeout 15m
+                gc-interval 1m
+              }
+
+              chain input {
+                  # Run after the conventional priority-0 filter hooks so an
+                  # earlier kube-proxy accept cannot bypass this final guard.
+                  type filter hook input priority 10; policy drop;
+
+                  iifname "lo" counter accept comment "local host traffic"
+
+                  # Physical IPv6 is disabled for phase one. Keep ::1 usable
+                  # through the loopback rule, then fail closed for all other
+                  # IPv6 input, including established connections.
+                  meta nfproto ipv6 counter drop comment "no physical IPv6 input"
+
+                  ct state invalid counter drop comment "invalid conntrack state"
+
+                  # Re-evaluate every etcd client packet before accepting an
+                  # established flow. Otherwise a connection opened during a
+                  # maintenance window could survive explicit close or set
+                  # timeout indefinitely through conntrack.
+                  ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+                  ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+                  tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"
+
+                  ct state { established, related } counter accept comment "reply traffic"
+                  ip protocol icmp counter accept comment "IPv4 diagnostics and errors"
+
+                  ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root peer and API traffic"
+              ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
+
+              ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
+
+                  counter drop comment "deny all remaining input"
+              }
+
+              chain forward {
+                  # No ordinary Pods or workers belong on the roots in phase
+                  # one. Kube-vip is host-networked, so new forwarding is a
+                  # policy violation. Expand and test this chain before adding
+                  # a worker or any non-host-networked Pod.
+                  type filter hook forward priority 10; policy drop;
+
+                  ct state invalid counter drop comment "invalid conntrack state"
+                  ct state { established, related } counter accept comment "forwarded replies"
+              counter drop comment "deny all new forwarding"
+            }
+          }
+    - path: /usr/local/sbin/fabric-etcd-maintenance-window
+      overwrite: true
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          action=
+          confirmation=
+
+          usage() {
+            cat >&2 <<'EOF'
+          Temporarily admit observer 10.66.0.2 to this member's etcd client port.
+
+            sudo /usr/local/sbin/fabric-etcd-maintenance-window \
+              --open --confirm OPEN:fabric-etcd-observer:15m
+
+            sudo /usr/local/sbin/fabric-etcd-maintenance-window \
+              --close --confirm CLOSE:fabric-etcd-observer
+
+          Open the window independently on every endpoint an attended operation
+          will contact. The rule is memory-only and expires after fifteen minutes;
+          close it explicitly as soon as the operation finishes.
+          EOF
+          }
+
+          die() {
+            echo "fabric-etcd-maintenance-window: $*" >&2
+            exit 1
+          }
+
+          while (($#)); do
+            case $1 in
+              --open | --close)
+                [[ -z $action ]] || die 'choose exactly one of --open or --close'
+                action=${1#--}
+                shift
+                ;;
+              --confirm)
+                (($# >= 2)) || die '--confirm requires a value'
+                confirmation=$2
+                shift 2
+                ;;
+              -h | --help)
+                usage
+                exit 0
+                ;;
+              *)
+                die "unknown argument: $1"
+                ;;
+            esac
+          done
+
+          [[ $EUID == 0 ]] || die 'must run as root through an attended SSH or console session'
+          [[ -n $action ]] || die 'choose exactly one of --open or --close'
+          nft list table inet fabric_guard >/dev/null || die 'fabric_guard is not loaded'
+
+          case $action in
+            open)
+              [[ $confirmation == OPEN:fabric-etcd-observer:15m ]] ||
+                die 'exact --confirm OPEN:fabric-etcd-observer:15m is required'
+              nft delete element inet fabric_guard etcd_maintenance_v4 \
+                '{ 10.66.0.2 }' 2>/dev/null || true
+              nft add element inet fabric_guard etcd_maintenance_v4 \
+                '{ 10.66.0.2 timeout 15m }'
+              expires=$(date --utc --date='+15 minutes' --iso-8601=seconds)
+              echo "observer etcd maintenance window is open on this member until $expires"
+              ;;
+            close)
+              [[ $confirmation == CLOSE:fabric-etcd-observer ]] ||
+                die 'exact --confirm CLOSE:fabric-etcd-observer is required'
+              nft delete element inet fabric_guard etcd_maintenance_v4 \
+                '{ 10.66.0.2 }' 2>/dev/null || true
+              echo 'observer etcd maintenance window is closed on this member'
+              ;;
+          esac
+systemd:
+  units:
+    - name: fabric-guard.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install the phase-one fabric root nftables guard
+        Documentation=man:nft(8)
+        Wants=network-pre.target
+        Before=network-pre.target etcd.service install-k3s.service k3s.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ProtectSystem=full
+        ProtectHome=true
+        ExecStartPre=/usr/bin/test -r /etc/nftables/fabric-guard.nft
+        ExecStart=/usr/sbin/nft --check --file /etc/nftables/fabric-guard.nft
+        ExecStart=/usr/sbin/nft --file /etc/nftables/fabric-guard.nft
+        ExecReload=/usr/sbin/nft --check --file /etc/nftables/fabric-guard.nft
+        ExecReload=/usr/sbin/nft --file /etc/nftables/fabric-guard.nft
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: etcd.service
+      dropins:
+        - name: 10-fabric-guard.conf
+          contents: |
+            [Unit]
+            Requires=fabric-guard.service
+            After=fabric-guard.service
+    - name: install-k3s.service
+      dropins:
+        - name: 10-fabric-guard.conf
+          contents: |
+            [Unit]
+            Requires=fabric-guard.service
+            After=fabric-guard.service
+    - name: k3s.service
+      dropins:
+        - name: 10-fabric-guard.conf
+          contents: |
+            [Unit]
+            Requires=fabric-guard.service
+            After=fabric-guard.service
+    - name: sshd.service
+      dropins:
+        - name: 10-fabric-guard.conf
+          contents: |
+            [Unit]
+            Requires=fabric-guard.service
+            After=fabric-guard.service

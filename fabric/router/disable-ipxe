@@ -1,0 +1,2 @@
+# The sacred root network has no DHCP/TFTP/PXE service. Consensus installation
+# is offline and worker provisioning will use a separately reviewed boundary.

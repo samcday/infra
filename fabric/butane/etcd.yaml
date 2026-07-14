@@ -1,0 +1,117 @@
+variant: fcos
+version: 1.5.0
+storage:
+    directories:
+        - path: /etc/etcd
+          mode: 448
+        - path: /etc/etcd/pki
+          mode: 448
+        - path: /var/lib/etcd
+          mode: 448
+    files:
+        - path: /etc/etcd/pki/ca.pem
+          overwrite: true
+          mode: 420
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:G4UiGONpOj5k3dJOw+6D94exDdQ2GUl7+4/AC3EZ3t/OmaEFlUKuz1PserA3Fow32XbcRMHWpTFEVIo7Oqy3g91vkWUZLOKFuWiZnZV68BCJBhPU9+biKbeZfJKumYK0ySsHPgUJu+tzhJsML1tsGK02VgHh6A/nDycRXP9XMn4pbu1mLEiXcYE3UOotZLDZv6RcVjKkaUu428+/1uEvmqFMt0OzUA76/GJ7oGtZJUj5ahzuvBS6RCFziwvCasPTeE0WdxhcyD27ean+1Oa3M2aoq8Fs1C1UV7SKPhlNYDcwKmidGz4zuL757dGhWTMKncoVRioO94DBWkptof9TZgnM+uTPOl1NTIHY7jCz0aCzc6pGUyARl1sYqsv0R1JYuBAUhkCoNktR+uNJ32TrKa1MQQZ/WVaiF8/3gTWkr3/LZ/hX/nKI/t+ETHshYydwGbZl9ucytN9L0eNUdkfXGTiGaybY+YOUsRxM3/0MyF84hwvB+3W8CQ+Wzfw+kV58kOhLR+RbE88+eGTILA0iRsf2qT7l7xuIV6vM+wM4yLv1ILD0MlHzkQSY2TjnJ3sU7DXWI6kO8/B4GBTtNs4NdiRHcHQefSxl4JpQ7ar3cvGV+d03+fU5s+Gu3JJhvilnuil9+MAAw7XqSBGhTC1wdusitwGjfsGlbMJZqpQQXg3yJCyBBZgK9iTVnm7UGVyvRAXNY/OZNXbOLzzAIP4XziaG2Cf13vty6njERTsY09OCoZnI6HZFZepXFSIxqr6xsmCyfe9z3awt6SBsKo57alE8pBTVx7S/awmiAl9Efrdhy8nB0c87yET8GsCp2mqyIZE2HJ9lKNYdXTcu6efO2wCCHeX+gON/pPyBpbHiE9XEsmBrSjSNxVAO7zv3nneR/QpC/y4cnlm6IJ4A3nVsEB6+n0RSQzZn0Cz9JjzOaQ/OuE2oweLkiLgn11I0ujaYq+rM/ybztqrh5UsRqmG1IwjaXh/IfvjLAfMvhjAOoMVQMkvXfdHYJdS7mPea0NYST5ubhwbgvC7g8Ivy3K8lgYoRNT+rJki6tPCMCHzurtDuJvvpTMnaqI+AEu903E/Yprn/vw3ggUSnuqFFzczFL4CwiegNw/okTUbZtsxmi8NRi8/Qo5SqqU7QhTNzm4Mdji79+VxmBKd9sUzTaX06/4uKDSj8wKkX6exokV4z2BBAXWLMOEErAyf5ioVrgOJ8ZmwLyBM2PokWf7/qwd6ne/W2AOyeJTyWam/xwbnoPjL4q4ZN4+HgZ2RbHBAIJjZtSMEBRZrTR5z24pttXmlAeBometexpwOs0jh1kfAc1L0xL0MiHu86yi6Xcxh7FMPqNz1LNXq4Mt2LzM1kVRRbH10qdu5O51uR6t7j+SnoNqrAHYuEFpmx9AECjdvn5d6eWylSKklxS6974zZc1zMgsyvNeoLwW/uJdhtEh1A+DwfRQ8+ZRup9mN6E2uW1UATG1sAb7fR6OU8qqC3b5zxI35Njxp9PbKO8upXGwyCQY0aI5JjaW8eg1PrpeaHnK9pY1LhHDgFmSm6R9+7/TrBgTutickHMOhhp1TkdrnfspvKmJkviean5NuGTriWZr1CgKCsj0XTARizbvN2GoE6RN+iwe427jImYW+LPd/DJx3YNPoOqmeK0S650B8eh+hYsTyEuqKgFDIdx1rOeNA11RvxOmZd88QQiOjUf9j1p2yaUhBg6y3WprAJJNBJG2JZgkGpni24htCJIlM18q077Ngaikf0utsLCvdeTqaIrKXy4FhGVgSt7YSOP/jAGPFXQtmAcC65jy+MQL6+Jb902nLGXOB3vTH7WKS+F9msvteNp9Fw/KgvxjGM4OQkLv0j/ro0nwEkPOkyEamyN+AVqyMpiLsLrHRWXiua90EdTgaTa+kJaSarnMjU7MyeRdsfiDLftgFtlzIuKJVXNb2xpvg==,iv:OoZhn5o0X2eGC3gjaV6IJvuCBxDKd5pwd5TpQwjQnZY=,tag:l2FJcK1gRrIOXgC3fRhyow==,type:str]
+systemd:
+    units:
+        - name: etcd.slice
+          contents: |
+            [Slice]
+            IOWeight=10000
+        - name: etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Fabric root external etcd member
+            Wants=network-online.target
+            ConditionPathExists=/var/lib/fabric/k3s-selinux-ready
+            Requires=install-etcd-binaries.service verify-k3s-selinux.service
+            After=network-online.target install-etcd-binaries.service verify-k3s-selinux.service
+            RequiresMountsFor=/var/lib/etcd
+
+            [Service]
+            Environment=CLUSTER_STATE=new
+            Slice=etcd.slice
+            IOSchedulingClass=best-effort
+            IOSchedulingPriority=0
+            OOMScoreAdjust=-900
+            LimitNOFILE=1048576
+            Restart=always
+            RestartSec=5s
+            TimeoutStartSec=0
+            TimeoutStopSec=30s
+            ExecStartPre=/usr/bin/test -s /etc/etcd/pki/ca.pem
+            ExecStartPre=/usr/bin/test -s /etc/etcd/pki/peer.pem
+            ExecStartPre=/usr/bin/test -s /etc/etcd/pki/peer-key.pem
+            ExecStart=/usr/local/bin/etcd \
+              --name=%H \
+              --initial-cluster-state=${CLUSTER_STATE} \
+              --initial-cluster=fabric-az1-cp1=https://fabric-az1-cp1.fabric.internal:2380,fabric-az1-cp2=https://fabric-az1-cp2.fabric.internal:2380,fabric-az1-cp3=https://fabric-az1-cp3.fabric.internal:2380 \
+              --initial-cluster-token=fabric-root-etcd \
+              --data-dir=/var/lib/etcd \
+              --initial-advertise-peer-urls=https://%H.fabric.internal:2380 \
+              --listen-peer-urls=https://0.0.0.0:2380 \
+              --advertise-client-urls=https://%H.fabric.internal:2379 \
+              --listen-client-urls=https://0.0.0.0:2379 \
+              --listen-metrics-urls=http://0.0.0.0:2381 \
+              --client-cert-auth=true \
+              --peer-client-cert-auth=true \
+              --cert-file=/etc/etcd/pki/peer.pem \
+              --key-file=/etc/etcd/pki/peer-key.pem \
+              --trusted-ca-file=/etc/etcd/pki/ca.pem \
+              --peer-cert-file=/etc/etcd/pki/peer.pem \
+              --peer-key-file=/etc/etcd/pki/peer-key.pem \
+              --peer-trusted-ca-file=/etc/etcd/pki/ca.pem \
+              --auto-compaction-mode=periodic \
+              --auto-compaction-retention=1h \
+              --quota-backend-bytes=2147483648
+
+            [Install]
+            WantedBy=multi-user.target
+        - name: install-etcd-binaries.service
+          enabled: true
+          contents: |+
+            [Unit]
+            Description=Install pinned fabric etcd binaries
+            RequiresMountsFor=/var/lib/fabric/assets
+            Before=etcd.service
+            ConditionPathExists=!/var/lib/fabric/etcd-binaries-v3.6.13.stamp
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/usr/bin/rm -rf /var/lib/fabric/etcd-v3.6.13-extract
+            ExecStart=/usr/bin/mkdir -p /var/lib/fabric/etcd-v3.6.13-extract
+            ExecStart=/usr/bin/tar --extract --gzip --no-same-owner --no-same-permissions --file=/var/lib/fabric/assets/etcd-v3.6.13-linux-amd64.tar.gz --directory=/var/lib/fabric/etcd-v3.6.13-extract etcd-v3.6.13-linux-amd64/etcd etcd-v3.6.13-linux-amd64/etcdctl etcd-v3.6.13-linux-amd64/etcdutl
+            ExecStart=/usr/bin/install --owner=root --group=root --mode=0755 /var/lib/fabric/etcd-v3.6.13-extract/etcd-v3.6.13-linux-amd64/etcd /usr/local/bin/etcd
+            ExecStart=/usr/bin/install --owner=root --group=root --mode=0755 /var/lib/fabric/etcd-v3.6.13-extract/etcd-v3.6.13-linux-amd64/etcdctl /usr/local/bin/etcdctl
+            ExecStart=/usr/bin/install --owner=root --group=root --mode=0755 /var/lib/fabric/etcd-v3.6.13-extract/etcd-v3.6.13-linux-amd64/etcdutl /usr/local/bin/etcdutl
+            ExecStart=/usr/bin/rm -rf /var/lib/fabric/etcd-v3.6.13-extract
+            ExecStart=/usr/bin/test -x /usr/local/bin/etcd
+            ExecStart=/usr/bin/test -x /usr/local/bin/etcdctl
+            ExecStart=/usr/bin/test -x /usr/local/bin/etcdutl
+            ExecStart=/usr/local/bin/etcd --version
+            ExecStart=/usr/local/bin/etcdctl version
+            ExecStart=/usr/bin/touch /var/lib/fabric/etcd-binaries-v3.6.13.stamp
+
+            [Install]
+            WantedBy=multi-user.target
+
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB2bzAxWTV0aFNTM1BSLzRK
+            R21JR05hVE9uMCtFVG9tbFZiTlozTEFHd2s0ClJSeC9zTE4zZjFaeGhIcmZzK3kw
+            bGVuRTRVWWY2VERCM00rNmNPcDhtRkEKLS0tIEJlbHYrTXlGdUpwcDlTQ0RSZTVi
+            YWtxeWtGNjIxai80U1Vjdlk5bVlGU0UKiBYeGvXO3SnGMMdo5yGxjpwagzepbmam
+            YgfNe1Bf2xYItEVUH/l986IXQ/Nq47ysOiJB9PSRMQ3uwgJMdt700g==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-13T10:40:36Z"
+    mac: ENC[AES256_GCM,data:iTrH11J9VMvwYJMkcVFLcB9N0IrK7j6PDK/iNrDxJiQSO3vzP7MqUukQr9j+f3wS6LN/OzNiJg4vQ0EhU4dJgb8X+ExZGXApx2vs4rJeI7ydHTcMTFyLU1JcpgFIE3L2kFAfbce+NA2nxmCFWoo2qrnSuQakv9KP0N6YZt83Ijc=,iv:A+wLT0jCDKxPm1Nn8kv6otqX5Nyk+IKoPpbGL6fO/sI=,tag:h9vGy2ZDMqWxWQVFFIsjiA==,type:str]
+    encrypted_comment_regex: cryptme
+    version: 3.11.0

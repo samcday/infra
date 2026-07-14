@@ -1,0 +1,104 @@
+variant: fcos
+version: 1.5.0
+storage:
+  directories:
+    - path: /var/lib/fabric/node-exporter-textfile
+      mode: 493
+  files:
+    - path: /var/lib/fabric/assets/node_exporter-1.11.1.linux-amd64.tar.gz
+      overwrite: true
+      mode: 420
+      contents:
+        source: http://10.66.0.1/static/node_exporter-1.11.1.linux-amd64.tar.gz
+        verification:
+          hash: sha256-9f5ea48e5bc7b656f8a91a32e7d7deb89f70f73dabd0d974418aca15f37d6810
+    - path: /var/lib/fabric/assets/node_exporter-1.11.1.linux-amd64.tar.gz.sha256
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          9f5ea48e5bc7b656f8a91a32e7d7deb89f70f73dabd0d974418aca15f37d6810  /var/lib/fabric/assets/node_exporter-1.11.1.linux-amd64.tar.gz
+systemd:
+  units:
+    - name: install-node-exporter.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install pinned fabric node exporter
+        RequiresMountsFor=/var/lib/fabric/assets
+        Before=node-exporter.service
+        ConditionPathExists=!/var/lib/fabric/node-exporter-v1.11.1.stamp
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/sha256sum --check --status /var/lib/fabric/assets/node_exporter-1.11.1.linux-amd64.tar.gz.sha256
+        ExecStart=/usr/bin/rm -rf /var/lib/fabric/node-exporter-v1.11.1-extract
+        ExecStart=/usr/bin/mkdir -p /var/lib/fabric/node-exporter-v1.11.1-extract
+        ExecStart=/usr/bin/tar --extract --gzip --no-same-owner --no-same-permissions --file=/var/lib/fabric/assets/node_exporter-1.11.1.linux-amd64.tar.gz --directory=/var/lib/fabric/node-exporter-v1.11.1-extract node_exporter-1.11.1.linux-amd64/node_exporter
+        ExecStart=/usr/bin/install --owner=root --group=root --mode=0755 /var/lib/fabric/node-exporter-v1.11.1-extract/node_exporter-1.11.1.linux-amd64/node_exporter /usr/local/bin/node_exporter
+        ExecStart=/usr/sbin/restorecon -F /usr/local/bin/node_exporter
+        ExecStart=/usr/local/bin/node_exporter --version
+        ExecStart=/usr/bin/rm -rf /var/lib/fabric/node-exporter-v1.11.1-extract
+        ExecStart=/usr/bin/touch /var/lib/fabric/node-exporter-v1.11.1.stamp
+
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: node-exporter.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Fabric root host metrics exporter
+        Wants=network-online.target
+        Requires=fabric-guard.service install-node-exporter.service
+        After=fabric-guard.service network-online.target install-node-exporter.service
+
+        [Service]
+        Type=simple
+        DynamicUser=yes
+        ExecStart=/usr/local/bin/node_exporter \
+          --web.listen-address=%H.fabric.internal:9100 \
+          --collector.disable-defaults \
+          --collector.cpu \
+          --collector.diskstats \
+          --collector.filesystem \
+          --collector.hwmon \
+          --collector.loadavg \
+          --collector.meminfo \
+          --collector.netdev \
+          --collector.pressure \
+          --collector.stat \
+          --collector.textfile \
+          --collector.textfile.directory=/var/lib/fabric/node-exporter-textfile \
+          --collector.time \
+          --collector.uname \
+          --collector.vmstat
+        Restart=on-failure
+        RestartSec=5s
+        CPUWeight=10
+        Nice=10
+        MemoryMax=128M
+        OOMScoreAdjust=500
+        TasksMax=64
+        UMask=0027
+        AmbientCapabilities=
+        CapabilityBoundingSet=
+        LockPersonality=yes
+        NoNewPrivileges=yes
+        PrivateDevices=yes
+        PrivateTmp=yes
+        ProtectClock=yes
+        ProtectControlGroups=yes
+        ProtectHome=yes
+        ProtectHostname=yes
+        ProtectKernelLogs=yes
+        ProtectKernelModules=yes
+        ProtectKernelTunables=yes
+        ProtectSystem=strict
+        RestrictAddressFamilies=AF_INET AF_INET6
+        RestrictNamespaces=yes
+        RestrictRealtime=yes
+
+        [Install]
+        WantedBy=multi-user.target

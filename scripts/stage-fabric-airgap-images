@@ -1,0 +1,275 @@
+#!/bin/bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Materialize checksum-pinned OCI images for the fabric router's offline cache.
+
+Usage:
+  scripts/stage-fabric-airgap-images [options]
+
+Options:
+  --check             Validate manifests and required tools without networking.
+  --filename NAME     Process only one image archive from data-images.txt.
+  --output-dir DIR    Write to DIR instead of the repository's _build/data.
+  --rebuild           Recreate a cache entry; compare valid bytes, replace invalid bytes.
+  -h, --help          Show this help.
+
+An oci:// URL in fabric/router/data-files.txt is a build source, not a URL for
+curl. Its matching data-images.txt record pins the source index, selected
+platform manifest, archive image name, and canonical OCI archive checksum.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+check_only=false
+rebuild=false
+selected_filename=
+output_dir=
+
+while (($#)); do
+  case "$1" in
+    --check)
+      $check_only && die '--check may only be specified once'
+      check_only=true
+      shift
+      ;;
+    --filename)
+      (($# >= 2)) || die '--filename requires a value'
+      [[ -z "$selected_filename" ]] || die '--filename may only be specified once'
+      selected_filename=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a path'
+      [[ -z "$output_dir" ]] || die '--output-dir may only be specified once'
+      output_dir=$2
+      shift 2
+      ;;
+    --rebuild)
+      $rebuild && die '--rebuild may only be specified once'
+      rebuild=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+$check_only && $rebuild && die '--check and --rebuild are mutually exclusive'
+
+for command in awk chmod cmp find jq mkdir mktemp mv rm sha256sum skopeo stat tar; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root_dir=$(cd -- "$script_dir/.." && pwd)
+image_manifest="$root_dir/fabric/router/data-images.txt"
+data_manifest="$root_dir/fabric/router/data-files.txt"
+output_dir=${output_dir:-"$root_dir/_build/data"}
+
+[[ -f "$image_manifest" ]] || die "image manifest not found: $image_manifest"
+[[ -f "$data_manifest" ]] || die "data manifest not found: $data_manifest"
+[[ -z "$selected_filename" || "$selected_filename" != */* ]] || die '--filename must be a basename'
+
+declare -A data_sources=()
+declare -A data_hashes=()
+
+while IFS= read -r filename; do
+  [[ -n "$filename" ]] || continue
+  IFS= read -r source || die "missing source for data payload: $filename"
+  IFS= read -r archive_sha256 || die "missing SHA256 for data payload: $filename"
+  IFS= read -r separator || true
+
+  [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe data payload filename: $filename"
+  [[ -n "$source" ]] || die "empty source for data payload: $filename"
+  [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] || die "invalid data payload SHA256: $filename"
+  [[ -z "${separator:-}" ]] || die "expected a blank separator after data payload: $filename"
+  [[ -z "${data_sources[$filename]:-}" ]] || die "duplicate data payload: $filename"
+
+  data_sources[$filename]=$source
+  data_hashes[$filename]=$archive_sha256
+done < "$data_manifest"
+
+declare -A seen_images=()
+matched=0
+staged=0
+work_dir=
+
+cleanup() {
+  [[ -z "$work_dir" ]] || rm -rf -- "$work_dir"
+}
+trap cleanup EXIT INT TERM
+
+while IFS= read -r filename; do
+  [[ -n "$filename" ]] || continue
+  IFS= read -r source || die "missing OCI source for image: $filename"
+  IFS= read -r platform || die "missing platform for image: $filename"
+  IFS= read -r platform_digest || die "missing platform digest for image: $filename"
+  IFS= read -r archive_ref || die "missing archive reference for image: $filename"
+  IFS= read -r archive_sha256 || die "missing archive SHA256 for image: $filename"
+  IFS= read -r separator || true
+
+  [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]tar$ ]] || die "unsafe image archive filename: $filename"
+  [[ "$source" =~ ^oci://[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]] || die "invalid pinned OCI index source: $filename"
+  [[ "$platform" == linux/amd64 ]] || die "unsupported image platform for $filename: $platform"
+  [[ "$platform_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "invalid platform manifest digest: $filename"
+  [[ "$archive_ref" =~ ^[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+:[A-Za-z0-9._-]+$ ]] || die "invalid archive image reference: $filename"
+  [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] || die "invalid image archive SHA256: $filename"
+  [[ -z "${separator:-}" ]] || die "expected a blank separator after image: $filename"
+  [[ -z "${seen_images[$filename]:-}" ]] || die "duplicate image archive: $filename"
+  seen_images[$filename]=1
+
+  [[ "${data_sources[$filename]:-}" == "$source" ]] || die "$filename source does not match data-files.txt"
+  [[ "${data_hashes[$filename]:-}" == "$archive_sha256" ]] || die "$filename SHA256 does not match data-files.txt"
+
+  if [[ -n "$selected_filename" && "$selected_filename" != "$filename" ]]; then
+    continue
+  fi
+  ((matched += 1))
+
+  $check_only && continue
+
+  mkdir -p -- "$output_dir"
+  destination="$output_dir/$filename"
+  [[ ! -L "$destination" ]] || die "refusing symlink destination: $destination"
+
+  destination_was_valid=false
+  if [[ -f "$destination" ]]; then
+    if echo "$archive_sha256  $destination" | sha256sum --check --status -; then
+      if $rebuild; then
+        destination_was_valid=true
+      else
+        printf 'verified cached %s\n' "$destination"
+        ((staged += 1))
+        continue
+      fi
+    else
+      $rebuild ||
+        die "cached archive checksum mismatch (remove only after inspection, or use --rebuild): $destination"
+      printf 'rebuilding mismatched cached %s\n' "$destination"
+    fi
+  fi
+
+  [[ ! -e "$destination" || -f "$destination" ]] || die "destination exists and is not a regular file: $destination"
+
+  # Keep the candidate on the destination filesystem so the final rename is
+  # atomic even when TMPDIR and the cache live on different mounts.
+  work_dir=$(mktemp -d "$output_dir/.fabric-airgap.XXXXXXXX")
+  index_json="$work_dir/source-index.json"
+  platform_json="$work_dir/platform-manifest.json"
+  layout="$work_dir/oci"
+  archive_tmp="$work_dir/$filename"
+
+  source_ref=${source#oci://}
+  repository=${source_ref%@sha256:*}
+  index_digest=sha256:${source_ref##*@sha256:}
+  archive_repository=${archive_ref%:*}
+  [[ "$archive_repository" == "$repository" ]] || die "$filename archive repository differs from its source"
+
+  printf 'resolving %s (%s)\n' "$source_ref" "$platform"
+  skopeo inspect --raw "docker://$source_ref" > "$index_json"
+  actual_index_digest=sha256:$(sha256sum "$index_json" | awk '{print $1}')
+  [[ "$actual_index_digest" == "$index_digest" ]] ||
+    die "$filename registry index digest mismatch: expected $index_digest, got $actual_index_digest"
+
+  match_count=$(jq -r --arg os linux --arg arch amd64 \
+    '[.manifests[] | select(.platform.os == $os and .platform.architecture == $arch and ((.platform.variant // "") == ""))] | length' \
+    "$index_json")
+  [[ "$match_count" == 1 ]] || die "$filename index has $match_count unqualified linux/amd64 manifests"
+  resolved_digest=$(jq -r --arg os linux --arg arch amd64 \
+    '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch and ((.platform.variant // "") == "")) | .digest' \
+    "$index_json")
+  [[ "$resolved_digest" == "$platform_digest" ]] ||
+    die "$filename platform digest mismatch: expected $platform_digest, got $resolved_digest"
+
+  skopeo inspect --raw "docker://$repository@$platform_digest" > "$platform_json"
+  actual_platform_digest=sha256:$(sha256sum "$platform_json" | awk '{print $1}')
+  [[ "$actual_platform_digest" == "$platform_digest" ]] ||
+    die "$filename platform manifest content does not match $platform_digest"
+
+  skopeo copy --tmpdir "$work_dir" --override-os linux --override-arch amd64 \
+    "docker://$repository@$platform_digest" "oci:$layout:$archive_ref"
+
+  layout_manifest="$layout/blobs/sha256/${platform_digest#sha256:}"
+  [[ -f "$layout_manifest" ]] || die "$filename OCI layout lacks its pinned platform manifest"
+  cmp --silent "$platform_json" "$layout_manifest" ||
+    die "$filename OCI layout changed the pinned platform manifest"
+
+  shopt -s nullglob
+  blobs=("$layout"/blobs/sha256/*)
+  shopt -u nullglob
+  ((${#blobs[@]} > 0)) || die "$filename OCI layout contains no blobs"
+  for blob in "${blobs[@]}"; do
+    [[ -f "$blob" && ! -L "$blob" ]] || die "$filename OCI blob is not a regular file: $blob"
+    blob_name=${blob##*/}
+    [[ "$blob_name" =~ ^[0-9a-f]{64}$ ]] || die "$filename OCI blob has an invalid name: $blob_name"
+    actual_blob_sha256=$(sha256sum "$blob" | awk '{print $1}')
+    [[ "$actual_blob_sha256" == "$blob_name" ]] || die "$filename OCI blob checksum mismatch: $blob_name"
+  done
+
+  config_digest=$(jq -r '.config.digest' "$layout_manifest")
+  [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$filename image config digest is invalid"
+  config_blob="$layout/blobs/sha256/${config_digest#sha256:}"
+  [[ -f "$config_blob" ]] || die "$filename OCI layout lacks its image config"
+  [[ $(jq -r '.os + "/" + .architecture' "$config_blob") == "$platform" ]] ||
+    die "$filename image config platform does not match $platform"
+
+  manifest_size=$(stat -c %s -- "$layout_manifest")
+  jq -cnS \
+    --arg digest "$platform_digest" \
+    --arg ref "$archive_ref" \
+    --argjson size "$manifest_size" \
+    '{schemaVersion:2,mediaType:"application/vnd.oci.image.index.v1+json",manifests:[{mediaType:"application/vnd.oci.image.manifest.v1+json",digest:$digest,size:$size,annotations:{"org.opencontainers.image.ref.name":$ref}}]}' \
+    > "$layout/index.json.canonical"
+  mv -- "$layout/index.json.canonical" "$layout/index.json"
+  printf '%s\n' '{"imageLayoutVersion":"1.0.0"}' > "$layout/oci-layout"
+
+  # Skopeo honors the caller's umask when creating the layout. Normalize every
+  # archive member so identical pinned content produces identical tar bytes.
+  unexpected_entry=$(find "$layout" -mindepth 1 ! -type d ! -type f -print -quit)
+  [[ -z "$unexpected_entry" ]] || die "$filename OCI layout has an unsupported entry: $unexpected_entry"
+  find "$layout" -type d -exec chmod 0755 -- {} +
+  find "$layout" -type f -exec chmod 0644 -- {} +
+
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+    -C "$layout" -cf "$archive_tmp" .
+  echo "$archive_sha256  $archive_tmp" | sha256sum --check --status - ||
+    die "$filename canonical archive checksum mismatch"
+
+  if $destination_was_valid; then
+    cmp --silent "$archive_tmp" "$destination" ||
+      die "$filename rebuild differs from the already verified archive"
+  else
+    mv -f -- "$archive_tmp" "$destination"
+  fi
+  echo "$archive_sha256  $destination" | sha256sum --check --status - ||
+    die "$filename final cache verification failed"
+  printf 'staged %s\n' "$destination"
+  ((staged += 1))
+
+  rm -rf -- "$work_dir"
+  work_dir=
+done < "$image_manifest"
+
+((matched > 0)) || die "image archive not found in manifest: ${selected_filename:-<none>}"
+
+if $check_only; then
+  printf 'validated %d pinned air-gap image record(s)\n' "$matched"
+else
+  printf 'verified or staged %d air-gap image archive(s)\n' "$staged"
+fi

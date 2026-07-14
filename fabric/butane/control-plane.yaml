@@ -1,0 +1,253 @@
+variant: fcos
+version: 1.5.0
+storage:
+    directories:
+        - path: /etc/rancher/k3s/config.yaml.d
+          mode: 448
+        - path: /var/lib/rancher/k3s/server
+          mode: 448
+        - path: /var/lib/rancher/k3s/server/manifests
+          mode: 448
+    files:
+        - path: /etc/rancher/k3s/config.yaml.d/10-datastore.yaml
+          overwrite: true
+          mode: 384
+          contents:
+            inline: |
+                datastore-endpoint: https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379
+                datastore-cafile: /var/lib/rancher/k3s/server/etcd-ca.pem
+                datastore-certfile: /var/lib/rancher/k3s/server/etcd-client.pem
+                datastore-keyfile: /var/lib/rancher/k3s/server/etcd-client-key.pem
+                kube-apiserver-arg:
+                  - etcd-prefix=/fabric-root
+                  - etcd-compaction-interval=0
+        - path: /etc/rancher/k3s/config.yaml.d/20-network.yaml
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                cluster-cidr: 172.22.0.0/16
+                service-cidr: 172.21.0.0/16
+                cluster-domain: cluster.fabric.internal
+                flannel-backend: vxlan
+                tls-san:
+                  - 10.66.0.254
+                  - api.fabric.internal
+        - path: /etc/rancher/k3s/config.yaml.d/30-server.yaml
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                disable:
+                  - coredns
+                  - local-storage
+                  - metrics-server
+                  - servicelb
+                  - traefik
+                node-label:
+                  - fabric.samcday.com/root-consensus=true
+                node-taint:
+                  - node-role.kubernetes.io/control-plane=true:NoSchedule
+                  - fabric.samcday.com/root-consensus=true:NoSchedule
+                secrets-encryption: true
+                selinux: true
+                write-kubeconfig-mode: "0640"
+                kubelet-arg:
+                  - system-reserved=cpu=500m,memory=2Gi,ephemeral-storage=2Gi
+                  - kube-reserved=cpu=500m,memory=1Gi,ephemeral-storage=2Gi
+                  - eviction-hard=memory.available<500Mi,nodefs.available<10%,imagefs.available<10%
+        - path: /etc/rancher/k3s/server.token
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:dAy78Mi2e18nfcnyGzjvu2cExN4l34hdUSFO0lSlT3Iox02n0NVqK7OyZcz7q1B4mScztW+QEavO9TXO7KPtlLA=,iv:Y+Ib+niOV3tUCI1KFiolsM9i3GqzFewjvq0w8l3SDeg=,tag:SkAmsFKzmeVsvwV1f2M8fA==,type:str]
+        - path: /var/lib/rancher/k3s/server/etcd-client.pem
+          overwrite: true
+          mode: 420
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:FBupfwrX53kzHcEyY4U+XB5I6FRhP89jIIXxf+d/mDk=,tag:5VXpPBArLmRthhBLiMugFA==,type:str]
+        - path: /var/lib/rancher/k3s/server/etcd-ca.pem
+          overwrite: true
+          mode: 420
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:pYmoyBpOidSeaXUByVB8fSb49UdnGkWexLGSCTboy7YgVnu72MRQQ5PVRahyD16esP+6rneOnbhg9WgXZTkdNZVSBc/nf8gTfvlw4oC8JRYeMHmU0Fk6nDl6v9bL2QWzje2HWTnz/ip6iND/UEwRvFuTzgF25zk68wPifElATP1m4pPyl5fHFKTpNjqf0in227A5KMwS5mPVGCBU3Bm6BwfjKQ/7KJ3TaKxw84xXpr/wATbl9vgzAqV+JhkJgL7zZoC2k8+rv3Iw6PkXqjTqqfh0bgL+mtNTxIjkOhAN+phC/CG2KDvgWm+SfCz+AqjS3XMflLcecKhnVnFq55aRrckMb5NvVP1s6yXI7BHowPhzKWBHDOsaVVfBCGplzMGxTNnHZaekbeCoz9Jl7Rc/bM6wQr8ugQ/tixcC1+Qtq0cbTmgeYAK2e1keCkJ6fEeobpjHGc+OA2RhZn6PTiKYm6B5ohNS5KUB1Llqw8li4FGjBiEYWC2RRxrMsz8LmUBUTsgEhGZ9sS/WA+kKzkdrv/UL30WowccUw9cllZiZQu58pxoNvH38XD1HpHsblJJ/6wFCmcqaKek9jp11RsxFq8ecgGWg2gN4Qml4mjGILLbb24qWuFs/SOcY869L/9QODfLRQGi7fmumw7uv14oWZt/V1VWoOmvzf63Nx04g4D4Qe+FZvOQ9aSRnFPIijhEaQlC2VUvzAnxXL9VMa4QUZrLFu6EG5dyZd4QI+bOXYv865wubj1rkTG4i16DgEflRPLACDH9xdTkH6pTdkdELW0kq5CPbxw/bPGfcbu6kzZvCmIFThcsOtDaOcgiruMxwb1xzEWvGZNxIsUWTAOZjhbp4dPMv2R5U/Myl97rnwrx+X9l4RIjMZSTxWAuLiFn6rw0IjrMIOxG9oATEsEJgHJs80QnYdgmhekC0FXAO1c3UiAeOEq94hgWzBCAEkTZaer4tY+R1278gbXITmtDuhUNscoseyKgbjZ8+x20jucyAnh/ft98j5ajxe5bMiIs4ABAjBzMFIyDibeUqmC6loBAokZdI3w8mC4iOW6QOek3BWOAkN2nN4D3eiQK5T1qDvZWx3j5MekZ6ToD4IZYGm6JsG+xbVljzfgfYtLeWgn3o65tGKK4noxFKS2ovmKRkeITuse3lo7yiatBm6CNgt1Ns/pOnM01cPhGQFiMlsBfQ2/LT/VPSgzicsd4BYziWZZzXK0SZmANb4snOrT4otRA6Q5Ox/dJN3TyeQx/5HIfVCJfeA9Sb2ZNWXeBrC8Ah1g+ohHgSAKcXCBZp+zQdR41yr4TkuJ6C8N3dFifc8jeP/0sfc3m03INZAp0CtKpmtWitQrpsln3yxewkTHj7tdpecSq4WlZn0ZRqRJiJfBK2TuYey21SFcpd0F2WRaEctJoriTugbRZjC8V1WkLvS8QKPJPROqnYZ0f9jnKcvaJBDbucs9eDDcj/UyPq71Rs9HMDlKds3UZ5hAbAzjV/wKekSwPGteDHthEKY0hImyTinyK20tQbwnNYFtGb5uUTiwkDxH1iIXqVBy6VXxo8VaHPjZYTaoWvhdS2LBeSklyf6peKvdDSpLnSdicjJ3mQAs7o1Cb3OhP55LslojkDl9hps1mUR4Bd9Uk8Z5wH2l8kvGN/YPcvPHV1VOAnGsSW0+kSx/E/QDY5sSuJ/QoNYRMNUeljUM32hxb6i3y48b9Z6ZTzxZtIXbbOnCyTgCs55jELULBth0dEJ8FwVcUWEtxIhpoOyvNDEC++eMNRTBmUJSk9ZkPniC7QHehUU5/1NPAN1ALuYkWHQ2Fw7hl500B5TbmoxxL0S40pLND92atoF8XWHdn090ClXo02HX86YbLmcGO2OImPhLGXthls7AXB6nPkP2q2dTyccjWykGDeEhNnXuqrUY4/lkPOEhkDx9s9BIyo0/82whLodwGngg==,iv:/D++AUyOdnBEFK4jcrmWpfGnFgJgaPxQrDUDb2a9jyY=,tag:wrMwKaEQNHuNC19GdIdG5w==,type:str]
+        - path: /var/lib/rancher/k3s/server/etcd-client-key.pem
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:R+dlj5csL7W7QH9erqMObW4XgAtbRv3MvtgQ3ACwU8s=,tag:R+BSN5P2tGv6wm5mSZxhew==,type:str]
+        - path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                apiVersion: v1
+                kind: ServiceAccount
+                metadata:
+                  name: kube-vip
+                  namespace: kube-system
+                ---
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: kube-vip-control-plane
+                  namespace: kube-system
+                rules:
+                  - apiGroups:
+                      - coordination.k8s.io
+                    resources:
+                      - leases
+                    verbs:
+                      - create
+                  - apiGroups:
+                      - coordination.k8s.io
+                    resourceNames:
+                      - plndr-cp-lock
+                    resources:
+                      - leases
+                    verbs:
+                      - get
+                      - patch
+                      - update
+                ---
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: RoleBinding
+                metadata:
+                  name: kube-vip-control-plane
+                  namespace: kube-system
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: Role
+                  name: kube-vip-control-plane
+                subjects:
+                  - kind: ServiceAccount
+                    name: kube-vip
+                    namespace: kube-system
+                ---
+                apiVersion: apps/v1
+                kind: DaemonSet
+                metadata:
+                  labels:
+                    app.kubernetes.io/name: kube-vip-ds
+                    app.kubernetes.io/version: v1.2.1
+                  name: kube-vip-ds
+                  namespace: kube-system
+                spec:
+                  selector:
+                    matchLabels:
+                      app.kubernetes.io/name: kube-vip-ds
+                  template:
+                    metadata:
+                      labels:
+                        app.kubernetes.io/name: kube-vip-ds
+                        app.kubernetes.io/version: v1.2.1
+                    spec:
+                      affinity:
+                        nodeAffinity:
+                          requiredDuringSchedulingIgnoredDuringExecution:
+                            nodeSelectorTerms:
+                              - matchExpressions:
+                                  - key: fabric.samcday.com/root-consensus
+                                    operator: In
+                                    values:
+                                      - "true"
+                      containers:
+                        - name: kube-vip
+                          image: ghcr.io/kube-vip/kube-vip:v1.2.1
+                          imagePullPolicy: Never
+                          args:
+                            - manager
+                          env:
+                            - name: vip_arp
+                              value: "true"
+                            - name: port
+                              value: "6443"
+                            - name: vip_nodename
+                              valueFrom:
+                                fieldRef:
+                                  fieldPath: spec.nodeName
+                            - name: vip_subnet
+                              value: "32"
+                            - name: dns_mode
+                              value: first
+                            - name: cp_enable
+                              value: "true"
+                            - name: cp_namespace
+                              value: kube-system
+                            - name: vip_leaderelection
+                              value: "true"
+                            - name: vip_leasename
+                              value: plndr-cp-lock
+                            - name: vip_leaseduration
+                              value: "30"
+                            - name: vip_renewdeadline
+                              value: "20"
+                            - name: vip_retryperiod
+                              value: "5"
+                            - name: address
+                              value: 10.66.0.254
+                            - name: prometheus_server
+                              value: :2112
+                          resources:
+                            requests:
+                              cpu: 20m
+                              memory: 32Mi
+                            limits:
+                              memory: 128Mi
+                          securityContext:
+                            allowPrivilegeEscalation: false
+                            capabilities:
+                              add:
+                                - NET_ADMIN
+                                - NET_RAW
+                              drop:
+                                - ALL
+                      hostNetwork: true
+                      priorityClassName: system-node-critical
+                      serviceAccountName: kube-vip
+                      terminationGracePeriodSeconds: 5
+                      tolerations:
+                        - operator: Exists
+                          effect: NoSchedule
+                        - operator: Exists
+                          effect: NoExecute
+systemd:
+    units:
+        - name: install-k3s.service
+          dropins:
+            - name: fabric-server.conf
+              contents: |
+                [Unit]
+                Requires=etcd.service
+                After=etcd.service
+
+                [Service]
+                Environment=INSTALL_K3S_EXEC=server
+                Environment=K3S_TOKEN_FILE=/etc/rancher/k3s/server.token
+                Environment=K3S_AGENT_TOKEN_FILE=/etc/rancher/k3s/agent.token
+        - name: k3s.service
+          dropins:
+            - name: etcd.conf
+              contents: |
+                [Unit]
+                Requires=etcd.service
+                After=etcd.service
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkdUo2c2QwdWE5ZDBxVFlU
+            eVU3U3R1U1UyeTEza2RLbllWajI1OXU0SENnCnNTUzhRRXNlbEJuQmdLUkhlUUtQ
+            a1l0ZXhhZTk3TGpabkpWcmlSQjhiWjgKLS0tIDZJS2xVUXZzRjVyaTY5b1NSY09X
+            WjcvSktFSm1BNkVhZncwcHV0VW8veWcK2D/tkknedJ+saXQYaI0CFvEBOS3Q5ZCD
+            EAAftt5VfTzlzEJgI0QKfgYJrS1xlD+YZ2DPZYClIinj3HjE504o0g==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-13T10:40:36Z"
+    mac: ENC[AES256_GCM,data:T+Z1FwM0yqVEadxQRvCwuT9RBPS3yf2OK/jxQr06CW+/2DVTqM6RcWdkf1eY9tUS5XKE7KesOeqBh5tHVSPKC1XxQnRJbwXb8IX+uHaSfk+kjmcVmLxzAHwGLYRboKCPw9kVoGSJp+f9ToEFpDVg/4sX4V4UaViyTe0vnKvGJMI=,iv:ts42E/5X97z7WNNLX+1xCzsp9NCeYD5oMovZ9X353Pk=,tag:cKcvLzzmqG/LQ34AFTIh/g==,type:str]
+    encrypted_comment_regex: cryptme
+    version: 3.11.0

@@ -1,0 +1,86 @@
+variant: fcos
+version: 1.5.0
+storage:
+    files:
+        - path: /etc/etcd/pki/observer.pem
+          overwrite: true
+          mode: 420
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:KOYrQJ/pYvX1g4kCSpZcL9Ej4061klmcWGDFMfIEr08=,tag:qOSrU7gUxoSIqERe1cJ3RA==,type:str]
+        - path: /etc/etcd/pki/observer-key.pem
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:M67AdhZX2WbzYVH4akPOdVPgo8v06yLL+JjAo3K+Wbw=,tag:0PFXTKfxwYLC4y8Z70M6zw==,type:str]
+        - path: /usr/local/sbin/collect-fabric-etcd-alarms
+          overwrite: true
+          mode: 493
+          contents:
+            local: files/collect-fabric-etcd-alarms
+systemd:
+    units:
+        - name: fabric-etcd-alarm-collector.service
+          contents: |
+            [Unit]
+            Description=Export authenticated local fabric etcd alarm state
+            Documentation=https://etcd.io/docs/v3.6/op-guide/monitoring/
+            Wants=etcd.service
+            After=etcd.service
+            RequiresMountsFor=/var/lib/fabric/node-exporter-textfile
+
+            [Service]
+            Type=oneshot
+            User=root
+            Group=root
+            ExecStart=/usr/local/sbin/collect-fabric-etcd-alarms
+            TimeoutStartSec=10s
+            AmbientCapabilities=
+            CapabilityBoundingSet=
+            LockPersonality=yes
+            NoNewPrivileges=yes
+            PrivateDevices=yes
+            PrivateTmp=yes
+            ProtectClock=yes
+            ProtectControlGroups=yes
+            ProtectHome=yes
+            ProtectHostname=yes
+            ProtectKernelLogs=yes
+            ProtectKernelModules=yes
+            ProtectKernelTunables=yes
+            ProtectSystem=strict
+            ReadWritePaths=/var/lib/fabric/node-exporter-textfile
+            RestrictAddressFamilies=AF_INET
+            RestrictNamespaces=yes
+            RestrictRealtime=yes
+        - name: fabric-etcd-alarm-collector.timer
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Poll authenticated local fabric etcd alarm state
+
+            [Timer]
+            OnBootSec=30s
+            OnUnitInactiveSec=15s
+            AccuracySec=1s
+            RandomizedDelaySec=2s
+            Unit=fabric-etcd-alarm-collector.service
+
+            [Install]
+            WantedBy=timers.target
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkY1I0SHZYeGJxYm1JT3V1
+            Yk56V1lGWkpaZkxNaTNWU2ZmZWM5ZnpkeWxjCnROajZJUFcrYjVBOHRIRGpVbHZY
+            bGlaS2U1QmFaWnpiMzdUNlJGbUpMelkKLS0tIER0U1ZkV1I1TEZ6ZzVxOFNwZ1hM
+            ZUQ4Y3ZDMHBQZkxzbk1OTkxVU0owV2cKvuYWDGe5JfWp0z0WocuG4/9WvpSUixKP
+            A1TMhYboxLWRZUb6+5NDDWoS3I3A8eWY6JQW/nEP8YuqhLcz+wwt0g==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-13T10:40:37Z"
+    mac: ENC[AES256_GCM,data:O8s2kt0Ni/oar03mKHPPCkBZTTUr5rfFK80A1YSmKe1CWABHdHPenzSo0PicGMy8L0uE2HNwWiVHL0fL4varen1XFdWsIrf3nWVSAr5RTNRUqMOEXxMei+h+rJTjxiGKFkZc1vmKhsR+DHv6y9UpMUvBXdI10CXMcE6HaZeR0DU=,iv:vzIDBdgYeL5wQYuHtun8FXJ8embJqeJfOhQ0urxH8k0=,tag:4P3MHpgNioNdh/dJCAouHQ==,type:str]
+    encrypted_comment_regex: cryptme
+    version: 3.11.0

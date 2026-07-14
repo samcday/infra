@@ -1,0 +1,14 @@
+# Root-fabric routing is deliberately plain NAT with no overlay or dynamic
+# routing control plane. Remove these rather than merely disabling them.
+frr-bgpd
+frr-pythontools
+frr-staticd
+frr-watchfrr
+frr-zebra
+kmod-usb-net-cdc-ether
+kmod-usb-net-cdc-ncm
+luci
+prometheus-node-exporter-lua
+tailscale
+tang
+usb-modeswitch

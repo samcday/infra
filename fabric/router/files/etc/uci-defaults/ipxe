@@ -1,0 +1,8 @@
+# PXE is deliberately fail-closed for the sacred-node phase. The initial
+# consensus Ignitions are rendered and carried offline; no online service is
+# allowed to hold their etcd and LUKS keys. Add a reviewed worker-only chain
+# configuration in a later iteration before enabling DHCP/TFTP boot options.
+set -u
+
+logger -t fabric-bootstrap 'PXE remains disabled pending worker-only provisioner'
+exit 0

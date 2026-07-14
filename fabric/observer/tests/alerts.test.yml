@@ -1,0 +1,139 @@
+---
+rule_files:
+  - ../alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: authenticated active alarm is never interpreted as healthy
+    interval: 1m
+    input_series:
+      - series: >-
+          fabric_etcd_active_alarms{job="fabric-node",node="fabric-az1-cp1",instance="10.66.0.10:9100"}
+        values: 1x3
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FabricEtcdAuthenticatedAlarmActive
+        exp_alerts:
+          - exp_labels:
+              instance: 10.66.0.10:9100
+              job: fabric-node
+              node: fabric-az1-cp1
+              severity: critical
+            exp_annotations:
+              summary: >-
+                Authenticated etcd alarms are active on fabric-az1-cp1.
+              description: >-
+                The local authenticated alarm list contains one or more
+                alarms. Inspect fabric_etcd_alarm_active for member and alarm
+                type; never disarm an alarm without resolving and recording
+                its cause.
+
+  - name: a live HTTP endpoint cannot hide a frozen collector
+    interval: 1m
+    input_series:
+      - series: >-
+          fabric_observer_collection_timestamp_seconds{job="fabric-observer"}
+        values: 0x4
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FabricObserverCollectionStale
+        exp_alerts:
+          - exp_labels:
+              job: fabric-observer
+              severity: critical
+            exp_annotations:
+              summary: >-
+                The loopback observer is serving stale collection evidence.
+              description: >-
+                Its HTTP endpoint may still answer, but no complete
+                API/VIP/Lease collection has finished in more than one minute.
+
+  - name: a missing VIP readiness series fails closed
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FabricAPIVIPNotReady
+        exp_alerts:
+          - exp_labels:
+              endpoint_type: vip
+              job: fabric-observer
+              severity: critical
+            exp_annotations:
+              summary: The fabric Kubernetes API VIP is not ready.
+              description: >-
+                An authenticated, CA-verified /readyz request through
+                10.66.0.254 has failed for one minute.
+
+  - name: self-reported and authoritative kube-vip holders must agree
+    interval: 1m
+    input_series:
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp1"}
+        values: 1x3
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp2"}
+        values: 0x3
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp3"}
+        values: 0x3
+      - series: >-
+          fabric_observer_kube_vip_lease_holder{job="fabric-observer",node="fabric-az1-cp1"}
+        values: 0x3
+      - series: >-
+          fabric_observer_kube_vip_lease_holder{job="fabric-observer",node="fabric-az1-cp2"}
+        values: 1x3
+      - series: >-
+          fabric_observer_kube_vip_lease_holder{job="fabric-observer",node="fabric-az1-cp3"}
+        values: 0x3
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FabricKubeVIPLeaderLeaseMismatch
+        exp_alerts:
+          - exp_labels:
+              node: fabric-az1-cp1
+              severity: critical
+            exp_annotations:
+              summary: >-
+                Kube-vip's self-reported leader disagrees with the API Lease.
+              description: >-
+                The per-root kube-vip leader series and the authenticated,
+                authoritative plndr-cp-lock Lease do not identify the same
+                holder, or one side is missing an expected root identity.
+          - exp_labels:
+              node: fabric-az1-cp2
+              severity: critical
+            exp_annotations:
+              summary: >-
+                Kube-vip's self-reported leader disagrees with the API Lease.
+              description: >-
+                The per-root kube-vip leader series and the authenticated,
+                authoritative plndr-cp-lock Lease do not identify the same
+                holder, or one side is missing an expected root identity.
+
+  - name: three zero kube-vip leaders fail cardinality
+    interval: 1m
+    input_series:
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp1"}
+        values: 0x3
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp2"}
+        values: 0x3
+      - series: >-
+          kube_vip_is_leader{job="fabric-kube-vip",lease_name="plndr-cp-lock",node="fabric-az1-cp3"}
+        values: 0x3
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FabricKubeVIPLeaderCardinalityInvalid
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: >-
+                Fabric kube-vip does not report exactly one API leader.
+              description: >-
+                The pinned kube-vip election metric is absent or has a leader
+                cardinality other than one. Correlate with the authoritative
+                Lease probe before touching the Lease or any control-plane
+                process.

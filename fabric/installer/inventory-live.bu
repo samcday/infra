@@ -1,0 +1,345 @@
+variant: fcos
+version: 1.5.0
+
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+
+storage:
+  directories:
+    - path: /var/home/core/fabric-inventory
+      mode: 493
+      user:
+        name: root
+      group:
+        name: root
+
+  files:
+    - path: /usr/local/sbin/inventory-fabric-node
+      overwrite: true
+      mode: 493
+      contents:
+        local: scripts/inventory-fabric-node
+
+    - path: /usr/local/sbin/collect-fabric-inventory
+      overwrite: true
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          umask 077
+
+          [[ -e /run/ostree-live ]] || {
+              echo 'refusing inventory capture outside an OSTree live boot' >&2
+              exit 1
+          }
+
+          directory=/var/home/core/fabric-inventory
+          output=$directory/fabric-candidate.txt
+          checksum=$output.sha256
+          staging=$(mktemp --directory -- /run/fabric-inventory/staging.XXXXXXXX)
+          temporary_output=$directory/.fabric-candidate.txt.$$
+          temporary_checksum=$directory/.fabric-candidate.txt.sha256.$$
+          cleanup() {
+              rm -rf -- "$staging"
+              rm -f -- "$temporary_output" "$temporary_checksum"
+          }
+          trap cleanup EXIT
+
+          capture_status=0
+          timeout --signal=TERM --kill-after=30s 15m \
+              /usr/local/sbin/inventory-fabric-node \
+              > "$staging/fabric-candidate.txt" 2>&1 || capture_status=$?
+          case $capture_status in
+              0) ;;
+              124|137)
+                  printf '\n## capture status\nInventory timed out after 15 minutes; partial output was preserved.\n' \
+                      >> "$staging/fabric-candidate.txt"
+                  ;;
+              *)
+                  printf '\n## capture status\nInventory exited with status %s; partial output was preserved.\n' \
+                      "$capture_status" >> "$staging/fabric-candidate.txt"
+                  ;;
+          esac
+          output_sha256=$(sha256sum "$staging/fabric-candidate.txt" | awk '{ print $1 }')
+          [[ $output_sha256 =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  fabric-candidate.txt\n' "$output_sha256" > "$staging/fabric-candidate.txt.sha256"
+
+          install -o core -g core -m 0600 "$staging/fabric-candidate.txt" "$temporary_output"
+          install -o core -g core -m 0600 "$staging/fabric-candidate.txt.sha256" "$temporary_checksum"
+          rm -f -- "$checksum"
+          mv -f -- "$temporary_output" "$output"
+          mv -f -- "$temporary_checksum" "$checksum"
+          trap - EXIT
+          rm -rf -- "$staging"
+          /usr/sbin/restorecon -F "$output" "$checksum"
+
+          [[ $(stat -Lc '%U:%G:%a' "$output") == core:core:600 ]]
+          [[ $(stat -Lc '%U:%G:%a' "$checksum") == core:core:600 ]]
+          (cd "$directory" && sha256sum --check --strict fabric-candidate.txt.sha256)
+          printf '\nFabric inventory capture complete.\n'
+          printf 'Copy and verify as a pair: %s and %s\n\n' "$output" "$checksum"
+          if ((capture_status != 0)); then
+              echo 'capture is incomplete; inspect its final status section' >&2
+              exit 1
+          fi
+
+    - path: /usr/local/sbin/guard-fabric-inventory-live
+      overwrite: true
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          fail() {
+              printf 'fabric inventory network guard failed: %s\n' "$*" >&2
+              exit 1
+          }
+
+          [[ -e /run/ostree-live ]] || fail '/run/ostree-live is absent; this is not an FCOS live boot'
+          [[ $(sysctl -n net.ipv4.ip_forward) == 0 ]] || fail 'IPv4 forwarding is enabled'
+          [[ $(sysctl -n net.ipv6.conf.all.forwarding) == 0 ]] || fail 'IPv6 forwarding is enabled'
+          [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) == 1 ]] || fail 'IPv6 is enabled'
+
+          mapfile -t global_ipv4 < <(ip -4 -o address show scope global | awk '{ print $2 " " $4 }')
+          ((${#global_ipv4[@]} == 1)) || fail "expected one global IPv4 address, found ${#global_ipv4[@]}"
+          [[ ${global_ipv4[0]} == *' 10.66.0.100/24' ]] || fail "unexpected IPv4 address: ${global_ipv4[0]}"
+          interface=${global_ipv4[0]%% *}
+
+          ! ip -4 route show default | grep -q . || fail 'an IPv4 default route is active'
+          ! ip -6 route show default | grep -q . || fail 'an IPv6 default route is active'
+          ! ip -6 -o address show scope global | grep -q . || fail 'a global IPv6 address is active'
+          ! nmcli --get-values IP4.DNS,IP6.DNS device show | grep -q '[^[:space:]]' ||
+              fail 'NetworkManager reports an active DNS server'
+
+          /usr/sbin/nft delete table inet fabric_inventory 2>/dev/null || true
+          /usr/sbin/nft --check --file /etc/nftables/fabric-inventory.nft
+          /usr/sbin/nft --file /etc/nftables/fabric-inventory.nft
+          /usr/sbin/nft list table inet fabric_inventory >/dev/null
+          printf 'admitted live interface %s at 10.66.0.100/24; SSH source is restricted to 10.66.0.2\n' "$interface"
+
+    - path: /usr/local/sbin/show-fabric-inventory-access
+      overwrite: true
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          host_key=/etc/ssh/ssh_host_ed25519_key.pub
+          [[ -s $host_key ]]
+          fingerprint=$(/usr/bin/ssh-keygen -l -E sha256 -f "$host_key")
+
+          cat <<EOF
+
+          =====================================================================
+          FABRIC INVENTORY LIVE MEDIA - NO DISK INSTALLER IS CONFIGURED
+
+          Static address: 10.66.0.100/24 (no gateway and no DNS)
+          Operator source: 10.66.0.2/24 (the only address allowed to SSH)
+          SSH command:    ssh core@10.66.0.100
+          SSH host key:   $fingerprint
+
+          This live boot creates an ephemeral host key. On 10.66.0.2, use a
+          fresh candidate-specific known_hosts file, scan this key, and compare
+          its SHA256 fingerprint with the physical-console value above:
+            candidate_dir=/secure/fabric-inventory/candidate-N
+            install -d -m 0700 "\$candidate_dir"
+            known_hosts=\$candidate_dir/known_hosts
+            test ! -e "\$known_hosts"
+            umask 077
+            ssh-keyscan -T 5 -t ed25519 10.66.0.100 > "\$known_hosts"
+            ssh-keygen -l -E sha256 -f "\$known_hosts"
+            ssh -o UserKnownHostsFile="\$known_hosts" \\
+              -o StrictHostKeyChecking=yes core@10.66.0.100
+
+          Hardware collection runs read-only as root. Its completed report is:
+            /var/home/core/fabric-inventory/fabric-candidate.txt
+            /var/home/core/fabric-inventory/fabric-candidate.txt.sha256
+          Both files are owner core, mode 0600. Copy both, then run:
+            scp -o UserKnownHostsFile="\$known_hosts" \\
+              -o StrictHostKeyChecking=yes \\
+              core@10.66.0.100:fabric-inventory/fabric-candidate.txt \\
+              core@10.66.0.100:fabric-inventory/fabric-candidate.txt.sha256 \\
+              "\$candidate_dir/"
+            cd "\$candidate_dir"
+            sha256sum --check --strict fabric-candidate.txt.sha256
+
+          Check progress with:
+            sudo systemctl status fabric-inventory.service
+            sudo journalctl -b -u fabric-inventory.service
+          =====================================================================
+
+          EOF
+
+    - path: /etc/motd.d/90-fabric-inventory
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          FABRIC INVENTORY LIVE MEDIA - NO DISK INSTALLER IS CONFIGURED
+          Static address: 10.66.0.100/24 (no gateway or DNS)
+          SSH is firewall-restricted to operator address 10.66.0.2.
+          The physical console prints this boot's ED25519 SSH host fingerprint.
+          Use a fresh candidate-specific known_hosts file: live keys are ephemeral.
+          Inventory output: /var/home/core/fabric-inventory/fabric-candidate.txt{,.sha256}
+          Progress: sudo systemctl status fabric-inventory.service
+
+    - path: /etc/hostname
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          fabric-inventory-live
+
+    - path: /etc/ssh/sshd_config.d/90-fabric-inventory.conf
+      overwrite: true
+      mode: 384
+      contents:
+        inline: |
+          AuthenticationMethods publickey
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitEmptyPasswords no
+          PermitRootLogin no
+          AllowUsers core@10.66.0.2
+          DisableForwarding yes
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          GatewayPorts no
+          PermitTunnel no
+          X11Forwarding no
+          UseDNS no
+
+    - path: /etc/sysctl.d/90-fabric-inventory.conf
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          net.ipv4.ip_forward = 0
+          net.ipv6.conf.all.forwarding = 0
+          net.ipv6.conf.default.forwarding = 0
+          net.ipv6.conf.all.disable_ipv6 = 1
+          net.ipv6.conf.default.disable_ipv6 = 1
+
+    - path: /etc/nftables/fabric-inventory.nft
+      overwrite: true
+      mode: 384
+      contents:
+        inline: |
+          table inet fabric_inventory {
+              chain input {
+                  type filter hook input priority filter; policy drop;
+                  iifname "lo" accept
+                  ct state invalid drop
+                  ct state established,related accept
+                  ip saddr 10.66.0.2 tcp dport 22 ct state new accept
+                  ip saddr 10.66.0.2 ip protocol icmp accept
+              }
+
+              chain forward {
+                  type filter hook forward priority filter; policy drop;
+              }
+
+              chain output {
+                  type filter hook output priority filter; policy drop;
+                  oifname "lo" accept
+                  ct state established,related accept
+                  ip daddr 10.66.0.2 ip protocol icmp accept
+              }
+          }
+
+systemd:
+  units:
+    # Defense in depth: this live medium inventories hardware and must never
+    # start the FCOS automatic installer, even if an unexpected config appears.
+    - name: coreos-installer.service
+      mask: true
+    - name: coreos-installer.target
+      mask: true
+
+    - name: sshd.service
+      enabled: true
+      dropins:
+        - name: 90-fabric-inventory-network-guard.conf
+          contents: |
+            [Unit]
+            Requires=fabric-inventory-network-guard.service
+            After=fabric-inventory-network-guard.service
+
+    - name: fabric-inventory-network-guard.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Fail closed unless the inventory live network is isolated
+        Wants=network-online.target
+        After=network-online.target systemd-sysctl.service
+        Before=sshd.service fabric-inventory-console.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/local/sbin/guard-fabric-inventory-live
+        StandardOutput=journal+console
+        StandardError=journal+console
+
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: fabric-inventory-console.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Show fabric inventory live-media access details
+        Requires=fabric-inventory-network-guard.service
+        Wants=sshd.service
+        After=fabric-inventory-network-guard.service sshd.service
+        Before=fabric-inventory.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/local/sbin/show-fabric-inventory-access
+        StandardOutput=journal+console
+        StandardError=journal+console
+
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: fabric-inventory.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Collect read-only fabric candidate hardware inventory
+        Requires=fabric-inventory-console.service
+        After=fabric-inventory-console.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        UMask=0077
+        RuntimeDirectory=fabric-inventory
+        RuntimeDirectoryMode=0700
+        ExecStart=/usr/local/sbin/collect-fabric-inventory
+        StandardOutput=journal+console
+        StandardError=journal+console
+        LockPersonality=yes
+        NoNewPrivileges=yes
+        PrivateTmp=yes
+        ProtectClock=yes
+        ProtectControlGroups=yes
+        ProtectKernelModules=yes
+        ProtectKernelTunables=yes
+        ProtectSystem=strict
+        ReadWritePaths=/var/home/core/fabric-inventory
+        RestrictNamespaces=yes
+        RestrictRealtime=yes
+
+        [Install]
+        WantedBy=multi-user.target

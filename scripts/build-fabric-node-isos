@@ -1,0 +1,792 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+manifest=$repo_root/fabric/installer/fcos-live-iso.txt
+asset_manifest=$repo_root/fabric/router/data-files.txt
+default_cache_dir=$repo_root/_build/fabric/installer
+nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
+network_keyfile_path=/etc/NetworkManager/system-connections/fabric-static.nmconnection
+hostname_path=/etc/hostname
+etcd_ca_path=/etc/etcd/pki/ca.pem
+etcd_peer_cert_path=/etc/etcd/pki/peer.pem
+router_asset_url=http://10.66.0.1/static
+expected_asset_count=7
+
+check_only=false
+ignition_dir=
+output_dir=
+cache_dir=
+cp1_disk=
+cp2_disk=
+cp3_disk=
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  build-fabric-node-isos --check
+
+  build-fabric-node-isos \
+    --ignition-dir /secure/fabric-bootstrap \
+    --output-dir /secure/fabric-installers \
+    --cache-dir /secure/fabric-installer-cache \
+    --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE \
+    --cp2-disk /dev/disk/by-id/ata-EXACT_CP2_DEVICE \
+    --cp3-disk /dev/disk/by-id/ata-EXACT_CP3_DEVICE
+
+Normal mode downloads and verifies the pinned Fedora CoreOS live ISO, then
+builds three separate, secret-bearing, confirmation-gated installer ISOs.
+Every disk path must come from reviewed inventory.  Booting an ISO and typing
+its exact confirmation will destroy that ISO's configured destination disk.
+The optional cache directory stores only the public FCOS ISO and signature; it
+defaults to _build/fabric/installer inside the checkout.
+
+The --check mode validates only the public FCOS/asset manifests and pinned
+Fedora signing-key identity.  It does not read final Ignitions, bind hardware
+identities, download the FCOS ISO, or build installer media; normal mode
+performs those deeper checks after inventory and secret rendering.
+EOF
+}
+
+decode_data_url() {
+  local source=$1
+  local compression=$2
+  local destination=$3
+
+  [[ $source == data:*,* ]] || {
+    echo "refusing non-data URL while resolving embedded Ignition" >&2
+    return 1
+  }
+  [[ -z $compression || $compression == gzip ]] || {
+    echo "unsupported embedded Ignition compression: $compression" >&2
+    return 1
+  }
+
+  # Ignition uses both compact percent-encoded data URLs for short files and
+  # base64+gzip URLs for larger files/config fragments. Decode either form
+  # without evaluating backslash escapes from untrusted config content.
+  printf '%s' "$source" | python3 -c '
+import base64
+import gzip
+import sys
+from urllib.parse import unquote_to_bytes
+
+compression, destination = sys.argv[1:]
+source = sys.stdin.read()
+metadata, payload = source[5:].split(",", 1)
+if metadata.endswith(";base64"):
+    data = base64.b64decode(payload, validate=True)
+else:
+    data = unquote_to_bytes(payload)
+if compression == "gzip":
+    data = gzip.decompress(data)
+with open(destination, "wb") as output:
+    output.write(data)
+' "$compression" "$destination"
+}
+
+extract_embedded_ignition_file() {
+  local root_config=$1
+  local target_path=$2
+  local destination=$3
+  local walk_dir=$4
+  local config
+  local config_index=0
+  local child_index=1
+  local match_count=0
+  local source
+  local compression
+  local match
+  local child
+
+  mkdir -m 0700 -- "$walk_dir"
+  cp -- "$root_config" "$walk_dir/0.ign"
+
+  while [[ -f $walk_dir/$config_index.ign ]]; do
+    config=$walk_dir/$config_index.ign
+    jq -e '.ignition.version | startswith("3.")' "$config" >/dev/null
+    jq -e '.ignition.config.replace == null' "$config" >/dev/null || {
+      echo "refusing an Ignition replace directive while resolving $target_path" >&2
+      return 1
+    }
+
+    while IFS= read -r match; do
+      source=$(printf '%s' "$match" | base64 --decode | jq -r '.source')
+      compression=$(printf '%s' "$match" | base64 --decode | jq -r '.compression // ""')
+      ((match_count += 1))
+      ((match_count == 1)) || {
+        echo "multiple embedded Ignition files target $target_path" >&2
+        return 1
+      }
+      decode_data_url "$source" "$compression" "$destination"
+    done < <(jq -r --arg path "$target_path" '
+      .storage.files[]?
+      | select(.path == $path)
+      | {source: .contents.source, compression: (.contents.compression // "")}
+      | @base64
+    ' "$config")
+
+    while IFS= read -r match; do
+      ((child_index <= 64)) || {
+        echo 'embedded Ignition graph exceeds 64 configs' >&2
+        return 1
+      }
+      source=$(printf '%s' "$match" | base64 --decode | jq -r '.source')
+      compression=$(printf '%s' "$match" | base64 --decode | jq -r '.compression // ""')
+      child=$walk_dir/$child_index.ign
+      decode_data_url "$source" "$compression" "$child"
+      ((child_index += 1))
+    done < <(jq -r '
+      .ignition.config.merge[]?
+      | {source, compression: (.compression // "")}
+      | @base64
+    ' "$config")
+
+    ((config_index += 1))
+  done
+
+  ((match_count == 1)) || {
+    echo "cannot find exactly one embedded Ignition file at $target_path" >&2
+    return 1
+  }
+}
+
+build_expected_asset_manifest() {
+  local source=$1
+  local destination=$2
+  local filename
+  local url
+  local sha256
+  local separator
+  local record=0
+
+  : > "$destination"
+  while IFS= read -r filename; do
+    [[ -n $filename ]] || continue
+    ((record += 1))
+    IFS= read -r url || {
+      echo "missing URL for router asset record $record" >&2
+      return 1
+    }
+    IFS= read -r sha256 || {
+      echo "missing SHA-256 for router asset record $record" >&2
+      return 1
+    }
+    separator=
+    IFS= read -r separator || true
+
+    [[ $filename =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+      echo "unsafe router asset filename in record $record: $filename" >&2
+      return 1
+    }
+    [[ $url == https://* || $url == oci://* ]] || {
+      echo "unsupported router asset source in record $record: $url" >&2
+      return 1
+    }
+    [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || {
+      echo "invalid router asset SHA-256 in record $record: $filename" >&2
+      return 1
+    }
+    [[ -z $separator ]] || {
+      echo "expected a blank separator after router asset record $record" >&2
+      return 1
+    }
+    printf '%s  %s\n' "$sha256" "$filename" >> "$destination"
+  done < "$source"
+
+  ((record == expected_asset_count)) || {
+    echo "expected exactly $expected_asset_count offline router assets, found $record" >&2
+    return 1
+  }
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      check_only=true
+      shift
+      ;;
+    --ignition-dir)
+      (($# >= 2)) || { echo '--ignition-dir requires a value' >&2; exit 2; }
+      ignition_dir=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || { echo '--output-dir requires a value' >&2; exit 2; }
+      output_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      (($# >= 2)) || { echo '--cache-dir requires a value' >&2; exit 2; }
+      cache_dir=$2
+      shift 2
+      ;;
+    --cp1-disk)
+      (($# >= 2)) || { echo '--cp1-disk requires a value' >&2; exit 2; }
+      cp1_disk=$2
+      shift 2
+      ;;
+    --cp2-disk)
+      (($# >= 2)) || { echo '--cp2-disk requires a value' >&2; exit 2; }
+      cp2_disk=$2
+      shift 2
+      ;;
+    --cp3-disk)
+      (($# >= 2)) || { echo '--cp3-disk requires a value' >&2; exit 2; }
+      cp3_disk=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+for command in base64 cmp coreos-installer curl date find flock gpg gpgv jq openssl python3 realpath sha256sum; do
+  command -v "$command" >/dev/null || {
+    echo "missing required command: $command" >&2
+    exit 1
+  }
+done
+
+workdir=$(fabric_secure_tmpdir fabric-node-iso-build 67108864)
+current_iso_temporary=
+current_checksum_temporary=
+current_published_output=
+cleanup() {
+  [[ -z $current_iso_temporary ]] || rm -f -- "$current_iso_temporary"
+  [[ -z $current_checksum_temporary ]] || rm -f -- "$current_checksum_temporary"
+  [[ -z $current_published_output ]] || rm -f -- "$current_published_output"
+  rm -rf -- "$workdir"
+}
+trap cleanup EXIT
+mkdir -m 0700 -- "$workdir/gnupg"
+expected_asset_manifest=$workdir/expected-SHASUMS.txt
+build_expected_asset_manifest "$asset_manifest" "$expected_asset_manifest"
+
+mapfile -t media_record < "$manifest"
+[[ ${#media_record[@]} -eq 4 ]] || {
+  echo "$manifest must contain exactly filename, URL, SHA-256, and signature URL" >&2
+  exit 1
+}
+iso_filename=${media_record[0]}
+iso_url=${media_record[1]}
+iso_sha256=${media_record[2]}
+iso_signature_url=${media_record[3]}
+
+[[ $iso_filename =~ ^fedora-coreos-[A-Za-z0-9._-]+-live-iso\.x86_64\.iso$ ]]
+[[ $iso_url == https://builds.coreos.fedoraproject.org/*/$iso_filename ]]
+[[ $iso_sha256 =~ ^[0-9a-f]{64}$ ]]
+[[ $iso_signature_url == "$iso_url.sig" ]]
+
+fedora_key=/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary
+fedora_key_fingerprint=36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6
+[[ -s $fedora_key ]] || {
+  echo "missing Fedora 44 primary signing key: $fedora_key" >&2
+  exit 1
+}
+actual_fingerprint=$(gpg --quiet --homedir "$workdir/gnupg" --batch --show-keys --with-colons "$fedora_key" |
+  awk -F: '$1 == "fpr" { print $10; exit }')
+[[ $actual_fingerprint == "$fedora_key_fingerprint" ]] || {
+  echo "unexpected Fedora 44 signing-key fingerprint: ${actual_fingerprint:-missing}" >&2
+  exit 1
+}
+
+if $check_only; then
+  [[ -z $ignition_dir && -z $output_dir && -z $cache_dir && -z $cp1_disk && -z $cp2_disk && -z $cp3_disk ]] || {
+    echo '--check cannot be combined with build arguments' >&2
+    exit 2
+  }
+  echo "validated pinned installer manifest for $iso_filename"
+  echo "validated $expected_asset_count-payload offline router manifest"
+  exit 0
+fi
+
+[[ -n $ignition_dir && -n $output_dir && -n $cp1_disk && -n $cp2_disk && -n $cp3_disk ]] || {
+  usage
+  exit 2
+}
+
+ignition_dir=$(realpath -e -- "$ignition_dir")
+output_dir=$(realpath -m -- "$output_dir")
+cache_dir=$(realpath -m -- "${cache_dir:-$default_cache_dir}")
+for directory in "$ignition_dir" "$output_dir"; do
+  case $directory in
+    "$repo_root" | "$repo_root"/*)
+      echo "refusing sensitive installer input/output inside Git: $directory" >&2
+      exit 1
+      ;;
+  esac
+done
+
+disks=("$cp1_disk" "$cp2_disk" "$cp3_disk")
+for disk in "${disks[@]}"; do
+  [[ $disk =~ ^/dev/disk/by-id/ata-[A-Za-z0-9._:+-]+$ ]] || {
+    echo "refusing non-ATA or unstable installer destination: $disk" >&2
+    exit 1
+  }
+done
+[[ $cp1_disk != "$cp2_disk" && $cp1_disk != "$cp3_disk" && $cp2_disk != "$cp3_disk" ]] || {
+  echo 'the three installer destinations must be distinct stable disk identities' >&2
+  exit 1
+}
+
+mkdir -p -- "$cache_dir"
+iso=$cache_dir/$iso_filename
+signature=$iso.sig
+exec {cache_lock_fd}> "$cache_dir/.download.lock"
+flock "$cache_lock_fd"
+
+download() {
+  local url=$1
+  local destination=$2
+  local temporary=$destination.tmp.$$
+
+  [[ -f $destination ]] && return
+  rm -f -- "$temporary"
+  curl --retry 3 --fail --location --output "$temporary" "$url"
+  mv -- "$temporary" "$destination"
+}
+
+download "$iso_url" "$iso"
+echo "$iso_sha256  $iso" | sha256sum --check -
+download "$iso_signature_url" "$signature"
+fedora_keyring=$workdir/fedora-44-primary.gpg
+gpg --quiet --homedir "$workdir/gnupg" --batch --yes --dearmor --output "$fedora_keyring" "$fedora_key"
+gpgv --keyring "$fedora_keyring" "$signature" "$iso"
+flock -u "$cache_lock_fd"
+
+mkdir -p -- "$output_dir"
+chmod 0700 -- "$output_dir"
+
+for node in "${nodes[@]}"; do
+  output=$output_dir/$node-installer.iso
+  checksum=$output.sha256
+  [[ ! -e $output && ! -e $output.tmp && ! -e $checksum && ! -e $checksum.tmp ]] || {
+    echo "refusing to overwrite existing installer output or checksum: $output" >&2
+    exit 1
+  }
+done
+
+asset_manifest_b64=$(base64 --wrap=0 "$expected_asset_manifest")
+mapfile -t asset_names < <(awk '{ print $2 }' "$expected_asset_manifest")
+printf -v asset_names_shell '%q ' "${asset_names[@]}"
+
+for index in "${!nodes[@]}"; do
+  node=${nodes[$index]}
+  disk=${disks[$index]}
+  ignition=$ignition_dir/$node.ign
+  output=$output_dir/$node-installer.iso
+  temporary=$output.tmp
+  checksum=$output.sha256
+  checksum_temporary=$checksum.tmp
+  current_iso_temporary=$temporary
+  current_checksum_temporary=$checksum_temporary
+  current_published_output=
+  pre_install=$workdir/$node-pre-install.sh
+  post_install=$workdir/$node-post-install.sh
+  installer_config=$workdir/$node-installer.yaml
+  network_keyfile=$workdir/$node-fabric-static.nmconnection
+  embedded_hostname_file=$workdir/$node-hostname
+  embedded_etcd_ca_file=$workdir/$node-etcd-ca.pem
+  embedded_etcd_peer_cert_file=$workdir/$node-etcd-peer.pem
+
+  [[ -f $ignition ]] || { echo "missing Ignition: $ignition" >&2; exit 1; }
+  [[ -z $(find "$ignition" -maxdepth 0 -perm /077 -print) ]] || {
+    echo "Ignition must not be group/world accessible: $ignition" >&2
+    exit 1
+  }
+  jq -e '.ignition.version | startswith("3.")' "$ignition" >/dev/null
+
+  extract_embedded_ignition_file \
+    "$ignition" \
+    "$network_keyfile_path" \
+    "$network_keyfile" \
+    "$workdir/$node-ignition-walk"
+  chmod 0600 -- "$network_keyfile"
+  extract_embedded_ignition_file \
+    "$ignition" \
+    "$hostname_path" \
+    "$embedded_hostname_file" \
+    "$workdir/$node-hostname-ignition-walk"
+  embedded_hostname=$(tr -d '\n' < "$embedded_hostname_file")
+  [[ $embedded_hostname == "$node" ]] || {
+    echo "Ignition hostname does not match its installer node: $embedded_hostname != $node" >&2
+    exit 1
+  }
+  extract_embedded_ignition_file \
+    "$ignition" \
+    "$etcd_ca_path" \
+    "$embedded_etcd_ca_file" \
+    "$workdir/$node-etcd-ca-ignition-walk"
+  extract_embedded_ignition_file \
+    "$ignition" \
+    "$etcd_peer_cert_path" \
+    "$embedded_etcd_peer_cert_file" \
+    "$workdir/$node-etcd-peer-ignition-walk"
+
+  mapfile -t mac_records < <(awk -F= '$1 == "mac-address" { print tolower($2) }' "$network_keyfile")
+  ((${#mac_records[@]} == 1)) || {
+    echo "expected one wired MAC in $ignition, found ${#mac_records[@]}" >&2
+    exit 1
+  }
+  mac=${mac_records[0]}
+  [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || {
+    echo "invalid wired MAC recovered from $ignition" >&2
+    exit 1
+  }
+  mapfile -t address_records < <(awk -F= '$1 == "address1" { print $2 }' "$network_keyfile")
+  ((${#address_records[@]} == 1)) || {
+    echo "expected one static IPv4 record in $ignition, found ${#address_records[@]}" >&2
+    exit 1
+  }
+  expected_ip=10.66.0.$((index + 10))
+  expected_cidr=$expected_ip/24
+  [[ ${address_records[0]} == "$expected_cidr,10.66.0.1" ]] || {
+    echo "Ignition static address does not match $node: ${address_records[0]}" >&2
+    exit 1
+  }
+  openssl verify -CAfile "$embedded_etcd_ca_file" "$embedded_etcd_peer_cert_file" >/dev/null
+  openssl x509 -in "$embedded_etcd_peer_cert_file" -noout -checkhost "$node.fabric.internal" >/dev/null
+  openssl x509 -in "$embedded_etcd_peer_cert_file" -noout -checkip "$expected_ip" >/dev/null
+  certificate_not_before_record=$(openssl x509 -in "$embedded_etcd_peer_cert_file" -noout -startdate)
+  certificate_not_after_record=$(openssl x509 -in "$embedded_etcd_peer_cert_file" -noout -enddate)
+  [[ $certificate_not_before_record == notBefore=* && $certificate_not_after_record == notAfter=* ]]
+  certificate_not_before_epoch=$(date --date="${certificate_not_before_record#notBefore=}" +%s)
+  certificate_not_after_epoch=$(date --date="${certificate_not_after_record#notAfter=}" +%s)
+  ((certificate_not_before_epoch < certificate_not_after_epoch)) || {
+    echo "invalid embedded etcd certificate validity window for $node" >&2
+    exit 1
+  }
+
+  confirmation=INSTALL:$node:${disk##*/}
+  cat > "$pre_install" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec </dev/console >/dev/console 2>&1
+
+node='$node'
+target='$disk'
+expected_mac='$mac'
+expected_ip='$expected_ip'
+expected_cidr='$expected_cidr'
+expected_confirmation='$confirmation'
+router_asset_url='$router_asset_url'
+expected_asset_manifest_b64='$asset_manifest_b64'
+asset_names=($asset_names_shell)
+minimum_disk_bytes=68719476736
+certificate_not_before_epoch=$certificate_not_before_epoch
+certificate_not_after_epoch=$certificate_not_after_epoch
+
+fail() {
+  printf 'ADMISSION FAILED: %s\n' "\$*" >&2
+  exit 1
+}
+
+printf '\nDANGER: armed fabric consensus installer\n'
+printf 'Node:        %s\n' "\$node"
+printf 'Destination: %s\n' "\$target"
+printf 'Wired MAC:   %s\n' "\$expected_mac"
+printf 'Static IP:   %s\n\n' "\$expected_cidr"
+
+[[ -d /sys/firmware/efi/efivars ]] || fail 'installer was not booted in UEFI mode'
+[[ -c /dev/tpmrm0 ]] || fail 'TPM2 resource-manager device /dev/tpmrm0 is absent'
+[[ \$(cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null) == 2 ]] ||
+  fail 'the admitted TPM is not reported as TPM 2.0'
+systemd-analyze has-tpm2 | grep -qx yes || fail 'systemd cannot use this TPM2 stack'
+systemd-cryptenroll --tpm2-device=list | grep -Fq /dev/tpmrm0 ||
+  fail 'systemd-cryptenroll cannot enumerate /dev/tpmrm0'
+current_epoch=\$(date +%s)
+((current_epoch >= certificate_not_before_epoch && current_epoch < certificate_not_after_epoch)) ||
+  fail 'UTC clock falls outside the embedded etcd leaf-certificate validity window'
+
+[[ -L \$target ]] || fail 'stable destination link is absent'
+resolved=\$(readlink -f -- "\$target")
+[[ \$(lsblk -dn -o TYPE -- "\$resolved") == disk ]] || {
+  fail "destination is not a whole disk: \$resolved"
+}
+udevadm info --query=property --name "\$resolved" | grep -qx 'ID_BUS=ata' || {
+  fail "destination is not reported as an ATA device: \$resolved"
+}
+[[ \$(blockdev --getro "\$resolved") == 0 ]] || fail 'destination is read-only'
+disk_bytes=\$(blockdev --getsize64 "\$resolved")
+((disk_bytes >= minimum_disk_bytes)) ||
+  fail "destination is smaller than the 64 GiB floor: \$disk_bytes bytes"
+if lsblk -nrpo MOUNTPOINTS -- "\$resolved" | grep -q '[^[:space:]]'; then
+  fail 'destination or one of its partitions is mounted'
+fi
+while IFS= read -r block_path; do
+  block_name=\${block_path##*/}
+  if find "/sys/class/block/\$block_name/holders" -mindepth 1 -maxdepth 1 -print -quit |
+      grep -q .; then
+    fail "destination component has active holders: \$block_path"
+  fi
+done < <(lsblk -nrpo NAME -- "\$resolved")
+
+interface=
+for address_file in /sys/class/net/*/address; do
+  if [[ \$(<"\$address_file") == "\$expected_mac" ]]; then
+    [[ -z \$interface ]] || fail 'expected MAC appears on multiple interfaces'
+    interface=\${address_file%/address}
+    interface=\${interface##*/}
+  fi
+done
+[[ -n \$interface ]] || fail 'expected permanent wired MAC is absent'
+ip -4 -o address show dev "\$interface" |
+  awk '{ print \$4 }' | grep -Fxq "\$expected_cidr" ||
+  fail "expected static address is not active on \$interface"
+ip -4 route get 10.66.0.1 | grep -Eq "dev \$interface( |\$).*src \$expected_ip( |\$)" ||
+  fail 'the router route does not use the admitted interface and source address'
+
+expected_manifest=\$(mktemp)
+actual_manifest=\$(mktemp)
+cleanup() {
+  rm -f -- "\$expected_manifest" "\$actual_manifest"
+}
+trap cleanup EXIT
+printf '%s' "\$expected_asset_manifest_b64" | base64 --decode > "\$expected_manifest"
+curl --fail --silent --show-error --connect-timeout 5 --max-time 15 --retry 2 \
+  --output "\$actual_manifest" "\$router_asset_url/SHASUMS.txt" ||
+  fail 'cannot fetch the router offline-asset manifest'
+cmp --silent "\$expected_manifest" "\$actual_manifest" ||
+  fail 'router offline-asset manifest does not match the installer expectation'
+for asset_name in "\${asset_names[@]}"; do
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    --head --output /dev/null "\$router_asset_url/\$asset_name" ||
+    fail "router asset is not readable: \$asset_name"
+done
+
+lsblk -dn -o PATH,SIZE,MODEL,SERIAL,TRAN -- "\$resolved"
+printf 'TPM2:       admitted by systemd and systemd-cryptenroll\n'
+printf 'UTC clock:  %s (inside embedded etcd certificate validity)\n' "\$(date --utc --iso-8601=seconds)"
+printf 'Router:     exact $expected_asset_count-payload manifest reachable via %s\n' "\$interface"
+printf '\nCompare node, IP, MAC, disk path, model, and serial with the chassis label.\n'
+printf 'Type exactly: %s\n> ' "\$expected_confirmation"
+IFS= read -r reply
+[[ \$reply == "\$expected_confirmation" ]] || {
+  echo 'confirmation mismatch; refusing installation'
+  exit 1
+}
+echo 'confirmation accepted; destructive offline installation begins now'
+EOF
+  chmod 0700 -- "$pre_install"
+
+  cat > "$post_install" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec </dev/console >/dev/console 2>&1
+
+printf '\nINSTALL SUCCEEDED: %s is installed on %s.\n' '$node' '$disk'
+printf 'Powering off now. Remove and rewrite the armed USB installer before booting again.\n'
+sync
+systemctl --no-block poweroff
+# Keep the install target from completing into the live-media login/reboot path
+# while systemd executes the requested poweroff.
+while :; do
+  sleep 60
+done
+EOF
+  chmod 0700 -- "$post_install"
+
+  cat > "$installer_config" <<'EOF'
+offline: true
+EOF
+
+  coreos-installer iso customize \
+    --dest-device "$disk" \
+    --dest-ignition "$ignition" \
+    --installer-config "$installer_config" \
+    --network-keyfile "$network_keyfile" \
+    --pre-install "$pre_install" \
+    --post-install "$post_install" \
+    --live-karg-append coreos.inst.skip_reboot \
+    --output "$temporary" \
+    "$iso"
+
+  # coreos-installer reports that a configured destination installs without
+  # its own interactive prompt.  Our destructive gate is the generated
+  # pre-install unit, so re-open the completed ISO and prove that the unit,
+  # exact destination Ignition, device identity, and network keyfile all made
+  # it into the boot media before publishing the temporary output.
+  verified_live_ignition=$workdir/$node-verified-live.ign
+  verified_destination_ignition=$workdir/$node-verified-destination.ign
+  verified_pre_install=$workdir/$node-verified-pre-install.sh
+  verified_post_install=$workdir/$node-verified-post-install.sh
+  verified_installer_config=$workdir/$node-verified-installer.yaml
+  verified_customize_config=$workdir/$node-verified-customize.yaml
+  verified_network_dir=$workdir/$node-verified-network
+
+  coreos-installer iso ignition show "$temporary" > "$verified_live_ignition"
+  chmod 0600 -- "$verified_live_ignition"
+  failed_live_checks=$(jq -r --arg node "$node" '
+    ([
+      "# Generated by coreos-installer {iso|pxe} customize",
+      "",
+      "[Unit]",
+      ("Description=Pre-Install Script (" + $node + "-pre-install.sh)"),
+      "Documentation=https://coreos.github.io/coreos-installer/customizing-install/",
+      "After=coreos-installer-pre.target",
+      "Before=coreos-installer.service",
+      "",
+      "[Service]",
+      "Type=oneshot",
+      ("ExecStart=/usr/local/bin/pre-install-" + $node + "-pre-install.sh"),
+      "RemainAfterExit=true",
+      "StandardOutput=kmsg+console",
+      "StandardError=kmsg+console",
+      "",
+      "[Install]",
+      "RequiredBy=coreos-installer.service"
+    ] | join("\n")) as $expected_pre_unit |
+    ([
+      "# Generated by coreos-installer {iso|pxe} customize",
+      "",
+      "[Unit]",
+      ("Description=Post-Install Script (" + $node + "-post-install.sh)"),
+      "Documentation=https://coreos.github.io/coreos-installer/customizing-install/",
+      "After=coreos-installer.service",
+      "Before=coreos-installer.target",
+      "",
+      "[Service]",
+      "Type=oneshot",
+      ("ExecStart=/usr/local/bin/post-install-" + $node + "-post-install.sh"),
+      "RemainAfterExit=true",
+      "StandardOutput=kmsg+console",
+      "StandardError=kmsg+console",
+      "",
+      "[Install]",
+      "RequiredBy=coreos-installer.target"
+    ] | join("\n")) as $expected_post_unit |
+    {
+      no_ignition_merges: (((.ignition.config.merge // []) | length) == 0),
+      no_ignition_replace: ((.ignition.config.replace // null) == null),
+      exact_storage_shape: ((.storage | keys | sort) == ["files"]),
+      exact_file_count: ((.storage.files | length) == 5),
+      exact_systemd_shape: ((.systemd | keys | sort) == ["units"]),
+      exact_unit_count: ((.systemd.units | length) == 2),
+      safe_unit_object_shapes: all(.systemd.units[];
+        (((. | keys) - ["contents", "dropins", "enabled", "mask", "name"] | length) == 0) and
+        ((.mask // false) == false) and
+        (((.dropins // []) | length) == 0)),
+      exact_pre_install_unit: any(.systemd.units[];
+        .name == ("pre-install-" + $node + "-pre-install.sh.service") and
+        .enabled == true and
+        .contents == $expected_pre_unit),
+      exact_post_install_unit: any(.systemd.units[];
+        .name == ("post-install-" + $node + "-post-install.sh.service") and
+        .enabled == true and
+        .contents == $expected_post_unit)
+    }
+    | to_entries[]
+    | select(.value != true)
+    | .key
+  ' "$verified_live_ignition")
+  if [[ -n $failed_live_checks ]]; then
+    echo "customized ISO has unexpected live-Ignition structure: $node" >&2
+    printf '%s\n' "$failed_live_checks" >&2
+    exit 1
+  fi
+
+  extract_embedded_ignition_file \
+    "$verified_live_ignition" \
+    "/usr/local/bin/pre-install-$node-pre-install.sh" \
+    "$verified_pre_install" \
+    "$workdir/$node-verified-pre-walk"
+  extract_embedded_ignition_file \
+    "$verified_live_ignition" \
+    "/usr/local/bin/post-install-$node-post-install.sh" \
+    "$verified_post_install" \
+    "$workdir/$node-verified-post-walk"
+  extract_embedded_ignition_file \
+    "$verified_live_ignition" \
+    /etc/coreos/dest.ign \
+    "$verified_destination_ignition" \
+    "$workdir/$node-verified-destination-walk"
+  extract_embedded_ignition_file \
+    "$verified_live_ignition" \
+    "/etc/coreos/installer.d/0000-${installer_config##*/}" \
+    "$verified_installer_config" \
+    "$workdir/$node-verified-installer-walk"
+  extract_embedded_ignition_file \
+    "$verified_live_ignition" \
+    /etc/coreos/installer.d/0001-customize.yaml \
+    "$verified_customize_config" \
+    "$workdir/$node-verified-customize-walk"
+
+  cmp --silent "$pre_install" "$verified_pre_install" || {
+    echo "customized ISO pre-install gate differs from its source: $node" >&2
+    exit 1
+  }
+  cmp --silent "$post_install" "$verified_post_install" || {
+    echo "customized ISO post-install gate differs from its source: $node" >&2
+    exit 1
+  }
+  cmp --silent "$ignition" "$verified_destination_ignition" || {
+    echo "customized ISO destination Ignition differs from its source: $node" >&2
+    exit 1
+  }
+  cmp --silent "$installer_config" "$verified_installer_config" || {
+    echo "customized ISO offline installer config differs from its source: $node" >&2
+    exit 1
+  }
+  cmp --silent \
+    <(printf '%s\n' \
+      'ignition-file: /etc/coreos/dest.ign' \
+      'copy-network: true' \
+      "dest-device: $disk") \
+    "$verified_customize_config" || {
+    echo "customized ISO device or copy-network config is unexpected: $node" >&2
+    exit 1
+  }
+
+  mkdir -m 0700 -- "$verified_network_dir"
+  coreos-installer iso network extract \
+    --directory "$verified_network_dir" \
+    "$temporary" >/dev/null
+  mapfile -d '' verified_network_entries < <(
+    find "$verified_network_dir" -mindepth 1 -maxdepth 1 -print0
+  )
+  ((${#verified_network_entries[@]} == 1)) || {
+    echo "customized ISO does not contain exactly one network entry: $node" >&2
+    exit 1
+  }
+  verified_network_entry=${verified_network_entries[0]}
+  [[ -f $verified_network_entry && ! -L $verified_network_entry &&
+     ${verified_network_entry##*/} == "${network_keyfile##*/}" ]] || {
+    echo "customized ISO network entry is not the exact regular keyfile: $node" >&2
+    exit 1
+  }
+  cmp --silent "$network_keyfile" "$verified_network_entry" || {
+    echo "customized ISO network keyfile differs from its source: $node" >&2
+    exit 1
+  }
+
+  chmod 0600 -- "$temporary"
+  output_sha256=$(sha256sum "$temporary" | awk '{ print $1 }')
+  printf '%s  %s\n' "$output_sha256" "${output##*/}" > "$checksum_temporary"
+  chmod 0600 -- "$checksum_temporary"
+
+  current_published_output=$output
+  mv -- "$temporary" "$output"
+  current_iso_temporary=
+  mv -- "$checksum_temporary" "$checksum"
+  current_checksum_temporary=
+  current_published_output=
+  echo "verified embedded install gate and exact inputs for $node" >&2
+  printf '%s  %s\n' "$output_sha256" "$output"
+done
+
+echo "wrote three confirmation-gated secret installer ISOs to $output_dir" >&2

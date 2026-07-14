@@ -1,0 +1,448 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+umask 077
+export LC_ALL=C
+
+usage() {
+  cat <<'EOF'
+Write one guarded fabric boot ISO to a USB disk.
+
+Dry-run inspection (the default):
+  scripts/write-fabric-installer-usb \
+    --iso /secure/fabric-installers/fabric-az1-cp1-installer.iso \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0
+
+Destructive execution (copy the exact confirmation from the dry run):
+  sudo scripts/write-fabric-installer-usb \
+    --iso /secure/fabric-installers/fabric-az1-cp1-installer.iso \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0 \
+    --apply --confirm 'WRITE-FABRIC-INSTALLER:...'
+
+Options:
+  --iso PATH       Exact fabric-az1-cp[1-3]-installer.iso or
+                   fabric-inventory-live.iso to write.
+  --device PATH    Exact /dev/disk/by-id/usb-* whole-disk symlink.
+  --sha256 HASH    Use this exact lowercase SHA-256 instead of ISO.sha256.
+  --apply          Overwrite the USB disk and verify all written ISO bytes.
+  --confirm TEXT   Exact device-specific text printed by the dry run.
+  -h, --help       Show this help.
+
+By default the ISO must have an adjacent mode-0600 ISO.sha256 file containing
+exactly one standard "<hash>  <basename>" record. Both accepted media types,
+and the checksum record when used, must be mode 0600 regular files outside
+this Git worktree. Without --apply this script performs read-only validation
+and never writes the block device. It never prompts interactively and it never
+guesses a device. It overwrites and verifies only the ISO-length prefix; it
+does not sanitize trailing bytes or flash-controller remapped cells. A USB
+device used for any secret installer remains secret-classified afterward. All
+accepted USB devices must report a non-empty hardware serial.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+iso=
+device=
+explicit_sha256=
+confirmation_arg=
+apply=false
+iso_seen=false
+device_seen=false
+sha256_seen=false
+confirmation_seen=false
+
+while (($#)); do
+  case $1 in
+    --iso)
+      (($# >= 2)) || die '--iso requires a path'
+      $iso_seen && die '--iso may only be specified once'
+      iso=$2
+      iso_seen=true
+      shift 2
+      ;;
+    --device)
+      (($# >= 2)) || die '--device requires a path'
+      $device_seen && die '--device may only be specified once'
+      device=$2
+      device_seen=true
+      shift 2
+      ;;
+    --sha256)
+      (($# >= 2)) || die '--sha256 requires a hash'
+      $sha256_seen && die '--sha256 may only be specified once'
+      explicit_sha256=$2
+      sha256_seen=true
+      shift 2
+      ;;
+    --apply)
+      $apply && die '--apply may only be specified once'
+      apply=true
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires text'
+      $confirmation_seen && die '--confirm may only be specified once'
+      confirmation_arg=$2
+      confirmation_seen=true
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+$iso_seen || {
+  usage >&2
+  die '--iso is required'
+}
+$device_seen || {
+  usage >&2
+  die '--device is required'
+}
+$apply || ! $confirmation_seen || die '--confirm is only accepted with --apply'
+
+for command in awk basename dirname findmnt git lsblk readlink realpath sha256sum stat; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel) || die 'cannot locate the Git worktree'
+repo_root=$(realpath -e -- "$repo_root")
+
+[[ -e $iso ]] || die "fabric ISO does not exist: $iso"
+[[ ! -L $iso && -f $iso ]] || die 'fabric ISO must be a regular file, not a symlink'
+iso_path=$(realpath -e -- "$iso") || die "cannot resolve fabric ISO: $iso"
+case $iso_path in
+  "$repo_root" | "$repo_root"/*)
+    die "refusing a fabric ISO inside Git: $iso_path"
+    ;;
+esac
+
+iso_basename=${iso_path##*/}
+case $iso_basename in
+  fabric-az1-cp[123]-installer.iso)
+    confirmation_prefix=WRITE-FABRIC-INSTALLER
+    media_label='consensus installer'
+    secret_media=true
+    ;;
+  fabric-inventory-live.iso)
+    confirmation_prefix=WRITE-FABRIC-INVENTORY
+    media_label='inventory live image'
+    secret_media=false
+    ;;
+  *)
+    die "unexpected fabric ISO basename: $iso_basename"
+    ;;
+esac
+[[ $(stat -Lc '%a' -- "$iso_path") == 600 ]] || die 'fabric ISO mode must be exactly 0600'
+[[ $(stat -Lc '%F' -- "$iso_path") == 'regular file' ]] || die 'fabric ISO is not a regular file'
+
+# Hold the validated inode open through hashing and writing so replacing a path
+# after confirmation cannot substitute different installer contents.
+exec {iso_fd}< "$iso_path"
+iso_fd_path=/proc/$$/fd/$iso_fd
+[[ $(stat -Lc '%a' -- "$iso_fd_path") == 600 ]] || die 'opened fabric ISO mode is not exactly 0600'
+[[ $(stat -Lc '%F' -- "$iso_fd_path") == 'regular file' ]] || die 'opened fabric ISO is not a regular file'
+[[ $(stat -Lc '%d:%i' -- "$iso_fd_path") == "$(stat -Lc '%d:%i' -- "$iso_path")" ]] || {
+  die 'fabric ISO changed while it was being opened'
+}
+iso_size=$(stat -Lc '%s' -- "$iso_fd_path")
+[[ $iso_size =~ ^[0-9]+$ && $iso_size -gt 0 ]] || die 'fabric ISO has an invalid size'
+iso_owner=$(stat -Lc '%u:%g' -- "$iso_fd_path")
+
+checksum_source=
+if $sha256_seen; then
+  [[ $explicit_sha256 =~ ^[0-9a-f]{64}$ ]] || die '--sha256 must be exactly 64 lowercase hexadecimal characters'
+  expected_sha256=$explicit_sha256
+  checksum_source='explicit --sha256'
+else
+  checksum_record=$iso_path.sha256
+  [[ -e $checksum_record ]] || die "adjacent checksum record is missing: $checksum_record"
+  [[ ! -L $checksum_record && -f $checksum_record ]] || die 'checksum record must be a regular file, not a symlink'
+  exec {checksum_fd}< "$checksum_record"
+  checksum_fd_path=/proc/$$/fd/$checksum_fd
+  [[ $(stat -Lc '%a' -- "$checksum_fd_path") == 600 ]] || die 'checksum record mode must be exactly 0600'
+  [[ $(stat -Lc '%F' -- "$checksum_fd_path") == 'regular file' ]] || die 'opened checksum record is not a regular file'
+  [[ $(stat -Lc '%d:%i' -- "$checksum_fd_path") == "$(stat -Lc '%d:%i' -- "$checksum_record")" ]] || {
+    die 'checksum record changed while it was being opened'
+  }
+  [[ $(stat -Lc '%u:%g' -- "$checksum_fd_path") == "$iso_owner" ]] || {
+    die 'checksum record and installer ISO must have the same owner and group'
+  }
+  checksum_size=$(stat -Lc '%s' -- "$checksum_fd_path")
+  [[ $checksum_size =~ ^[0-9]+$ && $checksum_size -le 256 ]] || die 'checksum record has an invalid size'
+
+  mapfile -t checksum_lines < "$checksum_fd_path"
+  [[ ${#checksum_lines[@]} -eq 1 ]] || die 'checksum record must contain exactly one line'
+  checksum_line=${checksum_lines[0]}
+  expected_sha256=${checksum_line:0:64}
+  [[ $expected_sha256 =~ ^[0-9a-f]{64}$ ]] || die 'checksum record does not start with a lowercase SHA-256'
+  [[ $checksum_line == "$expected_sha256  $iso_basename" ]] || {
+    die "checksum record must be exactly: <hash>  $iso_basename"
+  }
+  checksum_source=$checksum_record
+fi
+
+actual_sha256=$(sha256sum -- "$iso_fd_path" | awk '{print $1}')
+[[ $actual_sha256 == "$expected_sha256" ]] || die 'fabric ISO does not match its expected SHA-256'
+
+# Only accept a literal stable USB whole-disk by-id symlink. Never accept a
+# kernel name, a partition symlink, or another path that happens to resolve to
+# the same block device.
+[[ $device =~ ^/dev/disk/by-id/usb-[A-Za-z0-9._:+-]+$ ]] || {
+  die '--device must be one stable /dev/disk/by-id/usb-* whole-disk identity'
+}
+[[ $device != *-part[0-9]* ]] || die '--device must be a whole disk, not a partition'
+[[ -L $device ]] || die "device is not a by-id symlink: $device"
+
+reject_system_disk() {
+  local source
+  local ancestor
+  local source_output
+  local ancestor_output
+
+  source_output=$(findmnt -rn -o SOURCE) || die 'cannot enumerate mounted system sources'
+  while IFS= read -r source; do
+    source=${source%%\[*}
+    [[ $source == /dev/* && -e $source ]] || continue
+    ancestor_output=$(lsblk -snrpo PATH -- "$source") || {
+      die "cannot trace the physical disk backing system source: $source"
+    }
+    while IFS= read -r ancestor; do
+      ancestor=$(readlink -e -- "$ancestor" 2>/dev/null || true)
+      [[ -n $ancestor ]] || continue
+      [[ $ancestor != "$real_device" ]] || die 'refusing a disk that backs the running system'
+    done <<< "$ancestor_output"
+  done <<< "$source_output"
+}
+
+inspect_device() {
+  local device_type
+  local child_type
+  local node
+  local node_real
+  local kernel_name
+  local holder
+  local mounted_output
+  local child_types_output
+  local target_nodes_output
+  local -a mounted_lines
+  local -a target_nodes
+
+  [[ -L $device ]] || die "device by-id symlink disappeared: $device"
+  real_device=$(realpath -e -- "$device") || die "cannot resolve device: $device"
+  [[ $real_device == /dev/* && -b $real_device ]] || {
+    die "by-id path does not resolve to a block device: $device"
+  }
+
+  device_type=$(lsblk --nodeps -dnro TYPE -- "$real_device" | awk '{$1=$1; print}')
+  [[ $device_type == disk ]] || die 'by-id path is not an unambiguous whole disk'
+
+  transport=$(lsblk --nodeps -dnro TRAN -- "$real_device" | awk '{$1=$1; print}')
+  [[ $transport == usb ]] || die "device transport is not USB: ${transport:-unknown}"
+  read_only=$(lsblk --nodeps -dnro RO -- "$real_device" | awk '{$1=$1; print}')
+  [[ $read_only == 0 ]] || die 'refusing a read-only block device'
+
+  size_bytes=$(lsblk --nodeps -bdnro SIZE -- "$real_device" | awk '{$1=$1; print}')
+  size_human=$(lsblk --nodeps -dnro SIZE -- "$real_device" | awk '{$1=$1; print}')
+  model=$(lsblk --nodeps -dnro MODEL -- "$real_device" | awk '{$1=$1; print}')
+  serial=$(lsblk --nodeps -dnro SERIAL -- "$real_device" | awk '{$1=$1; print}')
+  major_minor=$(lsblk --nodeps -dnro MAJ:MIN -- "$real_device" | awk '{$1=$1; print}')
+  [[ $size_bytes =~ ^[0-9]+$ && $size_bytes -gt 0 ]] || die 'could not determine device size'
+  [[ $major_minor =~ ^[0-9]+:[0-9]+$ ]] || die 'could not determine device major:minor identity'
+  node_identity=$(stat -Lc '%d:%i:%t:%T' -- "$real_device")
+
+  reject_system_disk
+
+  mounted_output=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$real_device") || {
+    die 'cannot inspect target mountpoints'
+  }
+  mapfile -t mounted_lines < <(printf '%s\n' "$mounted_output" | awk 'NF > 1')
+  if ((${#mounted_lines[@]})); then
+    printf 'Mounted or active target descendants:\n' >&2
+    printf '  %s\n' "${mounted_lines[@]}" >&2
+    die 'refusing a disk with mounted filesystems or active swap'
+  fi
+
+  child_types_output=$(lsblk -nrpo TYPE -- "$real_device") || die 'cannot inspect target descendants'
+  [[ -n $child_types_output ]] || die 'target block-device tree is empty'
+  while IFS= read -r child_type; do
+    case $child_type in
+      disk|part) ;;
+      *) die "refusing active mapped/RAID descendant of type: $child_type" ;;
+    esac
+  done <<< "$child_types_output"
+
+  target_nodes_output=$(lsblk -nrpo PATH -- "$real_device") || die 'cannot enumerate target block-device nodes'
+  [[ -n $target_nodes_output ]] || die 'target block-device node list is empty'
+  mapfile -t target_nodes <<< "$target_nodes_output"
+  for node in "${target_nodes[@]}"; do
+    node_real=$(readlink -e -- "$node" 2>/dev/null || true)
+    [[ -n $node_real ]] || continue
+    kernel_name=${node_real#/dev/}
+    for holder in "/sys/class/block/$kernel_name/holders/"*; do
+      [[ -e $holder ]] || continue
+      die "refusing device with an active holder: $node_real -> $(basename -- "$holder")"
+    done
+  done
+}
+
+inspect_device
+((iso_size <= size_bytes)) || die "USB device is too small: ISO is $iso_size bytes; device is $size_bytes bytes"
+[[ -n $serial ]] || die 'fabric media requires a USB device that reports a non-empty hardware serial'
+
+initial_real_device=$real_device
+initial_node_identity=$node_identity
+initial_size_bytes=$size_bytes
+initial_model=$model
+initial_serial=$serial
+initial_major_minor=$major_minor
+serial_for_confirmation=$serial
+expected_confirmation="$confirmation_prefix:$device:$size_bytes:$serial_for_confirmation:$iso_basename:$expected_sha256"
+
+printf '\nFabric USB plan (%s):\n' "$media_label"
+printf '  image:       %s\n' "$iso_path"
+printf '  checksum:    %s (%s)\n' "$expected_sha256" "$checksum_source"
+printf '  ISO bytes:   %s\n' "$iso_size"
+printf '  stable ID:   %s\n' "$device"
+printf '  kernel path: %s\n' "$real_device"
+printf '  model:       %s\n' "${model:-unknown}"
+printf '  serial:      %s\n' "${serial:-unknown}"
+printf '  device size: %s (%s bytes)\n' "$size_human" "$size_bytes"
+printf '  operation:   overwrite the USB disk from byte zero, flush it, then hash exactly %s bytes back\n' "$iso_size"
+printf '  tail bytes:  bytes beyond the ISO length are not overwritten or verified\n'
+printf '\nWARNING: rewriting flash media is not sanitization; controller-remapped cells may retain old bytes.\n'
+if $secret_media; then
+  printf 'AFTER APPLY: classify and physically control the entire USB device as fabric secret material.\n'
+else
+  printf 'If this USB has ever held a fabric installer, it remains secret-classified and must not be used for inventory/general duty.\n'
+fi
+
+if ! $apply; then
+  printf '\nDRY RUN ONLY: no block-device writes were made.\n'
+  printf 'After physically rechecking the model, serial, size, and by-id path, run:\n  sudo %q --iso %q --device %q' "$0" "$iso_path" "$device"
+  $sha256_seen && printf ' --sha256 %q' "$expected_sha256"
+  printf ' --apply --confirm %q\n' "$expected_confirmation"
+  exit 0
+fi
+
+[[ $EUID -eq 0 ]] || die '--apply must be run as root'
+[[ $confirmation_arg == "$expected_confirmation" ]] || {
+  die 'confirmation does not exactly match this ISO and device; run the dry run again'
+}
+
+for command in blockdev dd flock sync; do
+  need_command "$command"
+done
+[[ -d /run/lock && ! -L /run/lock ]] || die '/run/lock must be a real directory'
+[[ $(stat -Lc '%u' -- /run/lock) == 0 ]] || die '/run/lock must be owned by root'
+lock_directory_mode=$(stat -Lc '%a' -- /run/lock)
+[[ $lock_directory_mode =~ ^[0-7]{3,4}$ ]] || die '/run/lock has an invalid mode'
+(( (8#$lock_directory_mode & 8#022) == 0 )) || die '/run/lock must not be group- or world-writable'
+lock_name=${major_minor/:/-}
+device_lock=/run/lock/fabric-installer-usb-$lock_name.lock
+[[ ! -L $device_lock ]] || die "refusing symlinked device lock: $device_lock"
+exec {device_lock_fd}>> "$device_lock"
+device_lock_fd_path=/proc/$$/fd/$device_lock_fd
+[[ ! -L $device_lock ]] || die "device lock became a symlink: $device_lock"
+[[ $(stat -Lc '%d:%i' -- "$device_lock_fd_path") == "$(stat -Lc '%d:%i' -- "$device_lock")" ]] || {
+  die 'device lock path changed while it was being opened'
+}
+[[ -f $device_lock_fd_path ]] || die 'device lock is not a regular file'
+[[ $(stat -Lc '%u:%a:%h' -- "$device_lock_fd_path") == '0:600:1' ]] || {
+  die 'device lock must be a root-owned, mode-0600, single-link regular file'
+}
+flock -n "$device_lock_fd" || die "another apply operation holds the lock for $real_device"
+
+# Re-evaluate both source and destination after taking the per-device lock and
+# immediately before the first block write.
+[[ $(stat -Lc '%d:%i' -- "$iso_fd_path") == "$(stat -Lc '%d:%i' -- "$iso_path")" ]] || {
+  die 'installer ISO path now names a different file'
+}
+[[ $(sha256sum -- "$iso_fd_path" | awk '{print $1}') == "$expected_sha256" ]] || {
+  die 'fabric ISO changed after the dry-run checks'
+}
+
+inspect_device
+[[ $real_device == "$initial_real_device" ]] || die 'the stable by-id path now resolves to a different kernel device'
+[[ $node_identity == "$initial_node_identity" ]] || die 'the block-device node changed after inspection'
+[[ $major_minor == "$initial_major_minor" ]] || die 'the block-device major:minor identity changed after inspection'
+[[ $size_bytes == "$initial_size_bytes" ]] || die 'device size changed after inspection'
+[[ $model == "$initial_model" ]] || die 'device model changed after inspection'
+[[ $serial == "$initial_serial" ]] || die 'device serial changed after inspection'
+[[ $(blockdev --getro "$real_device") == 0 ]] || die 'device became read-only after inspection'
+[[ $(blockdev --getsize64 "$real_device") == "$size_bytes" ]] || die 'block-device size disagrees with the inspected size'
+((iso_size <= size_bytes)) || die 'USB device became too small for the installer ISO'
+
+# Pin the validated destination open before the destructive operation. Recheck
+# the stable path after opening, then use only this descriptor for write,
+# flush, and readback so hot-unplug/path reuse cannot redirect dd.
+exec {target_fd}<> "$real_device" || die "cannot open validated USB device: $real_device"
+target_fd_path=/proc/$$/fd/$target_fd
+[[ -b $target_fd_path ]] || die 'opened USB target is no longer a block device'
+opened_node_identity=$(stat -Lc '%d:%i:%t:%T' -- "$target_fd_path")
+[[ $opened_node_identity == "$initial_node_identity" ]] || {
+  die 'opened USB device does not match the inspected block-device inode'
+}
+
+inspect_device
+[[ $real_device == "$initial_real_device" ]] || die 'the stable by-id path changed after opening the target'
+[[ $node_identity == "$opened_node_identity" ]] || die 'the stable by-id path no longer names the opened target'
+[[ $major_minor == "$initial_major_minor" ]] || die 'target major:minor changed after opening the target'
+[[ $size_bytes == "$initial_size_bytes" ]] || die 'target size changed after opening the target'
+[[ $model == "$initial_model" ]] || die 'target model changed after opening the target'
+[[ $serial == "$initial_serial" ]] || die 'target serial changed after opening the target'
+[[ $(blockdev --getro "$target_fd_path") == 0 ]] || die 'opened USB target is read-only'
+[[ $(blockdev --getsize64 "$target_fd_path") == "$initial_size_bytes" ]] || {
+  die 'opened USB target size disagrees with the inspected size'
+}
+
+printf '\nWriting %s to the ISO-length prefix of %s. Trailing bytes are not sanitized.\n' \
+  "$iso_basename" "$real_device"
+dd \
+  if="$iso_fd_path" \
+  of="$target_fd_path" \
+  bs=4M \
+  count="$iso_size" \
+  iflag=fullblock,count_bytes \
+  conv=fsync,notrunc \
+  status=progress
+sync
+blockdev --flushbufs "$target_fd_path"
+
+printf 'Reading and hashing exactly %s bytes from the USB disk.\n' "$iso_size"
+readback_sha256=$(
+  dd \
+    if="$target_fd_path" \
+    bs=4M \
+    count="$iso_size" \
+    iflag=fullblock,count_bytes \
+    status=none |
+    sha256sum |
+    awk '{print $1}'
+)
+[[ $readback_sha256 == "$expected_sha256" ]] || {
+  die "USB readback hash mismatch: expected $expected_sha256; got $readback_sha256"
+}
+blockdev --flushbufs "$target_fd_path"
+sync
+
+printf '\nVerified %s on %s. It is safe to unplug after the OS reports no pending device activity.\n' \
+  "$iso_basename" "$device"
+if $secret_media; then
+  printf 'The entire USB is now fabric secret material; retain it in locked offline storage.\n'
+fi

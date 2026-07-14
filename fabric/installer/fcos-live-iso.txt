@@ -1,0 +1,4 @@
+fedora-coreos-44.20260621.3.1-live-iso.x86_64.iso
+https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260621.3.1/x86_64/fedora-coreos-44.20260621.3.1-live-iso.x86_64.iso
+ea7cd4e81a5bdd4603865df6bbf0d617c8b69b0aef1ce890746658640f53151a
+https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260621.3.1/x86_64/fedora-coreos-44.20260621.3.1-live-iso.x86_64.iso.sig

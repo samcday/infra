@@ -1,0 +1,7 @@
+{
+  "CN": "fabric-root",
+  "key": {
+    "algo": "rsa",
+    "size": 3072
+  }
+}

@@ -1,0 +1,42 @@
+[Unit]
+Description=Temporary pre-worker fabric observer collector
+Documentation=file:/opt/fabric-observer/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fabric-observer
+Group=fabric-observer
+UMask=0077
+ExecStart=/opt/fabric-observer/collector.py serve --config /etc/fabric-observer/config.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=10.66.0.0/24
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output_dir=/var/lib/fabric/node-exporter-textfile
+output=$output_dir/fabric-etcd-alarms.prom
+last_success_file=$output_dir/.fabric-etcd-alarm-last-success
+cert=/etc/etcd/pki/observer.pem
+key=/etc/etcd/pki/observer-key.pem
+ca=/etc/etcd/pki/ca.pem
+endpoint=https://127.0.0.1:2379
+
+umask 022
+install -d -m 0755 "$output_dir"
+tmp=$(mktemp "$output_dir/.fabric-etcd-alarms.prom.XXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+
+# Ambient etcd variables must never widen this root-local query or replace the
+# dedicated zero-role TLS identity.
+unset ETCDCTL_API ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT \
+  ETCDCTL_KEY ETCDCTL_USER ETCDCTL_PASSWORD
+
+now=$(date --utc +%s)
+success=0
+active_alarms=NaN
+certificate_not_after=NaN
+alarm_metrics=
+
+if not_after=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null); then
+  certificate_not_after=$(
+    date --utc --date="${not_after#notAfter=}" +%s 2>/dev/null || printf NaN
+  )
+fi
+
+if alarm_output=$(timeout 5s /usr/local/bin/etcdctl \
+  --command-timeout=4s \
+  --dial-timeout=3s \
+  --endpoints="$endpoint" \
+  --cacert="$ca" \
+  --cert="$cert" \
+  --key="$key" \
+  --write-out=fields \
+  alarm list); then
+  parse_ok=true
+  fields=()
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*$ ]] || fields+=("$line")
+  done <<<"$alarm_output"
+
+  # etcd 3.6.13 fields output is one exact four-field response header followed
+  # by zero or more MemberID/AlarmType pairs. Treat any grammar change,
+  # truncated pair, unknown alarm, or duplicate as a failed observation. This
+  # deliberately fails closed instead of publishing a plausible partial list.
+  (( ${#fields[@]} >= 4 )) || parse_ok=false
+  if $parse_ok; then
+    [[ ${fields[0]} =~ ^\"ClusterID\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*$ ]] || parse_ok=false
+    [[ ${fields[1]} =~ ^\"MemberID\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*$ ]] || parse_ok=false
+    [[ ${fields[2]} =~ ^\"Revision\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*$ ]] || parse_ok=false
+    [[ ${fields[3]} =~ ^\"RaftTerm\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*$ ]] || parse_ok=false
+    (( (${#fields[@]} - 4) % 2 == 0 )) || parse_ok=false
+  fi
+
+  members=()
+  alarms=()
+  declare -A seen_alarms=()
+  if $parse_ok; then
+    for ((index = 4; index < ${#fields[@]}; index += 2)); do
+      if [[ ${fields[index]} =~ ^\"MemberID\"[[:space:]]*:[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+        member_id=${BASH_REMATCH[1]}
+      else
+        parse_ok=false
+        break
+      fi
+      if [[ ${fields[index + 1]} =~ ^\"AlarmType\"[[:space:]]*:[[:space:]]*(NOSPACE|CORRUPT)[[:space:]]*$ ]]; then
+        alarm=${BASH_REMATCH[1]}
+      else
+        parse_ok=false
+        break
+      fi
+      alarm_key=$member_id:$alarm
+      if [[ -v seen_alarms[$alarm_key] ]]; then
+        parse_ok=false
+        break
+      fi
+      seen_alarms[$alarm_key]=1
+      members+=("$member_id")
+      alarms+=("$alarm")
+    done
+  fi
+
+  if $parse_ok; then
+    parsed_count=${#members[@]}
+    for ((index = 0; index < parsed_count; index += 1)); do
+      printf -v alarm_metrics '%s%s\n' "$alarm_metrics" \
+        "fabric_etcd_alarm_active{member_id=\"${members[index]}\",alarm=\"${alarms[index]}\"} 1"
+    done
+    success=1
+    active_alarms=$parsed_count
+    printf '%s\n' "$now" >"$last_success_file.tmp"
+    chmod 0644 "$last_success_file.tmp"
+    mv -f -- "$last_success_file.tmp" "$last_success_file"
+  else
+    echo 'etcd alarm output did not match the strict 3.6.13 fields grammar' >&2
+  fi
+fi
+
+last_success=0
+if [[ -r $last_success_file ]]; then
+  read -r last_success <"$last_success_file" || last_success=0
+  [[ $last_success =~ ^[0-9]+$ ]] || last_success=0
+fi
+
+{
+  cat <<'EOF'
+# HELP fabric_etcd_alarm_list_success Whether authenticated local alarm collection and strict parsing succeeded.
+# TYPE fabric_etcd_alarm_list_success gauge
+EOF
+  printf 'fabric_etcd_alarm_list_success %d\n' "$success"
+  cat <<'EOF'
+# HELP fabric_etcd_alarm_collection_timestamp_seconds Unix time of the most recent collection attempt.
+# TYPE fabric_etcd_alarm_collection_timestamp_seconds gauge
+EOF
+  printf 'fabric_etcd_alarm_collection_timestamp_seconds %s\n' "$now"
+  cat <<'EOF'
+# HELP fabric_etcd_alarm_last_success_timestamp_seconds Unix time of the most recent successful authenticated alarm list.
+# TYPE fabric_etcd_alarm_last_success_timestamp_seconds gauge
+EOF
+  printf 'fabric_etcd_alarm_last_success_timestamp_seconds %s\n' "$last_success"
+  cat <<'EOF'
+# HELP fabric_etcd_active_alarms Number of active alarms returned by the local member.
+# TYPE fabric_etcd_active_alarms gauge
+EOF
+  printf 'fabric_etcd_active_alarms %s\n' "$active_alarms"
+  cat <<'EOF'
+# HELP fabric_etcd_alarm_active Active etcd alarms returned by the authenticated local member.
+# TYPE fabric_etcd_alarm_active gauge
+EOF
+  [[ -z $alarm_metrics ]] || printf '%s' "$alarm_metrics"
+  cat <<'EOF'
+# HELP fabric_etcd_observer_certificate_not_after_timestamp_seconds Expiry time of the zero-role etcd observer certificate.
+# TYPE fabric_etcd_observer_certificate_not_after_timestamp_seconds gauge
+EOF
+  printf 'fabric_etcd_observer_certificate_not_after_timestamp_seconds %s\n' \
+    "$certificate_not_after"
+} >"$tmp"
+
+chmod 0644 "$tmp"
+mv -f -- "$tmp" "$output"
+trap - EXIT

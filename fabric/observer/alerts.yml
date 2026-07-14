@@ -1,0 +1,866 @@
+---
+groups:
+  - name: fabric-root-etcd
+    rules:
+      - alert: FabricEtcdTargetDown
+        expr: up{job="fabric-etcd"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric etcd metrics target {{ $labels.node }} is down.
+          description: >-
+            The observer has failed to scrape {{ $labels.instance }} for two
+            minutes. Treat this as lost member visibility until direct health
+            checks prove otherwise.
+
+      - alert: FabricEtcdNoLeader
+        expr: etcd_server_has_leader{job="fabric-etcd"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric etcd member {{ $labels.node }} cannot see a leader.
+          description: >-
+            {{ $labels.instance }} has reported no leader continuously for one
+            minute. Check quorum, peer reachability, and disk latency before
+            making any membership change.
+
+      - alert: FabricEtcdLeaderChangesHigh
+        expr: |
+          max by (cluster) (
+            round(
+              increase(etcd_server_leader_changes_seen_total{job="fabric-etcd"}[15m])
+            )
+          ) > 2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd changed leader more than twice in fifteen minutes.
+          description: >-
+            Repeated elections during the soak usually indicate peer network,
+            scheduling, or storage latency instability.
+
+      - alert: FabricEtcdProposalFailures
+        expr: |
+          increase(
+            etcd_server_proposals_failed_total{job="fabric-etcd"}[15m]
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd member {{ $labels.node }} recorded failed proposals.
+          description: >-
+            {{ $labels.instance }} has recorded at least one failed consensus
+            proposal in the last fifteen minutes.
+
+      - alert: FabricEtcdSlowApplies
+        expr: |
+          increase(etcd_server_slow_apply_total{job="fabric-etcd"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd member {{ $labels.node }} recorded a slow apply.
+          description: >-
+            {{ $labels.instance }} has recorded at least one slow apply in the
+            last fifteen minutes. Correlate it with WAL fsync, backend commit,
+            CPU pressure, and peer-network latency.
+
+      - alert: FabricEtcdProposalsPending
+        expr: etcd_server_proposals_pending{job="fabric-etcd"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd member {{ $labels.node }} has pending proposals.
+          description: >-
+            {{ $labels.instance }} has been unable to commit all outstanding
+            proposals for two minutes.
+
+      - alert: FabricEtcdApplyLag
+        expr: |
+          (
+            etcd_server_proposals_committed_total{job="fabric-etcd"}
+              -
+            etcd_server_proposals_applied_total{job="fabric-etcd"}
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd member {{ $labels.node }} is not applying committed
+            proposals.
+          description: >-
+            Committed proposals have remained ahead of applied proposals on
+            {{ $labels.instance }} for five minutes.
+
+      - alert: FabricEtcdWALFsyncLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (cluster, node, instance, le) (
+              rate(
+                etcd_disk_wal_fsync_duration_seconds_bucket{
+                  job="fabric-etcd"
+                }[5m]
+              )
+            )
+          ) > 0.010
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd WAL fsync p99 is above 10 ms on {{ $labels.node }}.
+          description: >-
+            {{ $labels.instance }} has exceeded the etcd disk-latency guidance
+            continuously for ten minutes.
+
+      - alert: FabricEtcdBackendCommitLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (cluster, node, instance, le) (
+              rate(
+                etcd_disk_backend_commit_duration_seconds_bucket{
+                  job="fabric-etcd"
+                }[5m]
+              )
+            )
+          ) > 0.025
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd backend commit p99 is above 25 ms on {{ $labels.node }}.
+          description: >-
+            {{ $labels.instance }} has exceeded the etcd disk-latency guidance
+            continuously for ten minutes.
+
+      - alert: FabricEtcdBackendQuotaWarning
+        expr: |
+          (
+            etcd_mvcc_db_total_size_in_bytes{job="fabric-etcd"}
+              /
+            etcd_server_quota_backend_bytes{job="fabric-etcd"}
+          ) > 0.80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd backend is over 80% of quota on {{ $labels.node }}.
+          description: >-
+            Physical database allocation on {{ $labels.instance }} is nearing
+            its configured backend quota. Inspect compaction and fragmentation;
+            do not raise the quota reflexively.
+
+      - alert: FabricEtcdBackendQuotaCritical
+        expr: |
+          (
+            etcd_mvcc_db_total_size_in_bytes{job="fabric-etcd"}
+              /
+            etcd_server_quota_backend_bytes{job="fabric-etcd"}
+          ) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric etcd backend is over 95% of quota on {{ $labels.node }}.
+          description: >-
+            {{ $labels.instance }} is close to the NOSPACE alarm boundary and
+            may soon reject writes.
+
+      - alert: FabricEtcdFragmentationHigh
+        expr: |
+          (
+            etcd_mvcc_db_total_size_in_bytes{job="fabric-etcd"}
+              >
+            2 * etcd_mvcc_db_total_size_in_use_in_bytes{job="fabric-etcd"}
+          )
+          and
+          etcd_mvcc_db_total_size_in_bytes{job="fabric-etcd"} > 536870912
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd backend is over 50% reclaimable on
+            {{ $labels.node }}.
+          description: >-
+            The physical backend on {{ $labels.instance }} is more than twice
+            its in-use size and larger than 512 MiB. Review compaction and plan
+            a member-at-a-time defragmentation; do not defragment all members
+            together.
+
+      - alert: FabricEtcdProcessRestarted
+        expr: |
+          changes(process_start_time_seconds{job="fabric-etcd"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric etcd restarted on {{ $labels.node }}.
+          description: >-
+            The process start time exported by {{ $labels.instance }} changed
+            during the last fifteen minutes. Correlate with journald and any
+            simultaneous election or storage alerts.
+
+  - name: fabric-root-nodes
+    rules:
+      - alert: FabricNodeExporterDown
+        expr: up{job="fabric-node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric host metrics target {{ $labels.node }} is down.
+          description: >-
+            The observer has failed to scrape {{ $labels.instance }} for two
+            minutes. Host CPU, memory, filesystem, and pressure evidence is
+            incomplete until the exporter or observer path recovers.
+
+      - alert: FabricNodeCollectorFailed
+        expr: node_scrape_collector_success{job="fabric-node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric node collector {{ $labels.collector }} is failing on
+            {{ $labels.node }}.
+          description: >-
+            Node exporter is reachable, but its {{ $labels.collector }}
+            collector has failed continuously for five minutes. Treat the
+            affected host evidence as missing.
+
+      - alert: FabricNodeCPUHigh
+        expr: |
+          100 * (
+            1 - avg by (cluster, node, instance) (
+              rate(node_cpu_seconds_total{job="fabric-node", mode="idle"}[5m])
+            )
+          ) > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root CPU utilization is above 90% on {{ $labels.node }}.
+          description: >-
+            Sustained CPU saturation can delay etcd heartbeats and control
+            plane work. Correlate with CPU pressure and etcd elections before
+            changing resource reservations.
+
+      - alert: FabricNodeMemoryLow
+        expr: |
+          (
+            node_memory_MemAvailable_bytes{job="fabric-node"}
+              /
+            node_memory_MemTotal_bytes{job="fabric-node"}
+          ) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root available memory is below 10% on {{ $labels.node }}.
+          description: >-
+            {{ $labels.instance }} has had less than ten percent of memory
+            available for ten minutes. Check memory PSI and K3s reservations.
+
+      - alert: FabricNodeFilesystemSpaceLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{
+              job="fabric-node",
+              mountpoint=~"/|/var|/var/lib/etcd"
+            }
+              /
+            node_filesystem_size_bytes{
+              job="fabric-node",
+              mountpoint=~"/|/var|/var/lib/etcd"
+            }
+          ) < 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root filesystem {{ $labels.mountpoint }} is low on space on
+            {{ $labels.node }}.
+          description: >-
+            Less than fifteen percent of {{ $labels.mountpoint }} remains
+            available on {{ $labels.instance }}. Do not expand the etcd quota
+            to consume the isolated filesystem reserve.
+
+      - alert: FabricNodeFilesystemReadOnly
+        expr: |
+          node_filesystem_readonly{
+            job="fabric-node",
+            mountpoint=~"/|/var|/var/lib/etcd"
+          } == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric root filesystem {{ $labels.mountpoint }} is read-only on
+            {{ $labels.node }}.
+          description: >-
+            A selected root filesystem has remained read-only for one minute.
+            Preserve evidence and inspect the SATA device and kernel log before
+            attempting repair.
+
+      - alert: FabricNodeCPUPressureHigh
+        expr: |
+          rate(
+            node_pressure_cpu_waiting_seconds_total{job="fabric-node"}[5m]
+          ) > 0.20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root CPU pressure is high on {{ $labels.node }}.
+          description: >-
+            At least one runnable task has waited for CPU for more than twenty
+            percent of wall time over a sustained interval on
+            {{ $labels.instance }}.
+
+      - alert: FabricNodeMemoryPressure
+        expr: |
+          rate(
+            node_pressure_memory_stalled_seconds_total{job="fabric-node"}[5m]
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root has full memory stalls on {{ $labels.node }}.
+          description: >-
+            No runnable task could make progress because of memory pressure for
+            more than one percent of wall time on {{ $labels.instance }}.
+
+      - alert: FabricNodeIOPressureHigh
+        expr: |
+          rate(
+            node_pressure_io_waiting_seconds_total{job="fabric-node"}[5m]
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root I/O pressure is high on {{ $labels.node }}.
+          description: >-
+            At least one task has waited on congested I/O for more than twenty
+            percent of wall time on {{ $labels.instance }}. Correlate with etcd
+            WAL fsync and backend commit latency.
+
+      - alert: FabricNodeIOStalled
+        expr: |
+          rate(
+            node_pressure_io_stalled_seconds_total{job="fabric-node"}[5m]
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric root has full I/O stalls on {{ $labels.node }}.
+          description: >-
+            No runnable task could make progress because of I/O congestion for
+            more than five percent of wall time on {{ $labels.instance }}.
+
+      - alert: FabricNodeDiskBusy
+        expr: |
+          rate(
+            node_disk_io_time_seconds_total{
+              job="fabric-node",
+              device!~"^(dm-|loop|ram|zram).*$"
+            }[5m]
+          ) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric root disk {{ $labels.device }} is over 90% busy on
+            {{ $labels.node }}.
+          description: >-
+            The physical disk has spent more than ninety percent of wall time
+            servicing I/O for fifteen minutes on {{ $labels.instance }}.
+
+  - name: fabric-root-kube-vip
+    rules:
+      - alert: FabricKubeVIPTargetDown
+        expr: up{job="fabric-kube-vip"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric kube-vip metrics target {{ $labels.scrape_node }} is down.
+          description: >-
+            The observer has failed to scrape {{ $labels.instance }} for two
+            minutes. Confirm the kube-vip pod and API VIP before treating the
+            control-plane endpoint as healthy.
+
+      - alert: FabricKubeVIPLeaderCardinalityInvalid
+        expr: |
+          absent(
+            kube_vip_is_leader{
+              job="fabric-kube-vip",
+              lease_name="plndr-cp-lock"
+            }
+          )
+          or
+          count(
+            kube_vip_is_leader{
+              job="fabric-kube-vip",
+              lease_name="plndr-cp-lock"
+            }
+          ) != 3
+          or
+          sum(
+            kube_vip_is_leader{
+              job="fabric-kube-vip",
+              lease_name="plndr-cp-lock"
+            }
+          ) != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric kube-vip does not report exactly one API leader.
+          description: >-
+            The pinned kube-vip election metric is absent or has a leader
+            cardinality other than one. Correlate with the authoritative Lease
+            probe before touching the Lease or any control-plane process.
+
+      - alert: FabricKubeVIPLeaderTransitionsHigh
+        expr: |
+          max(
+            increase(
+              kube_vip_leader_election_transitions_total{
+                job="fabric-kube-vip",
+                lease_name="plndr-cp-lock"
+              }[15m]
+            )
+          ) > 2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric kube-vip changed leader repeatedly in fifteen minutes.
+          description: >-
+            More than two transitions can indicate API, node, or L2
+            instability even when the VIP currently answers.
+
+      - alert: FabricKubeVIPLeaderLeaseMismatch
+        expr: |
+          (
+            max by (node) (
+              kube_vip_is_leader{
+                job="fabric-kube-vip",
+                lease_name="plndr-cp-lock"
+              }
+            )
+              != on (node)
+            max by (node) (
+              fabric_observer_kube_vip_lease_holder{
+                job="fabric-observer"
+              }
+            )
+          )
+          or
+          (
+            max by (node) (
+              kube_vip_is_leader{
+                job="fabric-kube-vip",
+                lease_name="plndr-cp-lock"
+              }
+            )
+              unless on (node)
+            max by (node) (
+              fabric_observer_kube_vip_lease_holder{
+                job="fabric-observer"
+              }
+            )
+          )
+          or
+          (
+            max by (node) (
+              fabric_observer_kube_vip_lease_holder{
+                job="fabric-observer"
+              }
+            )
+              unless on (node)
+            max by (node) (
+              kube_vip_is_leader{
+                job="fabric-kube-vip",
+                lease_name="plndr-cp-lock"
+              }
+            )
+          )
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Kube-vip's self-reported leader disagrees with the API Lease.
+          description: >-
+            The per-root kube-vip leader series and the authenticated,
+            authoritative plndr-cp-lock Lease do not identify the same holder,
+            or one side is missing an expected root identity.
+
+  - name: fabric-root-authenticated-alarms
+    rules:
+      - alert: FabricEtcdAuthenticatedAlarmCollectorFailed
+        expr: |
+          (
+            up{job="fabric-node"} == 1
+            unless on (instance, node)
+            fabric_etcd_alarm_list_success{job="fabric-node"}
+          )
+          or
+          fabric_etcd_alarm_list_success{job="fabric-node"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Authenticated etcd alarm collection is failing on
+            {{ $labels.node }}.
+          description: >-
+            The root-local, zero-role etcd identity has failed to list and
+            strictly parse alarms for two minutes. Do not interpret an absent
+            alarm series as an all-clear.
+
+      - alert: FabricEtcdAuthenticatedAlarmCollectorStale
+        expr: |
+          (
+            up{job="fabric-node"} == 1
+            unless on (instance, node)
+            fabric_etcd_alarm_collection_timestamp_seconds{job="fabric-node"}
+          )
+          or
+          (
+            time() - fabric_etcd_alarm_collection_timestamp_seconds{
+              job="fabric-node"
+            } > 60
+          )
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Authenticated etcd alarm evidence is stale on {{ $labels.node }}.
+          description: >-
+            The node-exporter textfile has not recorded an alarm collection
+            attempt for more than one minute.
+
+      - alert: FabricEtcdAuthenticatedAlarmActive
+        expr: fabric_etcd_active_alarms{job="fabric-node"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Authenticated etcd alarms are active on {{ $labels.node }}.
+          description: >-
+            The local authenticated alarm list contains one or more alarms.
+            Inspect fabric_etcd_alarm_active for member and alarm type; never
+            disarm an alarm without resolving and recording its cause.
+
+      - alert: FabricEtcdObserverCertificateExpiring
+        expr: |
+          (
+            up{job="fabric-node"} == 1
+            unless on (instance, node)
+            fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+              job="fabric-node"
+            }
+          )
+          or
+          (
+            fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+              job="fabric-node"
+            } - time() < 7776000
+          )
+          or
+          (
+            fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+              job="fabric-node"
+            }
+              !=
+            fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+              job="fabric-node"
+            }
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The etcd observer certificate expires within 90 days on
+            {{ $labels.node }}.
+          description: >-
+            Rotate and re-test the zero-role authenticated observer identity
+            before expiry; an expired client must fail closed, not silently
+            turn alarm absence into health.
+
+  - name: fabric-laptop-observer
+    rules:
+      - alert: FabricObserverTargetDown
+        expr: up{job="fabric-observer"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The loopback-only fabric observer collector is down.
+          description: >-
+            Prometheus cannot scrape API/VIP and Lease evidence from the local
+            observer process.
+
+      - alert: FabricObserverCollectionFailed
+        expr: |
+          absent(fabric_observer_collection_available{job="fabric-observer"})
+          or
+          fabric_observer_collection_available{job="fabric-observer"} != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The fabric observer cannot produce a complete metric payload.
+          description: >-
+            Treat every API/VIP and Lease claim as missing until collection
+            recovers.
+
+      - alert: FabricObserverCollectionStale
+        expr: |
+          absent(
+            fabric_observer_collection_timestamp_seconds{
+              job="fabric-observer"
+            }
+          )
+          or
+          (
+            time() - fabric_observer_collection_timestamp_seconds{
+              job="fabric-observer"
+            } > 60
+          )
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The loopback observer is serving stale collection evidence.
+          description: >-
+            Its HTTP endpoint may still answer, but no complete API/VIP/Lease
+            collection has finished in more than one minute.
+
+      - alert: FabricAPIVIPNotReady
+        expr: |
+          absent(
+            fabric_observer_kube_api_ready{
+              job="fabric-observer",
+              endpoint_type="vip"
+            }
+          )
+          or
+          fabric_observer_kube_api_ready{
+            job="fabric-observer",
+            endpoint_type="vip"
+          } != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The fabric Kubernetes API VIP is not ready.
+          description: >-
+            An authenticated, CA-verified /readyz request through 10.66.0.254
+            has failed for one minute.
+
+      - alert: FabricDirectNodeAPINotReady
+        expr: |
+          fabric_observer_kube_api_ready{
+            job="fabric-observer",
+            endpoint_type="node"
+          } != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Direct API recovery endpoint {{ $labels.node }} is not ready.
+          description: >-
+            The observer cannot complete an authenticated, CA-verified
+            /readyz request to {{ $labels.endpoint }}.
+
+      - alert: FabricDirectNodeAPICardinalityInvalid
+        expr: |
+          absent(
+            fabric_observer_kube_api_ready{
+              job="fabric-observer",
+              endpoint_type="node"
+            }
+          )
+          or
+          count(
+            fabric_observer_kube_api_ready{
+              job="fabric-observer",
+              endpoint_type="node"
+            }
+          ) != 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The observer does not expose exactly three direct API targets.
+          description: >-
+            One or more fixed root API readiness series is missing or an
+            unexpected extra series exists; direct recovery evidence is
+            incomplete.
+
+      - alert: FabricKubeVIPLeaseProbeFailed
+        expr: |
+          absent(
+            fabric_observer_kube_vip_lease_query_success{
+              job="fabric-observer"
+            }
+          )
+          or
+          fabric_observer_kube_vip_lease_query_success{
+            job="fabric-observer"
+          } != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The observer cannot read and validate the kube-vip Lease.
+          description: >-
+            The fixed Lease GET failed or returned an unexpected holder,
+            duration, timestamp, identity, or schema.
+
+      - alert: FabricKubeVIPLeaseInvalid
+        expr: |
+          absent(
+            fabric_observer_kube_vip_lease_valid{job="fabric-observer"}
+          )
+          or
+          fabric_observer_kube_vip_lease_valid{job="fabric-observer"} != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The kube-vip Lease is stale or inconsistent.
+          description: >-
+            Its fixed 30-second renewal contract or observer clock relationship
+            has remained invalid for one minute.
+
+      - alert: FabricKubeVIPLeaseHolderCardinalityInvalid
+        expr: |
+          absent(
+            fabric_observer_kube_vip_lease_holder{job="fabric-observer"}
+          )
+          or
+          count(
+            fabric_observer_kube_vip_lease_holder{job="fabric-observer"}
+          ) != 3
+          or
+          sum(
+            fabric_observer_kube_vip_lease_holder{job="fabric-observer"}
+          ) != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The authoritative kube-vip Lease does not identify one root holder.
+          description: >-
+            Exactly one of the three fixed root-node holder series must be one.
+
+      - alert: FabricKubeVIPLeaseTransitionsHigh
+        expr: |
+          increase(
+            fabric_observer_kube_vip_lease_transitions_total{
+              job="fabric-observer"
+            }[15m]
+          ) > 2
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The authoritative kube-vip Lease transitioned repeatedly.
+          description: >-
+            More than two holder transitions in fifteen minutes can indicate
+            API, node, or L2 instability.
+
+      - alert: FabricObserverClientCertificateInvalid
+        expr: |
+          absent(
+            fabric_observer_kube_client_certificate_valid{
+              job="fabric-observer"
+            }
+          )
+          or
+          fabric_observer_kube_client_certificate_valid{
+            job="fabric-observer"
+          } != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The short-lived Kubernetes observer certificate is invalid.
+          description: >-
+            The collector could not load the mTLS certificate/key or parse its
+            expiry; API evidence must fail closed.
+
+      - alert: FabricObserverClientCertificateExpiring
+        expr: |
+          absent(
+            fabric_observer_kube_client_certificate_not_after_timestamp_seconds{
+              job="fabric-observer"
+            }
+          )
+          or
+          (
+            fabric_observer_kube_client_certificate_not_after_timestamp_seconds{
+              job="fabric-observer"
+            } - time() < 21600
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The short-lived Kubernetes observer certificate expires within
+            six hours.
+          description: >-
+            Finish and preserve the 48-hour soak or deliberately issue a new
+            unique observer identity; never stretch or reuse this credential.

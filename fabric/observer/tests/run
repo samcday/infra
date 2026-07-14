@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+
+cd -- "$(dirname -- "$0")/.."
+python3 -B -m unittest discover --start-directory tests --pattern 'test_*.py'
+
+if command -v promtool >/dev/null; then
+  work=$(mktemp -d)
+  trap 'rm -rf -- "$work"' EXIT
+  chmod 0700 "$work"
+  jq -n --arg root "$work" '{
+    interval_seconds: 15,
+    request_timeout_seconds: 3,
+    listen_address: "127.0.0.1",
+    listen_port: 19101,
+    kubernetes: {
+      ca_file: ($root + "/missing-ca.crt"),
+      cert_file: ($root + "/missing-client.pem"),
+      key_file: ($root + "/missing-client-key.pem")
+    }
+  }' > "$work/config.json"
+  chmod 0600 "$work/config.json"
+  ./collector.py once --config "$work/config.json" | promtool check metrics
+  promtool test rules tests/alerts.test.yml
+fi

@@ -1,0 +1,6 @@
+kube-vip-v1.2.1-amd64.tar
+oci://ghcr.io/kube-vip/kube-vip@sha256:49b77655f9f109bedc5eb25723bb0e4c57d8513ba33cc69c31be3f243eb2386d
+linux/amd64
+sha256:44035f68040c9eb99103c65f1f9ab9698d93f9f272110825705338ac1926f3d9
+ghcr.io/kube-vip/kube-vip:v1.2.1
+0e03c6575d8b9fb9e6647c6af8e8a672bf9e15dea9d0e09536d9876facf4d44c

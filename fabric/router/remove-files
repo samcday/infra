@@ -1,0 +1,8 @@
+# The root fabric has one fixed WAN and no overlay/tether escape hatches.
+files/etc/uci-defaults/tailscale
+files/etc/uci-defaults/tang
+files/etc/hotplug.d/iface/90-tailscale-up
+files/etc/hotplug.d/usb/01-cdc-eth
+files/etc/hotplug.d/usb/01-iphone-eth
+files/etc/frr/daemons
+files/etc/uci-defaults/prometheus-node-exporter-lua

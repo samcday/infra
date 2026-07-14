@@ -1,0 +1,130 @@
+variant: fcos
+version: 1.5.0
+boot_device:
+    # The FCOS root volume unlocks locally. There is deliberately no Tang or
+    # dependency on the router for a cold boot.
+    luks:
+        tpm2: true
+storage:
+    disks:
+        - device: /dev/disk/by-id/coreos-boot-disk
+          wipe_table: false
+          partitions:
+            - number: 4
+              label: root
+              size_mib: 16384
+              resize: true
+            - number: 5
+              label: etcd
+              size_mib: 32768
+            - number: 6
+              label: var
+              size_mib: 0
+    luks:
+        - name: etcd
+          device: /dev/disk/by-partlabel/etcd
+          discard: true
+          wipe_volume: true
+          clevis:
+            tpm2: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:SiF8DIfr6svKXnLZZqHWgHMguMWFEsnJwnxhH7ieaz6Aqvkbw1d7YmSVYp3R+J7w2qDTTDJlth/AIL5TPq6hhw==,iv:jG3APOZ2j9wo3QqYKy6vYKbj23T9coJe3U3Uqfx4W0o=,tag:8rdFC8UHjDnFq1h9TYpGnw==,type:str]
+        - name: var
+          device: /dev/disk/by-partlabel/var
+          discard: true
+          wipe_volume: true
+          clevis:
+            tpm2: true
+          key_file:
+            # cryptme
+            inline: ENC[AES256_GCM,data:0Ll2id/IbptWlUg+31jZmA2aNkvharUdOdqbMoaCxUEG0F1iHur4owaeelcSYXej7/NouOkw7mFgXmnfDhQLVQ==,iv:iqtMi7MmpKsyvrGlG77MRR4fwnloUJqPrRM19l5th3o=,tag:fjDqHGt8QryzzMIFwYwUDw==,type:str]
+    filesystems:
+        - path: /var
+          device: /dev/mapper/var
+          format: ext4
+          mount_options:
+            - noatime
+          with_mount_unit: true
+        - path: /var/lib/etcd
+          device: /dev/mapper/etcd
+          format: ext4
+          mount_options:
+            - noatime
+          with_mount_unit: true
+    files:
+        - path: /etc/hostname
+          overwrite: true
+          mode: 420
+          contents:
+            inline: fabric-az1-cp3
+        - path: /etc/NetworkManager/system-connections/fabric-static.nmconnection
+          overwrite: true
+          mode: 384
+          contents:
+            inline: |
+                [connection]
+                id=fabric-static
+                uuid=b8ee0dd3-ff31-4bd6-8903-660000000012
+                type=ethernet
+                autoconnect=true
+                autoconnect-priority=100
+
+                [ethernet]
+                mac-address=@FABRIC_NODE_MAC@
+
+                [ipv4]
+                method=manual
+                dad-timeout=3000
+                address1=10.66.0.12/24,10.66.0.1
+                dns=10.66.0.1;
+                dns-search=fabric.internal;
+                may-fail=false
+                route-metric=10
+
+                [ipv6]
+                method=disabled
+        - path: /etc/rancher/k3s/config.yaml.d/40-node.yaml
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                node-name: fabric-az1-cp3
+                node-ip: 10.66.0.12
+        - path: /etc/etcd/pki/peer.pem
+          overwrite: true
+          mode: 420
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:f6Je54pJkoWkMx48qE+Lu71dbMoHV+azePIKNYEVhIw=,tag:H02KNluZlBi98E8QDBh0Zw==,type:str]
+        - path: /etc/etcd/pki/peer-key.pem
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data: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,iv:WQLPt5V+2ZYlc7KbvXe9YgWaBkRqcqmSU34Fw1+QqWo=,tag:1szGI6wH4dc2TUuqAqGsVA==,type:str]
+        - path: /etc/fabric/root-recovery.key
+          overwrite: true
+          mode: 384
+          contents:
+            # cryptme
+            inline: ENC[AES256_GCM,data:ktYZ7lJ2+SW2UgThqoaxdBaEODpXeNrtebrhMKuB6oFHUMQ3RElVcyiN+4YJiwUEMmemm6clAyhtUH54U5T5CQ==,iv:ANIHcN7o0/IY2MKvp+K5slDFkEcIpFqm0KGfzk7/zKQ=,tag:gDgJjMFHv0JiDkVHbpv5aA==,type:str]
+systemd:
+    units:
+        - name: NetworkManager-wait-online.service
+          enabled: true
+sops:
+    age:
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBhTGRaR1FvVXYrQmVaRmty
+            Y2l1Zjh6ZnArNFhVSjZhak43U01mOHNrNFhrCnlFZHZacGpEQzgrRGtVaDZQRnhN
+            cFFYV2liQ3JZekJvbHVwVnNsU0R0SWcKLS0tIDlISWdremFRTjZSbks2NUVDRnAv
+            ZzBFNXlyQ2JiUkYrN2hlQ1Z3QmdvWXMKA+cH/kf/RwhuZVkHAaz/Y4p9k7kuPN2K
+            gXTfV/GriMkrhG7Y/v55J1WAlocXEAPYbxhpHnbqSRXEQy1yKo3OpA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-13T10:40:37Z"
+    mac: ENC[AES256_GCM,data:OUuiMUmFu7YTrp6igxFtcC0+ikYiH8jCrU4EVvbzrsmN7QypAQIkM5uU2INIVcZDB5nGqg50Hjc1SylWo7qjr/hPl5KWoNRjtlhdLz+ejeXQMwwfG5oSSYbbaw1xPUj8BFK29pDJh6PeRTUBLWmLhpsiEYNrryLZXrkbfxtqbb8=,iv:CpBKp2YyRg++vRF10+eYFtWQziuuftMdN54zR+Okldg=,tag:SO7InjjbWMrz2PC82wFDmg==,type:str]
+    encrypted_comment_regex: cryptme
+    version: 3.11.0

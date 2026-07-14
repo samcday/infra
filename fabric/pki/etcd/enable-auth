@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$script_dir/../../../scripts/lib/fabric-secure-tempdir.sh"
+
+usage() {
+  cat <<'EOF'
+Enable and verify CN-based RBAC on an already healthy fabric etcd quorum.
+
+Run from a trusted Linux machine directly attached to the fabric LAN:
+
+  # First open the guarded 15-minute window on all three members from the
+  # observer address, using an attended SSH or console session on each root.
+  ./enable-auth --apply --confirm ENABLE:fabric-root-etcd
+
+Close every member's window immediately afterwards. The roots do not admit
+observer TCP/2379 in steady state; see fabric/pki/etcd/README.md.
+
+This mutates etcd. It creates passwordless TLS-CN users `root`, `fabric-root`,
+and `fabric-observer`; grants `fabric-root` read/write access to the Kubernetes
+`/fabric-root/` prefix and K3s's separate `/bootstrap/` prefix; leaves the
+observer with no key-space role; enables authentication; and proves the exact
+positive and negative permissions. Plaintext credentials exist only in a
+mode-0700 directory on verified tmpfs.
+EOF
+}
+
+apply=false
+confirmation=
+while (($#)); do
+  case $1 in
+    --apply)
+      apply=true
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || { echo '--confirm requires a value' >&2; exit 2; }
+      confirmation=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+$apply || { usage; exit 2; }
+[[ $confirmation == ENABLE:fabric-root-etcd ]] || {
+  echo 'exact --confirm ENABLE:fabric-root-etcd is required' >&2
+  exit 2
+}
+
+for command in awk etcdctl jq sops; do
+  command -v "$command" >/dev/null || {
+    echo "missing required command: $command" >&2
+    exit 1
+  }
+done
+
+etcdctl_version=$(etcdctl version | awk '/^etcdctl version:/ { print $3 }')
+[[ $etcdctl_version == 3.6.13 ]] || {
+  echo "etcdctl 3.6.13 is required; found ${etcdctl_version:-unknown}" >&2
+  echo 'use the checksum-pinned release archive from fabric/router/data-files.txt' >&2
+  exit 1
+}
+
+cd "$script_dir"
+umask 077
+work=$(fabric_secure_tmpdir fabric-etcd-enable-auth 16777216)
+trap 'rm -rf -- "$work"' EXIT
+
+for artifact in \
+  ca.pem \
+  root.pem root-key.pem \
+  fabric-root.pem fabric-root-key.pem \
+  fabric-observer.pem fabric-observer-key.pem; do
+  sops --decrypt "$artifact.enc" > "$work/$artifact"
+done
+
+endpoints=https://10.66.0.10:2379,https://10.66.0.11:2379,https://10.66.0.12:2379
+
+etcdctl_as() {
+  local identity=$1
+  shift
+  etcdctl \
+    --endpoints="$endpoints" \
+    --cacert="$work/ca.pem" \
+    --cert="$work/$identity.pem" \
+    --key="$work/$identity-key.pem" \
+    "$@"
+}
+
+outside_read_key=
+cleanup() {
+  if [[ -n $outside_read_key ]]; then
+    etcdctl_as root del "$outside_read_key" >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "$work"
+}
+trap cleanup EXIT
+
+etcdctl_as root endpoint health --cluster
+
+# K3s external-datastore mode keeps one token-derived bootstrap object outside
+# kube-apiserver's configured etcd prefix. Enabling auth without preserving
+# this access breaks server restart, join, and token rotation. Do not create a
+# synthetic key below /bootstrap/: K3s treats multiple bootstrap keys as an
+# invalid state.
+bootstrap_count=$(etcdctl_as root --write-out=json get /bootstrap/ --prefix | jq -r '.count')
+[[ $bootstrap_count == 1 ]] || {
+  echo "expected exactly one existing K3s bootstrap key; found $bootstrap_count" >&2
+  exit 1
+}
+
+if ! etcdctl_as root user get root >/dev/null 2>&1; then
+  etcdctl_as root user add root --no-password
+fi
+etcdctl_as root user grant-role root root
+
+if ! etcdctl_as root role get fabric-root >/dev/null 2>&1; then
+  etcdctl_as root role add fabric-root
+fi
+etcdctl_as root role grant-permission fabric-root --prefix=true readwrite /fabric-root/
+etcdctl_as root role grant-permission fabric-root --prefix=true readwrite /bootstrap/
+
+if ! etcdctl_as root user get fabric-root >/dev/null 2>&1; then
+  etcdctl_as root user add fabric-root --no-password
+fi
+etcdctl_as root user grant-role fabric-root fabric-root
+
+# The temporary soak observer needs an authenticated identity because etcd
+# 3.6 requires authentication for alarm GET and endpoint status. It receives
+# no role and therefore no key-space permissions. Never grant this user the
+# built-in root role merely to make alarm collection work.
+if ! etcdctl_as root user get fabric-observer >/dev/null 2>&1; then
+  etcdctl_as root user add fabric-observer --no-password
+fi
+
+if ! etcdctl_as root --write-out=json auth status | jq -e '.enabled == true' >/dev/null; then
+  etcdctl_as root auth enable
+fi
+
+smoke_key=/fabric-root/.rbac-smoke
+etcdctl_as fabric-root put "$smoke_key" ok >/dev/null
+[[ $(etcdctl_as fabric-root get "$smoke_key" --print-value-only) == ok ]]
+etcdctl_as fabric-root del "$smoke_key" >/dev/null
+
+bootstrap_count=$(etcdctl_as fabric-root --write-out=json get /bootstrap/ --prefix | jq -r '.count')
+[[ $bootstrap_count == 1 ]] || {
+  echo "K3s identity cannot read exactly one bootstrap key after auth; found $bootstrap_count" >&2
+  exit 1
+}
+
+user_json=$(etcdctl_as root --write-out=json user get fabric-root)
+jq -e '.roles == ["fabric-root"]' <<<"$user_json" >/dev/null || {
+  echo 'RBAC verification failed: fabric-root user has unexpected role bindings' >&2
+  exit 1
+}
+
+role_json=$(etcdctl_as root --write-out=json role get fabric-root)
+jq -e '
+  ([.perm[] | {
+    permType,
+    key: (.key | @base64d),
+    range_end: (.range_end | @base64d)
+  }] | sort_by(.key)) == [
+    {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
+    {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
+  ]
+' <<<"$role_json" >/dev/null || {
+  echo 'RBAC verification failed: fabric-root role is not the exact two-prefix read/write role' >&2
+  exit 1
+}
+
+outside_read_key=/fabric-rbac-read-must-deny
+etcdctl_as root put "$outside_read_key" root-only >/dev/null
+if etcdctl_as fabric-root get "$outside_read_key" >/dev/null 2>&1; then
+  echo "RBAC verification failed: fabric-root read outside its prefix: $outside_read_key" >&2
+  exit 1
+fi
+etcdctl_as root del "$outside_read_key" >/dev/null
+outside_read_key=
+
+observer_user_json=$(etcdctl_as root --write-out=json user get fabric-observer)
+jq -e '(.roles // []) == []' <<<"$observer_user_json" >/dev/null || {
+  echo 'RBAC verification failed: fabric-observer must have no role bindings' >&2
+  exit 1
+}
+
+# In etcd 3.6, listing alarms and endpoint status requires authentication but
+# not administrator permission. Prove the dedicated identity can perform
+# exactly those read-only maintenance observations while it remains unable to
+# read or write any key.
+etcdctl_as fabric-observer --write-out=json alarm list | jq -e \
+  '((.alarms // []) | type) == "array"' >/dev/null
+etcdctl_as fabric-observer \
+  --endpoints=https://10.66.0.10:2379 \
+  --write-out=json endpoint status | jq -e \
+  'type == "array" and length == 1' >/dev/null
+
+if etcdctl_as fabric-observer get /fabric-root/ --prefix >/dev/null 2>&1; then
+  echo 'RBAC verification failed: fabric-observer read Kubernetes keys' >&2
+  exit 1
+fi
+if etcdctl_as fabric-observer put /fabric-observer-must-deny denied >/dev/null 2>&1; then
+  etcdctl_as root del /fabric-observer-must-deny >/dev/null || true
+  echo 'RBAC verification failed: fabric-observer wrote a key' >&2
+  exit 1
+fi
+
+for outside_key in /fabric-root-escape /fabric-rbac-must-deny; do
+  if etcdctl_as fabric-root put "$outside_key" denied >/dev/null 2>&1; then
+    etcdctl_as root del "$outside_key" >/dev/null || true
+    echo "RBAC verification failed: fabric-root wrote outside its prefix: $outside_key" >&2
+    exit 1
+  fi
+done
+
+etcdctl_as root user get fabric-root
+etcdctl_as root role get fabric-root
+etcdctl_as root user get fabric-observer
+cat >&2 <<'EOF'
+fabric etcd authentication is enabled and prefix isolation is enforced.
+The cluster is not admitted yet: restart one K3s server at a time and prove a
+fresh server can rejoin before adding workers or child-cluster prefixes.
+EOF

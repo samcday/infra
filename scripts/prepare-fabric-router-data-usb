@@ -1,0 +1,508 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+usage() {
+  cat <<'EOF'
+Prepare the data USB device used by the fabric OpenWrt router.
+
+Dry-run inspection (the default):
+  scripts/prepare-fabric-router-data-usb \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0
+
+Destructive execution (copy the exact confirmation from the dry run):
+  sudo scripts/prepare-fabric-router-data-usb \
+    --device /dev/disk/by-id/usb-VENDOR_MODEL_SERIAL-0:0 \
+    --apply --confirm 'ERASE:...'
+
+Options:
+  --device PATH              Exact /dev/disk/by-id whole-disk symlink.
+  --apply                    Partition, format, and populate the device.
+  --confirm TEXT             Exact device-specific text printed by dry run.
+  --allow-non-removable-usb  Allow a USB bridge whose kernel removable bit is 0.
+  -h, --help                 Show this help.
+
+Without --apply this script only inspects the device and verifies the cached
+payloads. It never prompts interactively and it never guesses a device. The
+device must expose a non-empty hardware serial. Never use media that has held a
+fabric node installer: rewriting or reformatting cannot declassify it.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+device=
+apply=false
+confirmation_arg=
+allow_non_removable=false
+
+while (($#)); do
+  case "$1" in
+    --device)
+      (($# >= 2)) || die '--device requires a path'
+      [[ -z "$device" ]] || die '--device may only be specified once'
+      device=$2
+      shift 2
+      ;;
+    --apply)
+      $apply && die '--apply may only be specified once'
+      apply=true
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires text'
+      [[ -z "$confirmation_arg" ]] || die '--confirm may only be specified once'
+      confirmation_arg=$2
+      shift 2
+      ;;
+    --allow-non-removable-usb)
+      $allow_non_removable && die '--allow-non-removable-usb may only be specified once'
+      allow_non_removable=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$device" ]] || {
+  usage >&2
+  die '--device is required'
+}
+
+$apply || [[ -z "$confirmation_arg" ]] || die '--confirm is only accepted with --apply'
+
+for command in awk basename findmnt lsblk readlink realpath sha256sum stat; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root_dir=$(realpath -- "$script_dir/..")
+manifest="$root_dir/fabric/router/data-files.txt"
+cache_dir="$root_dir/_build/data"
+
+[[ -f "$manifest" ]] || die "payload manifest not found: $manifest"
+[[ -d "$cache_dir" ]] || die "payload cache not found: $cache_dir (build the fabric router first)"
+
+# Only accept a literal, stable, top-level by-id symlink. In particular, never
+# accept /dev/sdX, a partition symlink, or a path containing another component.
+[[ "$device" == /dev/disk/by-id/* ]] || die '--device must be under /dev/disk/by-id'
+device_id=${device#/dev/disk/by-id/}
+[[ -n "$device_id" && "$device_id" != */* ]] || die '--device must name one top-level /dev/disk/by-id entry'
+[[ "$device_id" != *-part[0-9]* ]] || die '--device must be a whole disk, not a partition'
+[[ -L "$device" ]] || die "device is not a by-id symlink: $device"
+
+real_device=$(realpath -e -- "$device") || die "cannot resolve device: $device"
+[[ "$real_device" == /dev/* && -b "$real_device" ]] || die "by-id path does not resolve to a block device: $device"
+initial_device_path_identity=$(stat -Lc '%d:%i:%t:%T' -- "$real_device")
+[[ "$initial_device_path_identity" =~ ^[0-9]+:[0-9]+:[0-9a-f]+:[0-9a-f]+$ ]] ||
+  die 'could not record the initially inspected block-device identity'
+
+device_types_output=$(lsblk --nodeps -dnro TYPE -- "$real_device") ||
+  die 'could not determine the device type'
+[[ -n "$device_types_output" ]] || die 'device type query returned no data'
+mapfile -t device_types <<< "$device_types_output"
+[[ ${#device_types[@]} -eq 1 && ${device_types[0]} == disk ]] || die 'by-id path is not an unambiguous whole disk'
+
+transport=$(lsblk --nodeps -dnro TRAN -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the device transport'
+removable=$(lsblk --nodeps -dnro RM -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the device removable bit'
+size_bytes=$(lsblk --nodeps -bdnro SIZE -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the device size'
+size_human=$(lsblk --nodeps -dnro SIZE -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the human-readable device size'
+model=$(lsblk --nodeps -dnro MODEL -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the device model'
+serial=$(lsblk --nodeps -dnro SERIAL -- "$real_device" | awk '{$1=$1; print}') ||
+  die 'could not determine the device serial'
+
+[[ "$transport" == usb || "$device_id" == usb-* ]] || die "device is not identified as USB (transport: ${transport:-unknown})"
+[[ "$size_bytes" =~ ^[0-9]+$ && "$size_bytes" -gt 0 ]] || die 'could not determine device size'
+[[ -n "$serial" ]] || die 'device exposes no non-empty hardware serial; refusing destructive use'
+
+if [[ "$removable" != 1 ]] && ! $allow_non_removable; then
+  die "kernel marks this USB disk non-removable; inspect the bridge and repeat with --allow-non-removable-usb only if intentional"
+fi
+
+# Refuse mounted filesystems, swap, and active device-mapper/RAID descendants.
+# Old, inactive partitions are allowed because the confirmed operation replaces
+# their partition table.
+mounted_lines=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$real_device" | awk 'NF > 1') ||
+  die 'could not inspect target mounts and active swap'
+if [[ -n "$mounted_lines" ]]; then
+  printf 'Mounted or active target descendants:\n' >&2
+  while IFS= read -r mounted_line; do
+    printf '  %s\n' "$mounted_line" >&2
+  done <<< "$mounted_lines"
+  die 'refusing a disk with mounted filesystems or active swap'
+fi
+
+child_types=$(lsblk -nrpo TYPE -- "$real_device") ||
+  die 'could not inspect target descendant types'
+[[ -n "$child_types" ]] || die 'target descendant query returned no data'
+while IFS= read -r child_type; do
+  case "$child_type" in
+    disk|part) ;;
+    *) die "refusing active mapped/RAID descendant of type: $child_type" ;;
+  esac
+done <<< "$child_types"
+
+target_nodes_output=$(lsblk -nrpo PATH -- "$real_device") ||
+  die 'could not enumerate target device nodes'
+[[ -n "$target_nodes_output" ]] || die 'target device-node query returned no data'
+mapfile -t target_nodes <<< "$target_nodes_output"
+for node in "${target_nodes[@]}"; do
+  node_real=$(readlink -e -- "$node" 2>/dev/null || true)
+  [[ -n "$node_real" ]] || continue
+  kernel_name=${node_real#/dev/}
+  for holder in "/sys/class/block/$kernel_name/holders/"*; do
+    [[ -e "$holder" ]] || continue
+    die "refusing device with an active holder: $node_real -> $(basename -- "$holder")"
+  done
+done
+
+# This catches the ordinary block-backed root mount explicitly. The mounted
+# descendant check above also protects boot, var, and swap on ostree/composefs
+# hosts where findmnt / does not expose the underlying physical root disk.
+root_source=$(findmnt -nro SOURCE / 2>/dev/null) ||
+  die 'could not identify the current system root mount'
+[[ -n "$root_source" ]] || die 'current system root mount query returned no data'
+root_source=${root_source%%\[*}
+if [[ "$root_source" == /dev/* && -e "$root_source" ]]; then
+  root_ancestors=$(lsblk -snrpo PATH -- "$root_source") ||
+    die 'could not inspect current system root-disk ancestry'
+  [[ -n "$root_ancestors" ]] || die 'current system root-disk ancestry query returned no data'
+  while IFS= read -r root_ancestor; do
+    root_ancestor=$(readlink -e -- "$root_ancestor" 2>/dev/null || true)
+    [[ "$root_ancestor" != "$real_device" ]] || die 'refusing the current system root disk'
+  done <<< "$root_ancestors"
+fi
+
+expected_sums=$(mktemp)
+mount_dir=
+mounted_by_us=false
+
+cleanup() {
+  cleanup_status=$?
+  trap - EXIT INT TERM
+  if $mounted_by_us && [[ -n "$mount_dir" ]]; then
+    if ! umount -- "$mount_dir"; then
+      printf 'ERROR: could not unmount %s; do not unplug the target device\n' "$mount_dir" >&2
+      cleanup_status=1
+    fi
+  fi
+  if [[ -n "$mount_dir" ]] && ! rmdir -- "$mount_dir" 2>/dev/null; then
+    printf 'WARNING: inspection mount directory remains: %s\n' "$mount_dir" >&2
+  fi
+  rm -f -- "$expected_sums"
+  exit "$cleanup_status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+declare -a payloads=()
+declare -A seen_payloads=()
+total_payload_bytes=0
+
+while IFS= read -r filename; do
+  [[ -n "$filename" ]] || continue
+  IFS= read -r url || die "missing URL for payload: $filename"
+  IFS= read -r sha256 || die "missing SHA256 for payload: $filename"
+  IFS= read -r separator || true
+
+  [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe payload filename: $filename"
+  [[ -n "$url" ]] || die "empty URL for payload: $filename"
+  [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || die "invalid SHA256 for payload: $filename"
+  [[ -z "${seen_payloads[$filename]:-}" ]] || die "duplicate payload filename: $filename"
+  [[ -z "${separator:-}" ]] || die "expected a blank separator after payload: $filename"
+  [[ -f "$cache_dir/$filename" && ! -L "$cache_dir/$filename" ]] || die "cached payload is missing or not a regular file: $cache_dir/$filename"
+
+  seen_payloads[$filename]=1
+  payloads+=("$filename")
+  printf '%s  %s\n' "$sha256" "$filename" >> "$expected_sums"
+  payload_bytes=$(stat -c %s -- "$cache_dir/$filename")
+  ((total_payload_bytes += payload_bytes))
+done < "$manifest"
+
+((${#payloads[@]} > 0)) || die "no payloads found in: $manifest"
+
+printf 'Verifying %d pinned payloads in %s\n' "${#payloads[@]}" "$cache_dir"
+(
+  cd -- "$cache_dir"
+  sha256sum --check -- "$expected_sums"
+)
+
+# Leave ample room for ext4 metadata and later ignition/boot payloads.
+minimum_bytes=$((total_payload_bytes + 256 * 1024 * 1024))
+((size_bytes >= minimum_bytes)) || die "device is too small: need at least $minimum_bytes bytes"
+
+expected_confirmation="ERASE:$device:$size_bytes:$serial"
+
+printf '\nFabric router data USB plan:\n'
+printf '  stable ID:  %s\n' "$device"
+printf '  kernel path:%s\n' " $real_device"
+printf '  model:      %s\n' " ${model:-unknown}"
+printf '  serial:     %s\n' " ${serial:-unknown}"
+printf '  size:       %s (%s bytes)\n' "$size_human" "$size_bytes"
+printf '  transport:  %s; removable bit: %s\n' "${transport:-unknown}" "${removable:-unknown}"
+printf '  payloads:   %s bytes plus SHASUMS.txt\n' "$total_payload_bytes"
+printf '  operation:  replace partition table; create one ext4 filesystem labeled data; populate www/\n'
+
+if ! $apply; then
+  printf '\nDRY RUN ONLY: no block-device writes were made.\n'
+  printf 'After physically rechecking the model, serial, size, and by-id path, run:\n  sudo %q --device %q' "$0" "$device"
+  $allow_non_removable && printf ' --allow-non-removable-usb'
+  printf ' --apply --confirm %q\n' "$expected_confirmation"
+  exit 0
+fi
+
+[[ $EUID -eq 0 ]] || die '--apply must be run as root'
+[[ "$confirmation_arg" == "$expected_confirmation" ]] || die 'confirmation does not exactly match this device; run the dry run again'
+
+for command in blockdev flock install mkfs.ext4 mount sfdisk sync udevadm umount; do
+  need_command "$command"
+done
+
+# Serialize destructive work by the kernel device number. The by-id identity is
+# still rechecked below; this lock prevents two independently confirmed apply
+# invocations from racing on the same device.
+[[ -d /run/lock && ! -L /run/lock ]] || die '/run/lock must be a real directory'
+[[ $(stat -Lc '%u' -- /run/lock) == 0 ]] || die '/run/lock must be owned by root'
+lock_directory_mode=$(stat -Lc '%a' -- /run/lock)
+[[ $lock_directory_mode =~ ^[0-7]{3,4}$ ]] || die '/run/lock has an invalid mode'
+(( (8#$lock_directory_mode & 8#022) == 0 )) ||
+  die '/run/lock must not be group- or world-writable'
+device_lock_id=$(stat -Lc '%t-%T' -- "$real_device")
+[[ "$device_lock_id" =~ ^[0-9a-f]+-[0-9a-f]+$ ]] || die 'could not derive a stable device lock ID'
+device_lock="/run/lock/fabric-router-data-usb-$device_lock_id.lock"
+[[ ! -L $device_lock ]] || die "refusing symlinked device lock: $device_lock"
+exec {device_lock_fd}>> "$device_lock"
+device_lock_fd_path=/proc/$$/fd/$device_lock_fd
+[[ -e $device_lock ]] || die 'device lock path disappeared while it was being opened'
+[[ $(stat -Lc '%d:%i' -- "$device_lock_fd_path") == "$(stat -Lc '%d:%i' -- "$device_lock")" ]] ||
+  die 'device lock path changed while it was being opened'
+[[ -f $device_lock_fd_path ]] || die 'device lock is not a regular file'
+[[ $(stat -Lc '%u:%a:%h' -- "$device_lock_fd_path") == '0:600:1' ]] ||
+  die 'device lock must be a root-owned, mode-0600, single-link regular file'
+flock -n "$device_lock_fd" || die "another apply operation holds the lock for $real_device"
+
+# Pin the exact block-device inode before the first write. Every destructive
+# whole-disk operation below uses this descriptor rather than reopening the
+# mutable /dev/sdX pathname.
+device_path_identity=$(stat -Lc '%d:%i:%t:%T' -- "$real_device")
+[[ "$device_path_identity" =~ ^[0-9]+:[0-9]+:[0-9a-f]+:[0-9a-f]+$ ]] ||
+  die 'could not record the target block-device identity'
+[[ "$device_path_identity" == "$initial_device_path_identity" ]] ||
+  die 'target device changed identity after the initial inspection'
+exec {target_fd}<> "$real_device"
+target_fd_path=/proc/$$/fd/$target_fd
+[[ -b $target_fd_path ]] || die 'opened target descriptor is not a block device'
+[[ $(stat -Lc '%d:%i:%t:%T' -- "$target_fd_path") == "$device_path_identity" ]] ||
+  die 'target pathname changed while its descriptor was being opened'
+
+target_device_hex=$(stat -Lc '%t:%T' -- "$target_fd_path")
+IFS=: read -r target_major_hex target_minor_hex <<< "$target_device_hex"
+[[ "$target_major_hex" =~ ^[0-9a-f]+$ && "$target_minor_hex" =~ ^[0-9a-f]+$ ]] ||
+  die 'target descriptor has an invalid kernel device number'
+target_device_number="$((16#$target_major_hex)):$((16#$target_minor_hex))"
+target_sysfs=$(readlink -e -- "/sys/dev/block/$target_device_number") ||
+  die 'target descriptor has no kernel sysfs identity'
+read -r target_sysfs_device_number < "$target_sysfs/dev" ||
+  die 'could not read the target sysfs device number'
+[[ "$target_sysfs_device_number" == "$target_device_number" ]] ||
+  die 'target sysfs identity does not match the opened descriptor'
+
+assert_target_identity() {
+  local phase=$1
+  local current_serial current_size resolved
+
+  resolved=$(realpath -e -- "$device") || die "$phase: stable by-id path disappeared"
+  [[ "$resolved" == "$real_device" ]] || die "$phase: stable by-id path resolves to a different device"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$real_device") == "$device_path_identity" ]] ||
+    die "$phase: kernel target pathname changed identity"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$target_fd_path") == "$device_path_identity" ]] ||
+    die "$phase: opened target descriptor changed identity"
+  [[ $(readlink -e -- "/sys/dev/block/$target_device_number") == "$target_sysfs" ]] ||
+    die "$phase: kernel target sysfs identity changed"
+
+  current_size=$(blockdev --getsize64 "$target_fd_path") ||
+    die "$phase: could not read size through the pinned target descriptor"
+  [[ "$current_size" == "$size_bytes" ]] || die "$phase: device size changed after inspection"
+  current_serial=$(lsblk --nodeps -dnro SERIAL -- "$target_fd_path" | awk '{$1=$1; print}') ||
+    die "$phase: could not read serial through the pinned target descriptor"
+  [[ "$current_serial" == "$serial" ]] || die "$phase: device serial changed after inspection"
+}
+
+assert_target_identity 'pre-write recheck'
+
+mounted_lines=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$target_fd_path" | awk 'NF > 1') ||
+  die 'could not recheck target mounts and active swap'
+[[ -z "$mounted_lines" ]] || die 'device became mounted after inspection; refusing to continue'
+child_types=$(lsblk -nrpo TYPE -- "$target_fd_path") ||
+  die 'could not recheck target descendant types'
+[[ -n "$child_types" ]] || die 'target descendant recheck returned no data'
+while IFS= read -r child_type; do
+  case "$child_type" in
+    disk|part) ;;
+    *) die "device gained an active mapped/RAID descendant of type: $child_type" ;;
+  esac
+done <<< "$child_types"
+for holders_dir in "$target_sysfs/holders" "$target_sysfs"/*/holders; do
+  [[ -d "$holders_dir" ]] || continue
+  for holder in "$holders_dir/"*; do
+    [[ -e "$holder" ]] || continue
+    die "device gained an active holder: $holders_dir -> $(basename -- "$holder")"
+  done
+done
+
+printf '\nDestroying and preparing %s (%s)\n' "$device" "$real_device"
+sfdisk --wipe=always --wipe-partitions=always -- "$target_fd_path" <<'EOF'
+label: gpt
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+EOF
+assert_target_identity 'after partition-table write'
+blockdev --rereadpt "$target_fd_path"
+udevadm settle
+assert_target_identity 'after kernel partition-table reread'
+
+partition_sysfs=
+for _ in {1..20}; do
+  partitions=()
+  for candidate in "$target_sysfs"/*; do
+    [[ -f "$candidate/partition" && -f "$candidate/dev" && -f "$candidate/uevent" ]] || continue
+    partitions+=("$candidate")
+  done
+  if [[ ${#partitions[@]} -eq 1 ]]; then
+    partition_sysfs=${partitions[0]}
+    break
+  fi
+  sleep 0.25
+done
+[[ -n "$partition_sysfs" ]] || die 'the single new partition did not appear beneath the pinned target'
+
+read -r partition_device_number < "$partition_sysfs/dev" ||
+  die 'could not read the new partition device number'
+[[ "$partition_device_number" =~ ^[0-9]+:[0-9]+$ ]] ||
+  die 'new partition has an invalid kernel device number'
+partition_device_name=$(awk -F= '$1 == "DEVNAME" { print $2 }' "$partition_sysfs/uevent") ||
+  die 'could not read the new partition device name'
+[[ "$partition_device_name" =~ ^[A-Za-z0-9._-]+$ ]] ||
+  die 'new partition has an unsafe kernel device name'
+partition="/dev/$partition_device_name"
+[[ -b "$partition" ]] || die 'new partition device node is absent'
+
+partition_path_identity=$(stat -Lc '%d:%i:%t:%T' -- "$partition")
+exec {partition_fd}<> "$partition"
+partition_fd_path=/proc/$$/fd/$partition_fd
+[[ -b $partition_fd_path ]] || die 'opened partition descriptor is not a block device'
+[[ $(stat -Lc '%d:%i:%t:%T' -- "$partition_fd_path") == "$partition_path_identity" ]] ||
+  die 'partition pathname changed while its descriptor was being opened'
+partition_device_hex=$(stat -Lc '%t:%T' -- "$partition_fd_path")
+IFS=: read -r partition_major_hex partition_minor_hex <<< "$partition_device_hex"
+[[ "$partition_major_hex" =~ ^[0-9a-f]+$ && "$partition_minor_hex" =~ ^[0-9a-f]+$ ]] ||
+  die 'partition descriptor has an invalid kernel device number'
+opened_partition_device_number="$((16#$partition_major_hex)):$((16#$partition_minor_hex))"
+[[ "$opened_partition_device_number" == "$partition_device_number" ]] ||
+  die 'partition descriptor does not match the partition beneath the pinned target'
+
+assert_partition_identity() {
+  local phase=$1
+
+  assert_target_identity "$phase"
+  [[ -f "$partition_sysfs/partition" && -f "$partition_sysfs/dev" ]] ||
+    die "$phase: pinned partition disappeared from sysfs"
+  [[ $(<"$partition_sysfs/dev") == "$partition_device_number" ]] ||
+    die "$phase: pinned partition changed kernel identity"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$partition_fd_path") == "$partition_path_identity" ]] ||
+    die "$phase: opened partition descriptor changed identity"
+  [[ -b "$partition" ]] || die "$phase: partition device node disappeared"
+  [[ $(stat -Lc '%d:%i:%t:%T' -- "$partition") == "$partition_path_identity" ]] ||
+    die "$phase: partition device pathname changed identity"
+}
+
+assert_partition_identity 'before filesystem creation'
+
+mkfs.ext4 -F -m 0 -L data -- "$partition_fd_path"
+udevadm settle
+assert_partition_identity 'after filesystem creation'
+
+# A desktop automounter may react to the new filesystem before this process
+# mounts it. Never proceed if anything else claimed the target or a descendant.
+post_mkfs_mounts=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$target_fd_path" | awk 'NF > 1') ||
+  die 'could not inspect mounts after formatting'
+if [[ -n "$post_mkfs_mounts" ]]; then
+  printf 'Target was automounted after formatting:\n' >&2
+  while IFS= read -r mounted_line; do
+    printf '  %s\n' "$mounted_line" >&2
+  done <<< "$post_mkfs_mounts"
+  die 'disable desktop automounting, unmount the target, and start again'
+fi
+
+mount_dir=$(mktemp -d)
+assert_partition_identity 'before mounting the new filesystem'
+mount --no-canonicalize --internal-only --source "$partition_fd_path" --target "$mount_dir"
+mounted_by_us=true
+install -d -m 0755 -- "$mount_dir/www"
+
+for filename in "${payloads[@]}"; do
+  install -m 0644 -- "$cache_dir/$filename" "$mount_dir/www/$filename"
+done
+install -m 0644 -- "$expected_sums" "$mount_dir/www/SHASUMS.txt"
+sync -- "$mount_dir/www"
+
+(
+  cd -- "$mount_dir/www"
+  sha256sum --check -- SHASUMS.txt
+)
+
+umount -- "$mount_dir"
+mounted_by_us=false
+rmdir -- "$mount_dir"
+mount_dir=
+
+udevadm settle
+assert_partition_identity 'after unmounting the populated filesystem'
+final_mounts=$(lsblk -nrpo PATH,MOUNTPOINTS -- "$target_fd_path" | awk 'NF > 1') ||
+  die 'could not perform the final target mount check'
+[[ -z "$final_mounts" ]] || {
+  printf 'Target remains mounted after preparation:\n' >&2
+  while IFS= read -r mounted_line; do
+    printf '  %s\n' "$mounted_line" >&2
+  done <<< "$final_mounts"
+  die 'do not unplug the target; disable automounting and unmount every listed path'
+}
+
+final_child_types=$(lsblk -nrpo TYPE -- "$target_fd_path") ||
+  die 'could not perform the final target descendant check'
+[[ -n "$final_child_types" ]] || die 'final target descendant query returned no data'
+while IFS= read -r child_type; do
+  case "$child_type" in
+    disk|part) ;;
+    *) die "target has an active mapped/RAID descendant after preparation: $child_type" ;;
+  esac
+done <<< "$final_child_types"
+
+for holders_dir in "$target_sysfs/holders" "$target_sysfs"/*/holders; do
+  [[ -d "$holders_dir" ]] || continue
+  for holder in "$holders_dir/"*; do
+    [[ -e "$holder" ]] || continue
+    die "target has an active holder after preparation: $holders_dir -> $(basename -- "$holder")"
+  done
+done
+
+printf '\nPrepared %s successfully. It is safe to unplug after the OS reports no pending device activity.\n' "$device"

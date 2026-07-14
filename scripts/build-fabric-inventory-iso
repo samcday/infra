@@ -1,0 +1,608 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+manifest=$repo_root/fabric/installer/fcos-live-iso.txt
+profile=$repo_root/fabric/installer/inventory-live.bu
+network_profile=$repo_root/fabric/installer/inventory-static.nmconnection
+inventory_script=$repo_root/scripts/inventory-fabric-node
+operator_profile=$repo_root/fabric/butane/base.yaml
+default_cache_dir=$repo_root/_build/fabric/installer
+output_basename=fabric-inventory-live.iso
+fedora_key=/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary
+fedora_key_fingerprint=36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6
+sam_ssh_key=
+
+check_only=false
+output_dir=
+cache_dir=
+build_dir=
+published_output=
+published_output_identity=
+published_checksum=
+published_checksum_identity=
+publication_complete=false
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  build-fabric-inventory-iso --check
+
+  build-fabric-inventory-iso \
+    --output-dir /path/on/trusted-storage/fabric-inventory-media \
+    [--cache-dir /path/on/trusted-storage/fabric-installer-cache]
+
+Build one reusable, non-destructive Fedora CoreOS live ISO named
+fabric-inventory-live.iso. It embeds only live-environment Ignition and a
+static 10.66.0.100/24 Ethernet profile. It never accepts a destination device
+and never configures coreos-installer to install to disk.
+
+The public FCOS ISO cache defaults to _build/fabric/installer. The output
+directory must be outside this Git checkout. Existing ISO or checksum outputs
+are never overwritten. Run without sudo. Pre-existing output/cache directories
+must be owned by the invoking user and mode 0700.
+EOF
+}
+
+decode_data_url() {
+  local source=$1
+  local compression=$2
+  local destination=$3
+
+  [[ $source == data:*,* ]] || {
+    echo 'refusing a non-data URL in rendered inventory Ignition' >&2
+    return 1
+  }
+  [[ -z $compression || $compression == gzip ]] || {
+    echo "unsupported Ignition content compression: $compression" >&2
+    return 1
+  }
+
+  printf '%s' "$source" | python3 -c '
+import base64
+import gzip
+import sys
+from urllib.parse import unquote_to_bytes
+
+compression, destination = sys.argv[1:]
+source = sys.stdin.read()
+metadata, payload = source[5:].split(",", 1)
+if metadata.endswith(";base64"):
+    data = base64.b64decode(payload, validate=True)
+else:
+    data = unquote_to_bytes(payload)
+if compression == "gzip":
+    data = gzip.decompress(data)
+with open(destination, "wb") as output:
+    output.write(data)
+' "$compression" "$destination"
+}
+
+extract_ignition_file() {
+  local ignition=$1
+  local path=$2
+  local destination=$3
+  local count
+  local source
+  local compression
+
+  count=$(jq --arg path "$path" '[.storage.files[]? | select(.path == $path)] | length' "$ignition")
+  [[ $count == 1 ]] || {
+    echo "expected exactly one rendered Ignition file at $path, found $count" >&2
+    return 1
+  }
+  source=$(jq -r --arg path "$path" '.storage.files[] | select(.path == $path) | .contents.source' "$ignition")
+  compression=$(jq -r --arg path "$path" '.storage.files[] | select(.path == $path) | .contents.compression // ""' "$ignition")
+  decode_data_url "$source" "$compression" "$destination"
+}
+
+validate_network_profile() {
+  python3 - "$network_profile" <<'PY'
+import configparser
+import sys
+
+path = sys.argv[1]
+config = configparser.ConfigParser(interpolation=None, strict=True)
+with open(path, encoding="utf-8") as source:
+    config.read_file(source)
+
+expected_sections = {"connection", "ethernet", "ipv4", "ipv6"}
+if set(config.sections()) != expected_sections:
+    raise SystemExit(f"unexpected NetworkManager sections: {config.sections()}")
+if config["connection"].get("type") != "ethernet":
+    raise SystemExit("inventory connection is not Ethernet")
+if config["ipv4"].get("method") != "manual":
+    raise SystemExit("inventory IPv4 method is not manual")
+if config["ipv4"].get("address1") != "10.66.0.100/24":
+    raise SystemExit("inventory IPv4 address is not exactly 10.66.0.100/24")
+if config["ipv4"].getboolean("never-default", fallback=False) is not True:
+    raise SystemExit("inventory connection could install a default route")
+if config["ipv4"].getboolean("ignore-auto-routes", fallback=False) is not True:
+    raise SystemExit("inventory connection could accept automatic routes")
+if config["ipv4"].getboolean("ignore-auto-dns", fallback=False) is not True:
+    raise SystemExit("inventory connection could accept automatic DNS")
+if config["ipv4"].getint("dad-timeout", fallback=0) != 3000:
+    raise SystemExit("inventory IPv4 duplicate-address detection is not set to 3000 ms")
+if config["ipv6"].get("method") != "disabled":
+    raise SystemExit("inventory IPv6 must be disabled")
+
+for section in config.sections():
+    for key in config[section]:
+        lowered = key.lower()
+        if lowered == "gateway" or lowered.startswith("gateway"):
+            raise SystemExit(f"gateway setting is forbidden: [{section}] {key}")
+        if lowered == "dns" or lowered.startswith("dns-") or lowered.startswith("dns"):
+            if not (section == "ipv4" and lowered == "ignore-auto-dns"):
+                raise SystemExit(f"DNS setting is forbidden: [{section}] {key}")
+PY
+}
+
+validate_live_ignition() {
+  local ignition=$1
+  local extracted_inventory=$workdir/rendered-inventory-fabric-node
+
+  jq -e '.ignition.version | startswith("3.")' "$ignition" >/dev/null
+  jq -e --arg key "$sam_ssh_key" '
+    [.passwd.users[]?
+      | select(.name == "core")
+      | .sshAuthorizedKeys[]?
+      | select(. == $key)]
+    | length == 1
+  ' "$ignition" >/dev/null
+  jq -e '
+    [.passwd.users[]? | select(.name == "core")]
+    | length == 1 and
+      all(.[]; (.passwordHash == null) and (.sshAuthorizedKeys | length == 1))
+  ' "$ignition" >/dev/null
+  jq -e '
+    ((.ignition.config.merge // []) | length == 0) and
+    (.ignition.config.replace == null) and
+    all(.storage.files[]?; (.contents.source | type == "string") and (.contents.source | startswith("data:")))
+  ' "$ignition" >/dev/null
+  jq -e '
+    [.systemd.units[]? | select(.name == "coreos-installer.service" and .mask == true)] | length == 1
+  ' "$ignition" >/dev/null
+  jq -e '
+    [.systemd.units[]? | select(.name == "coreos-installer.target" and .mask == true)] | length == 1
+  ' "$ignition" >/dev/null
+  jq -e '
+    all(.systemd.units[]?;
+      ((.name | test("coreos-installer")) | not) or .mask == true) and
+    all(.storage.files[]?; (.path | startswith("/etc/coreos/installer.d/")) | not) and
+    ((.storage.disks // []) | length == 0) and
+    ((.storage.filesystems // []) | length == 0) and
+    ((.storage.luks // []) | length == 0) and
+    ((.storage.raid // []) | length == 0) and
+    ((.storage.links // []) | length == 0) and
+    ((.storage.trees // []) | length == 0) and
+    ((.kernelArguments.shouldExist // []) | length == 0) and
+    ((.kernelArguments.shouldNotExist // []) | length == 0)
+  ' "$ignition" >/dev/null
+  jq -e '
+    ([.passwd.users[]?.name] == ["core"]) and
+    ([.storage.directories[]?.path] == ["/var/home/core/fabric-inventory"]) and
+    ([.storage.files[]?.path] | sort) == ([
+      "/etc/hostname",
+      "/etc/motd.d/90-fabric-inventory",
+      "/etc/nftables/fabric-inventory.nft",
+      "/etc/ssh/sshd_config.d/90-fabric-inventory.conf",
+      "/etc/sysctl.d/90-fabric-inventory.conf",
+      "/usr/local/sbin/collect-fabric-inventory",
+      "/usr/local/sbin/guard-fabric-inventory-live",
+      "/usr/local/sbin/inventory-fabric-node",
+      "/usr/local/sbin/show-fabric-inventory-access"
+    ] | sort) and
+    ([.systemd.units[]?.name] | sort) == ([
+      "coreos-installer.service",
+      "coreos-installer.target",
+      "fabric-inventory-console.service",
+      "fabric-inventory-network-guard.service",
+      "fabric-inventory.service",
+      "sshd.service"
+    ] | sort)
+  ' "$ignition" >/dev/null
+  if jq -r '.. | strings' "$ignition" |
+      grep -Eq '(^|[[:space:]])coreos\.inst\.[^[:space:]]*'; then
+    echo 'rendered inventory Ignition contains a coreos.inst.* kernel argument' >&2
+    return 1
+  fi
+  jq -e '
+    [.systemd.units[]? | select(.name == "fabric-inventory.service" and .enabled == true)] | length == 1
+  ' "$ignition" >/dev/null
+  jq -e '
+    [.systemd.units[]? | select(.name == "fabric-inventory-network-guard.service" and .enabled == true)] | length == 1
+  ' "$ignition" >/dev/null
+  jq -e '
+    [.storage.files[]?
+      | select(.path == "/usr/local/sbin/inventory-fabric-node" and .mode == 493)]
+    | length == 1
+  ' "$ignition" >/dev/null
+
+  extract_ignition_file "$ignition" /usr/local/sbin/inventory-fabric-node "$extracted_inventory"
+  cmp --silent "$inventory_script" "$extracted_inventory" || {
+    echo 'rendered live Ignition does not embed the canonical inventory script exactly' >&2
+    return 1
+  }
+}
+
+validate_output_iso() {
+  local iso=$1
+  local embedded_root=$workdir/embedded-live-root.ign
+  local embedded_profile=$workdir/embedded-live-profile.ign
+  local kargs=$workdir/live-kargs.txt
+  local network_dir=$workdir/extracted-network
+  local source
+  local compression
+  local -a network_files
+
+  coreos-installer iso kargs show "$iso" > "$kargs"
+  if grep -Eq '(^|[[:space:]])coreos\.inst([.=]|[[:space:]]|$)' "$kargs"; then
+    echo 'customized inventory ISO unexpectedly contains coreos.inst kernel arguments' >&2
+    return 1
+  fi
+  if grep -Eq '(^|[[:space:]])ignition\.config([.=]|[[:space:]]|$)' "$kargs"; then
+    echo 'customized inventory ISO unexpectedly contains external Ignition config arguments' >&2
+    return 1
+  fi
+
+  # `iso customize --live-ignition` embeds a minimal live root whose only
+  # operation is one data-URL merge.  Inspect that wrapper, decode its child,
+  # and validate the complete normalized live profile rather than mistaking
+  # the wrapper for a destination-system Ignition config.
+  coreos-installer iso ignition show "$iso" > "$embedded_root"
+  jq -e '
+    (keys == ["ignition"]) and
+    ((.ignition | keys | sort) == (["config", "version"] | sort)) and
+    (.ignition.version | startswith("3.")) and
+    ((.ignition.config | keys) == ["merge"]) and
+    ((.ignition.config.merge // []) | length == 1) and
+    (.ignition.config.merge[0].source | type == "string") and
+    (.ignition.config.merge[0].source | startswith("data:")) and
+    ((.ignition.config.merge[0].compression // "") == "gzip")
+  ' "$embedded_root" >/dev/null
+  source=$(jq -r '.ignition.config.merge[0].source' "$embedded_root")
+  compression=$(jq -r '.ignition.config.merge[0].compression // ""' "$embedded_root")
+  decode_data_url "$source" "$compression" "$embedded_profile"
+  validate_live_ignition "$embedded_profile"
+
+  mkdir -m 0700 -- "$network_dir"
+  coreos-installer iso network extract --directory "$network_dir" "$iso"
+  mapfile -t network_files < <(find "$network_dir" -type f -print)
+  ((${#network_files[@]} == 1)) || {
+    echo "expected one network profile in customized ISO, found ${#network_files[@]}" >&2
+    return 1
+  }
+  [[ ${network_files[0]##*/} == "${network_profile##*/}" ]] || {
+    echo "unexpected embedded network profile: ${network_files[0]##*/}" >&2
+    return 1
+  }
+  cmp --silent "$network_profile" "${network_files[0]}" || {
+    echo 'embedded network profile differs from the reviewed static profile' >&2
+    return 1
+  }
+}
+
+download() {
+  local url=$1
+  local destination=$2
+  local temporary
+
+  [[ -f $destination ]] && return
+  temporary=$(mktemp --tmpdir="${destination%/*}" ".${destination##*/}.download.XXXXXXXX")
+  if ! curl --retry 3 --fail --location --output "$temporary" "$url"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  chmod 0600 -- "$temporary"
+  mv -- "$temporary" "$destination"
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      check_only=true
+      shift
+      ;;
+    --output-dir)
+      (($# >= 2)) || { echo '--output-dir requires a value' >&2; exit 2; }
+      output_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      (($# >= 2)) || { echo '--cache-dir requires a value' >&2; exit 2; }
+      cache_dir=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+((EUID != 0)) || {
+  echo 'refusing to build inventory media as root; run this builder without sudo' >&2
+  exit 1
+}
+
+for command in awk butane cmp coreos-installer curl find flock gpg gpgv id jq ln mktemp python3 realpath sha256sum stat sync wc yq; do
+  command -v "$command" >/dev/null || {
+    echo "missing required command: $command" >&2
+    exit 1
+  }
+done
+
+workdir=$(fabric_secure_tmpdir fabric-inventory-iso-build 16777216)
+remove_owned_publication() {
+  local path=$1
+  local expected_identity=$2
+  local current_identity
+
+  [[ -n $path && -n $expected_identity && ! -L $path ]] || return 0
+  if current_identity=$(stat -c '%d:%i' -- "$path" 2>/dev/null) &&
+      [[ $current_identity == "$expected_identity" ]]; then
+    rm -f -- "$path"
+  fi
+}
+
+cleanup() {
+  local status=$?
+
+  # If publication was interrupted between the two links, remove only paths
+  # that still name the exact inodes built by this process. Never unlink a
+  # destination that another process replaced.
+  if ! $publication_complete; then
+    remove_owned_publication "$published_checksum" "$published_checksum_identity" || true
+    remove_owned_publication "$published_output" "$published_output_identity" || true
+  fi
+  [[ -z $build_dir ]] || rm -rf -- "$build_dir"
+  rm -rf -- "$workdir"
+  return "$status"
+}
+trap cleanup EXIT
+mkdir -m 0700 -- "$workdir/gnupg"
+
+mapfile -t media_record < "$manifest"
+[[ ${#media_record[@]} -eq 4 ]] || {
+  echo "$manifest must contain exactly filename, URL, SHA-256, and signature URL" >&2
+  exit 1
+}
+iso_filename=${media_record[0]}
+iso_url=${media_record[1]}
+iso_sha256=${media_record[2]}
+iso_signature_url=${media_record[3]}
+
+[[ $iso_filename =~ ^fedora-coreos-[A-Za-z0-9._-]+-live-iso\.x86_64\.iso$ ]]
+[[ $iso_url == https://builds.coreos.fedoraproject.org/*/$iso_filename ]]
+[[ $iso_sha256 =~ ^[0-9a-f]{64}$ ]]
+[[ $iso_signature_url == "$iso_url.sig" ]]
+
+[[ -s $fedora_key ]] || {
+  echo "missing Fedora 44 primary signing key: $fedora_key" >&2
+  exit 1
+}
+actual_fingerprint=$(gpg --quiet --homedir "$workdir/gnupg" --batch --show-keys --with-colons "$fedora_key" |
+  awk -F: '$1 == "fpr" { print $10; exit }')
+[[ $actual_fingerprint == "$fedora_key_fingerprint" ]] || {
+  echo "unexpected Fedora 44 signing-key fingerprint: ${actual_fingerprint:-missing}" >&2
+  exit 1
+}
+
+yq -e '
+  ([.passwd.users[] | select(.name == "sam")] | length == 1) and
+  ([.passwd.users[] | select(.name == "sam") | .ssh_authorized_keys[]] | length == 1)
+' "$operator_profile" >/dev/null || {
+  echo 'canonical fabric operator profile must contain exactly one sam SSH key' >&2
+  exit 1
+}
+sam_ssh_key=$(yq -er '.passwd.users[] | select(.name == "sam") | .ssh_authorized_keys[0]' "$operator_profile")
+[[ $sam_ssh_key =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/]+={0,3}$ ]] || {
+  echo 'canonical fabric operator SSH key is not one comment-free Ed25519 public key' >&2
+  exit 1
+}
+
+validate_network_profile
+live_ignition=$workdir/fabric-inventory-live.ign
+butane --strict --pretty --files-dir "$repo_root" --output "$live_ignition" "$profile"
+validate_live_ignition "$live_ignition"
+
+if $check_only; then
+  [[ -z $output_dir && -z $cache_dir ]] || {
+    echo '--check cannot be combined with build arguments' >&2
+    exit 2
+  }
+  echo "validated pinned FCOS manifest and Fedora signing key for $iso_filename"
+  echo 'validated non-destructive inventory live Ignition and 10.66.0.100/24 network profile'
+  echo 'validated canonical operator key, masked installer units, no disk directives, and no install/external-config arguments'
+  exit 0
+fi
+
+[[ -n $output_dir ]] || {
+  usage
+  exit 2
+}
+
+requested_output_dir=$(realpath -ms -- "$output_dir")
+requested_cache_dir=$(realpath -ms -- "${cache_dir:-$default_cache_dir}")
+output_dir=$(realpath -m -- "$output_dir")
+cache_dir=$(realpath -m -- "${cache_dir:-$default_cache_dir}")
+[[ $requested_output_dir == "$output_dir" ]] || {
+  echo "refusing an output path containing symlink components: $requested_output_dir" >&2
+  exit 1
+}
+[[ $requested_cache_dir == "$cache_dir" ]] || {
+  echo "refusing a cache path containing symlink components: $requested_cache_dir" >&2
+  exit 1
+}
+case $output_dir in
+  "$repo_root" | "$repo_root"/*)
+    echo "refusing inventory ISO output inside Git: $output_dir" >&2
+    exit 1
+    ;;
+esac
+[[ $output_dir != "$cache_dir" ]] || {
+  echo 'output and cache directories must be distinct' >&2
+  exit 1
+}
+
+output_dir_preexisting=false
+cache_dir_preexisting=false
+[[ -e $output_dir || -L $output_dir ]] && output_dir_preexisting=true
+[[ -e $cache_dir || -L $cache_dir ]] && cache_dir_preexisting=true
+mkdir -p -- "$output_dir" "$cache_dir"
+output_dir=$(realpath -e -- "$output_dir")
+cache_dir=$(realpath -e -- "$cache_dir")
+[[ $requested_output_dir == "$output_dir" ]] || {
+  echo "output path changed while it was being created: $requested_output_dir -> $output_dir" >&2
+  exit 1
+}
+[[ $requested_cache_dir == "$cache_dir" ]] || {
+  echo "cache path changed while it was being created: $requested_cache_dir -> $cache_dir" >&2
+  exit 1
+}
+case $output_dir in
+  "$repo_root" | "$repo_root"/*)
+    echo "refusing resolved inventory ISO output inside Git: $output_dir" >&2
+    exit 1
+    ;;
+esac
+[[ $output_dir != "$cache_dir" ]] || {
+  echo 'resolved output and cache directories must be distinct' >&2
+  exit 1
+}
+case $output_dir/ in
+  "$cache_dir"/*)
+    echo 'output directory must not be nested beneath the cache directory' >&2
+    exit 1
+    ;;
+esac
+case $cache_dir/ in
+  "$output_dir"/*)
+    echo 'cache directory must not be nested beneath the output directory' >&2
+    exit 1
+    ;;
+esac
+current_uid=$(id -u)
+for directory in "$output_dir" "$cache_dir"; do
+  [[ -d $directory && ! -L $directory ]] || {
+    echo "refusing non-directory or symlinked build location: $directory" >&2
+    exit 1
+  }
+  [[ $(stat -c '%u' -- "$directory") == "$current_uid" ]] || {
+    echo "build location is not owned by the current user: $directory" >&2
+    exit 1
+  }
+done
+if $output_dir_preexisting; then
+  [[ $(stat -c '%a' -- "$output_dir") == 700 ]] || {
+    echo "existing output directory mode must be 0700: $output_dir" >&2
+    exit 1
+  }
+else
+  chmod 0700 -- "$output_dir"
+fi
+if $cache_dir_preexisting; then
+  [[ $(stat -c '%a' -- "$cache_dir") == 700 ]] || {
+    echo "existing cache directory mode must be 0700: $cache_dir" >&2
+    exit 1
+  }
+else
+  chmod 0700 -- "$cache_dir"
+fi
+
+output_lock=$output_dir/.fabric-inventory-build.lock
+[[ ! -L $output_lock ]] || {
+  echo "refusing symlinked output lock: $output_lock" >&2
+  exit 1
+}
+exec {output_lock_fd}> "$output_lock"
+flock -n "$output_lock_fd" || {
+  echo "another inventory ISO build holds the output directory: $output_dir" >&2
+  exit 1
+}
+
+output=$output_dir/$output_basename
+checksum=$output.sha256
+[[ ! -e $output && ! -L $output && ! -e $checksum && ! -L $checksum ]] || {
+  echo "refusing to overwrite inventory ISO or checksum: $output" >&2
+  exit 1
+}
+
+iso=$cache_dir/$iso_filename
+signature=$iso.sig
+lock=$cache_dir/.download.lock
+for cached_path in "$iso" "$signature" "$lock"; do
+  [[ ! -L $cached_path ]] || {
+    echo "refusing symlink in the FCOS cache: $cached_path" >&2
+    exit 1
+  }
+done
+exec {cache_lock_fd}> "$lock"
+flock "$cache_lock_fd"
+download "$iso_url" "$iso"
+echo "$iso_sha256  $iso" | sha256sum --check --strict -
+download "$iso_signature_url" "$signature"
+fedora_keyring=$workdir/fedora-44-primary.gpg
+gpg --quiet --homedir "$workdir/gnupg" --batch --yes --dearmor --output "$fedora_keyring" "$fedora_key"
+gpgv --keyring "$fedora_keyring" "$signature" "$iso"
+flock -u "$cache_lock_fd"
+
+build_dir=$(mktemp --directory -- "$output_dir/.fabric-inventory-build.XXXXXXXX")
+chmod 0700 -- "$build_dir"
+temporary=$build_dir/$output_basename
+coreos-installer iso customize \
+  --live-ignition "$live_ignition" \
+  --network-keyfile "$network_profile" \
+  --output "$temporary" \
+  "$iso"
+chmod 0600 -- "$temporary"
+validate_output_iso "$temporary"
+
+output_sha256=$(sha256sum "$temporary" | awk '{ print $1 }')
+[[ $output_sha256 =~ ^[0-9a-f]{64}$ ]]
+checksum_temporary=$build_dir/$output_basename.sha256
+printf '%s  %s\n' "$output_sha256" "$output_basename" > "$checksum_temporary"
+chmod 0600 -- "$checksum_temporary"
+[[ $(wc -l < "$checksum_temporary") == 1 ]]
+
+# Both sources live beneath output_dir, so each hard-link publication is an
+# atomic same-filesystem no-replace operation. A racing destination makes ln
+# fail; existing output is never overwritten. The EXIT cleanup tracks the
+# exact source inodes until both files pass their final verification, so an
+# interrupted or half-failed publication cannot leave an orphaned output.
+published_output=$output
+published_output_identity=$(stat -c '%d:%i' -- "$temporary")
+ln -T -- "$temporary" "$output" || {
+  published_output=
+  published_output_identity=
+  echo "refusing output created while the ISO was being built: $output" >&2
+  exit 1
+}
+published_checksum=$checksum
+published_checksum_identity=$(stat -c '%d:%i' -- "$checksum_temporary")
+ln -T -- "$checksum_temporary" "$checksum" || {
+  published_checksum=
+  published_checksum_identity=
+  echo "refusing checksum created while the ISO was being built: $checksum" >&2
+  exit 1
+}
+rm -- "$temporary" "$checksum_temporary"
+sync -f "$output"
+sync -f "$checksum"
+(cd "$output_dir" && sha256sum --check --strict "$output_basename.sha256")
+[[ $(stat -c '%a' -- "$output") == 600 && $(stat -c '%a' -- "$checksum") == 600 ]]
+publication_complete=true
+
+printf 'wrote non-destructive inventory ISO: %s\n' "$output" >&2
+printf 'wrote exact checksum sidecar: %s\n' "$checksum" >&2
