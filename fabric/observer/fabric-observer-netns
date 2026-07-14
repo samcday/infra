@@ -16,6 +16,7 @@ readonly state_temp=$runtime_dir/state.new
 readonly supplicant_config=$runtime_dir/wpa_supplicant.conf
 readonly supplicant_pid=$runtime_dir/wpa_supplicant.pid
 readonly supplicant_control=$runtime_dir/wpa-control
+readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
 readonly netns_config_dir=/etc/netns/$namespace
 readonly netns_resolv_conf=$netns_config_dir/resolv.conf
 readonly netns_nsswitch_conf=$netns_config_dir/nsswitch.conf
@@ -79,6 +80,46 @@ require_root_namespace() {
 require_root() {
   ((EUID == 0)) || die 'this operation must run as root'
   require_root_namespace
+}
+
+fabric_network_lock_fd=
+
+acquire_fabric_network_lock() {
+  local parent_metadata lock_metadata resolved
+
+  [[ -z "$fabric_network_lock_fd" ]] ||
+    die 'internal error: fabric network operation lock is already held'
+  parent_metadata=$(stat -Lc '%F:%u:%g:%a' -- /run/lock) ||
+    die 'cannot inspect the fabric network lock directory'
+  [[ "$parent_metadata" == 'directory:0:0:755' ]] ||
+    die 'fabric network lock directory must be root-owned mode 0755'
+  [[ ! -L "$fabric_network_lock" ]] ||
+    die 'fabric network operation lock must not be a symlink'
+  if [[ -e "$fabric_network_lock" ]]; then
+    [[ -f "$fabric_network_lock" ]] ||
+      die 'fabric network operation lock must be a regular file'
+    lock_metadata=$(stat -Lc '%u:%g:%a:%h' -- "$fabric_network_lock") ||
+      die 'cannot inspect the fabric network operation lock'
+    [[ "$lock_metadata" == '0:0:600:1' ]] ||
+      die 'fabric network operation lock must be a root-owned mode-0600 single-link regular file'
+  fi
+
+  exec {fabric_network_lock_fd}>>"$fabric_network_lock" ||
+    die 'cannot open the fabric network operation lock'
+  chmod 0600 -- "/proc/self/fd/$fabric_network_lock_fd" ||
+    die 'cannot protect the fabric network operation lock'
+  resolved=$(readlink -e -- "/proc/self/fd/$fabric_network_lock_fd") ||
+    die 'cannot resolve the opened fabric network operation lock'
+  [[ "$resolved" == "$fabric_network_lock" ]] ||
+    die 'opened fabric network operation lock has an unexpected identity'
+  [[ -f "/proc/self/fd/$fabric_network_lock_fd" ]] ||
+    die 'opened fabric network operation lock is not a regular file'
+  lock_metadata=$(stat -Lc '%u:%g:%a:%h' -- "/proc/self/fd/$fabric_network_lock_fd") ||
+    die 'cannot inspect the opened fabric network operation lock'
+  [[ "$lock_metadata" == '0:0:600:1' ]] ||
+    die 'opened fabric network operation lock is not safely owned'
+  flock --exclusive --nonblock "$fabric_network_lock_fd" ||
+    die 'another fabric network operation is active'
 }
 
 valid_interface_name() {
@@ -882,6 +923,7 @@ do_check() {
 do_setup() {
   local uplink=$1 wifi=$2 psk_file=$3 confirmation=$4 phy expected_confirmation
   require_root
+  acquire_fabric_network_lock
   [[ -n "$psk_file" ]] || die '--psk-file is required for setup'
   phy=$(validate_admission "$uplink" "$wifi" "$psk_file")
   expected_confirmation="SETUP:$namespace:$uplink:$wifi:$phy"
@@ -970,6 +1012,7 @@ do_setup() {
 do_teardown() {
   local confirmation=$1
   require_root
+  acquire_fabric_network_lock
   read_state
   [[ "$confirmation" == "TEARDOWN:$namespace" ]] ||
     die "confirmation mismatch; expected TEARDOWN:$namespace"
@@ -1040,7 +1083,7 @@ case "$action" in
   setup)
     [[ -n "$uplink" && -n "$wifi" ]] || die 'setup requires --uplink and --wifi'
     [[ -n "$confirmation" ]] || die 'setup requires --confirm from a passing check'
-    for command in find install mv nft sleep sysctl tr wpa_cli wpa_supplicant; do
+    for command in find flock install mv nft sleep sysctl tr wpa_cli wpa_supplicant; do
       need_command "$command"
     done
     do_setup "$uplink" "$wifi" "$psk_file" "$confirmation"
@@ -1055,7 +1098,7 @@ case "$action" in
   teardown)
     [[ -z "$uplink$wifi$psk_file" ]] || die 'teardown accepts only --confirm'
     [[ -n "$confirmation" ]] || die 'teardown requires --confirm'
-    for command in find mv sleep tr wpa_cli; do need_command "$command"; done
+    for command in find flock mv sleep tr wpa_cli; do need_command "$command"; done
     do_teardown "$confirmation"
     ;;
   help)

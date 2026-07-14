@@ -205,6 +205,22 @@ read-only snapshot. Also record that the upstream/home network has no route to
 `10.66.0.0/24` and no Tailscale subnet route advertises it. This gate remains
 open until that evidence is captured; do not attach a consensus node first.
 
+Run that matrix only with two dedicated, identity-pinned, otherwise-idle
+physical Ethernet test interfaces: one on the isolated fabric switch and one
+on the existing WAN/upstream L2. The matrix must own separate ephemeral network
+namespaces, hold `/run/lock/fabric-network-operation.lock`, and require the
+official observer namespace to be absent; it must never seize the desktop's
+normal wired uplink, Wi-Fi PHY, or Tailscale device. Treat a local tested path
+as tested-path evidence, not proof that the upstream router has no static
+route; an authoritative upstream configuration/route-table check is required
+for the broader claim.
+
+This matrix validates the router's behavior for packets carrying those source
+addresses. It does not authenticate a source on the shared LAN: a hostile peer
+could spoof an admitted address or poison ARP, and same-L2 peer traffic bypasses
+the router. Keep the pre-worker LAN physically trusted. Untrusted nodes still
+require the planned VLAN, switch, and host-firewall admission boundary.
+
 Perform one attended reboot from the serial console and rerun the same snapshot
 with the same serial-pinned host-key fingerprint. Require a changed `BOOT_ID`
 and an identical `stable-invariants.sha256`, alongside the unchanged host key

@@ -30,6 +30,13 @@ fi
 grep -Fq '  (set -e; resume_restoration)' "$helper"
 grep -Fq '  restore_rc=$?' "$helper"
 
+# Observer setup/teardown and the attended router traffic matrix must serialize
+# on one root-only lock. Admission checks are repeated while this lock is held,
+# so a matrix cannot race setup into creating a competing 10.66.0.2 identity.
+grep -Fq 'readonly fabric_network_lock=/run/lock/fabric-network-operation.lock' "$helper"
+[[ $(grep -Fc '  acquire_fabric_network_lock' "$helper") -eq 2 ]]
+grep -Fq "flock --exclusive --nonblock \"\$fabric_network_lock_fd\"" "$helper"
+
 # A single `ip route` output line can still be ECMP and name more than one
 # device. Admission must reject that shape rather than trusting the first dev.
 (

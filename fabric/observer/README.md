@@ -71,6 +71,12 @@ Do not put the secret in the command line, shell history, Git worktree, or a
 persistent filesystem. Then run the read-only gate with explicit interface
 names:
 
+Mutating setup and teardown hold the root-owned
+`/run/lock/fabric-network-operation.lock`. Any attended fabric network test
+that temporarily claims `10.66.0.2` must hold that same lock, so it cannot race
+observer setup into creating a competing address or poisoning the resulting
+ARP and firewall-counter evidence.
+
 ```sh
 sudo ./fabric-observer-netns check \
   --uplink eno1 \
