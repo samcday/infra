@@ -708,13 +708,21 @@ done
 [ -f /var/run/fw4.state ] && [ ! -L /var/run/fw4.state ] ||
   fail 'live fw4 state is missing or unsafe'
 for state_field in ubus_rules includes; do
-  state_value=$(jsonfilter -i /var/run/fw4.state -e "@.$state_field") ||
-    fail "could not inspect live fw4 state field: $state_field"
-  state_value=$(printf '%s' "$state_value" | tr -d '[:space:]')
-  case $state_field:$state_value in
-    ubus_rules:'[]'|includes:'[]'|includes:null) ;;
+  # jsonfilter prints the type "null" with a non-zero status and BusyBox tr
+  # does not reliably normalize its bracketed array output. Inspect the JSON
+  # types directly and separately prove that every permitted array is empty.
+  state_type=$(jsonfilter -i /var/run/fw4.state -t "@.$state_field" 2>/dev/null || true)
+  case $state_field:$state_type in
+    ubus_rules:array|includes:array|includes:null) ;;
     *) fail "live fw4 state contains unexpected $state_field" ;;
   esac
+  if [ "$state_type" = array ]; then
+    state_members=$(
+      jsonfilter -i /var/run/fw4.state -t "@.$state_field[*]" 2>/dev/null || true
+    )
+    [ -z "$state_members" ] ||
+      fail "live fw4 state contains non-empty $state_field"
+  fi
 done
 
 # firewall4 always includes top-level /etc/nftables.d/*.nft files. Retain the
@@ -1064,7 +1072,11 @@ for ((dns_index = 0; dns_index < ${#expected_dns_names[@]}; dns_index++)); do
 done
 
 ntp_sample=$evidence_dir/ntp-sample.txt
-if ! chronyd -Q -t 10 -f /dev/null "server $router_address iburst" \
+# The observer namespace deliberately restricts NSS to local files, while
+# Fedora supplies chrony's service account through altfiles. This one-shot
+# read-only sample therefore stays root instead of depending on that hidden
+# host identity source.
+if ! chronyd -Q -t 10 -f /dev/null -u root "server $router_address iburst" \
     > "$ntp_sample" 2>&1; then
   chmod 0600 -- "$ntp_sample"
   die 'router NTP sample failed'

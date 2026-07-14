@@ -86,6 +86,12 @@ set wireless.fabric_operator.disabled='0'
 commit wireless
 EOI
 
+# The wireless UCI package now contains the operator SAE credential. Stock
+# generated permissions are world-readable, so tighten the database after the
+# commit that writes the key.
+chown root:root /etc/config/wireless
+chmod 0600 /etc/config/wireless
+
 # The UCI database now owns the runtime copy. OpenWrt's boot service invokes
 # reload_config after all defaults and starts Wi-Fi later in the boot sequence;
 # do not race that lifecycle with an early reload. Whiteout the standalone
