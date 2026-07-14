@@ -39,7 +39,7 @@ included in the current hub Flux fan-out, and nothing merges the current
   receives etcd network access or a datastore identity.
 - `fabric-az1-cp{1,2,3}.yaml` supply the unique hostname, static address with
   IPv4 duplicate-address detection, permanent NIC MAC match, K3s node IP, and
-  a distinct etcd member keypair. Each also lays out its selected SATA boot
+  a distinct etcd member keypair. Each also lays out its selected root
   disk as a 16 GiB FCOS root, a 32 GiB encrypted `/var/lib/etcd`, and encrypted
   `/var` using the rest. Root, etcd, and var unlock through the local TPM, and
   every volume has a recovery key unique to both node and volume. On first
@@ -66,6 +66,14 @@ The static member map is:
 The API VIP is `10.66.0.254` (`api.fabric.internal`). Peer reconnects use the
 static node addresses and `/etc/hosts`; router DNS and DHCP are not part of
 etcd consensus.
+
+SATA SSDs identified by exact `/dev/disk/by-id/ata-*` paths remain the preferred
+default root devices. Sam has explicitly repurposed `fabric-az1-cp1`'s
+inventoried internal 256 GB Samsung NVMe, with the sole accepted identity
+`/dev/disk/by-id/nvme-eui.002538839100c827`. Sam has authorized installation
+over its existing contents. The armed gate must revalidate the exact identity
+and receive the device-specific confirmation first. Cp2 and cp3 remain
+ATA-only, and every non-target internal disk must be disconnected.
 
 ## Offline secret boundary
 
@@ -106,7 +114,7 @@ kubectl kustomize fabric/butane >/dev/null
 validates the merge structure, but it does not write or publish Ignition
 output. Those structural check identities are never used by normal mode.
 
-After inventory has confirmed the intended SATA target and permanent wired
+After inventory has confirmed the intended root target and permanent wired
 MAC for one machine, that node can be rendered independently into a directory
 outside the repository:
 
@@ -151,7 +159,9 @@ hash. K3s imports both image archives from its agent image directory. The
 kube-vip archive carries the exact `ghcr.io/kube-vip/kube-vip:v1.2.1` tag used
 by the DaemonSet, whose `imagePullPolicy: Never` prevents a GHCR fallback
 during bootstrap. Carry each rendered Ignition to its machine offline and
-invoke the installer against the physically verified stable SATA by-id path.
+invoke the installer against the physically verified stable root-disk by-id.
+For preferred/default SATA devices this is an exact `/dev/disk/by-id/ata-*`
+path; cp1 uses the exact admitted `nvme-eui` path above.
 The router never stores rendered Ignitions or any keys. First boot layers the
 policy and reboots once before K3s may start.
 
@@ -161,7 +171,8 @@ and later change the other initial members to `existing`; replacement-member
 induction is a different procedure and is intentionally not encoded here.
 
 The 32 GiB etcd partition provides mount and capacity isolation, not a second
-physical latency domain: it still shares the SATA device with root and var.
+physical latency domain: it still shares the selected root device with root and
+`/var`.
 Inventory, SMART health, and a synchronous-write test remain hard gates before
 authorizing a destructive installation.
 

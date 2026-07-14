@@ -2,7 +2,7 @@
 
 ## Read-only inventory live media
 
-Before assigning a SATA disk, MAC address, or node name, build the reusable
+Before assigning a root disk, MAC address, or node name, build the reusable
 inventory-only live ISO:
 
 ```sh
@@ -107,14 +107,24 @@ The eventual installer artifacts are three separate secret-bearing images:
 - `fabric-az1-cp2-installer.iso`
 - `fabric-az1-cp3-installer.iso`
 
-Each image embeds only its matching Ignition and the full stable SATA
-`/dev/disk/by-id/ata-*` destination admitted from inventory. One physical thumb
-drive may be used for inventory first and then rewritten between node
-installers, but no ISO may contain multiple node Ignitions. After the first
-installer write, classify the entire thumb drive as secret and never return it
-to inventory or general use. The writer overwrites and verifies only the
-ISO-length prefix; trailing bytes and flash-controller remapped cells are not a
-secure erase. Generated ISOs and checksum files belong on trusted storage
+Each image embeds only its matching Ignition and one admitted whole-disk
+identity. Cp2 and cp3 require SATA SSDs named by exact
+`/dev/disk/by-id/ata-*` paths. Cp1 is bound to the exact NVMe EUI below.
+
+Sam has explicitly repurposed `fabric-az1-cp1`'s inventoried internal 256 GB
+Samsung NVMe as that node's root disk. Its only accepted identity is the exact
+lowercase `/dev/disk/by-id/nvme-eui.002538839100c827`; do not substitute a
+model/serial alias or a kernel name. Its existing EFI, boot, and encrypted-root
+contents are authorized for destruction by this installation. The armed
+pre-install gate must revalidate that exact identity and receive its
+device-specific confirmation first.
+
+One physical thumb drive may be used for inventory first and then rewritten
+between node installers, but no ISO may contain multiple node Ignitions. After
+the first installer write, classify the entire thumb drive as secret and never
+return it to inventory or general use. The writer overwrites and verifies only
+the ISO-length prefix; trailing bytes and flash-controller remapped cells are
+not a secure erase. Generated ISOs and checksum files belong on trusted storage
 outside this Git worktree and must remain mode `0600`; they contain etcd keys,
 K3s tokens, and disk recovery material.
 
@@ -134,8 +144,10 @@ RTC, memory, NIC, and disk changes and qualification are complete and that
 candidate has a reviewed final recapture. It is not necessary to wait for the
 other two candidates before manufacturing this node's media. Preserve every
 initial discovery capture separately. Only a node's reviewed final capture may
-assign its exact SATA device and permanent wired MAC address. Disconnect every
-NVMe and non-target SATA disk before booting an armed installer.
+assign its exact root device and permanent wired MAC address. Disconnect every
+non-target internal disk before booting an armed installer. For the SATA
+default this includes all NVMe devices; for `fabric-az1-cp1`, leave attached
+only the exact target NVMe above and disconnect any other internal disk.
 
 The local-console ceremony is deliberate:
 
@@ -145,19 +157,19 @@ The local-console ceremony is deliberate:
    hash. This is integrity verification, not media sanitization. Never
    substitute a kernel path such as `/dev/sdX`.
 2. Attach the USB HDMI adapter and keyboard, connect the intended wired NIC,
-   and leave only the admitted SATA target installed.
+   and leave only the admitted root target installed.
 3. Boot the USB device in UEFI mode. The pre-install gate must accept usable
    TPM2, a UTC clock inside the embedded etcd certificate validity window, the
    exact static IP and a usable globally administered unicast MAC, the same
    MAC as both the NIC's current address and `ethtool -P` permanent address, a
-   64 GiB-or-larger whole SATA disk, and the router's exact seven-payload
+   64 GiB-or-larger supported whole disk, and the router's exact seven-payload
    manifest. Confirm the displayed node name,
    complete stable disk by-id, disk model/serial, IP, and wired MAC.
 4. Type the full device-specific confirmation only after physically comparing
    those values with the chassis label and inventory record.
 5. A successful live install reports success and powers the machine off. Remove
-   the armed installer, boot the SATA disk, and expect one later automatic
-   reboot while the pinned K3s SELinux policy is layered. Before that reboot,
+   the armed installer, boot the installed root disk, and expect one later
+   automatic reboot while the pinned K3s SELinux policy is layered. Before that reboot,
    the first-boot gate enrolls and verifies the node's offline root-volume
    recovery key, then deletes its installed copy. A failed install
    stops in the live emergency environment and the destination is not trusted.
@@ -185,7 +197,8 @@ FABRIC_CP1_MAC=aa:bb:cc:dd:ee:01 \
 
 Selected-node mode requires only the matching `FABRIC_CP*_MAC` and publishes
 only that node's Ignition. Build only its installer with the matching disk
-option and the exact stable ATA identity from the same capture:
+option and the exact stable identity from the same capture. For cp1, use the
+explicitly admitted NVMe EUI identity:
 
 ```sh
 scripts/build-fabric-node-isos \
@@ -193,7 +206,7 @@ scripts/build-fabric-node-isos \
   --ignition-dir /secure/fabric-bootstrap \
   --output-dir /secure/fabric-installers \
   --cache-dir /secure/fabric-installer-cache \
-  --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE
+  --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827
 ```
 
 The original all-three mode remains available: omit `--node`, provide all
@@ -203,13 +216,14 @@ which secret artifact is manufactured. Every Ignition retains the fixed
 declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
 `initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
 so the K3s API cannot become available until at least one other declared
-member is brought up with it.
+member is brought up with it. Cp2 and cp3 use exact
+`/dev/disk/by-id/ata-EXACT_DEVICE` paths from reviewed inventory.
 
 After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs
 before and is required by `coreos-installer.service`, that the post-install
 poweroff unit follows it, and that the embedded destination Ignition, offline
-installer config, stable ATA identity, and NetworkManager keyfile exactly
+installer config, stable disk identity, and NetworkManager keyfile exactly
 match their sources. `coreos-installer` itself prints that an embedded
 destination installs "without confirmation"; that refers to its built-in
 prompt. The required confirmation is the separately verified pre-install
@@ -217,10 +231,10 @@ unit, and a failed or missing unit prevents the installer service from
 starting.
 
 After inventory admission and Ignition rendering, supply the selected node's
-exact SATA by-id path, or all three paths in legacy all-member mode, as shown
+exact admitted by-id path, or all three paths in legacy all-member mode, as shown
 by `scripts/build-fabric-node-isos --help`. The helper
 verifies the ISO checksum and Fedora signature, refuses paths inside Git,
-refuses unstable or non-ATA destinations, extracts the expected permanent MAC
+refuses unstable or unsupported destinations, extracts the expected permanent MAC
 plus hostname and static IP from each Ignition, rejects locally administered,
 multicast, and all-zero expected MACs, and embeds a pre-install network, TPM2,
 router-asset, disk-size, and console challenge containing the full node-specific

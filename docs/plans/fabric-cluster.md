@@ -16,7 +16,8 @@ failures and five genuinely independent machines.
 
 The selected provisional consensus hardware is three Lenovo ThinkCentre M710q
 systems with Intel Core i3 CPUs. Fit each with at least 8 GiB RAM and one
-admitted SATA SSD. Each chassis is expected to expose TPM 2.0, but the model
+admitted root SSD; 128/256 GB SATA devices remain the preferred default. Each
+chassis is expected to expose TPM 2.0, but the model
 name is not proof: presence, enabled state, usable capabilities, and firmware
 posture remain per-machine inventory and admission gates. Stable wired
 networking, memory health, temperature, and synchronous disk latency matter
@@ -77,8 +78,11 @@ and uses temporary static address `10.66.0.100/24` with no gateway or DNS. Boot
 only one candidate at that address at a time. Initial installation then uses
 the pinned Fedora CoreOS 44.20260621.3.1 x86_64 live ISO and three separately
 customized images, each containing exactly one node's offline Ignition and its
-physically verified stable `/dev/disk/by-id/ata-*` destination. A node may be
-manufactured independently with
+physically verified supported stable destination identity. Preferred SATA
+devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1`, Sam has explicitly
+repurposed the inventoried internal 256 GB Samsung NVMe at exact lowercase
+`/dev/disk/by-id/nvme-eui.002538839100c827`; a node may be manufactured
+independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
 (or the corresponding supported cp2/cp3 pair); omitting `--node` preserves the
 all-three build.
@@ -99,8 +103,8 @@ Sam is the local console and remote hands: attach the USB HDMI adapter and
 keyboard, disconnect every non-target internal disk, and select the USB device
 with a one-time firmware boot. The inventory image must visibly identify
 itself as non-installing and expose the live SSH host fingerprint before its
-capture is accepted. Later, confirm the expected node name plus full SATA
-by-id before any installer is armed. Keep the three customized installer ISO
+capture is accepted. Later, confirm the expected node name plus full stable
+disk by-id before any installer is armed. Keep the three customized installer ISO
 files and their hashes on trusted storage outside Git; each embeds private
 keys and recovery material. Retain the armed USB in locked offline storage with
 the recovery packet. Declassification requires rotation of every secret it may
@@ -112,7 +116,7 @@ selected installer target.
 The guarded media writer accepts only a stable whole-device
 `/dev/disk/by-id/usb-*` identity and verifies the exact ISO bytes again after
 writing. At boot, the armed image refuses installation until UEFI, functional
-TPM2 access, the permanent MAC, exact static IP, a minimum 64 GiB SATA target,
+TPM2 access, the permanent MAC, exact static IP, a minimum 64 GiB supported target,
 and the router's exact seven-file asset manifest all pass. A successful install
 powers the live environment off instead of rebooting; remove the armed USB
 before the first disk boot. An install failure clears the destination partition
@@ -357,14 +361,23 @@ daily/monthly cumulative readings.
 ## Disk policy
 
 The 128/256 GB 2.5-inch SATA SSDs are the preferred consensus-node devices if
-they pass inventory and latency gates. Install only the selected SATA root disk
-in each consensus node during induction; reserve the approximately 1 TB NVMe
-devices for fabric workers and VM storage.
+they pass inventory and latency gates. Continue using exact
+`/dev/disk/by-id/ata-*` identities for those default devices. Sam has explicitly
+repurposed `fabric-az1-cp1`'s inventoried internal 256 GB Samsung NVMe as its
+root disk, using only the exact lowercase stable identity
+`/dev/disk/by-id/nvme-eui.002538839100c827`. Do not substitute its model/serial
+alias or a kernel name. Sam has authorized installation over its existing
+contents. Cp1 is bound to that exact EUI, while cp2 and cp3 remain ATA-only.
+Installation requires the armed pre-install gate to revalidate the identity
+and receive its device-specific confirmation.
+Disconnect every non-target internal disk before booting the armed installer.
+Other approximately 1 TB NVMe devices remain reserved for fabric workers and
+VM storage.
 
 The install profile allocates a 16 GiB Fedora CoreOS root partition, a 32 GiB
 encrypted ext4 filesystem mounted at `/var/lib/etcd`, and the remaining space
-to encrypted `/var`. Separate filesystems on one SATA device provide capacity
-and mount-failure isolation, not separate latency domains. Actual latency
+to encrypted `/var`. Separate filesystems on one selected root device provide
+capacity and mount-failure isolation, not separate latency domains. Actual latency
 isolation comes from the sacred-node allow-list: no Ceph OSD, VM image,
 registry, or monitoring TSDB competes for durable writes. The etcd service
 fails closed unless `/var/lib/etcd` is mounted.
@@ -382,7 +395,7 @@ This caps runaway logical growth and leaves headroom for compaction,
 defragmentation, and operational recovery. Track database size and `NOSPACE`
 alarms; the 32 GiB partition is not a reason to increase the quota casually.
 
-## Remote-hands inventory and SATA admission
+## Remote-hands inventory and root-disk admission
 
 For each candidate mini PC:
 
@@ -391,8 +404,10 @@ For each candidate mini PC:
    Inspect and write it with `scripts/write-fabric-installer-usb`; the required
    confirmation starts with `WRITE-FABRIC-INVENTORY:` and cannot authorize an
    armed installer image.
-2. Install one candidate SATA SSD and leave valuable NVMe devices disconnected.
-   Connect only this candidate to the isolated switch. Join the router's
+2. Install the candidate's intended root SSD and disconnect every non-target
+   internal disk. Prefer an admitted SATA SSD for new selections. For cp1,
+   retain only the exact inventoried NVMe target declared above. Connect only
+   this candidate to the isolated switch. Join the router's
    `fabric-observer` SSID from the isolated `sam-desktop` Wi-Fi namespace at
    static `10.66.0.2/24`.
 3. Attach HDMI and keyboard, choose a one-time UEFI boot from the inventory USB,
@@ -407,7 +422,7 @@ For each candidate mini PC:
    recovery path; do not improvise routing or advertise this subnet through
    Tailscale.
 5. Power the candidate off, remove the USB, and label the chassis with its
-   candidate number, wired MAC, system serial, SATA serial, and switch port.
+   candidate number, wired MAC, system serial, admitted root-disk identity, and switch port.
    Repeat with the next machine when ready, but never boot two inventory
    candidates concurrently; they intentionally share `10.66.0.100`.
 6. Return each capture for review. Do not wipe, partition, benchmark, or install
@@ -604,25 +619,26 @@ Zincati remains disabled until this cadence and rollback evidence exist.
    available.
 4. Build and verify the non-installing inventory ISO, write it with its distinct
    inventory-media confirmation, then mediate one candidate boot and capture at
-   a time. Finish firmware/UEFI/TPM/RTC settings, select each SATA device, and
+   a time. Finish firmware/UEFI/TPM/RTC settings, select each root device, and
    pass memory, SMART-long, thermal, Ethernet, flush/write-cache, and destructive
    synchronous-write qualification with explicit authorization. Recapture each
    candidate afterward; only that node's reviewed final capture may feed its
    installer MAC and disk values, but it need not wait for the other captures.
 5. Generate independent fabric PKI/secrets. Render and build one node at a time;
-   for example, use `fabric/butane/bootstrap.sh --node fabric-az1-cp1` and
-   `scripts/build-fabric-node-isos --node fabric-az1-cp1 --cp1-disk ...` for
-   cp1. Retain the legacy all-three mode by omitting `--node` after all inputs
-   are available. Keep the sensitive Ignitions and per-node customized FCOS
-   ISOs on trusted storage outside Git. Use
+   for example, use `fabric/butane/bootstrap.sh --node fabric-az1-cp1` for cp1
+   and pass exact `/dev/disk/by-id/nvme-eui.002538839100c827` to the builder's
+   `--cp1-disk`. Retain the legacy all-three mode by omitting `--node` after all
+   inputs are available. Keep the sensitive Ignitions and per-node customized
+   FCOS ISOs on trusted storage outside Git. Use
    `scripts/write-fabric-installer-usb` and its device-specific confirmation to
    reimage the installer thumb drive for exactly one node at a time. With only
-   its selected SATA disk attached, locally verify the displayed node, static
+   its selected root disk attached, locally verify the displayed node, static
    IP, TPM2, router manifest, and full disk by-id, then install. The live
-   installer powers off on success; remove the USB, boot the SATA disk, and
-   expect one later automatic reboot while the pinned K3s SELinux policy becomes
-   active. A first voter may be installed independently, but it will not provide
-   etcd quorum or a K3s API until a second declared voter is online.
+   installer powers off on success; remove the USB, boot the installed root
+   disk, and expect one later automatic reboot while the pinned K3s SELinux
+   policy becomes active. A first voter may be installed independently, but it
+   will not provide etcd quorum or a K3s API until a second declared voter is
+   online.
 6. Bring up at least two declared members together, then the third. Verify
    three healthy members, one leader, no alarms, the 2 GiB quota, API VIP
    failover, and all three K3s servers. Flux is intentionally absent.

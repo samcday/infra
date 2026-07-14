@@ -13,6 +13,7 @@ manifest=$repo_root/fabric/installer/fcos-live-iso.txt
 asset_manifest=$repo_root/fabric/router/data-files.txt
 default_cache_dir=$repo_root/_build/fabric/installer
 nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
+cp1_nvme_destination=/dev/disk/by-id/nvme-eui.002538839100c827
 network_keyfile_path=/etc/NetworkManager/system-connections/fabric-static.nmconnection
 hostname_path=/etc/hostname
 etcd_ca_path=/etc/etcd/pki/ca.pem
@@ -40,23 +41,26 @@ Usage:
     --ignition-dir /secure/fabric-bootstrap \
     --output-dir /secure/fabric-installers \
     --cache-dir /secure/fabric-installer-cache \
-    --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE
+    --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827
 
   build-fabric-node-isos \
     --ignition-dir /secure/fabric-bootstrap \
     --output-dir /secure/fabric-installers \
     --cache-dir /secure/fabric-installer-cache \
-    --cp1-disk /dev/disk/by-id/ata-EXACT_CP1_DEVICE \
+    --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827 \
     --cp2-disk /dev/disk/by-id/ata-EXACT_CP2_DEVICE \
     --cp3-disk /dev/disk/by-id/ata-EXACT_CP3_DEVICE
 
 Normal mode downloads and verifies the pinned Fedora CoreOS live ISO, then
 builds either one selected node ISO or all three separate, secret-bearing,
 confirmation-gated installer ISOs. Every disk path must come from reviewed
-inventory. Booting an ISO and typing its exact confirmation will destroy that
-ISO's configured destination disk. A selected first voter still uses the
-declared three-member etcd map and cannot form quorum until a second declared
-member is ready.
+inventory. The admitted cp1 destination is exactly
+`/dev/disk/by-id/nvme-eui.002538839100c827`; cp2 and cp3 require whole internal
+ATA disks named by stable `ata-*` identities. NVMe serial aliases, other EUI
+identities, and partitions are refused. Booting an ISO and typing its exact
+confirmation will destroy that ISO's configured destination disk. A selected
+first voter still uses the declared three-member etcd map and cannot form
+quorum until a second declared member is ready.
 The optional cache directory stores only the public FCOS ISO and signature; it
 defaults to _build/fabric/installer inside the checkout.
 
@@ -395,11 +399,39 @@ else
   }
 fi
 
-for disk in "${disks[@]}"; do
-  [[ $disk =~ ^/dev/disk/by-id/ata-[A-Za-z0-9._:+-]+$ ]] || {
-    echo "refusing non-ATA or unstable installer destination: $disk" >&2
+disk_kinds=()
+disk_wwns=()
+for index in "${!disks[@]}"; do
+  node=${build_nodes[$index]}
+  disk=${disks[$index]}
+  [[ $disk != *-part[0-9]* ]] || {
+    echo "refusing an installer destination partition: $disk" >&2
     exit 1
   }
+
+  if [[ $disk =~ ^/dev/disk/by-id/ata-[A-Za-z0-9._:+-]+$ ]]; then
+    [[ $node != fabric-az1-cp1 ]] || {
+      echo "fabric-az1-cp1 is bound to $cp1_nvme_destination" >&2
+      exit 1
+    }
+    disk_kinds+=(ata)
+    disk_wwns+=('')
+  elif [[ $disk =~ ^/dev/disk/by-id/nvme-eui\.([0-9a-f]{16})$ ]]; then
+    disk_eui=${BASH_REMATCH[1]}
+    [[ $disk_eui != 0000000000000000 && $disk_eui != ffffffffffffffff ]] || {
+      echo "refusing a placeholder NVMe EUI installer destination: $disk" >&2
+      exit 1
+    }
+    [[ $node == fabric-az1-cp1 && $disk == "$cp1_nvme_destination" ]] || {
+      echo "NVMe destination is not admitted for $node: $disk" >&2
+      exit 1
+    }
+    disk_kinds+=(nvme)
+    disk_wwns+=("eui.$disk_eui")
+  else
+    echo "refusing an unstable or unsupported installer destination: $disk" >&2
+    exit 1
+  fi
 done
 
 mkdir -p -- "$cache_dir"
@@ -446,6 +478,8 @@ printf -v asset_names_shell '%q ' "${asset_names[@]}"
 for index in "${!build_nodes[@]}"; do
   node=${build_nodes[$index]}
   disk=${disks[$index]}
+  disk_kind=${disk_kinds[$index]}
+  disk_wwn=${disk_wwns[$index]}
   ignition=$ignition_dir/$node.ign
   output=$output_dir/$node-installer.iso
   temporary=$output.tmp
@@ -547,6 +581,8 @@ exec </dev/console >/dev/console 2>&1
 
 node='$node'
 target='$disk'
+expected_disk_kind='$disk_kind'
+expected_disk_wwn='$disk_wwn'
 expected_mac='$mac'
 expected_ip='$expected_ip'
 expected_cidr='$expected_cidr'
@@ -584,13 +620,51 @@ current_epoch=\$(date +%s)
   fail 'UTC clock falls outside the embedded etcd leaf-certificate validity window'
 
 [[ -L \$target ]] || fail 'stable destination link is absent'
-resolved=\$(readlink -f -- "\$target")
-[[ \$(lsblk -dn -o TYPE -- "\$resolved") == disk ]] || {
+resolved=\$(readlink -e -- "\$target") || fail 'stable destination link does not resolve'
+disk_type=\$(lsblk --nodeps -dnro TYPE -- "\$resolved") ||
+  fail 'destination type cannot be inspected'
+[[ \$disk_type == disk ]] || {
   fail "destination is not a whole disk: \$resolved"
 }
-udevadm info --query=property --name "\$resolved" | grep -qx 'ID_BUS=ata' || {
-  fail "destination is not reported as an ATA device: \$resolved"
-}
+removable=\$(lsblk --nodeps -dnro RM -- "\$resolved") ||
+  fail 'destination removable state cannot be inspected'
+[[ \$removable == 0 ]] || fail 'destination is reported as removable media'
+udev_properties=\$(udevadm info --query=property --name "\$resolved") ||
+  fail 'destination udev identity cannot be inspected'
+case \$expected_disk_kind in
+  ata)
+    [[ -z \$expected_disk_wwn ]] || fail 'embedded ATA identity has an unexpected WWN constraint'
+    grep -Fxq 'ID_BUS=ata' <<< "\$udev_properties" ||
+      fail "destination is not reported as an ATA device: \$resolved"
+    ;;
+  nvme)
+    [[ \$expected_disk_wwn =~ ^eui\.[0-9a-f]{16}\$ &&
+       \$expected_disk_wwn != eui.0000000000000000 &&
+       \$expected_disk_wwn != eui.ffffffffffffffff ]] ||
+      fail 'embedded NVMe EUI identity is invalid'
+    grep -Fxq "ID_WWN=\$expected_disk_wwn" <<< "\$udev_properties" ||
+      fail "destination NVMe EUI does not match \$expected_disk_wwn"
+    nvme_nsid=
+    nvme_nsid_records=0
+    while IFS= read -r property; do
+      case \$property in
+        ID_NSID=*)
+          nvme_nsid=\${property#ID_NSID=}
+          ((nvme_nsid_records += 1))
+          ;;
+      esac
+    done <<< "\$udev_properties"
+    ((nvme_nsid_records == 1)) && [[ \$nvme_nsid =~ ^[1-9][0-9]*\$ ]] ||
+      fail 'destination does not expose one positive NVMe namespace ID'
+    disk_transport=\$(lsblk --nodeps -dnro TRAN -- "\$resolved") ||
+      fail 'destination transport cannot be inspected'
+    [[ \$disk_transport == nvme ]] ||
+      fail "destination is not reported on the NVMe transport: \$resolved"
+    ;;
+  *)
+    fail 'embedded destination kind is invalid'
+    ;;
+esac
 [[ \$(blockdev --getro "\$resolved") == 0 ]] || fail 'destination is read-only'
 disk_bytes=\$(blockdev --getsize64 "\$resolved")
 ((disk_bytes >= minimum_disk_bytes)) ||
