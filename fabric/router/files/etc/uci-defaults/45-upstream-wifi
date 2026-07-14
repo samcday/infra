@@ -1,0 +1,129 @@
+# BusyBox ash supports pipefail; ShellCheck's generic POSIX mode does not know
+# that target-specific extension.
+# shellcheck disable=SC3040
+set -ueo pipefail
+
+die() {
+    echo "ERROR: $*" >&2
+    logger -t fabric-upstream-wifi "ERROR: $*"
+    exit 1
+}
+
+sections_of_type() {
+    uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=$1$/\1/p"
+}
+
+zone_by_name() {
+    uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)\.name='$1'$/\1/p"
+}
+
+validate_secret_file() {
+    secret_path=$1
+    secret_label=$2
+    [ -f "$secret_path" ] || die "$secret_label is missing"
+    [ ! -L "$secret_path" ] || die "$secret_label must not be a symlink"
+    [ "$(stat -c '%u:%a' "$secret_path")" = '0:600' ] ||
+        die "$secret_label must be root-owned mode 0600"
+    [ "$(wc -l < "$secret_path")" -eq 1 ] ||
+        die "$secret_label must contain exactly one newline-terminated record"
+    [ "$(tail -c 1 "$secret_path" | wc -l)" -eq 1 ] ||
+        die "$secret_label must end with one newline"
+    LC_ALL=C grep -Eq '^[ -~]+$' "$secret_path" ||
+        die "$secret_label must contain only printable ASCII"
+}
+
+ssid_file=/etc/fabric/upstream-wifi-ssid
+psk_file=/etc/fabric/upstream-wifi-psk
+validate_secret_file "$ssid_file" 'upstream Wi-Fi SSID'
+validate_secret_file "$psk_file" 'upstream Wi-Fi PSK'
+ssid=$(cat "$ssid_file")
+psk=$(cat "$psk_file")
+[ "${#ssid}" -ge 1 ] && [ "${#ssid}" -le 32 ] ||
+    die 'upstream Wi-Fi SSID length must be between 1 and 32 bytes'
+[ "${#psk}" -ge 8 ] && [ "${#psk}" -le 63 ] ||
+    die 'upstream Wi-Fi PSK length must be between 8 and 63 bytes'
+
+# A missing or malformed upstream credential must leave the spare radio down
+# without weakening the independently configured operator AP or firewall.
+[ "$(uci -q get network.lan.ipaddr)" = '10.66.0.1' ] ||
+    die 'unexpected fabric LAN address'
+[ "$(uci -q get network.wan.proto)" = dhcp ] ||
+    die 'WAN is not an IPv4 DHCP client'
+if uci -q get network.wan.device >/dev/null 2>&1; then
+    die 'WAN must not retain the dead Ethernet device'
+fi
+[ "$(uci -q get network.wan6.disabled)" = 1 ] ||
+    die 'WAN IPv6 is not disabled'
+if uci -q get network.wan6.device >/dev/null 2>&1; then
+    die 'disabled WAN6 must not retain the dead Ethernet device'
+fi
+[ "$(uci -q get firewall.@defaults[0].forward)" = REJECT ] ||
+    die 'global forwarding policy is not reject'
+[ "$(uci -q get firewall.fabric_block_private.target)" = REJECT ] ||
+    die 'private-upstream destination block is missing'
+[ "$(uci -q get firewall.fabric_root_egress.src_ip)" = \
+    '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32' ] ||
+    die 'root-only WAN source allow-list is unexpected'
+
+wan_zone=$(zone_by_name wan)
+[ "$(printf '%s\n' "$wan_zone" | sed '/^$/d' | wc -l)" -eq 1 ] ||
+    die 'expected exactly one wan firewall zone'
+[ "$(uci -q get "firewall.$wan_zone.network")" = 'wan wan6' ] ||
+    die 'wan firewall zone has unexpected logical networks'
+
+[ "$(uci -q get wireless.fabric_operator)" = wifi-iface ] ||
+    die 'fabric operator AP is missing'
+operator_radio=$(uci -q get wireless.fabric_operator.device) ||
+    die 'fabric operator AP radio is missing'
+[ "$(uci -q get "wireless.$operator_radio.band")" = 5g ] ||
+    die 'fabric operator AP is not on the 5 GHz radio'
+[ "$(uci -q get "wireless.$operator_radio.disabled")" = 0 ] ||
+    die 'fabric operator AP radio is disabled'
+[ "$(sections_of_type wifi-iface)" = fabric_operator ] ||
+    die 'unexpected Wi-Fi interface exists before upstream setup'
+
+radios=$(sections_of_type wifi-device)
+[ "$(printf '%s\n' "$radios" | sed '/^$/d' | wc -l)" -eq 2 ] ||
+    die 'expected exactly two Wi-Fi radios'
+two_ghz_radio=
+for radio in $radios; do
+    case $(uci -q get "wireless.$radio.band") in
+        2g)
+            [ -z "$two_ghz_radio" ] || die 'more than one 2 GHz radio exists'
+            two_ghz_radio=$radio
+            ;;
+        5g)
+            [ "$radio" = "$operator_radio" ] ||
+                die 'unexpected 5 GHz radio is not the operator AP'
+            ;;
+        *) die 'unexpected Wi-Fi radio band' ;;
+    esac
+done
+[ -n "$two_ghz_radio" ] || die 'no 2 GHz upstream radio was discovered'
+[ "$two_ghz_radio" != "$operator_radio" ] ||
+    die 'upstream and operator Wi-Fi roles share one radio'
+
+uci -q batch <<EOI
+set wireless.${two_ghz_radio}.disabled='0'
+set wireless.${two_ghz_radio}.country='AU'
+set wireless.${two_ghz_radio}.channel='auto'
+set wireless.${two_ghz_radio}.htmode='HE20'
+
+set wireless.fabric_upstream='wifi-iface'
+set wireless.fabric_upstream.device='${two_ghz_radio}'
+set wireless.fabric_upstream.network='wan'
+set wireless.fabric_upstream.mode='sta'
+set wireless.fabric_upstream.encryption='sae'
+set wireless.fabric_upstream.ieee80211w='2'
+set wireless.fabric_upstream.sae_pwe='2'
+set wireless.fabric_upstream.disabled='0'
+EOI
+uci -q set "wireless.fabric_upstream.ssid=$ssid"
+uci -q set "wireless.fabric_upstream.key=$psk"
+uci -q commit wireless
+
+# Both Wi-Fi credentials now live only in the root-readable UCI database. Do
+# not retain standalone copies in the writable overlay after first boot.
+chown root:root /etc/config/wireless
+chmod 0600 /etc/config/wireless
+rm -f -- "$ssid_file" "$psk_file"

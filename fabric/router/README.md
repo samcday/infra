@@ -1,8 +1,11 @@
 # fabric router
 
-This overlay builds an isolated OpenWrt image for the OpenWrt One.
-Its WAN port obtains an address from the current upstream network; its LAN is
-the non-advertised `10.66.0.0/24` fabric provisioning and management network.
+This overlay builds an isolated OpenWrt image for the OpenWrt One. The
+temporary degraded-hardware profile uses `radio0` as a 2.4 GHz upstream
+station and logical WAN, `radio1` as the 5 GHz operator AP, and `eth1` as the
+only fabric Ethernet link. The failed 2.5G `eth0` port remains physically
+disconnected and unassigned. The LAN is the non-advertised `10.66.0.0/24`
+fabric provisioning and management network.
 
 Build from the repository root:
 
@@ -23,22 +26,39 @@ Its reviewed build hash is recorded in `sysupgrade-sha256`. The current image
 was rebuilt twice from the pinned ImageBuilder and produced identical bytes;
 verify that record from the artifact directory before any flash.
 
-The image contains the SOPS-managed `fabric-observer` WPA3 credential and is
-therefore secret-bearing. Keep the generated ITB mode `0600` on encrypted or
-tmpfs storage, never publish it as a CI artifact, and remove the plaintext
-ImageBuilder tree after copying and verifying the selected image. The encrypted
-source remains recoverable only with Sam's offline age identity.
+The image contains the SOPS-managed `fabric-observer` WPA3 credential and the
+upstream WLAN credential and is therefore secret-bearing. Keep the generated
+ITB mode `0600` on encrypted or tmpfs storage, never publish it as a CI
+artifact, and remove the plaintext ImageBuilder tree after copying and
+verifying the selected image. The encrypted source remains recoverable only
+with Sam's offline age identity.
 
 Install it without retaining factory settings (`sysupgrade -n`). Do not use a
 `factory.ubi`, preloader, or bootloader artifact for an ordinary first
 deployment. Those belong to the documented NAND/NOR recovery paths.
 
+For an attended upgrade of an already commissioned fabric image, preserve the
+existing SSH host identity and operator attachment with ordinary `sysupgrade`
+(without `-n`). The old wired-WAN profile persists `eth0` in its saved network
+configuration, so first stage the new image and require `sysupgrade -T` to
+accept it. With the damaged jack physically empty and observer access proven,
+delete both `network.wan.device` and `network.wan6.device`, commit only the
+`network` package, and confirm both options are absent before starting the
+upgrade. Do not reload the live network between that preparatory commit and
+`sysupgrade`. Keep USB-C serial attached throughout the attended transition;
+the new first-boot default refuses to create the radio WAN if either stale
+Ethernet binding survives.
+
 The image deliberately:
 
-- exposes one low-power 5 GHz WPA3-SAE/802.11w SSID named `fabric-observer`,
-  bridged to the fabric LAN for the sole admitted desktop Wi-Fi MAC;
-- caps that SSID at one association, disables stock/additional SSIDs, WPS,
-  IPv6 prefix delegation, FRR, Tailscale and Tang;
+- uses `radio0` only as a 2.4 GHz station on the existing upstream WLAN and
+  attaches that station only to the logical WAN;
+- exposes one low-power 5 GHz WPA3-SAE/802.11w SSID on `radio1` named
+  `fabric-observer`, bridged to the fabric LAN for the sole admitted desktop
+  Wi-Fi MAC;
+- caps the observer SSID at one association, removes every stock wireless
+  interface, permits no wireless interface other than these two, and disables
+  WPS, IPv6 prefix delegation, FRR, Tailscale and Tang;
 - has no route advertisement or Tailscale-to-LAN forwarding;
 - gives both LAN and WAN reject-by-default input/forward policies, with named
   IPv4 catch-all rejects for deterministic fw4 counters, no WAN-to-LAN
@@ -68,13 +88,22 @@ LuCI and the unused router Prometheus exporter are force-removed; bare `uhttpd`
 binds only `10.66.0.1:80` and serves the pinned public files beneath `/static/`
 with directory listings disabled and no web administration surface.
 
-Connect the labelled 2.5G port as WAN to the existing upstream network. Connect
-the labelled 1G LAN port to the measured five-port fabric switch, then connect
-only the three initial consensus nodes to that switch. Power the OpenWrt One
-through its USB-C power input from the measured extension board; PoE on WAN
-would bypass the intended power boundary. Do not connect a fabric LAN port
-directly to the existing hub/home LAN, and do not add workers until the
-documented VLAN/firewall gate passes.
+This chassis has prior lightning damage and its labelled 2.5G `eth0` port is
+treated as failed. Leave that jack empty and leave `eth0` outside every UCI
+network, bridge, and firewall zone. The temporary uplink is the `radio0`
+2.4 GHz station, which obtains the logical WAN address from the existing
+upstream WLAN. Connect the labelled 1G `eth1` LAN port to the measured
+five-port fabric switch, then connect only the three initial consensus nodes
+to that switch. `radio1` remains the observer AP and must never join the WAN.
+
+Power the OpenWrt One through its USB-C power input from the measured extension
+board. Do not use PoE on the damaged jack, connect a fabric switch port directly
+to the existing hub/home LAN, or add workers until the documented
+VLAN/firewall gate passes. This radio-WAN layout is a temporary hardware
+exception, not the permanent root-router design. Replace the lightning-damaged
+unit with known-good wired hardware before fabric becomes authoritative;
+OpenWrt Two is a candidate only after it is available, supported, and passes
+the same commissioning and failure gates.
 
 The firewall overlay deletes every inherited rule, forwarding, redirect, NAT,
 and include before constructing this policy. Four explicit IPv4 catch-all
@@ -89,8 +118,10 @@ root traffic bypasses the router and is constrained separately by the FCOS
 For normal operation leave the rear boot selector at `NAND`. The preferred
 first deployment is a wired staging connection or USB-C serial console at
 115200 8N1, followed by `sysupgrade -n` of the generated sysupgrade image.
-Verify the artifact SHA-256, key-only SSH, LAN address `10.66.0.1`, WAN/LAN
-port mapping, and isolation rules before moving the three nodes behind it.
+Verify the artifact SHA-256, key-only SSH, LAN address `10.66.0.1`, exact
+degraded role mapping (`radio0` WAN station, `radio1` observer AP, `eth1`
+fabric LAN, and unassigned `eth0`), and isolation rules before moving the three
+nodes behind it.
 
 The official reset-button USB workflow is also suitable. Put only the
 sysupgrade image on an MBR/FAT32 stick and rename it exactly:
@@ -143,10 +174,12 @@ only for the attended full-domain test after the power record reaches
 
 ## Pre-root network admission
 
-The `fabric-observer` radio is a narrow operator attachment, not a general
-management WLAN. It extends the trusted consensus L2 over the air, so possession
-of the SAE secret plus MAC spoofing can still enable ARP disruption. Keep it
-low-power, one-client, and time-bounded; do not associate roots or workers.
+The `fabric-observer` interface on `radio1` is a narrow operator attachment,
+not a general management WLAN. It extends the trusted consensus L2 over the
+air, so possession of the SAE secret plus MAC spoofing can still enable ARP
+disruption. Keep it low-power, one-client, and time-bounded; do not associate
+roots or workers. The `radio0` upstream station belongs only to the logical WAN
+and must not be bridged to the observer or fabric LAN.
 
 Before moving `sam-desktop`'s Wi-Fi radio, prove its wired home interface has
 carrier and owns the only ordinary default route. Place the Wi-Fi PHY in a
@@ -190,8 +223,11 @@ state without reading the wireless key, and retains protected evidence in
 tmpfs. The live firewall gate rejects extra nftables tables, executable
 automatic includes, and runtime fw4 UBus/include inputs; it also proves the
 reviewed IPv4 rules' exact chain, order, terminal accept/reject jump, and
-anonymous counter. It derives the seven-file asset manifest locally, checks
-exact remote membership and bytes, streams and hashes every HTTP response,
+anonymous counter. The topology gate must also prove that `eth0` is unassigned,
+`eth1` is the sole wired LAN bridge member, `radio0` is the sole logical-WAN
+station, and `radio1` is the sole observer AP. It derives the seven-file asset
+manifest locally, checks exact remote membership and bytes, streams and hashes
+every HTTP response,
 requires exact answers for all four fabric DNS records over UDP and TCP, and
 obtains an NTP sample. It does not trust the router data stick's own
 `SHASUMS.txt` in isolation.
@@ -216,15 +252,25 @@ snapshot. Also record that the upstream/home network has no route to
 `10.66.0.0/24` and no Tailscale subnet route advertises it. This gate remains
 open until that evidence is captured; do not attach a consensus node first.
 
-Run that matrix only with two dedicated, identity-pinned, otherwise-idle
-physical Ethernet test interfaces: one on the isolated fabric switch and one
-on the existing WAN/upstream L2. The matrix must own separate ephemeral network
-namespaces, hold `/run/lock/fabric-network-operation.lock`, and require the
-official observer namespace to be absent; it must never seize the desktop's
-normal wired uplink, Wi-Fi PHY, or Tailscale device. Treat a local tested path
+Run the fabric-source half of that matrix only with a dedicated,
+identity-pinned, otherwise-idle physical Ethernet interface on the isolated
+fabric switch. Use a separate controlled upstream-side client on the same
+upstream/home L2 as the `radio0` station for the WAN-source half. That client
+may be a dedicated wired interface if the AP bridges WLAN and Ethernet without
+client isolation; otherwise use a separately administered upstream WLAN
+station. Before accepting a WAN denial, prove with a router-side capture or the
+named firewall-counter delta that the probe actually reached `radio0`.
+
+The matrix must own separate ephemeral network namespaces where applicable,
+hold `/run/lock/fabric-network-operation.lock`, and require the official
+observer namespace to be absent. It must never seize the desktop's normal
+wired uplink, observer Wi-Fi PHY, or Tailscale device. Treat a local tested path
 as tested-path evidence, not proof that the upstream router has no static
 route; an authoritative upstream configuration/route-table check is required
-for the broader claim.
+for the broader claim. Also prove that disabling or disassociating `radio0`
+removes public egress without changing the fabric LAN, observer AP, or same-L2
+root reachability, and that reassociation restores only the reviewed logical
+WAN path.
 
 This matrix validates the router's behavior for packets carrying those source
 addresses. It does not authenticate a source on the shared LAN: a hostile peer
@@ -235,9 +281,10 @@ require the planned VLAN, switch, and host-firewall admission boundary.
 Perform one attended reboot from the serial console and rerun the same snapshot
 with the same serial-pinned host-key fingerprint. Require a changed `BOOT_ID`
 and an identical `stable-invariants.sha256`, alongside the unchanged host key
-and asset evidence. A wired packet capture must also show no router
-advertisements or DHCPv6 responses; the IPv6-disabled observer namespace cannot
-prove their absence by itself.
+and asset evidence. Require `radio0` to reassociate and reacquire its logical
+WAN lease without moving `radio1` or `eth1` between zones. A wired capture on
+the fabric switch must also show no router advertisements or DHCPv6 responses;
+the IPv6-disabled observer namespace cannot prove their absence by itself.
 
 ## Prepare the data USB device
 

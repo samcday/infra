@@ -19,7 +19,9 @@ set network.lan.ipaddr='10.66.0.1'
 set network.lan.netmask='255.255.255.0'
 delete network.lan.ip6assign
 set network.wan.proto='dhcp'
+delete network.wan.device
 set network.wan6.disabled='1'
+delete network.wan6.device
 commit network
 
 set dhcp.@dnsmasq[0].local='/fabric.internal/'

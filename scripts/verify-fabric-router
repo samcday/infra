@@ -436,10 +436,10 @@ assert_uci_absent network.lan.ip6assign
 assert_uci_absent network.lan.disabled
 assert_uci_absent network.lan.gateway
 assert_uci network.wan.proto dhcp
-assert_uci network.wan.device eth0
+assert_uci_absent network.wan.device
 assert_uci_absent network.wan.disabled
 assert_uci network.wan6.disabled 1
-assert_uci network.wan6.device eth0
+assert_uci_absent network.wan6.device
 
 actual_network_interfaces=$(network_sections_of_type interface)
 expected_network_interfaces='loopback
@@ -484,7 +484,48 @@ case $live_lan_address in
 esac
 [ -z "$(ip -o -6 address show dev br-lan scope global)" ] ||
   fail 'live br-lan unexpectedly has a global IPv6 address'
-printf 'NETWORK_TOPOLOGY=br-lan:eth1-plus-one-operator-ap,wan:eth0\n'
+
+# The dead physical WAN port is deliberately outside every logical network.
+# Prove that the sole WAN protocol instance is live on a wireless netifd
+# device without emitting its SSID, BSSID, DHCP address, gateway, or DNS data.
+wan_up=$(ubus call network.interface.wan status |
+  jsonfilter -e '@.up') || fail 'could not inspect live WAN state'
+[ "$wan_up" = true ] || fail 'wireless WAN protocol instance is not up'
+wan_l3_device=$(ubus call network.interface.wan status |
+  jsonfilter -e '@.l3_device') || fail 'could not identify live WAN device'
+case $wan_l3_device in
+  *[!A-Za-z0-9_.-]*|'') fail 'live WAN device name is unsafe or empty' ;;
+esac
+[ "$wan_l3_device" != eth0 ] && [ "$wan_l3_device" != eth1 ] &&
+  [ "$wan_l3_device" != br-lan ] ||
+  fail 'live WAN unexpectedly uses a physical Ethernet or LAN bridge device'
+[ -e "/sys/class/net/$wan_l3_device/phy80211" ] ||
+  fail 'live WAN device is not backed by an 802.11 PHY'
+wan_ipv4_count=$(ip -o -4 address show dev "$wan_l3_device" scope global |
+  awk 'NF { count++ } END { print count + 0 }')
+[ "$wan_ipv4_count" -eq 1 ] ||
+  fail 'live wireless WAN does not have exactly one global DHCPv4 address'
+wan_default_count=$(ip -o -4 route show default dev "$wan_l3_device" |
+  awk 'NF { count++ } END { print count + 0 }')
+[ "$wan_default_count" -eq 1 ] ||
+  fail 'live wireless WAN does not own exactly one IPv4 default route'
+[ -z "$(ip -o -6 address show dev "$wan_l3_device" scope global)" ] ||
+  fail 'live wireless WAN unexpectedly has a global IPv6 address'
+[ ! -e /sys/class/net/eth0/master ] ||
+  fail 'dead physical WAN port is unexpectedly enslaved to another device'
+[ -r /sys/class/net/eth0/carrier ] ||
+  fail 'dead physical WAN port carrier state is unavailable'
+[ "$(cat /sys/class/net/eth0/carrier)" = 0 ] ||
+  fail 'dead physical WAN port is not physically disconnected'
+[ -z "$(ip -o -4 address show dev eth0)" ] ||
+  fail 'dead physical WAN port unexpectedly has an IPv4 address'
+[ -z "$(ip -o -6 address show dev eth0)" ] ||
+  fail 'dead physical WAN port unexpectedly has an IPv6 address'
+[ -z "$(ip -o -4 route show table all dev eth0)" ] ||
+  fail 'dead physical WAN port unexpectedly has an IPv4 route'
+[ -z "$(ip -o -6 route show table all dev eth0)" ] ||
+  fail 'dead physical WAN port unexpectedly has an IPv6 route'
+printf 'NETWORK_TOPOLOGY=br-lan:eth1-plus-one-operator-ap,wan:2g-managed-sta,eth0:unassigned\n'
 
 assert_uci dhcp.lan.ignore 1
 assert_uci dhcp.lan.dhcpv4 disabled
@@ -876,7 +917,7 @@ Reject-other-fabric-router-input'
 printf 'FIREWALL_RUNTIME=fw4-state-includes-empty-live-tables-chains-order-ipv4-verdicts-and-counters-pass\n'
 
 installed_packages=$(apk info) || fail 'could not enumerate installed packages'
-for required_package in coreutils-stat shadow-chpasswd; do
+for required_package in coreutils-stat shadow-chpasswd wpad-basic-mbedtls; do
   printf '%s\n' "$installed_packages" | grep -Fqx "$required_package" ||
     fail "required package is absent: $required_package"
 done
@@ -884,6 +925,8 @@ command -v stat >/dev/null 2>&1 || fail 'required stat command is absent'
 [ -f /usr/sbin/chpasswd ] && [ ! -L /usr/sbin/chpasswd ] &&
   [ -x /usr/sbin/chpasswd ] ||
   fail 'required /usr/sbin/chpasswd executable is absent or unsafe'
+command -v wpa_supplicant >/dev/null 2>&1 ||
+  fail 'required wpa_supplicant command is absent'
 for forbidden_package in "$@"; do
   if printf '%s\n' "$installed_packages" | grep -Fqx "$forbidden_package"; then
     fail "removed package is installed: $forbidden_package"
@@ -919,7 +962,7 @@ if printf '%s\n' "$listeners" | grep -Eqi 'dropbear|odhcpd'; then
 fi
 printf 'PACKAGES_BEGIN\n%s\nPACKAGES_END\n' "$installed_packages"
 printf 'REMOVED_PACKAGES=absent\n'
-printf 'LISTENERS_BEGIN\n%s\nLISTENERS_END\n' "$listeners"
+printf 'LISTENER_POLICY=forbidden-service-owners-absent\n'
 printf 'ENABLED_SERVICES_BEGIN\n'
 for service_link in /etc/rc.d/S*; do
   [ -e "$service_link" ] || continue
@@ -944,17 +987,28 @@ printf '%s\n' "$sshd_effective" | grep -Eq '^permitrootlogin (prohibit-password|
   fail 'root SSH is not restricted to non-password authentication'
 printf 'SSHD_POLICY=key-only-no-forwarding\n'
 
-# Query only explicitly safe wireless fields. The section-type lookups do not
-# read the option values, and the key is never emitted into this snapshot.
+# Query only explicitly safe wireless fields. Never query the upstream SSID or
+# key: the live DHCP WAN assertion above proves successful association without
+# placing either credential, the BSSID, or lease data in this snapshot.
 [ "$(uci -q get wireless.fabric_operator)" = wifi-iface ] ||
   fail 'fabric operator Wi-Fi interface is missing'
 [ "$(uci -q get wireless.@wifi-iface[0])" = wifi-iface ] ||
-  fail 'fabric operator Wi-Fi interface is not the sole first interface'
-if uci -q get wireless.@wifi-iface[1] >/dev/null 2>&1; then
+  fail 'fabric operator Wi-Fi interface is not the first interface'
+assert_uci 'wireless.@wifi-iface[0].mode' ap
+[ "$(uci -q get wireless.fabric_upstream)" = wifi-iface ] ||
+  fail 'fabric upstream Wi-Fi interface is missing'
+[ "$(uci -q get wireless.@wifi-iface[1])" = wifi-iface ] ||
+  fail 'fabric upstream Wi-Fi interface is not the second interface'
+assert_uci 'wireless.@wifi-iface[1].mode' sta
+if uci -q get wireless.@wifi-iface[2] >/dev/null 2>&1; then
   fail 'unexpected additional Wi-Fi interface'
 fi
 [ ! -e /etc/fabric/operator-wifi-psk ] ||
   fail 'standalone operator Wi-Fi PSK was not removed after first boot'
+[ ! -e /etc/fabric/upstream-wifi-ssid ] ||
+  fail 'standalone upstream Wi-Fi SSID was not removed after first boot'
+[ ! -e /etc/fabric/upstream-wifi-psk ] ||
+  fail 'standalone upstream Wi-Fi PSK was not removed after first boot'
 [ -f /etc/config/wireless ] && [ ! -L /etc/config/wireless ] ||
   fail 'wireless UCI database is missing or unsafe'
 [ "$(stat -c '%u:%a' /etc/config/wireless)" = 0:600 ] ||
@@ -974,7 +1028,9 @@ assert_uci "wireless.$operator_radio.txpower" 10
 assert_uci "wireless.$operator_radio.disabled" 0
 assert_uci wireless.fabric_operator.network lan
 assert_uci wireless.fabric_operator.mode ap
-assert_uci wireless.fabric_operator.ssid fabric-observer
+[ "$(uci -q get wireless.fabric_operator.ssid)" = fabric-observer ] ||
+  fail 'fabric operator Wi-Fi SSID differs from policy'
+printf 'WIRELESS_OPERATOR_SSID=reviewed-not-emitted\n'
 assert_uci wireless.fabric_operator.encryption sae
 assert_uci wireless.fabric_operator.ieee80211w 2
 assert_uci wireless.fabric_operator.sae_pwe 2
@@ -984,12 +1040,32 @@ assert_uci wireless.fabric_operator.macfilter allow
 assert_uci wireless.fabric_operator.maclist d8:80:83:81:cb:f7
 assert_uci wireless.fabric_operator.wps_pushbutton 0
 assert_uci wireless.fabric_operator.disabled 0
+upstream_radio=$(uci -q get wireless.fabric_upstream.device) ||
+  fail 'upstream Wi-Fi radio reference is missing'
+case $upstream_radio in
+  *[!A-Za-z0-9_]*|'') fail 'upstream Wi-Fi radio name is unsafe' ;;
+esac
+[ "$upstream_radio" != "$operator_radio" ] ||
+  fail 'operator AP and upstream STA unexpectedly share one radio'
+[ "$(uci -q get "wireless.$upstream_radio")" = wifi-device ] ||
+  fail 'upstream Wi-Fi radio is not a wifi-device'
+assert_uci "wireless.$upstream_radio.band" 2g
+assert_uci "wireless.$upstream_radio.country" AU
+assert_uci "wireless.$upstream_radio.channel" auto
+assert_uci "wireless.$upstream_radio.htmode" HE20
+assert_uci "wireless.$upstream_radio.disabled" 0
+assert_uci wireless.fabric_upstream.network wan
+assert_uci wireless.fabric_upstream.mode sta
+assert_uci wireless.fabric_upstream.encryption sae
+assert_uci wireless.fabric_upstream.ieee80211w 2
+assert_uci wireless.fabric_upstream.sae_pwe 2
+assert_uci wireless.fabric_upstream.disabled 0
 printf 'SNAPSHOT_ASSERTIONS=pass\n'
 REMOTE_SNAPSHOT
 chmod 0600 -- "$snapshot"
 
 awk '
-  /^(BOARD_NAME|OPENWRT_RELEASE|FIRSTBOOT_DEFAULTS|NETWORK_TOPOLOGY|UCI |UCI_ABSENT |DATA_MOUNT |FIREWALL_|REMOVED_PACKAGES|SSHD_POLICY|SNAPSHOT_ASSERTIONS)/ {
+  /^(BOARD_NAME|OPENWRT_RELEASE|FIRSTBOOT_DEFAULTS|NETWORK_TOPOLOGY|UCI |UCI_ABSENT |DATA_MOUNT |FIREWALL_|LISTENER_POLICY|REMOVED_PACKAGES|SSHD_POLICY|SNAPSHOT_ASSERTIONS|WIRELESS_OPERATOR_SSID)/ {
     print
     next
   }

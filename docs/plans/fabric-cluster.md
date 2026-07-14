@@ -140,17 +140,29 @@ server, and explicit service-publishing boundary. Its PXE hooks remain
 fail-closed and LAN DHCP is disabled during the sacred-node phase. Put a wired
 switch behind it so the three etcd peers remain on one L2 segment when the
 router or WAN is restarted.
-Use the labelled 2.5G port for WAN and labelled 1G port for the fabric switch.
-Power it through USB-C rather than WAN PoE so it remains inside the measured
-root power domain.
+The present lightning-damaged chassis is a temporary degraded-hardware
+exception: its failed labelled 2.5G `eth0` port stays disconnected and
+unassigned, `radio0` is a 2.4 GHz station attached only to the logical WAN,
+`radio1` supplies the 5 GHz observer AP, and the labelled 1G `eth1` port is the
+only wired fabric link. Connect `eth1` to the fabric switch and power the router
+through USB-C so it remains inside the measured root power domain. Do not use
+PoE on the damaged jack.
 
-One low-power 5 GHz WPA3-SAE SSID, `fabric-observer`, is bridged into that LAN
-only for `sam-desktop`'s admitted permanent Wi-Fi MAC at static
+This exception does not change the permanent design preference for a known-good
+wired router. Replace the damaged unit before fabric becomes authoritative.
+OpenWrt Two may replace it later only after it is available, supported, and
+passes the same image, isolation, power-loss, and recovery qualification; its
+model name alone is not admission.
+
+One low-power 5 GHz WPA3-SAE SSID on `radio1`, `fabric-observer`, is bridged
+into that LAN only for `sam-desktop`'s admitted permanent Wi-Fi MAC at static
 `10.66.0.2/24`. It has no DHCP, gateway, DNS, IPv6, or client forwarding and is
 limited to one association. Because a bridged radio extends the consensus L2,
 the desktop radio runs in a network namespace with no link to the host
 namespace; the host's stable home uplink remains wired. Retire or rotate this
 temporary radio credential after worker-era management ingress exists.
+The `radio0` upstream station is never part of that bridge and receives only
+the logical WAN policy.
 
 The provisional, intentionally non-advertised consensus LAN is
 `10.66.0.0/24`:
@@ -563,8 +575,17 @@ Zincati remains disabled until this cadence and rollback evidence exist.
 2. Commission and qualify the candidate Matter plug outside the measured
    domain. Prove W/Wh telemetry or replace it, prove restore-to-ON behavior,
    then label and assemble the exact measured power domain.
-3. Verify the isolated LAN, DNS, NTP, static addressing, WAN RFC1918 block, and
-   wired L2 behavior without any Tailscale subnet route.
+3. Verify the isolated LAN, DNS, NTP, static addressing, logical-WAN RFC1918
+   block, and wired L2 behavior without any Tailscale subnet route. Prove the
+   degraded role map explicitly: failed `eth0` is disconnected and unassigned,
+   `eth1` is the sole wired fabric member, `radio0` is the sole 2.4 GHz
+   upstream-WAN station, and `radio1` is the sole 5 GHz observer AP. Exercise
+   WAN-side denials from a controlled client on the upstream/home L2 and use a
+   router capture or named firewall-counter delta to prove each denied probe
+   reached `radio0`; do not mistake upstream WLAN client isolation for a router
+   firewall result. Then disassociate and reassociate `radio0` and prove that
+   only public egress is lost and restored while fabric same-L2 traffic remains
+   available.
 4. Build and verify the non-installing inventory ISO, write it with its distinct
    inventory-media confirmation, then mediate one candidate boot and capture at
    a time. Finish firmware/UEFI/TPM/RTC settings, select the three SATA devices,
