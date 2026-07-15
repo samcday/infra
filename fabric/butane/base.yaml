@@ -48,7 +48,6 @@ storage:
                 umask 077
 
                 device=/dev/disk/by-partlabel/root
-                ignition_key=/etc/luks/root
                 recovery_key=/etc/fabric/root-recovery.key
                 marker=/var/lib/fabric/root-recovery-enrolled
                 marker_tmp=$marker.tmp.$$
@@ -79,15 +78,30 @@ storage:
                     exit 0
                 fi
 
-                [[ $(stat -Lc '%u:%g:%a' "$ignition_key") == 0:0:600 ]] ||
-                    fail 'Ignition-generated root key is absent or has unsafe ownership or mode'
                 [[ $(stat -Lc '%u:%g:%a' "$recovery_key") == 0:0:600 ]] ||
                     fail 'offline recovery-key file is absent or has unsafe ownership or mode'
+                if [[ $(wc -c < "$recovery_key") != 64 ]] ||
+                    ! grep -Eq '^[0-9a-f]{64}$' "$recovery_key"; then
+                    fail 'offline recovery-key file is malformed'
+                fi
 
                 if ! cryptsetup open --test-passphrase \
                     --key-file "$recovery_key" "$device"; then
-                    cryptsetup luksAddKey --key-file "$ignition_key" \
-                        "$device" "$recovery_key"
+                    mapfile -t clevis_slots < <(
+                        clevis luks list -d "$device" |
+                            sed -nE 's/^[[:space:]]*([0-9]+):.*/\1/p'
+                    )
+                    ((${#clevis_slots[@]} == 1)) ||
+                        fail 'root must have exactly one Clevis keyslot before recovery enrollment'
+                    clevis_slot=${clevis_slots[0]}
+                    clevis_policy=$(clevis luks list -d "$device" -s "$clevis_slot") ||
+                        fail 'root Clevis policy could not be inspected'
+                    [[ $clevis_policy == *tpm2* ]] ||
+                        fail 'root Clevis keyslot is not bound to the local TPM2'
+                    clevis luks pass -d "$device" -s "$clevis_slot" |
+                        cryptsetup luksAddKey --key-file - \
+                            "$device" "$recovery_key" ||
+                        fail 'offline recovery key could not be enrolled through TPM2'
                 fi
                 cryptsetup open --test-passphrase \
                     --key-file "$recovery_key" "$device" ||
@@ -229,6 +243,25 @@ systemd:
 
             [Install]
             WantedBy=multi-user.target
+        - name: systemd-pcrnvdone.service
+          contents: |
+            # Host-side workaround for coreos/fedora-coreos-tracker#2193.
+            # Remove after FCOS ships systemd commit 856ab04a29 and cold boot is verified.
+            [Unit]
+            Description=TPM PCR NvPCR Initialization Separator
+            Documentation=man:systemd-pcrnvdone.service(8)
+            DefaultDependencies=no
+            Conflicts=shutdown.target initrd-switch-root.target
+            After=tpm2.target systemd-tpm2-setup-early.service
+            Before=sysinit.target cryptsetup-pre.target cryptsetup.target shutdown.target initrd-switch-root.target
+            ConditionSecurity=measured-uki
+            ConditionPathExists=/etc/initrd-release
+            FailureAction=reboot-force
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/usr/lib/systemd/systemd-pcrextend --graceful --pcr=kernel-initrd --event-type=nvpcr-separator nvpcr-separator
 sops:
     age:
         - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
@@ -240,7 +273,7 @@ sops:
             RW56UGZlelpueUhFZ2VCemh3UGVzMXcKpjjTGYCgH21UHls+jcG3dGIKZjKwdmB+
             NxzfonJeicQUbUoRgiVnkOkVDjvRvrGxhp79u10g9savw0lJkO648Q==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-07-13T09:30:29Z"
-    mac: ENC[AES256_GCM,data:op6EPglK/zE4oPWP2B5P3rWIqUBr27Epcpz31pcS5/g6wfwkduAhkyrO5l5wagwojOe+sSOKBwiLD1+Nm0JVYhL+k2hVg/yThl1UPfBYFEw7LtMDCOcLkPUS0yXxp0queOcQxpXLHOLXkx3+sgyIwqTFYOhq6spUopjJD3bMcCo=,iv:JpT8CX535hCr7+X+ZLIwjjFl/9mDx9opKG6nlwQXmsk=,tag:IauWUQ+a6pVHGO9FGT7Mqg==,type:str]
+    lastmodified: "2026-07-15T04:15:01Z"
+    mac: ENC[AES256_GCM,data:PiM/pFE9aC6jovptjM12kkejLP4n+A7hoPTJTIgUdRFtaLRs5ynb645wTZ9uoNE3COpjZqyanOxJxyjHY61pR4CPiqFkHkVJxYOwJ02MtmyL6AY0lOio7mV+PMQYJZJ12XLBmraBku3mbzZnf8/e9wfMwtVRniOBV+PSDphoHZE=,iv:x4maHvikgTkQ9dEIViFiican22O1BiREl8T6r3QI3s4=,tag:BeukxovNwFJEVhM37XA/lg==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.11.0

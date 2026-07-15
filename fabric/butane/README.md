@@ -46,6 +46,15 @@ included in the current hub Flux fan-out, and nothing merges the current
   boot, the root key is enrolled, verified, and then its installed copy is
   deleted; the authoritative copy remains only in SOPS and the encrypted
   offline recovery packet. There is no Tang dependency.
+- `base.yaml` carries the host-side half of systemd fix `856ab04a29` for the
+  pinned FCOS 44 image. Systemd 259.6 incorrectly puts
+  `systemd-pcrnvdone.service` in the real-root graph after the late TPM setup,
+  whose `/var/lib/systemd` requirement creates a cycle when `/var` itself is
+  encrypted. Ignition cannot retrofit the stock initramfs, so this override
+  prevents that misplaced real-root separator from entering the graph; these
+  PCR-unbound Clevis policies do not depend on it. A future fixed FCOS
+  initramfs will run the separator in the right phase. Remove the override only
+  after that build is pinned and all three volumes pass a cold boot.
 - `common/discovery.yaml` is an SSH-only, non-cluster discovery profile kept as
   a seed for a future worker provisioner. The three consensus nodes do not use
   it. It deliberately contains no Tailscale, relaxed-security, Tang, or old
