@@ -108,8 +108,8 @@ The eventual installer artifacts are three separate secret-bearing images:
 - `fabric-az1-cp3-installer.iso`
 
 Each image embeds only its matching Ignition and one admitted whole-disk
-identity. Cp2 and cp3 require SATA SSDs named by exact
-`/dev/disk/by-id/ata-*` paths. Cp1 is bound to the exact NVMe EUI below.
+identity. Cp1 and cp2 are bound to their respective exact NVMe EUIs below.
+Cp3 requires a SATA SSD named by an exact `/dev/disk/by-id/ata-*` path.
 
 Sam has explicitly repurposed `fabric-az1-cp1`'s inventoried internal 256 GB
 Samsung NVMe as that node's root disk. Its only accepted identity is the exact
@@ -118,6 +118,15 @@ model/serial alias or a kernel name. Its existing EFI, boot, and encrypted-root
 contents are authorized for destruction by this installation. The armed
 pre-install gate must revalidate that exact identity and receive its
 device-specific confirmation first.
+
+Sam has also explicitly repurposed `fabric-az1-cp2`'s inventoried internal
+256 GB Samsung NVMe (model `MZVLW256HEHP-000L7`, serial
+`S35ENX0JB81948`). Its only accepted identity is the exact lowercase
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`; do not substitute its serial
+alias or a kernel name. Its existing contents are authorized for destruction
+by the temporary TPM conversion workflow and the subsequent cp2 installation.
+The armed pre-install gate must still revalidate this exact identity and
+receive its device-specific confirmation.
 
 One physical thumb drive may be used for inventory first and then rewritten
 between node installers, but no ISO may contain multiple node Ignitions. After
@@ -146,8 +155,9 @@ other two candidates before manufacturing this node's media. Preserve every
 initial discovery capture separately. Only a node's reviewed final capture may
 assign its exact root device and permanent wired MAC address. Disconnect every
 non-target internal disk before booting an armed installer. For the SATA
-default this includes all NVMe devices; for `fabric-az1-cp1`, leave attached
-only the exact target NVMe above and disconnect any other internal disk.
+default this includes all NVMe devices; for `fabric-az1-cp1` and
+`fabric-az1-cp2`, leave attached only that node's exact target NVMe above and
+disconnect any other internal disk.
 
 The local-console ceremony is deliberate:
 
@@ -220,6 +230,23 @@ scripts/build-fabric-node-isos \
   --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827
 ```
 
+After cp2 has completed the authorized TPM conversion and has a reviewed final
+capture, render its Ignition from that capture's permanent wired MAC and build
+its installer against only its admitted EUI identity:
+
+```sh
+FABRIC_CP2_MAC=aa:bb:cc:dd:ee:02 \
+  ./fabric/butane/bootstrap.sh --node fabric-az1-cp2 \
+  /secure/fabric-bootstrap
+
+scripts/build-fabric-node-isos \
+  --node fabric-az1-cp2 \
+  --ignition-dir /secure/fabric-bootstrap \
+  --output-dir /secure/fabric-installers \
+  --cache-dir /secure/fabric-installer-cache \
+  --cp2-disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45
+```
+
 The original all-three mode remains available: omit `--node`, provide all
 three `FABRIC_CP*_MAC` variables when rendering, and provide `--cp1-disk`,
 `--cp2-disk`, and `--cp3-disk` when building. Selected-node mode changes only
@@ -227,8 +254,8 @@ which secret artifact is manufactured. Every Ignition retains the fixed
 declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
 `initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
 so the K3s API cannot become available until at least one other declared
-member is brought up with it. Cp2 and cp3 use exact
-`/dev/disk/by-id/ata-EXACT_DEVICE` paths from reviewed inventory.
+member is brought up with it. Cp2 uses its exact admitted NVMe EUI above; cp3
+uses an exact `/dev/disk/by-id/ata-EXACT_DEVICE` path from reviewed inventory.
 
 After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs

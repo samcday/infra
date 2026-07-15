@@ -77,12 +77,15 @@ static node addresses and `/etc/hosts`; router DNS and DHCP are not part of
 etcd consensus.
 
 SATA SSDs identified by exact `/dev/disk/by-id/ata-*` paths remain the preferred
-default root devices. Sam has explicitly repurposed `fabric-az1-cp1`'s
-inventoried internal 256 GB Samsung NVMe, with the sole accepted identity
-`/dev/disk/by-id/nvme-eui.002538839100c827`. Sam has authorized installation
-over its existing contents. The armed gate must revalidate the exact identity
-and receive the device-specific confirmation first. Cp2 and cp3 remain
-ATA-only, and every non-target internal disk must be disconnected.
+default root devices. Sam has explicitly repurposed the inventoried internal
+256 GB Samsung NVMes in `fabric-az1-cp1` and `fabric-az1-cp2`. Their sole
+accepted identities are, respectively,
+`/dev/disk/by-id/nvme-eui.002538839100c827` and
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`. Sam has authorized installation
+over both devices' existing contents. The armed gate must revalidate the
+node-specific exact identity and receive the device-specific confirmation
+first. Cp3 remains ATA-only, and every non-target internal disk must be
+disconnected.
 
 ## Offline secret boundary
 
@@ -169,8 +172,9 @@ kube-vip archive carries the exact `ghcr.io/kube-vip/kube-vip:v1.2.1` tag used
 by the DaemonSet, whose `imagePullPolicy: Never` prevents a GHCR fallback
 during bootstrap. Carry each rendered Ignition to its machine offline and
 invoke the installer against the physically verified stable root-disk by-id.
-For preferred/default SATA devices this is an exact `/dev/disk/by-id/ata-*`
-path; cp1 uses the exact admitted `nvme-eui` path above.
+For the preferred/default SATA devices this is an exact
+`/dev/disk/by-id/ata-*` path; cp1 and cp2 use their respective exact admitted
+`nvme-eui` paths above.
 The router never stores rendered Ignitions or any keys. First boot layers the
 policy and reboots once before K3s may start.
 
