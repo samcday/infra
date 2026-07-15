@@ -79,10 +79,12 @@ only one candidate at that address at a time. Initial installation then uses
 the pinned Fedora CoreOS 44.20260621.3.1 x86_64 live ISO and three separately
 customized images, each containing exactly one node's offline Ignition and its
 physically verified supported stable destination identity. Preferred SATA
-devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1`, Sam has explicitly
-repurposed the inventoried internal 256 GB Samsung NVMe at exact lowercase
-`/dev/disk/by-id/nvme-eui.002538839100c827`; a node may be manufactured
-independently with
+devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1` and
+`fabric-az1-cp2`, Sam has explicitly repurposed the inventoried internal 256 GB
+Samsung NVMes at exact lowercase
+`/dev/disk/by-id/nvme-eui.002538839100c827` and
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. A node may be
+manufactured independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
 (or the corresponding supported cp2/cp3 pair); omitting `--node` preserves the
 all-three build.
@@ -363,13 +365,15 @@ daily/monthly cumulative readings.
 The 128/256 GB 2.5-inch SATA SSDs are the preferred consensus-node devices if
 they pass inventory and latency gates. Continue using exact
 `/dev/disk/by-id/ata-*` identities for those default devices. Sam has explicitly
-repurposed `fabric-az1-cp1`'s inventoried internal 256 GB Samsung NVMe as its
-root disk, using only the exact lowercase stable identity
-`/dev/disk/by-id/nvme-eui.002538839100c827`. Do not substitute its model/serial
-alias or a kernel name. Sam has authorized installation over its existing
-contents. Cp1 is bound to that exact EUI, while cp2 and cp3 remain ATA-only.
-Installation requires the armed pre-install gate to revalidate the identity
-and receive its device-specific confirmation.
+repurposed the inventoried internal 256 GB Samsung NVMes in
+`fabric-az1-cp1` and `fabric-az1-cp2` as their root disks, using only the exact
+lowercase stable identities `/dev/disk/by-id/nvme-eui.002538839100c827` and
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. Do not substitute a
+model/serial alias or kernel name. Sam has authorized installation over both
+devices' existing contents. Cp1 and cp2 are each bound to their exact EUI;
+cp3 remains ATA-only. Installation requires the armed pre-install gate to
+revalidate the node-specific identity and receive its device-specific
+confirmation.
 Disconnect every non-target internal disk before booting the armed installer.
 Other approximately 1 TB NVMe devices remain reserved for fabric workers and
 VM storage.
@@ -405,9 +409,9 @@ For each candidate mini PC:
    confirmation starts with `WRITE-FABRIC-INVENTORY:` and cannot authorize an
    armed installer image.
 2. Install the candidate's intended root SSD and disconnect every non-target
-   internal disk. Prefer an admitted SATA SSD for new selections. For cp1,
-   retain only the exact inventoried NVMe target declared above. Connect only
-   this candidate to the isolated switch. Join the router's
+   internal disk. Prefer an admitted SATA SSD for new selections. For cp1 and
+   cp2, retain only that node's exact inventoried NVMe target declared above.
+   Connect only this candidate to the isolated switch. Join the router's
    `fabric-observer` SSID from the isolated `sam-desktop` Wi-Fi namespace at
    static `10.66.0.2/24`.
 3. Attach HDMI and keyboard, choose a one-time UEFI boot from the inventory USB,
