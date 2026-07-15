@@ -24,6 +24,20 @@ platform:
   permanentMac: REPLACE
   finalCurrentMac: REPLACE
 
+# Use this only when a logical member's exact admitted disk is moved into a
+# different chassis before its first completed fabric install and before local
+# durable etcd state exists. Presence in the declared initial map is expected.
+preInstallChassisSubstitution:
+  used: false
+  sourceChassisEvidence: REPLACE_OR_NOT_APPLICABLE
+  replacementChassisEvidence: REPLACE_OR_NOT_APPLICABLE
+  diskTransplantEvidence: REPLACE_OR_NOT_APPLICABLE
+  sourceChassisPoweredOffAndQuarantined: false
+  fabricInstallNeverCompleted: false
+  fabricInstallNeverCompletedEvidence: REPLACE_OR_NOT_APPLICABLE
+  localEtcdDataDirectoryNeverInitialized: false
+  localEtcdDataDirectoryNeverInitializedEvidence: REPLACE_OR_NOT_APPLICABLE
+
 authorizations:
   # Keep separate records when temporary firmware-conversion media and the
   # final fabric install were authorized independently.

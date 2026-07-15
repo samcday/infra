@@ -34,12 +34,65 @@ reject() {
   fi
 }
 
+accept_pinned() {
+  local disk=$1
+  local expected_destination=$2
+  local expected_kind=$3
+  local expected_wwn=$4
+
+  if ! fabric_validate_pinned_disk_destination \
+    fixture "$disk" "$expected_destination"; then
+    echo "expected future-pin acceptance: $disk" >&2
+    ((failures += 1))
+    return
+  fi
+  if [[ $FABRIC_DISK_KIND != "$expected_kind" || $FABRIC_DISK_WWN != "$expected_wwn" ]]; then
+    echo "wrong future-pin classification for $disk: $FABRIC_DISK_KIND $FABRIC_DISK_WWN" >&2
+    ((failures += 1))
+  fi
+}
+
+reject_pinned() {
+  local disk=$1
+  local expected_destination=$2
+  local label=${3:-fixture}
+
+  if fabric_validate_pinned_disk_destination \
+    "$label" "$disk" "$expected_destination" >/dev/null 2>&1; then
+    echo "expected future-pin rejection: $disk against $expected_destination" >&2
+    ((failures += 1))
+  fi
+}
+
 accept fabric-az1-cp1 "$FABRIC_CP1_NVME_DESTINATION" nvme eui.002538839100c827
 accept fabric-az1-cp2 "$FABRIC_CP2_NVME_DESTINATION" nvme eui.002538bb71b4bb45
-[[ -z $FABRIC_CP3_ATA_DESTINATION ]] || {
-  echo 'cp3 must remain unadmitted until its exact ATA identity is committed' >&2
+[[ -z $FABRIC_CP3_DESTINATION ]] || {
+  echo 'cp3 must remain unadmitted until its exact disk identity is committed' >&2
   ((failures += 1))
 }
+
+accept_pinned \
+  /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE \
+  /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE \
+  ata ''
+accept_pinned \
+  /dev/disk/by-id/nvme-eui.0123456789abcdef \
+  /dev/disk/by-id/nvme-eui.0123456789abcdef \
+  nvme eui.0123456789abcdef
+
+reject_pinned /dev/disk/by-id/ata-OTHER_DEVICE /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE
+reject_pinned /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE ''
+reject_pinned \
+  /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE-part1 \
+  /dev/disk/by-id/ata-FUTURE_EXACT_CP3_DEVICE-part1
+reject_pinned /dev/disk/by-id/nvme-SERIAL_ALIAS /dev/disk/by-id/nvme-SERIAL_ALIAS
+reject_pinned /dev/disk/by-id/nvme-eui.0000000000000000 /dev/disk/by-id/nvme-eui.0000000000000000
+reject_pinned /dev/disk/by-id/nvme-eui.ffffffffffffffff /dev/disk/by-id/nvme-eui.ffffffffffffffff
+reject_pinned /dev/disk/by-id/nvme-eui.0123456789ABCDEF /dev/disk/by-id/nvme-eui.0123456789ABCDEF
+reject_pinned \
+  "$FABRIC_CP1_NVME_DESTINATION" "$FABRIC_CP1_NVME_DESTINATION" fabric-az1-cp3
+reject_pinned \
+  "$FABRIC_CP2_NVME_DESTINATION" "$FABRIC_CP2_NVME_DESTINATION" fabric-az1-cp3
 
 reject fabric-az1-cp1 /dev/disk/by-id/ata-UNRELATED_DEVICE
 reject fabric-az1-cp2 /dev/disk/by-id/ata-UNRELATED_DEVICE

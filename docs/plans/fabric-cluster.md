@@ -87,7 +87,8 @@ Samsung NVMes at exact lowercase
 node may be manufactured independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
 (or the corresponding cp2 pair). Cp3 and the all-three build remain disabled
-until cp3's reviewed exact ATA identity is committed to the disk policy.
+until cp3's reviewed exact ATA or lowercase NVMe-EUI identity is committed to
+the disk policy.
 Never use `/dev/sdX`. The same physical thumb drive may be used for inventory
 first and then rewritten between individual nodes, but a multi-node image
 containing all three Ignitions is forbidden. Once the first secret installer
@@ -371,8 +372,9 @@ lowercase stable identities `/dev/disk/by-id/nvme-eui.002538839100c827` and
 `/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. Do not substitute a
 model/serial alias or kernel name. Sam has authorized installation over both
 devices' existing contents. Cp1 and cp2 are each bound to their exact EUI;
-cp3 remains ATA-only. Installation requires the armed pre-install gate to
-revalidate the node-specific identity and receive its device-specific
+cp3 remains unadmitted until its exact ATA or lowercase NVMe-EUI whole-disk
+identity is reviewed and pinned. Installation requires the armed pre-install
+gate to revalidate the node-specific identity and receive its device-specific
 confirmation.
 Disconnect every non-target internal disk before booting the armed installer.
 Other approximately 1 TB NVMe devices remain reserved for fabric workers and

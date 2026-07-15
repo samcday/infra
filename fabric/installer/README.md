@@ -119,7 +119,9 @@ The eventual installer artifacts are three separate secret-bearing images:
 
 Each image embeds only its matching Ignition and one admitted whole-disk
 identity. Cp1 and cp2 are bound to their respective exact NVMe EUIs below.
-Cp3 requires a SATA SSD named by an exact `/dev/disk/by-id/ata-*` path.
+Cp3 prefers a SATA SSD named by an exact `/dev/disk/by-id/ata-*` path, but an
+exact lowercase `/dev/disk/by-id/nvme-eui.*` identity is also supported after
+final inventory.
 Until cp3's final inventory is reviewed, the disk-policy pin is intentionally
 empty and the builder refuses every cp3 destination.
 
@@ -141,6 +143,27 @@ The armed pre-install gate must still revalidate this exact identity and
 receive its device-specific confirmation. The model-specific, attended TPM
 conversion ceremony is documented in `m710q-tpm12-to-tpm20.md`; it is not a
 general-purpose TPM update procedure.
+
+Before cp2's admitted disk has ever completed a fabric installation or
+initialized a local durable `/var/lib/etcd`, its logical identity may instead
+follow that exact NVMe into a compatible native-TPM2 chassis. Cp2 already
+appears in every node's declared initial three-member map; that static entry
+does not mean cp2 has initialized local state and does not turn this pre-install
+chassis substitution into an etcd replacement-member operation. Power off and
+unplug both machines, install only the admitted NVMe in the replacement,
+disconnect every other internal disk, and keep the original chassis powered
+off.
+
+Boot the non-installing inventory media and preserve the replacement's initial
+discovery capture. Complete its normal firmware, memory, NIC, disk, thermal,
+and RTC qualification, then preserve a separate reviewed final recapture
+proving the replacement DMI/chassis identity, usable TPM2, UEFI/clock state,
+permanent and current wired MAC, and the unchanged EUI, serial
+`S35ENX0JB81948`, and byte size `256060514304`. Render cp2 only from that final
+replacement MAC. Stop if the disk identity differs, a fabric install ever
+completed on it, or local durable etcd state ever initialized; those cases are
+not covered by the existing exact-disk authorization and require a separately
+reviewed etcd recovery/replacement procedure.
 
 One physical thumb drive may be used for inventory first and then rewritten
 between node installers, but no ISO may contain multiple node Ignitions. After
@@ -250,7 +273,8 @@ scripts/build-fabric-node-isos \
   --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827
 ```
 
-After cp2 has completed the authorized TPM conversion and has a reviewed final
+After cp2 has either completed the authorized TPM conversion or passed the
+native-TPM2 pre-install substitution procedure above, and has a reviewed final
 capture, render its Ignition from that capture's permanent wired MAC and build
 its installer against only its admitted EUI identity:
 
@@ -267,17 +291,18 @@ scripts/build-fabric-node-isos \
   --cp2-disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45
 ```
 
-After cp3's exact ATA identity has been inventoried, reviewed, and committed
-to the disk policy, the original all-three mode becomes available: omit
-`--node`, provide all three `FABRIC_CP*_MAC` variables when rendering, and
-provide `--cp1-disk`, `--cp2-disk`, and `--cp3-disk` when building. Until then,
+After cp3's exact ATA or lowercase NVMe-EUI identity has been inventoried,
+reviewed, and committed to the disk policy, the original all-three mode becomes
+available: omit `--node`, provide all three `FABRIC_CP*_MAC` variables when
+rendering, and provide `--cp1-disk`, `--cp2-disk`, and `--cp3-disk` when
+building. Until then,
 both cp3 and all-three builds are deliberately refused. Selected-node mode
 changes only which secret artifact is manufactured. Every Ignition retains the
 fixed declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
 `initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
 so the K3s API cannot become available until at least one other declared
 member is brought up with it. Cp2 uses its exact admitted NVMe EUI above; cp3
-uses an exact `/dev/disk/by-id/ata-EXACT_DEVICE` path from reviewed inventory.
+uses one exact reviewed `ata-*` or lowercase `nvme-eui.*` whole-disk path.
 
 After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs

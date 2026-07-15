@@ -84,8 +84,9 @@ accepted identities are, respectively,
 `/dev/disk/by-id/nvme-eui.002538bb71b4bb45`. Sam has authorized installation
 over both devices' existing contents. The armed gate must revalidate the
 node-specific exact identity and receive the device-specific confirmation
-first. Cp3 remains ATA-only and unadmitted until its reviewed exact ATA
-identity is committed; every non-target internal disk must be disconnected.
+first. Cp3 remains unadmitted until its reviewed exact ATA or lowercase
+NVMe-EUI identity is committed; every non-target internal disk must be
+disconnected.
 
 ## Offline secret boundary
 
