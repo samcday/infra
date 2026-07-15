@@ -175,6 +175,43 @@ dmi_identity_evidence() {
     fi
 }
 
+read_firmware_attribute_tree() {
+    local root=$1
+    local setting field path
+    local found_evidence=0
+
+    path=$root/pending_reboot
+    if [[ -e $path ]]; then
+        found_evidence=1
+        printf '[global]\npending_reboot: '
+        if [[ -r $path ]]; then
+            cat "$path"
+        else
+            printf '%s\n' '<unreadable>'
+        fi
+    fi
+
+    for setting in "$root"/*; do
+        [[ -d $setting ]] || continue
+        found_evidence=1
+        printf '\n[%s]\n' "${setting##*/}"
+        for field in \
+            display_name display_name_language_code type current_value \
+            default_value pending_value possible_values pending_reboot; do
+            path=$setting/$field
+            [[ -e $path ]] || continue
+            printf '%s: ' "$field"
+            if [[ -r $path ]]; then
+                cat "$path"
+            else
+                printf '%s\n' '<unreadable>'
+            fi
+        done
+    done
+
+    ((found_evidence != 0))
+}
+
 root_run() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
         run "$@"
@@ -218,6 +255,17 @@ run lscpu
 run free -h
 run sh -c 'grep -E "^(microcode[[:space:]]*:|MemTotal:|MemAvailable:|SwapTotal:)" /proc/cpuinfo /proc/meminfo 2>/dev/null | head -80'
 
+section "firmware attributes"
+firmware_attributes=/sys/class/firmware-attributes/thinklmi/attributes
+if [[ -d $firmware_attributes ]]; then
+    capture_evidence "ThinkLMI firmware attributes and pending values" \
+        read_firmware_attribute_tree "$firmware_attributes"
+else
+    unavailable_evidence "ThinkLMI firmware attributes and pending values" \
+        'the ThinkLMI firmware-attributes tree is absent'
+fi
+run sh -c 'lsmod | grep -E "^think_lmi[[:space:]]" || true'
+
 section "network identity"
 run ip -brief link
 run ip -brief address
@@ -258,9 +306,33 @@ while read -r disk type; do
     else
         printf '\n! smartctl unavailable; collect SMART data before approving this disk\n'
     fi
-    if have nvme && [[ $disk == /dev/nvme* ]]; then
-        root_run nvme id-ctrl "$disk"
-        root_run nvme smart-log "$disk"
+    if [[ $disk == /dev/nvme* ]]; then
+        if have nvme; then
+            disk_name=${disk##*/}
+            if [[ $disk_name =~ ^nvme([0-9]+)(c[0-9]+)?n[0-9]+$ ]]; then
+                controller=/dev/nvme${BASH_REMATCH[1]}
+            else
+                controller=$disk
+            fi
+            root_capture_evidence "NVMe identify controller $controller" nvme id-ctrl "$controller"
+            root_capture_evidence "NVMe identify namespace $disk" nvme id-ns "$disk"
+            root_capture_evidence "NVMe subsystem topology $disk" nvme list-subsys "$disk"
+            root_capture_evidence "NVMe namespace list $controller" nvme list-ns --all "$controller"
+            root_capture_evidence "NVMe SMART log $disk" nvme smart-log "$disk"
+            root_capture_evidence "NVMe error log $controller" \
+                nvme error-log --log-entries=64 "$controller"
+            root_capture_evidence "NVMe self-test log $controller" nvme self-test-log "$controller"
+            run sh -c '
+disk_name=$1
+for attribute in nsid wwid uuid nguid eui; do
+    path=/sys/class/block/$disk_name/$attribute
+    test -e "$path" && { printf "%s: " "$path"; cat "$path"; }
+done
+' sh "$disk_name"
+        else
+            unavailable_evidence "NVMe identity and health evidence for $disk" \
+                'nvme-cli is unavailable'
+        fi
     fi
     if have hdparm; then
         root_run hdparm -I "$disk"
@@ -392,4 +464,4 @@ run sh -c 'test -d /sys/firmware/efi/efivars && echo "UEFI runtime: present" || 
 run sh -c 'for f in /sys/class/dmi/id/{bios_date,bios_version,board_name,board_version}; do test -e "$f" && { printf "%s: " "$f"; cat "$f"; }; done'
 
 section "inventory result"
-printf '%s\n' "Read-only capture complete. No disk benchmark, SMART test, TPM enrollment, or write was performed."
+printf '%s\n' "Read-only capture complete. No disk benchmark, SMART/NVMe self-test, TPM enrollment, or write was performed."

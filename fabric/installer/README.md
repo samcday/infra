@@ -85,6 +85,16 @@ an EK, persists a TPM object, writes TPM NV, or enrolls a secret; an absent EK
 public/certificate record remains a later admission issue rather than license
 to mutate the candidate during discovery.
 
+On systems exposing the kernel firmware-attributes API, the report also reads
+the global pending-reboot flag plus each ThinkLMI setting's display name,
+language, type, current/default value, pending value, possible values, and any
+per-setting pending-reboot field. It never reads the authentication
+tree or writes `save_settings`, `reset_bios`, or a setting value. For every
+NVMe namespace it records controller and namespace identity, subsystem
+topology, active/inactive namespace IDs, the SMART log, up to 64 existing error
+log entries, and the existing device-self-test log. `nvme error-log` and
+`nvme self-test-log` are queries; the inventory does not start a self-test.
+
 This ISO never installs or writes a target disk. Do not confuse it with the
 later node-specific, confirmation-gated installer images described below.
 
@@ -126,7 +136,9 @@ Sam has also explicitly repurposed `fabric-az1-cp2`'s inventoried internal
 alias or a kernel name. Its existing contents are authorized for destruction
 by the temporary TPM conversion workflow and the subsequent cp2 installation.
 The armed pre-install gate must still revalidate this exact identity and
-receive its device-specific confirmation.
+receive its device-specific confirmation. The model-specific, attended TPM
+conversion ceremony is documented in `m710q-tpm12-to-tpm20.md`; it is not a
+general-purpose TPM update procedure.
 
 One physical thumb drive may be used for inventory first and then rewritten
 between node installers, but no ISO may contain multiple node Ignitions. After
@@ -158,6 +170,12 @@ non-target internal disk before booting an armed installer. For the SATA
 default this includes all NVMe devices; for `fabric-az1-cp1` and
 `fabric-az1-cp2`, leave attached only that node's exact target NVMe above and
 disconnect any other internal disk.
+
+Copy `commissioning-record.example.yaml` into that node's protected evidence
+bundle outside Git and complete it as each gate is witnessed. Store relative
+evidence paths and SHA-256 digests, not private keys, recovery material,
+Ignition contents, or decrypted secrets. A completed record is evidence for
+review, not permission to skip any installer-side identity gate.
 
 The local-console ceremony is deliberate:
 

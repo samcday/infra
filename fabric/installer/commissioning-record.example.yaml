@@ -1,0 +1,159 @@
+---
+schemaVersion: fabric.samcday.com/v1alpha1
+kind: ConsensusNodeCommissioningRecord
+
+# This record contains identifiers and evidence hashes, never cluster tokens,
+# private keys, recovery keys, Ignition contents, or decrypted SOPS material.
+metadata:
+  nodeName: REPLACE_WITH_FABRIC_NODE_NAME
+  candidateLabel: REPLACE_WITH_PHYSICAL_LABEL
+  openedAt: REPLACE_WITH_UTC_TIMESTAMP
+  closedAt: REPLACE_WITH_UTC_TIMESTAMP
+  operator: REPLACE_WITH_OPERATOR
+  evidenceBundle: /protected/path/outside/git/REPLACE
+  evidenceManifestSha256: REPLACE_WITH_64_HEX
+
+platform:
+  manufacturer: REPLACE
+  productName: REPLACE
+  dmiProductUuid: REPLACE
+  chassisSerial: REPLACE
+  biosVersionInitial: REPLACE
+  biosVersionFinal: REPLACE
+  wiredInterface: REPLACE
+  permanentMac: REPLACE
+  finalCurrentMac: REPLACE
+
+authorizations:
+  # Keep separate records when temporary firmware-conversion media and the
+  # final fabric install were authorized independently.
+  - phase: REPLACE_WITH_PHASE
+    authorizedBy: REPLACE
+    authorizedAt: REPLACE_WITH_UTC_TIMESTAMP
+    exactScope: REPLACE_WITH_EXACT_AUTHORIZED_ACTIONS_AND_TARGET
+    evidence: REPLACE_WITH_RELATIVE_PROTECTED_PATH
+    evidenceSha256: REPLACE_WITH_64_HEX
+
+rootDisk:
+  stableById: /dev/disk/by-id/REPLACE_WITH_EXACT_ADMITTED_ID
+  model: REPLACE
+  serial: REPLACE
+  bytes: REPLACE_WITH_INTEGER
+  firmware: REPLACE
+  nonTargetInternalDisksDisconnected: false
+
+inventory:
+  initial:
+    capturedAt: REPLACE_WITH_UTC_TIMESTAMP
+    report: initial/fabric-candidate.txt
+    reportSha256: REPLACE_WITH_64_HEX
+    checksumVerified: false
+  final:
+    capturedAt: REPLACE_WITH_UTC_TIMESTAMP
+    report: final/fabric-candidate.txt
+    reportSha256: REPLACE_WITH_64_HEX
+    checksumVerified: false
+    uefiRuntime: false
+    rtcUtcAndSynchronized: false
+    firmwarePendingReboot: REPLACE_WITH_0_OR_1
+
+firmwareTransitions:
+  # Record each separately verified, fully completed transition. Never power
+  # cycle a machine while a firmware or TPM capsule is active.
+  - component: REPLACE
+    from: REPLACE
+    to: REPLACE
+    evidence: REPLACE_WITH_RELATIVE_PROTECTED_PATH
+    evidenceSha256: REPLACE_WITH_64_HEX
+    completedAt: REPLACE_WITH_UTC_TIMESTAMP
+
+tpm:
+  majorVersion: REPLACE_WITH_2
+  firmwareVersion: REPLACE
+  resourceManagerPresent: false
+  systemdHasTpm2: false
+  windowsQueryReport: REPLACE_OR_NOT_APPLICABLE
+  windowsQueryReportSha256: REPLACE_OR_NOT_APPLICABLE
+  finalInventoryEvidence: final/fabric-candidate.txt
+
+qualification:
+  memory:
+    method: REPLACE
+    durationSeconds: REPLACE_WITH_INTEGER
+    passes: REPLACE_WITH_INTEGER
+    errors: REPLACE_WITH_INTEGER
+    evidence: REPLACE
+    evidenceSha256: REPLACE_WITH_64_HEX
+  diskHealth:
+    selfTestType: REPLACE
+    selfTestResult: REPLACE
+    mediaErrors: REPLACE_WITH_INTEGER
+    unsafeShutdowns: REPLACE_WITH_INTEGER
+    errorLogEntriesReviewed: false
+    evidence: REPLACE
+    evidenceSha256: REPLACE_WITH_64_HEX
+  synchronousWrites:
+    method: REPLACE
+    sampleCount: REPLACE_WITH_INTEGER
+    p95Milliseconds: REPLACE_WITH_NUMBER
+    p99Milliseconds: REPLACE_WITH_NUMBER
+    maximumMilliseconds: REPLACE_WITH_NUMBER
+    evidence: REPLACE
+    evidenceSha256: REPLACE_WITH_64_HEX
+  thermalSoak:
+    durationSeconds: REPLACE_WITH_INTEGER
+    maximumCelsius: REPLACE_WITH_NUMBER
+    throttlingObserved: false
+    evidence: REPLACE
+    evidenceSha256: REPLACE_WITH_64_HEX
+  ethernet:
+    durationSeconds: REPLACE_WITH_INTEGER
+    negotiatedMegabits: REPLACE_WITH_INTEGER
+    rxErrorsDelta: REPLACE_WITH_INTEGER
+    txErrorsDelta: REPLACE_WITH_INTEGER
+    linkFlaps: REPLACE_WITH_INTEGER
+    evidence: REPLACE
+    evidenceSha256: REPLACE_WITH_64_HEX
+
+media:
+  inventoryIsoSha256: REPLACE_WITH_64_HEX
+  ignitionSha256: REPLACE_WITH_64_HEX
+  installerIsoSha256: REPLACE_WITH_64_HEX
+  installerUsbById: /dev/disk/by-id/REPLACE_WITH_EXACT_USB_ID
+  installerUsbSerial: REPLACE
+  writeConfirmationRecordedAt: REPLACE_WITH_UTC_TIMESTAMP
+
+installation:
+  startedAt: REPLACE_WITH_UTC_TIMESTAMP
+  completedAt: REPLACE_WITH_UTC_TIMESTAMP
+  consoleNodeNameMatched: false
+  consoleDiskIdentityMatched: false
+  consoleMacMatched: false
+  preinstallGatePassed: false
+  installerPoweredOffAfterSuccess: false
+  installerUsbRemovedBeforeFirstBoot: false
+  firstInstalledBootId: REPLACE
+  selinuxLayerRebootObserved: false
+  encryptedRootMounted: false
+  encryptedVarMounted: false
+  encryptedEtcdMounted: false
+
+clusterAdmission:
+  etcdMemberName: REPLACE_WITH_FABRIC_NODE_NAME
+  etcdMemberId: REPLACE
+  peerUrl: https://REPLACE_WITH_STATIC_IP:2380
+  clientUrl: https://REPLACE_WITH_STATIC_IP:2379
+  memberListEvidence: REPLACE
+  endpointHealthEvidence: REPLACE
+  alarmEvidence: REPLACE
+  k3sActive: false
+  nodeReady: false
+  kubeVipObserved: false
+
+review:
+  reviewedBy: REPLACE
+  reviewedAt: REPLACE_WITH_UTC_TIMESTAMP
+  identityAndHashesMatch: false
+  qualificationAccepted: false
+  admittedToConsensus: false
+  notes: REPLACE
