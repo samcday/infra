@@ -84,8 +84,8 @@ accepted identities are, respectively,
 `/dev/disk/by-id/nvme-eui.002538bb71b4bb45`. Sam has authorized installation
 over both devices' existing contents. The armed gate must revalidate the
 node-specific exact identity and receive the device-specific confirmation
-first. Cp3 remains ATA-only, and every non-target internal disk must be
-disconnected.
+first. Cp3 remains ATA-only and unadmitted until its reviewed exact ATA
+identity is committed; every non-target internal disk must be disconnected.
 
 ## Offline secret boundary
 
@@ -142,6 +142,13 @@ nine recovery keys and merges the same fixed three-member etcd map. This is a
 manufacturing convenience, not a single-member cluster mode: the resulting
 member still declares `initial-cluster-state=new` and must not be started as a
 lone cluster.
+
+K3s has an `ExecStartPre` gate against the local unauthenticated metrics
+listener and starts only after `etcd_server_has_leader` is exactly `1`. This
+keeps a deliberately lone first voter from repeatedly opening client
+connections and restarting K3s while it waits for the second voter. Etcd peer
+startup itself is not gated, so bringing up either matching remaining member
+still forms the initial two-of-three quorum.
 
 The original all-member mode remains available after inventory has confirmed
 the permanent wired MAC for all three machines:

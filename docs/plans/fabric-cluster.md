@@ -83,11 +83,11 @@ devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1` and
 `fabric-az1-cp2`, Sam has explicitly repurposed the inventoried internal 256 GB
 Samsung NVMes at exact lowercase
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. A node may be
-manufactured independently with
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. A currently admitted
+node may be manufactured independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
-(or the corresponding supported cp2/cp3 pair); omitting `--node` preserves the
-all-three build.
+(or the corresponding cp2 pair). Cp3 and the all-three build remain disabled
+until cp3's reviewed exact ATA identity is committed to the disk policy.
 Never use `/dev/sdX`. The same physical thumb drive may be used for inventory
 first and then rewritten between individual nodes, but a multi-node image
 containing all three Ignitions is forbidden. Once the first secret installer

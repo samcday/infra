@@ -191,6 +191,51 @@ if [[ $initial_cluster_records -ne 1 ]]; then
   exit 1
 fi
 
+quorum_wait_path=/usr/local/sbin/wait-for-fabric-etcd-quorum
+quorum_wait_records=$(yq -r '
+  [.storage.files[]
+    | select(.path == "/usr/local/sbin/wait-for-fabric-etcd-quorum")]
+  | length
+' "$workdir/control-plane.yaml")
+[[ $quorum_wait_records == 1 ]] || {
+  echo 'control-plane.yaml must carry exactly one local etcd-quorum wait helper' >&2
+  exit 1
+}
+quorum_wait_script=$workdir/wait-for-fabric-etcd-quorum
+yq -r '
+  .storage.files[]
+  | select(.path == "/usr/local/sbin/wait-for-fabric-etcd-quorum")
+  | .contents.inline
+' "$workdir/control-plane.yaml" >"$quorum_wait_script"
+bash -n "$quorum_wait_script"
+if ! grep -Fq 'metrics_url=http://127.0.0.1:2381/metrics' "$quorum_wait_script" ||
+  ! grep -Fq 'etcd_server_has_leader' "$quorum_wait_script"; then
+  echo 'the K3s start gate must query the local etcd leader metric' >&2
+  exit 1
+fi
+quorum_dropin_records=$(yq -r '
+  [.systemd.units[]
+    | select(.name == "k3s.service")
+    | .dropins[]
+    | select(.name == "20-etcd-quorum.conf")]
+  | length
+' "$workdir/control-plane.yaml")
+[[ $quorum_dropin_records == 1 ]] || {
+  echo 'k3s.service must carry exactly one etcd-quorum start-gate drop-in' >&2
+  exit 1
+}
+yq -r '
+  .systemd.units[]
+  | select(.name == "k3s.service")
+  | .dropins[]
+  | select(.name == "20-etcd-quorum.conf")
+  | .contents
+' "$workdir/control-plane.yaml" |
+  grep -Fxq "ExecStartPre=$quorum_wait_path" || {
+  echo 'k3s.service does not execute the reviewed etcd-quorum helper' >&2
+  exit 1
+}
+
 recovery_key_hashes=$workdir/recovery-key-hashes
 : > "$recovery_key_hashes"
 

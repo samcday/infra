@@ -36,10 +36,14 @@ reject() {
 
 accept fabric-az1-cp1 "$FABRIC_CP1_NVME_DESTINATION" nvme eui.002538839100c827
 accept fabric-az1-cp2 "$FABRIC_CP2_NVME_DESTINATION" nvme eui.002538bb71b4bb45
-accept fabric-az1-cp3 /dev/disk/by-id/ata-EXACT_INVENTORIED_CP3_DEVICE ata ''
+[[ -z $FABRIC_CP3_ATA_DESTINATION ]] || {
+  echo 'cp3 must remain unadmitted until its exact ATA identity is committed' >&2
+  ((failures += 1))
+}
 
 reject fabric-az1-cp1 /dev/disk/by-id/ata-UNRELATED_DEVICE
 reject fabric-az1-cp2 /dev/disk/by-id/ata-UNRELATED_DEVICE
+reject fabric-az1-cp3 /dev/disk/by-id/ata-EXACT_INVENTORIED_CP3_DEVICE
 reject fabric-az1-cp3 "$FABRIC_CP1_NVME_DESTINATION"
 reject fabric-az1-cp3 "$FABRIC_CP2_NVME_DESTINATION"
 reject fabric-az1-cp1 "$FABRIC_CP2_NVME_DESTINATION"

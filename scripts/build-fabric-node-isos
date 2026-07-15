@@ -54,6 +54,7 @@ Usage:
     --cache-dir /secure/fabric-installer-cache \
     --cp2-disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45
 
+  # Future all-three syntax, enabled only after cp3's exact ATA pin is committed:
   build-fabric-node-isos \
     --ignition-dir /secure/fabric-bootstrap \
     --output-dir /secure/fabric-installers \
@@ -69,7 +70,9 @@ inventory. The admitted cp1 and cp2 destinations are exactly
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
 `/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. Cp3 requires a whole
 internal ATA disk named by a stable `ata-*` identity. NVMe serial aliases,
-other EUI identities, and partitions are refused. Booting an ISO and typing
+other EUI identities, and partitions are refused. Cp3 and all-three builds are
+currently disabled until that exact reviewed ATA identity is committed to the
+disk policy. Booting an ISO and typing
 its exact confirmation will destroy that ISO's configured destination disk. A
 selected first voter still uses the declared three-member etcd map and cannot
 form quorum until a second declared member is ready.

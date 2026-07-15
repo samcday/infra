@@ -3,12 +3,14 @@
 # outputs and are consumed by the caller after validation.
 # shellcheck disable=SC2034
 
-# Exact, reviewed NVMe identities for the two admitted consensus nodes. Cp3
-# intentionally has no NVMe entry and remains restricted to a stable ATA
-# whole-disk identity until its own final inventory is reviewed.
+# Exact, reviewed identities for admitted consensus-node disks. Cp3 has not
+# completed inventory, so its empty pin deliberately rejects every destination
+# until one exact ATA whole-disk identity is reviewed and committed here.
 FABRIC_CP1_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538839100c827
 FABRIC_CP2_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538bb71b4bb45
+FABRIC_CP3_ATA_DESTINATION=
 readonly FABRIC_CP1_NVME_DESTINATION FABRIC_CP2_NVME_DESTINATION
+readonly FABRIC_CP3_ATA_DESTINATION
 
 FABRIC_DISK_KIND=
 FABRIC_DISK_WWN=
@@ -43,6 +45,14 @@ fabric_validate_node_disk_destination() {
         return 1
         ;;
       fabric-az1-cp3)
+        [[ -n $FABRIC_CP3_ATA_DESTINATION ]] || {
+          echo 'fabric-az1-cp3 has no admitted disk; complete and commit its exact inventory first' >&2
+          return 1
+        }
+        [[ $disk == "$FABRIC_CP3_ATA_DESTINATION" ]] || {
+          echo "ATA destination is not admitted for fabric-az1-cp3: $disk" >&2
+          return 1
+        }
         FABRIC_DISK_KIND=ata
         return 0
         ;;

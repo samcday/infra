@@ -215,6 +215,35 @@ storage:
                           effect: NoSchedule
                         - operator: Exists
                           effect: NoExecute
+        - path: /usr/local/sbin/wait-for-fabric-etcd-quorum
+          overwrite: true
+          mode: 493
+          contents:
+            inline: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                metrics_url=http://127.0.0.1:2381/metrics
+                attempt=0
+
+                while true; do
+                    metrics=$(
+                        /usr/bin/curl --silent --fail --max-time 2 "$metrics_url" 2>/dev/null || true
+                    )
+                    if /usr/bin/awk '
+                        $1 == "etcd_server_has_leader" && $2 == "1" { found = 1 }
+                        END { exit found ? 0 : 1 }
+                    ' <<<"$metrics"; then
+                        echo 'fabric etcd reports an elected leader; allowing K3s to start'
+                        exit 0
+                    fi
+
+                    ((attempt += 1))
+                    if ((attempt == 1 || attempt % 15 == 0)); then
+                        echo 'waiting for fabric etcd quorum before starting K3s'
+                    fi
+                    sleep 2
+                done
 systemd:
     units:
         - name: install-k3s.service
@@ -236,6 +265,10 @@ systemd:
                 [Unit]
                 Requires=etcd.service
                 After=etcd.service
+            - name: 20-etcd-quorum.conf
+              contents: |
+                [Service]
+                ExecStartPre=/usr/local/sbin/wait-for-fabric-etcd-quorum
 sops:
     age:
         - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
@@ -247,7 +280,7 @@ sops:
             WjcvSktFSm1BNkVhZncwcHV0VW8veWcK2D/tkknedJ+saXQYaI0CFvEBOS3Q5ZCD
             EAAftt5VfTzlzEJgI0QKfgYJrS1xlD+YZ2DPZYClIinj3HjE504o0g==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-07-13T10:40:36Z"
-    mac: ENC[AES256_GCM,data:T+Z1FwM0yqVEadxQRvCwuT9RBPS3yf2OK/jxQr06CW+/2DVTqM6RcWdkf1eY9tUS5XKE7KesOeqBh5tHVSPKC1XxQnRJbwXb8IX+uHaSfk+kjmcVmLxzAHwGLYRboKCPw9kVoGSJp+f9ToEFpDVg/4sX4V4UaViyTe0vnKvGJMI=,iv:ts42E/5X97z7WNNLX+1xCzsp9NCeYD5oMovZ9X353Pk=,tag:cKcvLzzmqG/LQ34AFTIh/g==,type:str]
+    lastmodified: "2026-07-15T11:39:21Z"
+    mac: ENC[AES256_GCM,data:OPGhkM4FzY9qpNOYnT2yVAMPgYpg3CgRl5EBPO3krkjdPGm3rQB91+pC3ov/ujTmzmXx24pbc4FJeCjVRFPYgqa1F5Ma9XQ9XCtuRvAPFXbrqI3aaBVlqOtw6ofM3V274PNWoGS/XotJHza7b5xUuGa3uAdFwYpuj5e7Cb883d4=,iv:bZGGYaM7j6H1WQ4OghZpT5mjIimjpDsLsphzqpgEgJg=,tag:tvC20+x8vsYkOKDj8MqXwA==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.11.0

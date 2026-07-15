@@ -120,6 +120,8 @@ The eventual installer artifacts are three separate secret-bearing images:
 Each image embeds only its matching Ignition and one admitted whole-disk
 identity. Cp1 and cp2 are bound to their respective exact NVMe EUIs below.
 Cp3 requires a SATA SSD named by an exact `/dev/disk/by-id/ata-*` path.
+Until cp3's final inventory is reviewed, the disk-policy pin is intentionally
+empty and the builder refuses every cp3 destination.
 
 Sam has explicitly repurposed `fabric-az1-cp1`'s inventoried internal 256 GB
 Samsung NVMe as that node's root disk. Its only accepted identity is the exact
@@ -265,11 +267,13 @@ scripts/build-fabric-node-isos \
   --cp2-disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45
 ```
 
-The original all-three mode remains available: omit `--node`, provide all
-three `FABRIC_CP*_MAC` variables when rendering, and provide `--cp1-disk`,
-`--cp2-disk`, and `--cp3-disk` when building. Selected-node mode changes only
-which secret artifact is manufactured. Every Ignition retains the fixed
-declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
+After cp3's exact ATA identity has been inventoried, reviewed, and committed
+to the disk policy, the original all-three mode becomes available: omit
+`--node`, provide all three `FABRIC_CP*_MAC` variables when rendering, and
+provide `--cp1-disk`, `--cp2-disk`, and `--cp3-disk` when building. Until then,
+both cp3 and all-three builds are deliberately refused. Selected-node mode
+changes only which secret artifact is manufactured. Every Ignition retains the
+fixed declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
 `initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
 so the K3s API cannot become available until at least one other declared
 member is brought up with it. Cp2 uses its exact admitted NVMe EUI above; cp3
