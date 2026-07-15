@@ -160,10 +160,10 @@ The local-console ceremony is deliberate:
    and leave only the admitted root target installed.
 3. Boot the USB device in UEFI mode. The pre-install gate must accept usable
    TPM2, a UTC clock inside the embedded etcd certificate validity window, the
-   exact static IP and a usable globally administered unicast MAC, the same
-   MAC as both the NIC's current address and `ethtool -P` permanent address, a
-   64 GiB-or-larger supported whole disk, and the router's exact seven-payload
-   manifest. Confirm the displayed node name,
+   exact embedded NetworkManager profile UUID, static IP, and a usable globally
+   administered unicast MAC, the same MAC as both the NIC's current address and
+   `ethtool -P` permanent address, a 64 GiB-or-larger supported whole disk, and
+   the router's exact seven-payload manifest. Confirm the displayed node name,
    complete stable disk by-id, disk model/serial, IP, and wired MAC.
 4. Type the full device-specific confirmation only after physically comparing
    those values with the chassis label and inventory record.
@@ -174,6 +174,16 @@ The local-console ceremony is deliberate:
    recovery key, then deletes its installed copy. A failed install
    stops in the live emergency environment and the destination is not trusted.
 
+The installer image also attempts to provide temporary diagnostic SSH as
+`core` after the exact static profile has activated. It accepts only the
+canonical operator key from `10.66.0.2`, disables forwarding, and is not copied
+into the installed system. An SSH failure is deliberately non-fatal because
+local admission and confirmation remain authoritative. Each boot generates an
+ephemeral host key; compare the SHA256 fingerprint printed by the gate with a
+fresh strict `known_hosts` scan before connecting. SSH cannot answer the
+destructive confirmation: that read remains bound to `/dev/console`, so use
+the physically attached keyboard or a locally verified USB-HID bridge.
+
 Validate the guarded builder without downloading or producing secrets:
 
 ```sh
@@ -181,10 +191,11 @@ scripts/build-fabric-node-isos --check
 ```
 
 This shallow check validates the public FCOS and seven-payload manifest
-structure plus the pinned Fedora signing-key identity. It deliberately does
-not inspect final Ignitions, bind real MAC/disk identities, download the FCOS
-ISO, or build installer media. Those hardware- and secret-bound checks run in
-normal mode only, after the inventory and offline Ignitions exist.
+structure, pinned Fedora signing-key identity, canonical operator key, and
+minimal live-only SSH profile. It deliberately does not inspect final
+Ignitions, bind real MAC/disk identities, download the FCOS ISO, or build
+installer media. Those hardware- and secret-bound checks run in normal mode
+only, after the inventory and offline Ignitions exist.
 
 After `fabric-az1-cp1` has a reviewed final capture, render only its Ignition
 using the permanent wired MAC from that capture:
@@ -223,12 +234,14 @@ After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs
 before and is required by `coreos-installer.service`, that the post-install
 poweroff unit follows it, and that the embedded destination Ignition, offline
-installer config, stable disk identity, and NetworkManager keyfile exactly
-match their sources. `coreos-installer` itself prints that an embedded
-destination installs "without confirmation"; that refers to its built-in
-prompt. The required confirmation is the separately verified pre-install
-unit, and a failed or missing unit prevents the installer service from
-starting.
+installer config, stable disk identity, NetworkManager keyfile, and live-only
+SSH profile exactly match their sources. It also verifies that the SSH service
+is pulled into the auto-installer dependency graph rather than relying on the
+unused live `multi-user.target`. `coreos-installer` itself prints that an
+embedded destination installs "without confirmation"; that refers to its
+built-in prompt. The required confirmation is the separately verified
+pre-install unit, and a failed or missing unit prevents the installer service
+from starting.
 
 After inventory admission and Ignition rendering, supply the selected node's
 exact admitted by-id path, or all three paths in legacy all-member mode, as shown

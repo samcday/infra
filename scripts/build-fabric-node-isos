@@ -11,6 +11,8 @@ source "$script_dir/lib/fabric-secure-tempdir.sh"
 repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
 manifest=$repo_root/fabric/installer/fcos-live-iso.txt
 asset_manifest=$repo_root/fabric/router/data-files.txt
+live_profile=$repo_root/fabric/installer/node-installer-live.bu
+operator_profile=$repo_root/fabric/butane/base.yaml
 default_cache_dir=$repo_root/_build/fabric/installer
 nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
 cp1_nvme_destination=/dev/disk/by-id/nvme-eui.002538839100c827
@@ -20,6 +22,7 @@ etcd_ca_path=/etc/etcd/pki/ca.pem
 etcd_peer_cert_path=/etc/etcd/pki/peer.pem
 router_asset_url=http://10.66.0.1/static
 expected_asset_count=7
+sam_ssh_key=
 
 check_only=false
 selected_node=
@@ -64,11 +67,125 @@ quorum until a second declared member is ready.
 The optional cache directory stores only the public FCOS ISO and signature; it
 defaults to _build/fabric/installer inside the checkout.
 
-The --check mode validates only the public FCOS/asset manifests and pinned
-Fedora signing-key identity.  It does not read final Ignitions, bind hardware
-identities, download the FCOS ISO, or build installer media; normal mode
-performs those deeper checks after inventory and secret rendering.
+Each image also carries a minimal live-only SSH profile for the canonical
+operator key.  It permits only core@10.66.0.2, disables SSH forwarding, and is
+not copied to the installed system.  The pre-install gate explicitly activates
+the exact embedded NetworkManager profile before admitting the static address.
+
+The --check mode validates only the public FCOS/asset manifests, pinned Fedora
+signing-key identity, and minimal live-access profile.  It does not read final
+Ignitions, bind hardware identities, download the FCOS ISO, or build installer
+media; normal mode performs those deeper checks after inventory and secret
+rendering.
 EOF
+}
+
+validate_live_access_ignition() {
+  local ignition=$1
+  local sshd_config=$workdir/validated-live-sshd.$$.conf
+  local sshd_source
+  local sshd_compression
+
+  jq -e --arg key "$sam_ssh_key" '
+    (.ignition.version | startswith("3.")) and
+    ((.ignition.config.merge // []) | length == 0) and
+    ((.ignition.config.replace // null) == null) and
+    ([.passwd.users[]?.name] == ["core"]) and
+    ([.passwd.users[]?
+      | select(.name == "core")
+      | .sshAuthorizedKeys[]?
+      | select(. == $key)] | length == 1) and
+    all(.passwd.users[]?;
+      (.passwordHash == null) and
+      ((.sshAuthorizedKeys // []) | length == 1)) and
+    ((.storage | keys | sort) == ["files"]) and
+    ([.storage.files[]?.path] ==
+      ["/etc/ssh/sshd_config.d/90-fabric-installer-live.conf"]) and
+    all(.storage.files[]?;
+      (.mode == 384) and
+      (.overwrite == true) and
+      (.contents.source | type == "string") and
+      (.contents.source | startswith("data:"))) and
+    ((.systemd | keys | sort) == ["units"]) and
+    ([.systemd.units[]?.name] | sort) ==
+      (["fabric-installer-live-ssh.service", "sshd.service"] | sort) and
+    all(.systemd.units[]?;
+      (.enabled == true) and
+      ((.mask // false) == false) and
+      (((.dropins // []) | length) == 0)) and
+    any(.systemd.units[]?;
+      .name == "sshd.service" and
+      ((.contents // null) == null)) and
+    any(.systemd.units[]?;
+      .name == "fabric-installer-live-ssh.service" and
+      .contents == ([
+        "[Unit]",
+        "Description=Start live installer SSH before automatic installation",
+        "Wants=sshd.service",
+        "After=sshd.service",
+        "Before=coreos-installer.service",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "RemainAfterExit=yes",
+        "ExecStart=/usr/bin/systemctl is-active --quiet sshd.service",
+        "",
+        "[Install]",
+        "WantedBy=coreos-installer.service",
+        ""
+      ] | join("\n")))
+  ' "$ignition" >/dev/null
+
+  jq -e '
+    walk(if type == "object" then with_entries(select(.value != null)) else . end) |
+    (keys | sort) == (["ignition", "passwd", "storage", "systemd"] | sort) and
+    ((.ignition | keys) == ["version"]) and
+    ((.passwd | keys) == ["users"]) and
+    all(.passwd.users[]?;
+      ((. | keys | sort) == (["name", "sshAuthorizedKeys"] | sort))) and
+    all(.storage.files[]?;
+      ((. | keys | sort) == (["contents", "mode", "overwrite", "path"] | sort)) and
+      ((.contents | keys | sort) == (["compression", "source"] | sort)) and
+      (.contents.compression == "gzip")) and
+    all(.systemd.units[]?;
+      if .name == "sshd.service" then
+        ((. | keys | sort) == (["enabled", "name"] | sort))
+      elif .name == "fabric-installer-live-ssh.service" then
+        ((. | keys | sort) == (["contents", "enabled", "name"] | sort))
+      else
+        false
+      end)
+  ' "$ignition" >/dev/null
+
+  sshd_source=$(jq -r '
+    .storage.files[]
+    | select(.path == "/etc/ssh/sshd_config.d/90-fabric-installer-live.conf")
+    | .contents.source
+  ' "$ignition")
+  sshd_compression=$(jq -r '
+    .storage.files[]
+    | select(.path == "/etc/ssh/sshd_config.d/90-fabric-installer-live.conf")
+    | .contents.compression // ""
+  ' "$ignition")
+  decode_data_url "$sshd_source" "$sshd_compression" "$sshd_config"
+  cmp --silent "$sshd_config" <(printf '%s\n' \
+    'AuthenticationMethods publickey' \
+    'PubkeyAuthentication yes' \
+    'PasswordAuthentication no' \
+    'KbdInteractiveAuthentication no' \
+    'PermitEmptyPasswords no' \
+    'PermitRootLogin no' \
+    'AllowUsers core@10.66.0.2' \
+    'DisableForwarding yes' \
+    'AllowAgentForwarding no' \
+    'AllowTcpForwarding no' \
+    'GatewayPorts no' \
+    'PermitTunnel no' \
+    'X11Forwarding no' \
+    'UseDNS no') || {
+    echo 'live installer SSH policy differs from the fail-closed operator policy' >&2
+    return 1
+  }
 }
 
 decode_data_url() {
@@ -278,7 +395,7 @@ while (($#)); do
   esac
 done
 
-for command in base64 cmp coreos-installer curl date find flock gpg gpgv jq openssl python3 realpath sha256sum; do
+for command in base64 butane cmp coreos-installer curl date find flock gpg gpgv jq openssl python3 realpath sha256sum yq; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 1
@@ -328,6 +445,23 @@ actual_fingerprint=$(gpg --quiet --homedir "$workdir/gnupg" --batch --show-keys 
   exit 1
 }
 
+yq -e '
+  ([.passwd.users[] | select(.name == "sam")] | length == 1) and
+  ([.passwd.users[] | select(.name == "sam") | .ssh_authorized_keys[]] | length == 1)
+' "$operator_profile" >/dev/null || {
+  echo 'canonical fabric operator profile must contain exactly one sam SSH key' >&2
+  exit 1
+}
+sam_ssh_key=$(yq -er '.passwd.users[] | select(.name == "sam") | .ssh_authorized_keys[0]' "$operator_profile")
+[[ $sam_ssh_key =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/]+={0,3}$ ]] || {
+  echo 'canonical fabric operator SSH key is not one comment-free Ed25519 public key' >&2
+  exit 1
+}
+live_access_ignition=$workdir/fabric-node-installer-live.ign
+butane --strict --pretty --output "$live_access_ignition" "$live_profile"
+chmod 0600 -- "$live_access_ignition"
+validate_live_access_ignition "$live_access_ignition"
+
 if $check_only; then
   ! $selected_node_seen &&
     [[ -z $ignition_dir && -z $output_dir && -z $cache_dir &&
@@ -337,6 +471,7 @@ if $check_only; then
   }
   echo "validated pinned installer manifest for $iso_filename"
   echo "validated $expected_asset_count-payload offline router manifest"
+  echo 'validated canonical operator key and minimal live-only SSH profile'
   exit 0
 fi
 
@@ -549,6 +684,16 @@ for index in "${!build_nodes[@]}"; do
     echo "expected one static IPv4 record in $ignition, found ${#address_records[@]}" >&2
     exit 1
   }
+  mapfile -t connection_uuid_records < <(awk -F= '$1 == "uuid" { print tolower($2) }' "$network_keyfile")
+  ((${#connection_uuid_records[@]} == 1)) || {
+    echo "expected one NetworkManager UUID in $ignition, found ${#connection_uuid_records[@]}" >&2
+    exit 1
+  }
+  expected_connection_uuid=${connection_uuid_records[0]}
+  [[ $expected_connection_uuid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
+    echo "invalid NetworkManager UUID recovered from $ignition" >&2
+    exit 1
+  }
   node_number=${node##*cp}
   [[ $node_number =~ ^[123]$ ]] || {
     echo "cannot derive fabric address from node name: $node" >&2
@@ -586,6 +731,7 @@ expected_disk_wwn='$disk_wwn'
 expected_mac='$mac'
 expected_ip='$expected_ip'
 expected_cidr='$expected_cidr'
+expected_connection_uuid='$expected_connection_uuid'
 expected_confirmation='$confirmation'
 router_asset_url='$router_asset_url'
 expected_asset_manifest_b64='$asset_manifest_b64'
@@ -701,11 +847,51 @@ current_mac=\$(<"/sys/class/net/\$interface/address")
 current_mac=\${current_mac,,}
 [[ \$current_mac == "\$expected_mac" ]] ||
   fail "permanent MAC matched \$interface, but its current address is \$current_mac"
-ip -4 -o address show dev "\$interface" |
-  awk '{ print \$4 }' | grep -Fxq "\$expected_cidr" ||
-  fail "expected static address is not active on \$interface"
-ip -4 route get 10.66.0.1 | grep -Eq "dev \$interface( |\$).*src \$expected_ip( |\$)" ||
-  fail 'the router route does not use the admitted interface and source address'
+command -v nmcli >/dev/null || fail 'nmcli is unavailable; the exact static profile cannot be activated'
+systemctl is-active --quiet NetworkManager.service ||
+  systemctl start NetworkManager.service ||
+  fail 'NetworkManager could not be started'
+nmcli connection reload || fail 'NetworkManager could not reload embedded profiles'
+if ! nmcli --wait 30 connection up uuid "\$expected_connection_uuid" ifname "\$interface" >/dev/null; then
+  nmcli --fields GENERAL.STATE,GENERAL.CONNECTION,GENERAL.CON-UUID,IP4.ADDRESS,IP4.GATEWAY \
+    device show "\$interface" >&2 || true
+  fail "exact static profile \$expected_connection_uuid could not activate on \$interface"
+fi
+active_connection_uuid=\$(nmcli --get-values GENERAL.CON-UUID device show "\$interface") ||
+  fail "NetworkManager could not report the active profile UUID on \$interface"
+[[ \$active_connection_uuid == "\$expected_connection_uuid" ]] ||
+  fail "NetworkManager activated unexpected profile \$active_connection_uuid on \$interface"
+network_ready=false
+for _ in {1..30}; do
+  if ip -4 -o address show dev "\$interface" |
+      awk '{ print \$4 }' | grep -Fxq "\$expected_cidr" &&
+      ip -4 route get 10.66.0.1 |
+      grep -Eq "dev \$interface( |\$).*src \$expected_ip( |\$)"; then
+    network_ready=true
+    break
+  fi
+  sleep 1
+done
+if ! \$network_ready; then
+  nmcli --fields GENERAL.STATE,GENERAL.CONNECTION,GENERAL.CON-UUID,IP4.ADDRESS,IP4.GATEWAY \
+    device show "\$interface" >&2 || true
+  fail "expected static address and router route did not become active on \$interface"
+fi
+
+if systemctl start sshd.service; then
+  for _ in {1..20}; do
+    [[ -s /etc/ssh/ssh_host_ed25519_key.pub ]] && break
+    sleep 0.25
+  done
+  if [[ -s /etc/ssh/ssh_host_ed25519_key.pub ]]; then
+    printf 'Live SSH:   core@%s from 10.66.0.2; host key %s\n' \
+      "\$expected_ip" "\$(ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub)"
+  else
+    printf 'Live SSH:   sshd started but its ED25519 host key is unavailable\n' >&2
+  fi
+else
+  printf 'Live SSH:   sshd failed to start; console confirmation remains available\n' >&2
+fi
 
 expected_manifest=\$(mktemp)
 actual_manifest=\$(mktemp)
@@ -762,6 +948,7 @@ offline: true
 EOF
 
   coreos-installer iso customize \
+    --live-ignition "$live_access_ignition" \
     --dest-device "$disk" \
     --dest-ignition "$ignition" \
     --installer-config "$installer_config" \
@@ -783,6 +970,7 @@ EOF
   verified_post_install=$workdir/$node-verified-post-install.sh
   verified_installer_config=$workdir/$node-verified-installer.yaml
   verified_customize_config=$workdir/$node-verified-customize.yaml
+  verified_live_access_ignition=$workdir/$node-verified-live-access.ign
   verified_network_dir=$workdir/$node-verified-network
 
   coreos-installer iso ignition show "$temporary" > "$verified_live_ignition"
@@ -827,7 +1015,14 @@ EOF
       "RequiredBy=coreos-installer.target"
     ] | join("\n")) as $expected_post_unit |
     {
-      no_ignition_merges: (((.ignition.config.merge // []) | length) == 0),
+      exact_live_access_merge:
+        (((.ignition.config.merge // []) | length) == 1) and
+        ((.ignition.config.merge[0] | keys | sort) ==
+          (["compression", "source"] | sort)) and
+        (.ignition.config.merge[0].source | type == "string") and
+        (.ignition.config.merge[0].source | startswith("data:")) and
+        ((.ignition.config.merge[0].compression // "") | IN("", "gzip")) and
+        ((.ignition.config.merge[0].verification // null) == null),
       no_ignition_replace: ((.ignition.config.replace // null) == null),
       exact_storage_shape: ((.storage | keys | sort) == ["files"]),
       exact_file_count: ((.storage.files | length) == 5),
@@ -855,6 +1050,25 @@ EOF
     printf '%s\n' "$failed_live_checks" >&2
     exit 1
   fi
+
+  live_access_source=$(jq -r '.ignition.config.merge[0].source' "$verified_live_ignition")
+  live_access_compression=$(jq -r '.ignition.config.merge[0].compression // ""' "$verified_live_ignition")
+  decode_data_url \
+    "$live_access_source" \
+    "$live_access_compression" \
+    "$verified_live_access_ignition"
+  chmod 0600 -- "$verified_live_access_ignition"
+  cmp --silent \
+    <(jq --sort-keys --compact-output \
+      'walk(if type == "object" then with_entries(select(.value != null)) else . end)' \
+      "$live_access_ignition") \
+    <(jq --sort-keys --compact-output \
+      'walk(if type == "object" then with_entries(select(.value != null)) else . end)' \
+      "$verified_live_access_ignition") || {
+    echo "customized ISO live-access Ignition differs from its source: $node" >&2
+    exit 1
+  }
+  validate_live_access_ignition "$verified_live_access_ignition"
 
   extract_embedded_ignition_file \
     "$verified_live_ignition" \

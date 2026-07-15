@@ -1,0 +1,52 @@
+variant: fcos
+version: 1.5.0
+
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+
+storage:
+  files:
+    - path: /etc/ssh/sshd_config.d/90-fabric-installer-live.conf
+      overwrite: true
+      mode: 384
+      contents:
+        inline: |
+          AuthenticationMethods publickey
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitEmptyPasswords no
+          PermitRootLogin no
+          AllowUsers core@10.66.0.2
+          DisableForwarding yes
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          GatewayPorts no
+          PermitTunnel no
+          X11Forwarding no
+          UseDNS no
+
+systemd:
+  units:
+    - name: sshd.service
+      enabled: true
+
+    - name: fabric-installer-live-ssh.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Start live installer SSH before automatic installation
+        Wants=sshd.service
+        After=sshd.service
+        Before=coreos-installer.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/systemctl is-active --quiet sshd.service
+
+        [Install]
+        WantedBy=coreos-installer.service
