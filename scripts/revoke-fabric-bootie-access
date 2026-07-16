@@ -125,22 +125,28 @@ if sudo --non-interactive ip netns exec fabric-observer \
 fi
 
 ssh_options=(
+  -F /dev/null
   -o BatchMode=yes
   -o ClearAllForwardings=yes
   -o ConnectTimeout=5
+  -o ControlMaster=no
+  -o ControlPath=none
   -o ForwardAgent=no
+  -o GlobalKnownHostsFile=/dev/null
   -o IdentitiesOnly=yes
   -o PermitLocalCommand=no
   -o ProxyCommand=none
   -o ProxyJump=none
   -o RequestTTY=no
   -o StrictHostKeyChecking=yes
+  -o UpdateHostKeys=no
   -o "UserKnownHostsFile=$known_hosts"
   -i "$identity"
 )
 ssh_root() {
   # shellcheck disable=SC2029
-  ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+  ip netns exec fabric-observer \
+    ssh "${ssh_options[@]}" "sam@$root_address" "$@"
 }
 root_kubectl() {
   ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \

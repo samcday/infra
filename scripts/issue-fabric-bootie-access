@@ -86,7 +86,7 @@ done
   exit 2
 }
 
-for command in base64 date git jq kubectl mktemp mv openssl realpath sha256sum ssh stat tr; do
+for command in base64 date git ip jq kubectl mktemp mv openssl realpath sha256sum ssh stat tr; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 
@@ -126,23 +126,29 @@ output_parent=$(dirname -- "$output_dir")
   die 'access output must be created on tmpfs, such as /dev/shm'
 
 ssh_options=(
+  -F /dev/null
   -o BatchMode=yes
   -o ClearAllForwardings=yes
   -o ConnectTimeout=5
+  -o ControlMaster=no
+  -o ControlPath=none
   -o ForwardAgent=no
+  -o GlobalKnownHostsFile=/dev/null
   -o IdentitiesOnly=yes
   -o PermitLocalCommand=no
   -o ProxyCommand=none
   -o ProxyJump=none
   -o RequestTTY=no
   -o StrictHostKeyChecking=yes
+  -o UpdateHostKeys=no
   -o "UserKnownHostsFile=$known_hosts"
   -i "$identity"
 )
 
 ssh_root() {
   # shellcheck disable=SC2029
-  ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+  ip netns exec fabric-observer \
+    ssh "${ssh_options[@]}" "sam@$root_address" "$@"
 }
 
 root_kubectl() {
@@ -292,16 +298,16 @@ jq -n \
   }' > "$work/kubeconfig"
 chmod 0600 "$work/ca.crt" "$work/kubeconfig" "$work/token"
 
-sudo ip netns exec fabric-observer \
+ip netns exec fabric-observer \
   kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
   get node fabric-az1-cp3 --output=name >/dev/null ||
   die 'the scoped token cannot read the cp3 placeholder through the observer path'
-if sudo ip netns exec fabric-observer \
+if ip netns exec fabric-observer \
   kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
   get node fabric-az1-cp1 --output=name >/dev/null 2>&1; then
   die 'the scoped token can unexpectedly read cp1'
 fi
-if sudo ip netns exec fabric-observer \
+if ip netns exec fabric-observer \
   kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
   get nodes --output=name >/dev/null 2>&1; then
   die 'the scoped token can unexpectedly list Nodes'
