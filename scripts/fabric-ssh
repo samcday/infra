@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: fabric-ssh <cp1|cp2> [remote-command [argument ...]]
+
+Connect end-to-end to a commissioned fabric root through sam-desktop's
+Tailnet identity and isolated fabric-observer namespace.
+EOF
+}
+
+die() {
+  printf 'fabric-ssh: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -ge 1 ]] || {
+  usage
+  exit 2
+}
+
+node=$1
+shift
+case $node in
+  cp1 | fabric-az1-cp1) address=10.66.0.10 ;;
+  cp2 | fabric-az1-cp2) address=10.66.0.11 ;;
+  *) die 'node must be cp1 or cp2; cp3 is not commissioned and pinned yet' ;;
+esac
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+known_hosts=$repo_root/fabric/access/known_hosts
+proxy_command="$script_dir/fabric-ssh-proxy %h %p"
+identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+
+[[ -f $known_hosts && ! -L $known_hosts ]] ||
+  die "strict host-key file is missing or unsafe: $known_hosts"
+[[ -r $identity ]] || die "SSH identity is not readable: $identity"
+
+ssh_arguments=(
+  -F /dev/null
+  -i "$identity"
+  -o BatchMode=yes
+  -o CanonicalizeHostname=no
+  -o CheckHostIP=no
+  -o ClearAllForwardings=yes
+  -o ConnectTimeout=10
+  -o ControlMaster=no
+  -o ControlPath=none
+  -o ControlPersist=no
+  -o ForwardAgent=no
+  -o GlobalKnownHostsFile=/dev/null
+  -o HostKeyAlgorithms=ssh-ed25519
+  -o IdentitiesOnly=yes
+  -o KbdInteractiveAuthentication=no
+  -o PasswordAuthentication=no
+  -o PermitLocalCommand=no
+  -o "ProxyCommand=$proxy_command"
+  -o StrictHostKeyChecking=yes
+  -o UpdateHostKeys=no
+  -o UserKnownHostsFile="$known_hosts"
+)
+
+if (($#)); then
+  printf -v remote_command '%q ' "$@"
+  exec ssh "${ssh_arguments[@]}" "sam@$address" "${remote_command% }"
+fi
+
+exec ssh "${ssh_arguments[@]}" "sam@$address"
