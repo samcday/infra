@@ -45,6 +45,11 @@ fi
 grep -Fq 'readonly fabric_network_lock=/run/lock/fabric-network-operation.lock' "$helper"
 [[ $(grep -Fc '  acquire_fabric_network_lock' "$helper") -eq 2 ]]
 grep -Fq "flock --exclusive --nonblock \"\$fabric_network_lock_fd\"" "$helper"
+# The daemonized supplicant must not inherit that lock after setup completes.
+grep -Fq '    exec {fabric_network_lock_fd}>&-' "$helper"
+# Assert literal source text, not test-shell expansion.
+# shellcheck disable=SC2016
+grep -Fq '    exec ip netns exec "$namespace" wpa_supplicant -B' "$helper"
 
 # A temporary fabric service may run after another ordinary home uplink has
 # appeared. It must use the isolation verifier, which retains the exact

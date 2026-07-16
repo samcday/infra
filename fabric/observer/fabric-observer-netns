@@ -1034,8 +1034,15 @@ do_setup() {
   strict_namespace_wdev_shape "$phy" "$wifi" ||
     die 'Wi-Fi PHY changed wdev shape while moving into the observer namespace'
   ip netns exec "$namespace" ip link set dev "$wifi" up
-  ip netns exec "$namespace" wpa_supplicant -B -D nl80211 -i "$wifi" \
-    -c "$supplicant_config" -P "$supplicant_pid"
+  # wpa_supplicant daemonizes, so explicitly close the operation-lock fd in
+  # the child before it forks. The setup process retains the lock until the
+  # namespace is fully verified, while the long-lived supplicant cannot pin
+  # the lock after setup returns.
+  (
+    exec {fabric_network_lock_fd}>&-
+    exec ip netns exec "$namespace" wpa_supplicant -B -D nl80211 -i "$wifi" \
+      -c "$supplicant_config" -P "$supplicant_pid"
+  )
   wait_for_association "$wifi"
   ip netns exec "$namespace" ip -4 address add "$observer_address" dev "$wifi"
 
