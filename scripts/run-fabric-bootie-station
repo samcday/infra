@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
 # shellcheck disable=SC1091
 source "$repo_root/scripts/lib/fabric-node-disk-policy.sh"
 readonly namespace=fabric-observer
@@ -87,7 +88,7 @@ else
   [[ -n $handoff_dir ]] || die '--handoff-dir is required in install mode'
 fi
 
-for command in awk curl dnsmasq flock git grep install ip jq kubectl podman readlink \
+for command in awk curl dnsmasq flock grep install ip jq kubectl podman readlink \
   realpath rmdir sha256sum sleep ss stat; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
