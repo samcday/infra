@@ -55,6 +55,7 @@ spec:
     deploymentStrategy:
       type: Recreate
     env:
+      BOOTIE_PUBLIC_ORIGIN: http://bootie.hub.samcday.com
       FCOS_BASE: http://10.0.1.1/static
       FCOS_VERSION: 42.20250803.3.0
     image:

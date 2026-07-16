@@ -1,0 +1,60 @@
+#!/bin/bash
+set -euo pipefail
+
+joined=$*
+if [[ -n ${FAKE_KUBECTL_LOG:-} ]]; then
+  printf '%s\n' "$joined" >> "$FAKE_KUBECTL_LOG"
+fi
+if [[ ${1:-} == annotate || ${1:-} == patch ]]; then
+  case ${2:-} in
+    node/test-node | node/fabric-az1-cp3) ;;
+    *)
+      echo "unexpected kubectl mutation target: $joined" >&2
+      exit 1
+      ;;
+  esac
+  if [[ ${1:-} == patch && ${FAIL_PATCH:-false} == true ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+case "$joined" in
+  "get node -o name fabric-az1-cp3")
+    echo node/fabric-az1-cp3
+    ;;
+  "get node -o name -l samcday.com/mac="*)
+    [[ ${FAIL_ON_LIST:-false} != true ]] || exit 1
+    echo node/test-node
+    ;;
+  "get node -o name -l samcday.com/serial="*)
+    [[ ${FAIL_ON_LIST:-false} != true ]] || exit 1
+    ;;
+  *samcday\\.com/mac*)
+    printf '%s' "${FAKE_MAC:-00-11-22-33-44-55}"
+    ;;
+  *samcday\\.com/serial*)
+    printf '%s' "${FAKE_SERIAL:-}"
+    ;;
+  *boot-device*)
+    printf '%s' "${FAKE_BOOT_DEVICE:-}"
+    ;;
+  *bootstrap-state*)
+    printf '%s' "${FAKE_BOOTSTRAP_STATE:-discovery}"
+    ;;
+  *ignition-token*)
+    printf '%s' "${FAKE_IGNITION_TOKEN:-fixed-token}"
+    ;;
+  *ignition-mode*)
+    printf '%s' "${FAKE_IGNITION_MODE:-install}"
+    ;;
+  *samcday\\.com/install*)
+    printf '%s' "${FAKE_INSTALL:-}"
+    ;;
+  *samcday\\.com/discovery*)
+    printf '%s' "${FAKE_DISCOVERY:-true}"
+    ;;
+  *)
+    echo "unexpected kubectl invocation: $joined" >&2
+    exit 1
+    ;;
+esac

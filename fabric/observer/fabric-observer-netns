@@ -39,6 +39,9 @@ Attended setup (copy the exact confirmation printed by check):
 Runtime verification:
   sudo fabric/observer/fabric-observer-netns verify
 
+Runtime isolation verification (permits unrelated root-namespace uplinks):
+  sudo fabric/observer/fabric-observer-netns verify-isolation
+
 Attended teardown (the exact confirmation is intentionally fixed):
   sudo fabric/observer/fabric-observer-netns teardown \
     --confirm TEARDOWN:fabric-observer
@@ -308,6 +311,33 @@ validate_root_uplink() {
     die 'could not inspect the root route to the fabric subnet'
   [[ -z "$exact_fabric" ]] ||
     die "root namespace already has a route for $observer_subnet in a policy-routing table"
+}
+
+validate_runtime_root_boundary() {
+  local uplink=$1 carrier exact_fabric
+
+  validate_interface_name uplink "$uplink"
+  [[ -e "/sys/class/net/$uplink" ]] || die "uplink does not exist: $uplink"
+  ! interface_is_wireless "$uplink" ||
+    die "tracked uplink must remain a separate non-Wi-Fi interface: $uplink"
+  [[ -e "/sys/class/net/$uplink/device" ]] ||
+    die "tracked uplink must remain a physical interface: $uplink"
+  [[ $(<"/sys/class/net/$uplink/type") == 1 ]] ||
+    die "tracked uplink is not an Ethernet-like physical interface: $uplink"
+
+  carrier=$(<"/sys/class/net/$uplink/carrier") ||
+    die "cannot read carrier for $uplink"
+  [[ "$carrier" == 1 ]] || die "tracked uplink has no carrier: $uplink"
+
+  # The sole-default check is an admission invariant: it prevents setup from
+  # accidentally marooning the operator. Once the complete Wi-Fi PHY is in
+  # this namespace, unrelated root uplinks do not weaken its isolation. A
+  # root-side route for the fabric subnet would weaken that boundary and is
+  # still forbidden here.
+  exact_fabric=$(ip -o -4 route show table all exact "$observer_subnet") ||
+    die 'could not inspect the root route to the fabric subnet'
+  [[ -z "$exact_fabric" ]] ||
+    die "root namespace has a route for $observer_subnet in a policy-routing table"
 }
 
 validate_wifi_admission() {
@@ -811,6 +841,7 @@ validate_runtime_boundary() {
 }
 
 verify_active() {
+  local root_policy=${1:-strict}
   local address_output route_output expected_routes ipv6_routes status actual_mac forwarding ipv6_forwarding root_phy ruleset
   local rules4 rules6 sysctl_value key
   local -a addresses=()
@@ -818,7 +849,11 @@ verify_active() {
   read_state
   [[ "$state_phase" == active ]] || die "observer namespace is not active (phase: $state_phase)"
   namespace_exists || die "network namespace is missing: $namespace"
-  validate_root_uplink "$state_uplink"
+  case $root_policy in
+    strict) validate_root_uplink "$state_uplink" ;;
+    isolation) validate_runtime_root_boundary "$state_uplink" ;;
+    *) die "internal error: unsupported observer root policy: $root_policy" ;;
+  esac
   [[ ! -e "/sys/class/net/$state_wifi" ]] || die 'Wi-Fi interface leaked back into the root namespace'
   if root_phy=$(iw phy "$state_phy" info 2>/dev/null); then
     [[ -z "$root_phy" ]] || die 'Wi-Fi PHY is still visible in the root namespace'
@@ -1005,7 +1040,7 @@ do_setup() {
   ip netns exec "$namespace" ip -4 address add "$observer_address" dev "$wifi"
 
   write_state active "$uplink" "$wifi" "$phy"
-  verify_active
+  verify_active strict
   trap - EXIT INT TERM
   note "Observer namespace is active and verified."
   note "Run fabric operations with: sudo ip netns exec $namespace COMMAND ..."
@@ -1095,8 +1130,16 @@ case "$action" in
     [[ -z "$uplink$wifi$psk_file$confirmation" ]] || die 'verify accepts no options'
     for command in nft sysctl wpa_cli; do need_command "$command"; done
     require_root
-    verify_active
+    verify_active strict
     note 'Observer namespace verification passed.'
+    ;;
+  verify-isolation)
+    [[ -z "$uplink$wifi$psk_file$confirmation" ]] ||
+      die 'verify-isolation accepts no options'
+    for command in nft sysctl wpa_cli; do need_command "$command"; done
+    require_root
+    verify_active isolation
+    note 'Observer namespace isolation verification passed.'
     ;;
   teardown)
     [[ -z "$uplink$wifi$psk_file" ]] || die 'teardown accepts only --confirm'

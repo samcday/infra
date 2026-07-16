@@ -46,6 +46,16 @@ grep -Fq 'readonly fabric_network_lock=/run/lock/fabric-network-operation.lock' 
 [[ $(grep -Fc '  acquire_fabric_network_lock' "$helper") -eq 2 ]]
 grep -Fq "flock --exclusive --nonblock \"\$fabric_network_lock_fd\"" "$helper"
 
+# A temporary fabric service may run after another ordinary home uplink has
+# appeared. It must use the isolation verifier, which retains the exact
+# root-side fabric-route prohibition without weakening setup admission.
+grep -Fq 'verify_active isolation' "$helper"
+# Assert literal source text, not test-shell expansion.
+# shellcheck disable=SC2016
+grep -Fq 'validate_runtime_root_boundary "$state_uplink"' "$helper"
+# shellcheck disable=SC2016
+grep -Fq 'root namespace has a route for $observer_subnet' "$helper"
+
 # A single `ip route` output line can still be ECMP and name more than one
 # device. Admission must reject that shape rather than trusting the first dev.
 (

@@ -1,0 +1,217 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+boot_request=$script_dir/../boot-request.sh
+export PATH="$script_dir/fake-bin:$PATH"
+export FCOS_VERSION=44.test
+export FCOS_BASE=http://10.66.0.2/static
+export FCOS_GRUB_BASE='(http,10.66.0.2)/static'
+export BOOTIE_PUBLIC_ORIGIN=http://10.66.0.2
+export QUERY_STRING=mac=00-11-22-33-44-55
+
+fail() {
+  echo "bootie test failed: $*" >&2
+  exit 1
+}
+
+assert_contains() {
+  local output=$1
+  local expected=$2
+  grep -Fq -- "$expected" <<< "$output" ||
+    fail "output does not contain: $expected"
+}
+
+assert_not_contains() {
+  local output=$1
+  local rejected=$2
+  if grep -Fq -- "$rejected" <<< "$output"; then
+    fail "output unexpectedly contains: $rejected"
+  fi
+}
+
+live_grub=$(
+  BOOT_FORMAT=grub \
+    FAKE_BOOT_DEVICE='' \
+    FAKE_DISCOVERY=true \
+    FAKE_INSTALL='' \
+    "$boot_request"
+)
+assert_contains "$live_grub" \
+  'linux (http,10.66.0.2)/static/fedora-coreos-44.test-live-kernel.x86_64'
+assert_contains "$live_grub" 'ignition.config.url=http://10.66.0.2/ignition/test-node?token='
+assert_contains "$live_grub" \
+  'initrd (http,10.66.0.2)/static/fedora-coreos-44.test-live-initramfs.x86_64.img'
+assert_not_contains "$live_grub" '#!ipxe'
+assert_not_contains "$live_grub" 'coreos.inst.install_dev='
+
+fixed_node=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    FAIL_ON_LIST=true \
+    FAKE_BOOT_DEVICE='' \
+    FAKE_DISCOVERY=true \
+    FAKE_INSTALL='' \
+    "$boot_request"
+)
+assert_contains "$fixed_node" \
+  'ignition.config.url=http://10.66.0.2/ignition/fabric-az1-cp3?token='
+
+wrong_fixed_mac=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    FAIL_ON_LIST=true \
+    FAKE_MAC=00-11-22-33-44-66 \
+    FAKE_BOOT_DEVICE='' \
+    FAKE_DISCOVERY=true \
+    FAKE_INSTALL='' \
+    "$boot_request" 2>&1
+)
+assert_contains "$wrong_fixed_mac" 'Status: 409 Conflict'
+assert_contains "$wrong_fixed_mac" 'the request MAC does not match node/fabric-az1-cp3'
+
+live_ipxe=$(
+  BOOT_FORMAT=ipxe \
+    FAKE_BOOT_DEVICE='' \
+    FAKE_DISCOVERY=true \
+    FAKE_INSTALL='' \
+    "$boot_request"
+)
+assert_contains "$live_ipxe" '#!ipxe'
+assert_contains "$live_ipxe" \
+  'kernel http://10.66.0.2/static/fedora-coreos-44.test-live-kernel.x86_64 initrd=main'
+
+not_armed=$(
+  BOOT_FORMAT=grub \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL='' \
+    "$boot_request"
+)
+assert_contains "$not_armed" '# Installation is not armed.'
+assert_not_contains "$not_armed" 'coreos.inst.install_dev='
+
+install_grub=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOTSTRAP_STATE=install-armed \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request"
+)
+assert_contains "$install_grub" \
+  'coreos.inst.install_dev=/dev/disk/by-id/ata-approved'
+assert_contains "$install_grub" '\&install=1'
+
+wrong_bootstrap_state=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOTSTRAP_STATE=discovery \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$wrong_bootstrap_state" 'Status: 409 Conflict'
+assert_contains "$wrong_bootstrap_state" 'without the reviewed bootstrap state'
+assert_not_contains "$wrong_bootstrap_state" 'coreos.inst.install_dev='
+
+for grub_response in "$live_grub" "$fixed_node" "$install_grub"; do
+  grub_body=${grub_response#*$'\n\n'}
+  grub2-script-check /dev/stdin <<< "$grub_body"
+done
+
+wrong_device=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-wrong \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$wrong_device" 'Status: 409 Conflict'
+assert_contains "$wrong_device" 'the declared boot device does not match install policy'
+assert_not_contains "$wrong_device" 'coreos.inst.install_dev='
+
+missing_policy=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$missing_policy" 'Status: 409 Conflict'
+assert_contains "$missing_policy" 'the required install policy is unavailable'
+
+invalid_format=$(
+  BOOT_FORMAT=pxelinux \
+    FAKE_BOOT_DEVICE='' \
+    FAKE_DISCOVERY=true \
+    FAKE_INSTALL='' \
+    "$boot_request" 2>&1
+)
+assert_contains "$invalid_format" 'Status: 500 Internal Server Error'
+
+fixed_dir=$(mktemp -d)
+trap 'rm -rf -- "$fixed_dir"' EXIT
+install -m 0600 "$script_dir/fixtures/fixed-ignition.ign" \
+  "$fixed_dir/fabric-az1-cp3.ign"
+mutation_log=$fixed_dir/kubectl-mutations.log
+fixed_ignition=$(
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    FAKE_KUBECTL_LOG="$mutation_log" \
+    FAKE_DISCOVERY=false \
+    FAKE_IGNITION_MODE=install \
+    FAKE_IGNITION_TOKEN=fixed-token \
+    QUERY_STRING='token=fixed-token&install=1' \
+    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    "$script_dir/../generate-ignition.sh"
+)
+assert_contains "$fixed_ignition" 'content-type: application/json'
+grep -Fq 'patch node/fabric-az1-cp3 --type=json --patch' "$mutation_log" ||
+  fail 'fixed Ignition request did not consume its one-use token'
+fixed_body=${fixed_ignition#*$'\n\n'}
+jq -e '
+  .ignition.version == "3.4.0" and
+  .storage.files[0].path == "/etc/bootie-fixed-profile"
+' <<< "$fixed_body" >/dev/null || fail 'fixed Ignition response changed'
+
+fixed_live_refusal=$(
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    FAKE_DISCOVERY=false \
+    FAKE_IGNITION_MODE=live \
+    FAKE_IGNITION_TOKEN=fixed-token \
+    QUERY_STRING='token=fixed-token' \
+    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    "$script_dir/../generate-ignition.sh" 2>&1
+)
+assert_contains "$fixed_live_refusal" 'Status: 403 Forbidden'
+assert_not_contains "$fixed_live_refusal" '/etc/bootie-fixed-profile'
+
+failed_consumption=$(
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    FAIL_PATCH=true \
+    FAKE_DISCOVERY=false \
+    FAKE_IGNITION_MODE=install \
+    FAKE_IGNITION_TOKEN=fixed-token \
+    QUERY_STRING='token=fixed-token&install=1' \
+    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    "$script_dir/../generate-ignition.sh" 2>&1
+)
+assert_contains "$failed_consumption" 'Status: 409 Conflict'
+assert_contains "$failed_consumption" 'ignition token was already consumed'
+assert_not_contains "$failed_consumption" '/etc/bootie-fixed-profile'
+
+echo 'bootie request tests passed'

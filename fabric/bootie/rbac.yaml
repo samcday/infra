@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bootie
+  labels:
+    fabric.samcday.com/purpose: cp3-bootstrap
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fabric-cp3-bootie
+  namespace: bootie
+  labels:
+    fabric.samcday.com/purpose: cp3-bootstrap
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fabric-cp3-bootie
+  labels:
+    fabric.samcday.com/purpose: cp3-bootstrap
+rules:
+  - apiGroups:
+      - ""
+    resourceNames:
+      - fabric-az1-cp3
+    resources:
+      - nodes
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fabric-cp3-bootie
+  labels:
+    fabric.samcday.com/purpose: cp3-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fabric-cp3-bootie
+subjects:
+  - kind: ServiceAccount
+    name: fabric-cp3-bootie
+    namespace: bootie

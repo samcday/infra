@@ -2,15 +2,23 @@
 
 bootie is a simple container to facilitate PXE booting k8s nodes with FCOS.
 
-It has two HTTP endpoints:
+It has three HTTP endpoints:
 
  * `/boot.ipxe?mac=&serial=`. iPXE clients chain this URL and receive
    instructions to boot FCOS. If no k8s Node yet exists matching the MAC or
    serial, a petname is generated and the Node is created.
+ * `/boot.grub?mac=&serial=`. A signed GRUB chain can request the same decision
+   as GRUB commands. Set `FCOS_GRUB_BASE` to GRUB's network-device path, for
+   example `(http,10.66.0.2)/static`; `FCOS_BASE` remains the ordinary URL used
+   in the FCOS rootfs kernel argument.
  * `/ignition/<node>`. This generates the appropriate Ignition config to
    provision the Node. It's assumes that an `/ignition` directory exists
    which contains, at a minimum, a `base.ign` config. Additional profiles
    can be selected by annotating the node with `samcday.com/boot-profiles`.
+
+`BOOTIE_PUBLIC_ORIGIN` is required and supplies the fixed HTTP(S) origin in
+every generated Ignition URL. Bootie never trusts the request's `Host` header
+for this security-sensitive redirect.
 
 ## Installation safety
 
@@ -22,6 +30,24 @@ Bootie treats disk identity and permission to install as separate concerns:
   Bootie atomically removes this annotation before it returns installer kernel
   arguments. If the boot fails before installation completes, an operator must
   explicitly arm the Node again.
+* Setting `BOOTIE_REQUIRE_INSTALL_POLICY=true` additionally requires
+  `BOOTIE_INSTALL_POLICY_FILE`. Each non-comment record in that read-only file
+  is exactly `NODE DEVICE`. An armed response is refused unless it finds one
+  record for the Node and the annotated boot device matches it byte-for-byte.
+* A bounded ceremony can set `BOOTIE_REQUIRE_BOOTSTRAP_STATE=true`. An armed
+  response is then accepted only from
+  `fabric.samcday.com/bootstrap-state=install-armed`; consuming the response
+  atomically advances that state to `install-response-issued` alongside the
+  one-use Ignition token.
+* A single-machine station can set `BOOTIE_NODE_NAME` and
+  `BOOTIE_ALLOW_NODE_CREATE=false`. Bootie then reads only that predeclared
+  Node, verifies the request MAC or serial against its labels, and refuses
+  unknown hardware without needing permission to list or create Nodes.
+* That station can also set `BOOTIE_FIXED_IGNITION_FILE` to a mode-0600,
+  read-only, complete Ignition JSON file. Bootie returns it only when the URL
+  Node matches `BOOTIE_NODE_NAME`, discovery mode is cleared, and a valid
+  one-use install token has already been consumed. Generic profile merging is
+  unchanged when this setting is absent.
 
 Every PXE response carries a random `samcday.com/ignition-token` bound to an
 `install` or `live` mode. The Ignition endpoint atomically verifies and
@@ -29,6 +55,10 @@ consumes both before returning any profile. Appending `install=1` to a guessed
 or live-mode URL therefore cannot bypass the install arm, and concurrent
 requests cannot both consume the same authorization. This is a one-use safety
 token, not a replacement for keeping Bootie on an isolated LAN.
+
+The container also serves a mounted `/pxe` directory beneath `/static/`. This
+is intended for a pinned kernel, initramfs and rootfs; directory listings are
+disabled. Bootie does not download or verify those artifacts itself.
 
 A declared Node with a boot device but no install arm receives an iPXE `exit`
 and continues to its local boot device. An unknown Node, or a declared Node

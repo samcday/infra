@@ -95,13 +95,53 @@ topology, active/inactive namespace IDs, the SMART log, up to 64 existing error
 log entries, and the existing device-self-test log. `nvme error-log` and
 `nvme self-test-log` are queries; the inventory does not start a self-test.
 
-This ISO never installs or writes a target disk. Do not confuse it with the
-later node-specific, confirmation-gated installer images described below.
+This ISO never installs or writes a target disk. Do not confuse it with either
+the node-specific, confirmation-gated installer images or the separately
+guarded cp3 network-install handoff described below.
 
-The initial three consensus nodes use local Fedora CoreOS ISO media, not PXE
-or Bootie. `fcos-live-iso.txt` pins the exact official x86_64 live ISO, its
-SHA-256 digest, and detached signature URL. Changing the stream pointer is not
-enough: update and review all four fields together.
+`fcos-live-iso.txt` pins the exact official x86_64 live ISO, its SHA-256
+digest, and detached signature URL for both local media and the temporary cp3
+PXE tree. Changing the stream pointer is not enough: update and review all
+four fields together.
+
+## Temporary cp3-only PXE ceremony
+
+Cp1 and cp2 use their already-manufactured node-local media. A bounded
+exception permits the final, already-declared `fabric-az1-cp3` member to use
+the observer-hosted Bootie station in `fabric/bootie/README.md`; it is not a
+general replacement for the offline media path below.
+
+The discovery stage compiles this directory's `inventory-live.bu` and exposes
+no install target or cp3 secret. DHCP answers only the reviewed permanent MAC,
+leases only `10.66.0.100`, and supplies neither a router nor DNS. Preserve and
+review the same hardware, TPM, NIC, and storage evidence required for local
+inventory media before proceeding.
+
+After admission, use `scripts/prepare-fabric-cp3-bootie-handoff` to render one
+complete cp3 Ignition plus its hash-bound one-record install policy into
+verified tmpfs. Keep it mode `0600`; never copy it into the public PXE stage,
+Git, a Kubernetes Secret, the router, or durable station storage. The
+candidate's exact whole-disk
+`/dev/disk/by-id/ata-*` or lowercase `nvme-eui.*` identity must be committed to
+policy before the helper will create a handoff. After the install-mode station
+reports ready, `scripts/arm-fabric-cp3-bootie-install` requires Sam's exact
+full-device confirmation and atomically places that same identity on the
+predeclared cp3 Node with one install arm. Bootie refuses installation while
+the Node remains in discovery mode and atomically consumes the explicit arm
+before emitting one installer response. A failed attempt must be reviewed and
+deliberately re-armed; it is never an invitation to retry against a less stable
+device name.
+
+The pinned shim, GRUB, and kernel retain their Secure Boot signature chain,
+but this path is not authenticated netboot. Its TFTP GRUB configuration and
+HTTP configuration, initramfs, rootfs, and Ignition transport are not
+protected end to end. Exact-MAC matching is not hardware authentication, so
+the isolated, physically trusted L2 remains part of the ceremony. Cp1 and cp2
+Ignitions are never mounted. Stop the station, revoke its temporary RBAC,
+zero the projected token, and discard the tmpfs handoff immediately after cp3
+is installed or the attempt is abandoned.
+
+## Node-local installer media
 
 The same guarded writer also accepts the non-installing
 `fabric-inventory-live.iso` used for the first read-only hardware capture. It
@@ -111,7 +151,8 @@ with an installer-image ceremony. Keep the inventory ISO and its adjacent
 checksum outside Git as mode-`0600` regular files, inspect the USB in a dry run,
 and copy only the exact confirmation emitted for that image and device.
 
-The eventual installer artifacts are three separate secret-bearing images:
+The node-local installation path produces three separate secret-bearing
+images. Cp1 and cp2 use this path; cp3 media remains the offline fallback:
 
 - `fabric-az1-cp1-installer.iso`
 - `fabric-az1-cp2-installer.iso`
@@ -196,7 +237,7 @@ evidence paths and SHA-256 digests, not private keys, recovery material,
 Ignition contents, or decrypted secrets. A completed record is evidence for
 review, not permission to skip any installer-side identity gate.
 
-The local-console ceremony is deliberate:
+The node-local-media console ceremony is deliberate:
 
 1. Rewrite the installer thumb drive with exactly one node's customized ISO
    using `scripts/write-fabric-installer-usb`; its guarded apply path flushes

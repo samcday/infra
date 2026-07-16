@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-node-disk-policy.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  prepare-fabric-cp3-bootie-handoff \
+    --stage-dir /trusted/fabric-cp3-pxe \
+    --disk /dev/disk/by-id/EXACT_COMMITTED_CP3_DISK \
+    --output-dir /dev/shm/fabric-cp3-install
+
+Renders the complete cp3 Ignition and an independently checked one-record
+install policy into a new mode-0700 tmpfs directory. This does not arm Bootie
+or write the disk. It refuses every disk until cp3's exact reviewed identity
+is committed to scripts/lib/fabric-node-disk-policy.sh.
+EOF
+}
+
+die() {
+  echo "prepare-fabric-cp3-bootie-handoff: $*" >&2
+  exit 1
+}
+
+stage_dir=
+disk=
+output_dir=
+while (($#)); do
+  case $1 in
+    --stage-dir)
+      (($# >= 2)) || die '--stage-dir requires a value'
+      stage_dir=$2
+      shift 2
+      ;;
+    --disk)
+      (($# >= 2)) || die '--disk requires a value'
+      disk=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      output_dir=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $stage_dir && -n $disk && -n $output_dir ]] || { usage; exit 2; }
+for command in awk chmod date find git jq mktemp mv realpath rm rmdir sha256sum \
+  stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+stage_dir=$(realpath -e -- "$stage_dir")
+[[ -d $stage_dir && ! -L $stage_dir ]] || die 'stage directory is invalid'
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+mac=$(< "$stage_dir/FABRIC_CP3_MAC")
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
+fabric_validate_node_disk_destination fabric-az1-cp3 "$disk" ||
+  die 'requested disk does not match the committed cp3 admission'
+
+output_dir=$(realpath -m -- "$output_dir")
+case $output_dir in
+  "$repo_root" | "$repo_root"/*) die 'handoff output must remain outside Git' ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || die 'handoff output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'handoff parent must be an existing non-symlink directory'
+[[ $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'handoff output must be created on tmpfs, such as /dev/shm'
+
+work=$(mktemp -d -- "$output_parent/.fabric-cp3-handoff.XXXXXXXX")
+chmod 0700 "$work"
+succeeded=false
+cleanup() {
+  if [[ $succeeded != true ]]; then
+    rm -rf -- "$work"
+  fi
+}
+trap cleanup EXIT
+
+rendered=$work/rendered
+FABRIC_CP3_MAC="$mac" \
+  "$repo_root/fabric/butane/bootstrap.sh" --node fabric-az1-cp3 "$rendered"
+fixed_ignition=$rendered/fabric-az1-cp3.ign
+[[ -f $fixed_ignition && ! -L $fixed_ignition ]] ||
+  die 'cp3 renderer did not produce its exact Ignition file'
+[[ $(stat -Lc '%a:%h' "$fixed_ignition") == 600:1 ]] ||
+  die 'rendered cp3 Ignition has unsafe permissions or links'
+jq -e '
+  type == "object" and
+  (.ignition.version | type == "string" and test("^3\\.[0-9]+\\.[0-9]+$"))
+' "$fixed_ignition" >/dev/null || die 'rendered cp3 Ignition is invalid'
+
+mv -- "$fixed_ignition" "$work/fabric-az1-cp3.ign"
+rmdir -- "$rendered"
+printf '%s %s\n' fabric-az1-cp3 "$disk" > "$work/install-policy"
+chmod 0600 "$work/install-policy"
+ignition_sha256=$(sha256sum "$work/fabric-az1-cp3.ign" | awk '{print $1}')
+policy_sha256=$(sha256sum "$work/install-policy" | awk '{print $1}')
+disk_policy_sha256=$(sha256sum \
+  "$repo_root/scripts/lib/fabric-node-disk-policy.sh" | awk '{print $1}')
+jq -n \
+  --arg mac "$mac" \
+  --arg disk "$disk" \
+  --arg ignition_sha256 "$ignition_sha256" \
+  --arg policy_sha256 "$policy_sha256" \
+  --arg disk_policy_sha256 "$disk_policy_sha256" \
+  --arg repo_commit "$(git -C "$repo_root" rev-parse HEAD)" \
+  --arg created_at "$(date --utc --iso-8601=seconds)" \
+  '{
+    schema: 1,
+    node: "fabric-az1-cp3",
+    mac: $mac,
+    bootDevice: $disk,
+    ignition: {
+      file: "fabric-az1-cp3.ign",
+      sha256: $ignition_sha256
+    },
+    installPolicy: {
+      file: "install-policy",
+      sha256: $policy_sha256
+    },
+    diskPolicySha256: $disk_policy_sha256,
+    repoCommit: $repo_commit,
+    createdAt: $created_at
+  }' > "$work/handoff.json"
+chmod 0600 "$work/handoff.json"
+
+[[ $(find "$work" -mindepth 1 -maxdepth 1 -type f | wc -l) -eq 3 ]] ||
+  die 'handoff contains an unexpected top-level payload'
+mv -T -- "$work" "$output_dir"
+work=$output_dir
+succeeded=true
+
+printf 'prepared unarmed cp3 Bootie handoff at %s\n' "$output_dir"
+printf 'cp3 MAC: %s\n' "$mac"
+printf 'authorized policy candidate: %s\n' "$disk"
+printf 'Ignition SHA-256: %s\n' "$ignition_sha256"
+printf 'No Node annotation changed and no disk was written.\n'

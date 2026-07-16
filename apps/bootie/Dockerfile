@@ -39,4 +39,4 @@ COPY generate-ignition.sh /usr/local/bin/generate-ignition
 COPY boot-request.sh /usr/local/bin/boot-request
 
 RUN chmod +x /bin/run /usr/local/bin/generate-ignition /usr/local/bin/boot-request
-ENTRYPOINT /bin/run
+ENTRYPOINT ["/bin/run"]

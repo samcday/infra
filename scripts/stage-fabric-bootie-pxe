@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  stage-fabric-bootie-pxe \
+    --iso /trusted/fedora-coreos-VERSION-live-iso.x86_64.iso \
+    --mac 00:11:22:33:44:55 \
+    --output-dir /trusted/fabric-cp3-pxe
+
+Stages a cp3-only, exact-MAC, Secure-Boot-preserving PXE tree. The input ISO
+must exactly match fabric/installer/fcos-live-iso.txt. The output contains only
+public boot artifacts and the non-installing discovery profile; it never
+contains a node installer or cp3 secrets.
+EOF
+}
+
+die() {
+  echo "stage-fabric-bootie-pxe: $*" >&2
+  exit 1
+}
+
+iso=
+mac=
+output_dir=
+while (($#)); do
+  case $1 in
+    --iso)
+      (($# >= 2)) || die '--iso requires a value'
+      iso=$2
+      shift 2
+      ;;
+    --mac)
+      (($# >= 2)) || die '--mac requires a value'
+      mac=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      output_dir=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $iso && -n $mac && -n $output_dir ]] || { usage; exit 2; }
+
+for command in bsdtar butane coreos-installer git jq mcopy mktemp mv realpath sbverify sed sha256sum; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+iso=$(realpath -e -- "$iso")
+[[ -f $iso && ! -L $iso ]] || die 'the ISO must be a non-symlink regular file'
+final_output_dir=$(realpath -m -- "$output_dir")
+case $final_output_dir in
+  "$repo_root" | "$repo_root"/*) die 'output must remain outside the Git worktree' ;;
+esac
+[[ ! -e $final_output_dir && ! -L $final_output_dir ]] || die 'output already exists'
+output_parent=$(dirname -- "$final_output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'output parent must be an existing non-symlink directory'
+
+mac=${mac,,}
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'invalid MAC address'
+first_octet=${mac%%:*}
+(( (16#$first_octet & 1) == 0 )) || die 'multicast MAC addresses are forbidden'
+(( (16#$first_octet & 2) == 0 )) || die 'locally administered MAC addresses are forbidden'
+[[ $mac != 00:00:00:00:00:00 ]] || die 'the all-zero MAC is forbidden'
+mac_hexhyp=${mac//:/-}
+
+pin_file=$repo_root/fabric/installer/fcos-live-iso.txt
+mapfile -t fcos_pin < "$pin_file"
+((${#fcos_pin[@]} == 4)) || die 'the FCOS ISO pin must contain exactly four lines'
+expected_name=${fcos_pin[0]}
+expected_url=${fcos_pin[1]}
+expected_sha256=${fcos_pin[2]}
+[[ $(basename -- "$iso") == "$expected_name" ]] || die 'ISO basename does not match the pin'
+[[ $(basename -- "$expected_url") == "$expected_name" ]] || die 'pinned URL basename is inconsistent'
+[[ $expected_sha256 =~ ^[0-9a-f]{64}$ ]] || die 'pinned ISO SHA-256 is malformed'
+actual_sha256=$(sha256sum "$iso" | awk '{print $1}')
+[[ $actual_sha256 == "$expected_sha256" ]] || die 'ISO SHA-256 does not match the pin'
+version=${expected_name#fedora-coreos-}
+version=${version%-live-iso.x86_64.iso}
+[[ -n $version && $version != "$expected_name" ]] || die 'could not derive FCOS version'
+
+work=$(fabric_secure_tmpdir fabric-bootie-pxe 33554432)
+staging_dir=$(mktemp -d -- "$output_parent/.fabric-bootie-pxe.XXXXXXXX")
+chmod 0755 "$staging_dir"
+output_dir=$staging_dir
+cleanup() {
+  rm -rf -- "$work"
+  if [[ -n ${staging_dir:-} ]]; then
+    rm -rf -- "$staging_dir"
+  fi
+}
+trap cleanup EXIT
+
+install -d -m 0755 \
+  "$output_dir/ignition" \
+  "$output_dir/ignition/common" \
+  "$output_dir/static" \
+  "$output_dir/tftp" \
+  "$output_dir/tftp/EFI" \
+  "$output_dir/tftp/EFI/BOOT"
+
+coreos-installer iso extract pxe --output-dir "$output_dir/static" "$iso"
+kernel_source=$output_dir/static/fedora-coreos-$version-live-iso.x86_64-vmlinuz
+initrd_source=$output_dir/static/fedora-coreos-$version-live-iso.x86_64-initrd.img
+rootfs_source=$output_dir/static/fedora-coreos-$version-live-iso.x86_64-rootfs.img
+for artifact in "$kernel_source" "$initrd_source" "$rootfs_source"; do
+  [[ -f $artifact && ! -L $artifact ]] || die "missing extracted PXE artifact: $artifact"
+  chmod 0644 "$artifact"
+done
+ln "$kernel_source" \
+  "$output_dir/static/fedora-coreos-$version-live-kernel.x86_64"
+ln "$initrd_source" \
+  "$output_dir/static/fedora-coreos-$version-live-initramfs.x86_64.img"
+ln "$rootfs_source" \
+  "$output_dir/static/fedora-coreos-$version-live-rootfs.x86_64.img"
+
+bsdtar -xf "$iso" -C "$work" images/efiboot.img
+efi_image=$work/images/efiboot.img
+[[ -f $efi_image ]] || die 'the verified ISO has no EFI boot image'
+mcopy -i "$efi_image" ::/EFI/BOOT/BOOTX64.EFI \
+  "$output_dir/tftp/EFI/BOOT/BOOTX64.EFI"
+mcopy -i "$efi_image" ::/EFI/BOOT/GRUBX64.EFI \
+  "$output_dir/tftp/EFI/BOOT/grubx64.efi"
+mcopy -i "$efi_image" ::/EFI/BOOT/MMX64.EFI \
+  "$output_dir/tftp/EFI/BOOT/mmx64.efi"
+chmod 0644 \
+  "$output_dir/tftp/EFI/BOOT/BOOTX64.EFI" \
+  "$output_dir/tftp/EFI/BOOT/grubx64.efi" \
+  "$output_dir/tftp/EFI/BOOT/mmx64.efi"
+
+shim_signatures=$(sbverify --list "$output_dir/tftp/EFI/BOOT/BOOTX64.EFI" 2>&1)
+grub_signatures=$(sbverify --list "$output_dir/tftp/EFI/BOOT/grubx64.efi" 2>&1)
+kernel_signatures=$(sbverify --list "$kernel_source" 2>&1)
+grep -Fq 'Microsoft Corporation UEFI CA 2011' <<< "$shim_signatures" ||
+  die 'the ISO shim lacks the expected Microsoft UEFI signature chain'
+grep -Fq 'Fedora Secure Boot CA' <<< "$grub_signatures" ||
+  die 'the ISO GRUB lacks the expected Fedora signature chain'
+grep -Fq 'Fedora Secure Boot CA' <<< "$kernel_signatures" ||
+  die 'the FCOS kernel lacks the expected Fedora signature chain'
+
+install -m 0644 "$repo_root/fabric/bootie/grub.cfg.in" \
+  "$output_dir/tftp/EFI/BOOT/grub.cfg"
+sed -i "s/@FABRIC_CP3_MAC_HEXHYP@/$mac_hexhyp/g" \
+  "$output_dir/tftp/EFI/BOOT/grub.cfg"
+grep -Fq "mac=$mac_hexhyp" "$output_dir/tftp/EFI/BOOT/grub.cfg" ||
+  die 'the GRUB request was not bound to the selected MAC'
+
+install -m 0644 "$repo_root/fabric/bootie/dnsmasq.conf.in" \
+  "$output_dir/dnsmasq.conf"
+sed -i "s/@FABRIC_CP3_MAC@/$mac/g" "$output_dir/dnsmasq.conf"
+grep -Fq "dhcp-host=$mac,set:cp3,10.66.0.100,infinite" "$output_dir/dnsmasq.conf" ||
+  die 'the DHCP configuration was not bound to the selected MAC'
+grep -Fxq 'tftp-root=/run/fabric-bootie/tftp' "$output_dir/dnsmasq.conf" ||
+  die 'the TFTP root is not the station runtime snapshot'
+
+butane --strict \
+  --files-dir "$repo_root" \
+  --output "$output_dir/ignition/common/discovery.ign" \
+  "$repo_root/fabric/installer/inventory-live.bu"
+chmod 0644 "$output_dir/ignition/common/discovery.ign"
+install -m 0644 /dev/null "$output_dir/install-policy"
+
+printf '%s\n' "$version" > "$output_dir/FCOS_VERSION"
+printf '%s\n' "$mac" > "$output_dir/FABRIC_CP3_MAC"
+chmod 0644 "$output_dir/FCOS_VERSION" "$output_dir/FABRIC_CP3_MAC"
+
+jq -n \
+  --arg mac "$mac_hexhyp" \
+  '{
+    apiVersion: "v1",
+    kind: "Node",
+    metadata: {
+      name: "fabric-az1-cp3",
+      annotations: {
+        "fabric.samcday.com/bootstrap-state": "discovery"
+      },
+      labels: {
+        "fabric.samcday.com/bootstrap-placeholder": "true",
+        "samcday.com/discovery": "true",
+        "samcday.com/mac": $mac
+      }
+    }
+  }' > "$output_dir/node-discovery.json"
+chmod 0644 "$output_dir/node-discovery.json"
+
+if command -v dnsmasq >/dev/null; then
+  dnsmasq --test --conf-file="$output_dir/dnsmasq.conf" >/dev/null
+fi
+
+(cd "$output_dir" && sha256sum \
+  dnsmasq.conf \
+  FABRIC_CP3_MAC \
+  FCOS_VERSION \
+  ignition/common/discovery.ign \
+  install-policy \
+  node-discovery.json \
+  static/* \
+  tftp/EFI/BOOT/*) > "$output_dir/SHA256SUMS"
+chmod 0644 "$output_dir/SHA256SUMS"
+
+mv -T -- "$staging_dir" "$final_output_dir"
+staging_dir=
+output_dir=$final_output_dir
+
+printf 'staged FCOS %s secure cp3 PXE for %s at %s\n' \
+  "$version" "$mac" "$output_dir"
+printf 'source ISO SHA-256: %s\n' "$actual_sha256"
+printf 'serve Bootie at 10.66.0.2 with FCOS_BASE=http://10.66.0.2/static\n'
+printf 'and FCOS_GRUB_BASE=(http,10.66.0.2)/static\n'

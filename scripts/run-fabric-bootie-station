@@ -1,0 +1,525 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-node-disk-policy.sh"
+readonly namespace=fabric-observer
+readonly station_name=fabric-cp3-bootie
+readonly runtime_dir=/run/fabric-bootie
+readonly operation_lock=/run/lock/fabric-network-operation.lock
+
+usage() {
+  cat >&2 <<'EOF'
+Usage (run as a long-lived root service):
+  run-fabric-bootie-station \
+    --mode discovery|install \
+    --stage-dir /trusted/fabric-cp3-pxe \
+    --access-dir /trusted/fabric-cp3-bootie-access \
+    --image localhost/fabric-bootie:cp3 \
+    [--handoff-dir /dev/shm/fabric-cp3-install.XXXXXXXX]
+
+The station holds /run/lock/fabric-network-operation.lock for its entire
+lifetime, serves exact-MAC DHCP/TFTP plus Bootie only inside fabric-observer,
+and tears both processes down together. Start it through a transient systemd
+service so the lock and services survive an interactive shell disconnect.
+
+Discovery uses only the public, non-arming Ignition and empty policy in the
+staged PXE tree. Install mode requires a mode-0700 tmpfs handoff containing
+fabric-az1-cp3.ign, install-policy, and handoff.json; the runner snapshots it
+into root-owned runtime tmpfs before serving it.
+EOF
+}
+
+die() {
+  echo "run-fabric-bootie-station: $*" >&2
+  exit 1
+}
+
+mode=
+stage_dir=
+access_dir=
+image=
+handoff_dir=
+while (($#)); do
+  case $1 in
+    --mode)
+      (($# >= 2)) || die '--mode requires a value'
+      mode=$2
+      shift 2
+      ;;
+    --stage-dir)
+      (($# >= 2)) || die '--stage-dir requires a value'
+      stage_dir=$2
+      shift 2
+      ;;
+    --access-dir)
+      (($# >= 2)) || die '--access-dir requires a value'
+      access_dir=$2
+      shift 2
+      ;;
+    --image)
+      (($# >= 2)) || die '--image requires a value'
+      image=$2
+      shift 2
+      ;;
+    --handoff-dir)
+      (($# >= 2)) || die '--handoff-dir requires a value'
+      handoff_dir=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+((EUID == 0)) || die 'this station must run as root'
+[[ $mode == discovery || $mode == install ]] ||
+  die '--mode must be exactly discovery or install'
+[[ -n $stage_dir && -n $access_dir && -n $image ]] || { usage; exit 2; }
+if [[ $mode == discovery ]]; then
+  [[ -z $handoff_dir ]] || die '--handoff-dir is forbidden in discovery mode'
+else
+  [[ -n $handoff_dir ]] || die '--handoff-dir is required in install mode'
+fi
+
+for command in awk curl dnsmasq flock git grep install ip jq kubectl podman readlink \
+  realpath rmdir sha256sum sleep ss stat; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+stage_dir=$(realpath -e -- "$stage_dir")
+access_dir=$(realpath -e -- "$access_dir")
+[[ -d $stage_dir && ! -L $stage_dir ]] || die 'stage directory is invalid'
+[[ -d $access_dir && ! -L $access_dir ]] || die 'access directory is invalid'
+[[ $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'access directory must be root-owned mode 0700'
+[[ $(stat --file-system --format=%T -- "$access_dir") == tmpfs ]] ||
+  die 'scoped Bootie access must remain on tmpfs'
+[[ -f $stage_dir/SHA256SUMS && ! -L $stage_dir/SHA256SUMS ]] ||
+  die 'stage checksum manifest is unavailable'
+stage_manifest_sha256=$(sha256sum "$stage_dir/SHA256SUMS" | awk '{print $1}')
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+[[ $(sha256sum "$stage_dir/SHA256SUMS" | awk '{print $1}') == "$stage_manifest_sha256" ]] ||
+  die 'stage manifest changed during verification'
+version=$(< "$stage_dir/FCOS_VERSION")
+mac=$(< "$stage_dir/FABRIC_CP3_MAC")
+[[ $version =~ ^[0-9][0-9A-Za-z.-]+$ ]] || die 'staged FCOS version is malformed'
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
+
+static_files=(
+  "fedora-coreos-$version-live-initramfs.x86_64.img"
+  "fedora-coreos-$version-live-kernel.x86_64"
+  "fedora-coreos-$version-live-rootfs.x86_64.img"
+)
+
+for access_file in kubeconfig token identity.json; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "scoped Bootie access file is unsafe: $access_file"
+done
+[[ -s $access_dir/token ]] || die 'scoped Bootie token is empty or revoked'
+[[ $(jq -r '.node' "$access_dir/identity.json") == fabric-az1-cp3 &&
+   $(jq -r '.mac' "$access_dir/identity.json") == "$mac" ]] ||
+  die 'scoped Bootie identity does not match the staged cp3 MAC'
+
+ignition_dir=
+fixed_ignition=
+install_policy=
+handoff_manifest=
+if [[ $mode == discovery ]]; then
+  ignition_dir=$stage_dir/ignition
+  install_policy=$stage_dir/install-policy
+  [[ -d $ignition_dir && ! -L $ignition_dir ]] ||
+    die 'staged Ignition directory is invalid'
+  [[ -f $ignition_dir/common/discovery.ign &&
+     ! -L $ignition_dir/common/discovery.ign ]] ||
+    die 'the guarded discovery Ignition is unavailable'
+  [[ -f $install_policy && ! -L $install_policy ]] ||
+    die 'the staged empty install policy is unavailable'
+else
+  handoff_dir=$(realpath -e -- "$handoff_dir")
+  [[ -d $handoff_dir && ! -L $handoff_dir ]] ||
+    die 'install handoff directory is invalid'
+  handoff_owner=$(stat -Lc '%u:%g' "$handoff_dir")
+  [[ $(stat -Lc '%a' "$handoff_dir") == 700 ]] ||
+    die 'install handoff must be mode 0700'
+  [[ $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs ]] ||
+    die 'install handoff must remain on tmpfs'
+  fixed_ignition=$handoff_dir/fabric-az1-cp3.ign
+  install_policy=$handoff_dir/install-policy
+  handoff_manifest=$handoff_dir/handoff.json
+  for protected_file in "$fixed_ignition" "$install_policy" "$handoff_manifest"; do
+    [[ -f $protected_file && ! -L $protected_file ]] ||
+      die "install handoff file is unavailable: $protected_file"
+    [[ $(stat -Lc '%u:%g:%a:%h' "$protected_file") == "$handoff_owner:600:1" ]] ||
+      die "install handoff file must share its owner and be mode-0600 with one link: $protected_file"
+  done
+  jq -e '
+    type == "object" and
+    (.ignition.version | type == "string" and test("^3\\.[0-9]+\\.[0-9]+$"))
+  ' "$fixed_ignition" >/dev/null ||
+    die 'fixed cp3 Ignition is not a valid Ignition JSON object'
+fi
+
+policy_node=
+policy_device=
+policy_records=0
+while read -r declared_node declared_device extra; do
+  if [[ -z ${declared_node:-} || $declared_node == \#* ]]; then
+    continue
+  fi
+  [[ -n ${declared_device:-} && -z ${extra:-} ]] ||
+    die 'install policy contains a malformed record'
+  policy_node=$declared_node
+  policy_device=$declared_device
+  ((policy_records += 1))
+done < "$install_policy"
+if [[ $mode == discovery ]]; then
+  ((policy_records == 0)) || die 'discovery install policy must be empty'
+else
+  ((policy_records == 1)) ||
+    die 'install handoff must contain exactly one device-policy record'
+  [[ $policy_node == fabric-az1-cp3 ]] ||
+    die 'install policy is not bound to fabric-az1-cp3'
+  fabric_validate_node_disk_destination fabric-az1-cp3 "$policy_device" ||
+    die 'install policy does not match the committed cp3 disk admission'
+  ignition_sha256=$(sha256sum "$fixed_ignition" | awk '{print $1}')
+  policy_sha256=$(sha256sum "$install_policy" | awk '{print $1}')
+  disk_policy_sha256=$(sha256sum \
+    "$repo_root/scripts/lib/fabric-node-disk-policy.sh" | awk '{print $1}')
+  jq -e \
+    --arg mac "$mac" \
+    --arg device "$policy_device" \
+    --arg ignition_sha256 "$ignition_sha256" \
+    --arg policy_sha256 "$policy_sha256" \
+    --arg disk_policy_sha256 "$disk_policy_sha256" \
+    '
+      .schema == 1 and
+      .node == "fabric-az1-cp3" and
+      .mac == $mac and
+      .bootDevice == $device and
+      .ignition.file == "fabric-az1-cp3.ign" and
+      .ignition.sha256 == $ignition_sha256 and
+      .installPolicy.file == "install-policy" and
+      .installPolicy.sha256 == $policy_sha256 and
+      .diskPolicySha256 == $disk_policy_sha256
+    ' "$handoff_manifest" >/dev/null ||
+    die 'install handoff manifest does not bind the exact cp3 identity, disk, and Ignition'
+fi
+
+parent_metadata=$(stat -Lc '%F:%u:%g:%a' -- /run/lock) ||
+  die 'cannot inspect the fabric network lock directory'
+[[ $parent_metadata == 'directory:0:0:755' ]] ||
+  die 'fabric network lock directory must be root-owned mode 0755'
+[[ ! -L $operation_lock ]] || die 'fabric network operation lock must not be a symlink'
+if [[ -e $operation_lock ]]; then
+  [[ -f $operation_lock ]] || die 'fabric network operation lock must be a regular file'
+  lock_metadata=$(stat -Lc '%u:%g:%a:%h' -- "$operation_lock") ||
+    die 'cannot inspect the fabric network operation lock'
+  [[ $lock_metadata == '0:0:600:1' ]] ||
+    die 'fabric network operation lock has unsafe ownership or links'
+fi
+exec {lock_fd}>>"$operation_lock" || die 'cannot open the fabric network operation lock'
+chmod 0600 -- "/proc/self/fd/$lock_fd" || die 'cannot protect the network operation lock'
+resolved_lock=$(readlink -e -- "/proc/self/fd/$lock_fd") || die 'cannot resolve the lock'
+[[ $resolved_lock == "$operation_lock" ]] || die 'opened the wrong network operation lock'
+[[ $(stat -Lc '%u:%g:%a:%h' -- "/proc/self/fd/$lock_fd") == '0:0:600:1' ]] ||
+  die 'opened network operation lock has unsafe metadata'
+flock --exclusive --nonblock "$lock_fd" || die 'another fabric network operation is active'
+
+"$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+ip netns exec "$namespace" ip -4 route get 10.66.0.2 |
+  grep -Fq 'local 10.66.0.2' || die 'observer address 10.66.0.2 is unavailable'
+if ip netns exec "$namespace" ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+  die 'observer namespace unexpectedly has a route off the fabric L2'
+fi
+
+node_json=$(ip netns exec "$namespace" \
+  kubectl --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node fabric-az1-cp3 --output=json) ||
+  die 'scoped Bootie token cannot read fabric-az1-cp3 through the observer path'
+expected_node_mac=${mac//:/-}
+node_mac=$(jq -r '.metadata.labels["samcday.com/mac"] // ""' <<< "$node_json")
+placeholder=$(jq -r \
+  '.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // ""' \
+  <<< "$node_json")
+discovery=$(jq -r '.metadata.labels["samcday.com/discovery"] // ""' <<< "$node_json")
+bootstrap_state=$(jq -r \
+  '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
+  <<< "$node_json")
+boot_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' \
+  <<< "$node_json")
+install_arm=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' \
+  <<< "$node_json")
+ignition_token=$(jq -r \
+  '.metadata.annotations["samcday.com/ignition-token"] // ""' <<< "$node_json")
+ignition_mode=$(jq -r \
+  '.metadata.annotations["samcday.com/ignition-mode"] // ""' <<< "$node_json")
+machine_id=$(jq -r '.status.nodeInfo.machineID // ""' <<< "$node_json")
+[[ $node_mac == "$expected_node_mac" && $placeholder == true && -z $machine_id ]] ||
+  die 'cp3 is not the exact unjoined staged-MAC bootstrap placeholder'
+[[ -z $ignition_token && -z $ignition_mode ]] ||
+  die 'cp3 has a stale or in-flight one-use Ignition token'
+[[ $discovery == true && $bootstrap_state == discovery &&
+   -z $boot_device && -z $install_arm ]] ||
+  die "$mode station requires cp3's fail-closed, unarmed discovery baseline"
+if ip netns exec "$namespace" ss -H -lnt '( sport = :80 or sport = :9000 )' |
+  grep -q .; then
+  die 'Bootie or FastCGI ports are already in use inside the observer namespace'
+fi
+if ip netns exec "$namespace" ss -H -lnu '( sport = :67 or sport = :69 )' |
+  grep -q .; then
+  die 'DHCP or TFTP ports are already in use inside the observer namespace'
+fi
+
+podman image exists "$image" || die "root Podman image is unavailable: $image"
+if podman container exists "$station_name"; then
+  die "a stale $station_name container already exists"
+fi
+
+bootie_pid=
+dnsmasq_pid=
+cleaned=false
+# Invoked through the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup() {
+  local exit_status=$?
+  if [[ $cleaned == true ]]; then
+    return
+  fi
+  cleaned=true
+  if [[ -n ${dnsmasq_pid:-} ]]; then
+    kill "$dnsmasq_pid" >/dev/null 2>&1 || true
+    wait "$dnsmasq_pid" 2>/dev/null || true
+  fi
+  if podman container exists "$station_name"; then
+    podman stop --time 10 "$station_name" >/dev/null 2>&1 || true
+  fi
+  if [[ -n ${bootie_pid:-} ]]; then
+    wait "$bootie_pid" 2>/dev/null || true
+  fi
+  rm -f -- "$runtime_dir/dnsmasq/dnsmasq.leases" \
+    "$runtime_dir/dnsmasq/dnsmasq.pid" "$runtime_dir/dnsmasq/dnsmasq.conf"
+  if [[ -d $runtime_dir/handoff && ! -L $runtime_dir/handoff ]]; then
+    rm -f -- "$runtime_dir/handoff/fabric-az1-cp3.ign" \
+      "$runtime_dir/handoff/install-policy" "$runtime_dir/handoff/handoff.json"
+    rmdir -- "$runtime_dir/handoff" 2>/dev/null || true
+  fi
+  if [[ -d $runtime_dir/tftp/EFI/BOOT && ! -L $runtime_dir/tftp/EFI/BOOT ]]; then
+    for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
+      rm -f -- "$runtime_dir/tftp/EFI/BOOT/$efi_file"
+    done
+    rmdir -- "$runtime_dir/tftp/EFI/BOOT" 2>/dev/null || true
+    rmdir -- "$runtime_dir/tftp/EFI" 2>/dev/null || true
+    rmdir -- "$runtime_dir/tftp" 2>/dev/null || true
+  fi
+  if [[ -d $runtime_dir/ignition/common && ! -L $runtime_dir/ignition/common ]]; then
+    rm -f -- "$runtime_dir/ignition/common/discovery.ign"
+    rmdir -- "$runtime_dir/ignition/common" 2>/dev/null || true
+    rmdir -- "$runtime_dir/ignition" 2>/dev/null || true
+  fi
+  if [[ -d $runtime_dir/static && ! -L $runtime_dir/static ]]; then
+    for static_file in "${static_files[@]}"; do
+      rm -f -- "$runtime_dir/static/$static_file"
+    done
+    rmdir -- "$runtime_dir/static" 2>/dev/null || true
+  fi
+  rm -f -- "$runtime_dir/install-policy" "$runtime_dir/FABRIC_CP3_MAC" \
+    "$runtime_dir/FCOS_VERSION" "$runtime_dir/SHA256SUMS"
+  rmdir -- "$runtime_dir/dnsmasq" 2>/dev/null || true
+  rmdir -- "$runtime_dir" 2>/dev/null || true
+  return "$exit_status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+[[ ! -e $runtime_dir && ! -L $runtime_dir ]] ||
+  die "runtime path already exists: $runtime_dir"
+[[ $(stat --file-system --format=%T -- /run) == tmpfs ]] ||
+  die '/run must be tmpfs before Bootie runtime data is captured'
+install -d -o root -g nginx -m 0750 "$runtime_dir"
+install -d -o nginx -g nginx -m 0700 "$runtime_dir/dnsmasq"
+install -d -o root -g root -m 0755 "$runtime_dir/tftp/EFI/BOOT"
+install -d -o root -g root -m 0755 "$runtime_dir/static"
+install -d -o root -g root -m 0755 "$runtime_dir/ignition/common"
+install -o root -g root -m 0600 "$stage_dir/SHA256SUMS" \
+  "$runtime_dir/SHA256SUMS"
+[[ $(sha256sum "$runtime_dir/SHA256SUMS" | awk '{print $1}') == "$stage_manifest_sha256" ]] ||
+  die 'stage manifest changed before the runtime snapshot'
+
+snapshot_stage_file() {
+  local relative_path=$1
+  local destination=$2
+  local mode=$3
+  local source=$stage_dir/$relative_path
+  local expected_sha256 actual_sha256
+
+  [[ -f $source && ! -L $source ]] ||
+    die "staged file is unavailable: $relative_path"
+  expected_sha256=$(awk -v path="$relative_path" \
+    '$2 == path {print $1}' "$runtime_dir/SHA256SUMS")
+  [[ $expected_sha256 =~ ^[0-9a-f]{64}$ ]] ||
+    die "stage manifest does not contain exactly one valid checksum: $relative_path"
+  install -o root -g root -m "$mode" "$source" "$destination"
+  actual_sha256=$(sha256sum "$destination" | awk '{print $1}')
+  [[ $actual_sha256 == "$expected_sha256" ]] ||
+    die "runtime snapshot does not match the pinned stage manifest: $relative_path"
+}
+
+snapshot_stage_file FABRIC_CP3_MAC "$runtime_dir/FABRIC_CP3_MAC" 0644
+snapshot_stage_file FCOS_VERSION "$runtime_dir/FCOS_VERSION" 0644
+[[ $(< "$runtime_dir/FABRIC_CP3_MAC") == "$mac" &&
+   $(< "$runtime_dir/FCOS_VERSION") == "$version" ]] ||
+  die 'staged identity changed before the runtime snapshot'
+snapshot_stage_file dnsmasq.conf "$runtime_dir/dnsmasq/dnsmasq.conf" 0644
+snapshot_stage_file ignition/common/discovery.ign \
+  "$runtime_dir/ignition/common/discovery.ign" 0644
+for static_file in "${static_files[@]}"; do
+  snapshot_stage_file "static/$static_file" \
+    "$runtime_dir/static/$static_file" 0644
+done
+for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
+  snapshot_stage_file "tftp/EFI/BOOT/$efi_file" \
+    "$runtime_dir/tftp/EFI/BOOT/$efi_file" 0644
+done
+ignition_dir=$runtime_dir/ignition
+if [[ $mode == install ]]; then
+  install -d -o root -g root -m 0700 "$runtime_dir/handoff"
+  install -o root -g root -m 0600 "$fixed_ignition" \
+    "$runtime_dir/handoff/fabric-az1-cp3.ign"
+  install -o root -g root -m 0600 "$install_policy" \
+    "$runtime_dir/handoff/install-policy"
+  install -o root -g root -m 0600 "$handoff_manifest" \
+    "$runtime_dir/handoff/handoff.json"
+  fixed_ignition=$runtime_dir/handoff/fabric-az1-cp3.ign
+  install_policy=$runtime_dir/handoff/install-policy
+  handoff_manifest=$runtime_dir/handoff/handoff.json
+  snapshot_ignition_sha256=$(sha256sum "$fixed_ignition" | awk '{print $1}')
+  [[ $snapshot_ignition_sha256 == "$ignition_sha256" ]] ||
+    die 'root-owned install handoff snapshot changed during capture'
+  [[ $(< "$install_policy") == "fabric-az1-cp3 $policy_device" ]] ||
+    die 'root-owned install policy snapshot changed during capture'
+  jq -e --arg sha "$snapshot_ignition_sha256" \
+    '.ignition.sha256 == $sha' "$handoff_manifest" >/dev/null ||
+    die 'root-owned handoff manifest snapshot changed during capture'
+else
+  snapshot_stage_file install-policy "$runtime_dir/install-policy" 0644
+  install_policy=$runtime_dir/install-policy
+fi
+
+podman_args=(
+  run --rm
+  --name "$station_name"
+  --network "ns:/run/netns/$namespace"
+  --pull never
+  --read-only
+  --cap-drop ALL
+  --cap-add CHOWN
+  --cap-add DAC_OVERRIDE
+  --cap-add NET_BIND_SERVICE
+  --cap-add SETGID
+  --cap-add SETUID
+  --memory 256m
+  --pids-limit 64
+  --security-opt label=disable
+  --security-opt no-new-privileges
+  --tmpfs '/run/nginx:rw,nosuid,nodev,noexec,size=1m'
+  --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=8m'
+  --tmpfs '/var/lib/nginx:rw,nosuid,nodev,noexec,size=16m'
+  --tmpfs '/var/log/nginx:rw,nosuid,nodev,noexec,size=4m'
+  --env BOOTIE_ALLOW_NODE_CREATE=false
+  --env "BOOTIE_CEREMONY_MODE=$mode"
+  --env BOOTIE_INSTALL_POLICY_FILE=/policy/install-policy
+  --env BOOTIE_NODE_NAME=fabric-az1-cp3
+  --env BOOTIE_PUBLIC_ORIGIN=http://10.66.0.2
+  --env BOOTIE_REQUIRE_BOOTSTRAP_STATE=true
+  --env BOOTIE_REQUIRE_INSTALL_POLICY=true
+  --env FCOS_BASE=http://10.66.0.2/static
+  --env "FCOS_GRUB_BASE=(http,10.66.0.2)/static"
+  --env "FCOS_VERSION=$version"
+  --env HOME=/tmp
+  --env KUBECONFIG=/secrets/kubeconfig
+  --volume "$access_dir:/secrets:ro"
+  --volume "$install_policy:/policy/install-policy:ro"
+  --volume "$runtime_dir/static:/pxe:ro"
+)
+if [[ $mode == discovery ]]; then
+  podman_args+=(--volume "$ignition_dir:/ignition:ro")
+else
+  podman_args+=(
+    --env BOOTIE_FIXED_IGNITION_FILE=/fixed/fabric-az1-cp3.ign
+    --volume "$fixed_ignition:/fixed/fabric-az1-cp3.ign:ro"
+    --volume "$runtime_dir/ignition:/ignition:ro"
+  )
+fi
+
+podman "${podman_args[@]}" "$image" &
+bootie_pid=$!
+
+kernel_path=static/fedora-coreos-$version-live-kernel.x86_64
+for _attempt in {1..50}; do
+  if ip netns exec "$namespace" curl --fail --silent --show-error \
+    --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null; then
+    break
+  fi
+  kill -0 "$bootie_pid" 2>/dev/null || die 'Bootie exited during startup'
+  sleep 0.2
+done
+ip netns exec "$namespace" curl --fail --silent --show-error \
+  --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null ||
+  die 'Bootie did not become ready'
+fastcgi_listeners=$(ip netns exec "$namespace" ss -H -lnt 'sport = :9000') ||
+  die 'cannot inspect the FastCGI listener'
+fastcgi_total=0
+fastcgi_loopback=0
+while read -r _state _recvq _sendq local_address _peer; do
+  [[ -n ${local_address:-} ]] || continue
+  ((fastcgi_total += 1))
+  [[ $local_address == 127.0.0.1:9000 ]] && ((fastcgi_loopback += 1))
+done <<< "$fastcgi_listeners"
+[[ $fastcgi_total -eq 1 && $fastcgi_loopback -eq 1 ]] ||
+  die 'FastCGI must have exactly one loopback-only listener'
+backend_status=$(ip netns exec "$namespace" curl --silent --show-error \
+  --output /dev/null --write-out '%{http_code}' http://10.66.0.2/boot.grub) ||
+  die 'Bootie FastCGI request failed'
+[[ $backend_status == 409 ]] ||
+  die "Bootie FastCGI refusal probe returned HTTP $backend_status instead of 409"
+
+ip netns exec "$namespace" \
+  dnsmasq --keep-in-foreground \
+    --conf-file="$runtime_dir/dnsmasq/dnsmasq.conf" &
+dnsmasq_pid=$!
+for _attempt in {1..25}; do
+  if ip netns exec "$namespace" ss -H -lnu \
+    '( sport = :67 or sport = :69 )' | grep -q ':67' &&
+     ip netns exec "$namespace" ss -H -lnu \
+    '( sport = :67 or sport = :69 )' | grep -q ':69'; then
+    break
+  fi
+  kill -0 "$dnsmasq_pid" 2>/dev/null || die 'dnsmasq exited during startup'
+  sleep 0.2
+done
+udp_listeners=$(ip netns exec "$namespace" ss -H -lnu \
+  '( sport = :67 or sport = :69 )') || die 'cannot inspect DHCP/TFTP listeners'
+grep -q ':67' <<< "$udp_listeners" ||
+  die 'the exact-MAC DHCP listener did not become ready'
+grep -q ':69' <<< "$udp_listeners" || die 'the TFTP listener did not become ready'
+
+printf 'fabric cp3 Bootie station ready for %s at 10.66.0.2\n' "$mac"
+if [[ $mode == discovery ]]; then
+  printf 'Secure-Boot shim/GRUB TFTP and guarded discovery are active; no install is armed.\n'
+else
+  printf 'Cp3 install handoff is loaded for %s but remains unarmed.\n' \
+    "$policy_device"
+  printf 'Run the exact-confirmation arm helper only after this readiness message.\n'
+fi
+
+wait -n "$bootie_pid" "$dnsmasq_pid"
+die 'a station process exited unexpectedly'

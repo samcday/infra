@@ -47,6 +47,8 @@ spec:
       - name: bootie
         image: ghcr.io/samcday/infra-bootie:2026071109 # {"$imagepolicy": "flux-system:bootie"}
         env:
+        - name: BOOTIE_PUBLIC_ORIGIN
+          value: http://bootie.ilumbaclusta.hub.samcday.com
         - name: FCOS_VERSION
           value: 42.20250803.3.0
         - name: FCOS_BASE

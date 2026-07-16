@@ -1,0 +1,8 @@
+set timeout=0
+insmod net
+insmod efinet
+insmod http
+configfile (http,10.66.0.2)/boot.grub?mac=@FABRIC_CP3_MAC_HEXHYP@
+echo 'Bootie did not return a bootable cp3 response.'
+sleep --interruptible 10
+exit

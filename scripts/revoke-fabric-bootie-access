@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  revoke-fabric-bootie-access \
+    --root-address 10.66.0.10 \
+    --known-hosts /trusted/cp1-known-hosts \
+    --identity /trusted/id_ed25519 \
+    --access-dir /trusted/fabric-cp3-bootie-access \
+    --confirm REVOKE:fabric-az1-cp3-bootie
+
+Run only after the fabric-cp3-bootie-station service is stopped. This removes
+the temporary ServiceAccount and RBAC, clears stale one-shot annotations, and
+zeroes the local projected token. It preserves the exact-MAC cp3 placeholder
+for a later bounded reissue, or preserves the real joined cp3 Node.
+EOF
+}
+
+die() {
+  echo "revoke-fabric-bootie-access: $*" >&2
+  exit 1
+}
+
+root_address=
+known_hosts=
+identity=
+access_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --root-address)
+      (($# >= 2)) || die '--root-address requires a value'
+      root_address=$2
+      shift 2
+      ;;
+    --known-hosts)
+      (($# >= 2)) || die '--known-hosts requires a value'
+      known_hosts=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity requires a value'
+      identity=$2
+      shift 2
+      ;;
+    --access-dir)
+      (($# >= 2)) || die '--access-dir requires a value'
+      access_dir=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+((EUID == 0)) || die 'run this credential-revocation mutation as root'
+
+[[ $root_address == 10.66.0.10 || $root_address == 10.66.0.11 ]] ||
+  die '--root-address must be a live commissioned root'
+[[ $confirmation == REVOKE:fabric-az1-cp3-bootie ]] ||
+  die 'exact --confirm REVOKE:fabric-az1-cp3-bootie is required'
+[[ -n $known_hosts && -n $identity && -n $access_dir ]] || { usage; exit 2; }
+
+for command in chmod date git grep install ip jq mktemp mv podman realpath rm ssh \
+  ss stat sudo systemctl; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+known_hosts=$(realpath -e -- "$known_hosts")
+identity=$(realpath -e -- "$identity")
+access_dir=$(realpath -e -- "$access_dir")
+[[ -f $known_hosts && ! -L $known_hosts && $(stat -Lc '%a' "$known_hosts") == 600 ]] ||
+  die 'known_hosts must be a non-symlink mode-0600 file'
+[[ -f $identity && ! -L $identity && $(stat -Lc '%a' "$identity") == 600 ]] ||
+  die 'SSH identity must be a non-symlink mode-0600 file'
+[[ -d $access_dir && ! -L $access_dir ]] ||
+  die 'access directory must be a non-symlink directory'
+[[ $(stat --file-system --format=%T -- "$access_dir") == tmpfs ]] ||
+  die 'access directory must remain on tmpfs'
+[[ $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'access directory must be root-owned mode 0700'
+for access_file in kubeconfig token identity.json; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "scoped access file is unsafe: $access_file"
+done
+[[ $(jq -r '.node' "$access_dir/identity.json") == fabric-az1-cp3 ]] ||
+  die 'access identity is not for cp3'
+
+identity_tmp=
+cleanup() {
+  if [[ -n ${identity_tmp:-} ]]; then
+    rm -f -- "$identity_tmp"
+  fi
+}
+trap cleanup EXIT
+
+if systemctl is-active --quiet fabric-cp3-bootie-station.service; then
+  die 'fabric-cp3-bootie-station.service is still active'
+fi
+if sudo --non-interactive podman container exists fabric-cp3-bootie; then
+  die 'fabric-cp3-bootie container still exists'
+fi
+if sudo --non-interactive ip netns exec fabric-observer \
+  ss -H -lnt '( sport = :80 or sport = :9000 )' | grep -q .; then
+  die 'Bootie or FastCGI listener remains in the observer namespace'
+fi
+if sudo --non-interactive ip netns exec fabric-observer \
+  ss -H -lnu '( sport = :67 or sport = :69 )' | grep -q .; then
+  die 'DHCP or TFTP listener remains in the observer namespace'
+fi
+
+ssh_options=(
+  -o BatchMode=yes
+  -o ClearAllForwardings=yes
+  -o ConnectTimeout=5
+  -o ForwardAgent=no
+  -o IdentitiesOnly=yes
+  -o PermitLocalCommand=no
+  -o ProxyCommand=none
+  -o ProxyJump=none
+  -o RequestTTY=no
+  -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$known_hosts"
+  -i "$identity"
+)
+ssh_root() {
+  # shellcheck disable=SC2029
+  ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+}
+root_kubectl() {
+  ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml \
+    --request-timeout=10s \
+    "$@"
+}
+
+[[ $(root_kubectl get --raw=/readyz) == ok ]] || die 'selected root API is not ready'
+rbac=$repo_root/fabric/bootie/rbac.yaml
+root_kubectl delete --filename=- --ignore-not-found < "$rbac" >/dev/null
+if node_json=$(root_kubectl get node fabric-az1-cp3 --output=json 2>/dev/null); then
+  root_kubectl annotate node fabric-az1-cp3 \
+    fabric.samcday.com/bootstrap-state- \
+    samcday.com/boot-device- \
+    samcday.com/ignition-mode- \
+    samcday.com/ignition-token- \
+    samcday.com/install- \
+    --overwrite >/dev/null
+  placeholder=$(jq -r \
+    '.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // ""' \
+    <<< "$node_json")
+  machine_id=$(jq -r '.status.nodeInfo.machineID // ""' <<< "$node_json")
+  if [[ $placeholder == true && -z $machine_id ]]; then
+    root_kubectl label node fabric-az1-cp3 \
+      samcday.com/discovery=true --overwrite >/dev/null
+    root_kubectl annotate node fabric-az1-cp3 \
+      fabric.samcday.com/bootstrap-state=discovery --overwrite >/dev/null
+  fi
+  node_json=$(root_kubectl get node fabric-az1-cp3 --output=json)
+  jq -e '
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "")
+  ' <<< "$node_json" >/dev/null ||
+    die 'cp3 still carries a stale boot or one-use annotation after revocation'
+  if [[ $placeholder == true && -z $machine_id ]]; then
+    [[ $(jq -r '.metadata.labels["samcday.com/discovery"] // ""' \
+      <<< "$node_json") == true ]] ||
+      die 'unjoined cp3 placeholder did not return to fail-closed discovery mode'
+    [[ $(jq -r \
+      '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
+      <<< "$node_json") == discovery ]] ||
+      die 'unjoined cp3 placeholder did not return to discovery bootstrap state'
+  else
+    [[ $(jq -r \
+      '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
+      <<< "$node_json") == "" ]] ||
+      die 'joined cp3 retained a bootstrap-state annotation after revocation'
+  fi
+fi
+if root_kubectl get namespace bootie >/dev/null 2>&1; then
+  die 'namespace bootie still exists after revocation'
+fi
+
+install -m 0600 /dev/null "$access_dir/token"
+revoked=$(date --utc --iso-8601=seconds)
+identity_tmp=$(mktemp -- "$access_dir/.identity.json.XXXXXXXX")
+chmod 0600 "$identity_tmp"
+jq --arg revoked "$revoked" '. + {revokedAt: $revoked}' \
+  "$access_dir/identity.json" > "$identity_tmp"
+[[ $(stat -Lc '%u:%g:%a:%h' "$identity_tmp") == 0:0:600:1 ]] ||
+  die 'temporary revoked identity file is unsafe'
+mv -f -- "$identity_tmp" "$access_dir/identity.json"
+identity_tmp=
+
+printf 'revoked fabric cp3 Bootie access and zeroed %s/token\n' "$access_dir"
+printf 'fabric-az1-cp3 was retained; issue a fresh bounded token for the next ceremony.\n'

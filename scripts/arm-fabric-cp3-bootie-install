@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-node-disk-policy.sh"
+readonly namespace=fabric-observer
+readonly station_name=fabric-cp3-bootie
+
+usage() {
+  cat >&2 <<'EOF'
+Usage (run only after the install-mode station reports ready):
+  arm-fabric-cp3-bootie-install \
+    --stage-dir /trusted/fabric-cp3-pxe \
+    --access-dir /dev/shm/fabric-cp3-bootie-access-install \
+    --handoff-dir /dev/shm/fabric-cp3-install \
+    --confirm ARM:fabric-az1-cp3:/dev/disk/by-id/EXACT_COMMITTED_CP3_DISK
+
+This is the destructive authorization boundary. It atomically changes only
+the predeclared unjoined cp3 placeholder from discovery to one armed install.
+Bootie consumes the arm before returning installer kernel arguments.
+EOF
+}
+
+die() {
+  echo "arm-fabric-cp3-bootie-install: $*" >&2
+  exit 1
+}
+
+stage_dir=
+access_dir=
+handoff_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --stage-dir)
+      (($# >= 2)) || die '--stage-dir requires a value'
+      stage_dir=$2
+      shift 2
+      ;;
+    --access-dir)
+      (($# >= 2)) || die '--access-dir requires a value'
+      access_dir=$2
+      shift 2
+      ;;
+    --handoff-dir)
+      (($# >= 2)) || die '--handoff-dir requires a value'
+      handoff_dir=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+((EUID == 0)) || die 'run this destructive arming mutation as root'
+
+[[ -n $stage_dir && -n $access_dir && -n $handoff_dir ]] || { usage; exit 2; }
+for command in awk curl git grep ip jq kubectl podman realpath sha256sum ss stat \
+  systemctl; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+stage_dir=$(realpath -e -- "$stage_dir")
+access_dir=$(realpath -e -- "$access_dir")
+handoff_dir=$(realpath -e -- "$handoff_dir")
+for directory in "$stage_dir" "$access_dir" "$handoff_dir"; do
+  [[ -d $directory && ! -L $directory ]] || die "invalid directory: $directory"
+done
+[[ $(stat --file-system --format=%T -- "$access_dir") == tmpfs &&
+   $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs ]] ||
+  die 'access and install handoff directories must remain on tmpfs'
+[[ $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'scoped access directory must be root-owned mode 0700'
+for access_file in kubeconfig token identity.json; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "scoped access file is unsafe: $access_file"
+done
+[[ -s $access_dir/token ]] || die 'scoped access token is empty or revoked'
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+mac=$(< "$stage_dir/FABRIC_CP3_MAC")
+fixed_ignition=$handoff_dir/fabric-az1-cp3.ign
+install_policy=$handoff_dir/install-policy
+handoff_manifest=$handoff_dir/handoff.json
+for protected_file in "$fixed_ignition" "$install_policy" "$handoff_manifest"; do
+  [[ -f $protected_file && ! -L $protected_file ]] ||
+    die "handoff file is unavailable: $protected_file"
+done
+read -r policy_node policy_device extra < "$install_policy"
+[[ $policy_node == fabric-az1-cp3 && -n $policy_device && -z ${extra:-} ]] ||
+  die 'install policy is not one exact cp3 record'
+fabric_validate_node_disk_destination fabric-az1-cp3 "$policy_device" ||
+  die 'install policy does not match the committed cp3 disk admission'
+[[ $confirmation == "ARM:fabric-az1-cp3:$policy_device" ]] ||
+  die "exact --confirm ARM:fabric-az1-cp3:$policy_device is required"
+ignition_sha256=$(sha256sum "$fixed_ignition" | awk '{print $1}')
+policy_sha256=$(sha256sum "$install_policy" | awk '{print $1}')
+disk_policy_sha256=$(sha256sum \
+  "$repo_root/scripts/lib/fabric-node-disk-policy.sh" | awk '{print $1}')
+jq -e --arg mac "$mac" --arg disk "$policy_device" \
+  --arg sha "$ignition_sha256" --arg policy_sha "$policy_sha256" \
+  --arg disk_policy_sha "$disk_policy_sha256" '
+  .schema == 1 and .node == "fabric-az1-cp3" and .mac == $mac and
+  .bootDevice == $disk and .ignition.file == "fabric-az1-cp3.ign" and
+  .ignition.sha256 == $sha and .installPolicy.file == "install-policy" and
+  .installPolicy.sha256 == $policy_sha and .diskPolicySha256 == $disk_policy_sha
+' "$handoff_manifest" >/dev/null || die 'handoff manifest identity check failed'
+[[ $(jq -r '.node' "$access_dir/identity.json") == fabric-az1-cp3 &&
+   $(jq -r '.mac' "$access_dir/identity.json") == "$mac" ]] ||
+  die 'scoped access identity does not match the staged cp3 MAC'
+
+systemctl is-active --quiet fabric-cp3-bootie-station.service ||
+  die 'fabric-cp3-bootie-station.service is not active'
+podman container exists "$station_name" || die 'Bootie station container is absent'
+[[ $(podman inspect --format '{{.State.Running}}' "$station_name") == true ]] ||
+  die 'Bootie station container is not running'
+container_env=$(podman inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  "$station_name")
+grep -Fxq 'BOOTIE_CEREMONY_MODE=install' <<< "$container_env" ||
+  die 'running Bootie station is not in install mode'
+grep -Fxq 'BOOTIE_FIXED_IGNITION_FILE=/fixed/fabric-az1-cp3.ign' \
+  <<< "$container_env" || die 'running Bootie station lacks the fixed cp3 profile'
+container_ignition_sha256=$(podman exec "$station_name" \
+  sha256sum /fixed/fabric-az1-cp3.ign | awk '{print $1}')
+[[ $container_ignition_sha256 == "$ignition_sha256" ]] ||
+  die 'running Bootie station mounted a different cp3 Ignition'
+[[ $(podman exec "$station_name" cat /policy/install-policy) == "fabric-az1-cp3 $policy_device" ]] ||
+  die 'running Bootie station mounted a different install policy'
+
+kernel_path=static/fedora-coreos-$(< "$stage_dir/FCOS_VERSION")-live-kernel.x86_64
+ip netns exec "$namespace" curl --fail --silent --show-error \
+  --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null ||
+  die 'running Bootie HTTP endpoint is not ready'
+tcp_listeners=$(ip netns exec "$namespace" ss -H -lnt \
+  '( sport = :80 or sport = :9000 )')
+udp_listeners=$(ip netns exec "$namespace" ss -H -lnu \
+  '( sport = :67 or sport = :69 )')
+grep -q ':80' <<< "$tcp_listeners" || die 'Bootie HTTP listener is absent'
+grep -q '127.0.0.1:9000' <<< "$tcp_listeners" || die 'loopback FastCGI listener is absent'
+grep -q ':67' <<< "$udp_listeners" || die 'exact-MAC DHCP listener is absent'
+grep -q ':69' <<< "$udp_listeners" || die 'TFTP listener is absent'
+
+node_json=$(ip netns exec "$namespace" \
+  kubectl --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node fabric-az1-cp3 --output=json) ||
+  die 'scoped token cannot read cp3 through the observer path'
+mac_label=${mac//:/-}
+jq -e --arg mac "$mac_label" '
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "true" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  ((.status.nodeInfo.machineID // "") == "")
+' <<< "$node_json" >/dev/null || die 'cp3 is not at the exact safe arming baseline'
+resource_version=$(jq -r '.metadata.resourceVersion' <<< "$node_json")
+patch=$(jq -cn \
+  --arg resource_version "$resource_version" \
+  --arg mac "$mac_label" \
+  --arg disk "$policy_device" \
+  '[
+    {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
+    {"op":"test","path":"/metadata/labels/samcday.com~1mac","value":$mac},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder","value":"true"},
+    {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"true"},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"discovery"},
+    {"op":"replace","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
+    {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
+    {"op":"add","path":"/metadata/annotations/samcday.com~1boot-device","value":$disk},
+    {"op":"add","path":"/metadata/annotations/samcday.com~1install","value":"true"}
+  ]')
+ip netns exec "$namespace" kubectl --kubeconfig "$access_dir/kubeconfig" \
+  --request-timeout=10s patch node fabric-az1-cp3 --type=json --patch "$patch" \
+  >/dev/null || die 'atomic cp3 install arm was rejected or raced'
+
+node_json=$(ip netns exec "$namespace" \
+  kubectl --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node fabric-az1-cp3 --output=json)
+final_state=$(jq -r \
+  '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
+  <<< "$node_json")
+final_install=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' \
+  <<< "$node_json")
+final_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' \
+  <<< "$node_json")
+final_discovery=$(jq -r '.metadata.labels["samcday.com/discovery"] // ""' \
+  <<< "$node_json")
+[[ $final_device == "$policy_device" && $final_discovery == false ]] ||
+  die 'cp3 arm did not retain the exact device and cleared discovery state'
+case "$final_state:$final_install" in
+  install-armed:true)
+    printf 'ARMED one cp3 Bootie install for %s\n' "$policy_device"
+    printf 'Boot the attended cp3 UEFI network entry once now.\n'
+    ;;
+  install-response-issued:)
+    printf 'ARMED and already consumed one cp3 Bootie response for %s\n' \
+      "$policy_device"
+    printf 'Do not re-arm; follow the attended boot and installer console.\n'
+    ;;
+  *) die 'cp3 install state changed unexpectedly after the atomic arm' ;;
+esac
+printf 'Any refusal or lost response requires stop, revoke, review, and a new exact arm.\n'

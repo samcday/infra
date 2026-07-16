@@ -62,10 +62,9 @@ if ! kubectl patch "$node" --type=json --patch "$patch" >/dev/null; then
   exit
 fi
 
-echo "content-type: application/json"
-echo
-
 if [[ "$(kubectl get "$node" -o jsonpath='{.metadata.labels.samcday\.com/discovery}')" == "true" ]]; then
+  echo "content-type: application/json"
+  echo
   butane -d /ignition --strict <<HERE
 variant: fcos
 version: 1.5.0
@@ -80,6 +79,48 @@ storage:
       contents:
         inline: ${name/node\/}
 HERE
+  exit
+fi
+
+if [[ -n "${BOOTIE_FIXED_IGNITION_FILE:-}" ]]; then
+  if ! $install_request; then
+    echo "fixed Ignition is available only to an install-mode token" >&2
+    echo "Status: 403 Forbidden"
+    echo
+    exit
+  fi
+  if [[ -z "${BOOTIE_NODE_NAME:-}" || $name != "$BOOTIE_NODE_NAME" ]]; then
+    echo "fixed Ignition request does not match BOOTIE_NODE_NAME" >&2
+    echo "Status: 403 Forbidden"
+    echo
+    exit
+  fi
+  if [[ ! -f "$BOOTIE_FIXED_IGNITION_FILE" || -L "$BOOTIE_FIXED_IGNITION_FILE" ]]; then
+    echo "fixed Ignition file is unavailable" >&2
+    echo "Status: 409 Conflict"
+    echo
+    exit
+  fi
+  fixed_mode=$(stat -Lc '%a' "$BOOTIE_FIXED_IGNITION_FILE")
+  if [[ $fixed_mode != 600 ]]; then
+    echo "fixed Ignition file has unsafe permissions" >&2
+    echo "Status: 409 Conflict"
+    echo
+    exit
+  fi
+  if ! jq -e '
+    type == "object" and
+    (.ignition | type == "object") and
+    (.ignition.version | type == "string" and length > 0)
+  ' "$BOOTIE_FIXED_IGNITION_FILE" >/dev/null; then
+    echo "fixed Ignition file is not a valid Ignition JSON object" >&2
+    echo "Status: 409 Conflict"
+    echo
+    exit
+  fi
+  echo "content-type: application/json"
+  echo
+  cat "$BOOTIE_FIXED_IGNITION_FILE"
   exit
 fi
 
@@ -140,6 +181,8 @@ if $install_request; then
       - local: install.ign"
 fi
 
+echo "content-type: application/json"
+echo
 butane -d /ignition --strict <<HERE
 variant: fcos
 version: 1.5.0

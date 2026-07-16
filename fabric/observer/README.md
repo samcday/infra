@@ -112,11 +112,24 @@ and retains that precise phase until root PHY presence, NetworkManager
 registration with `managed=yes` and `autoconnect=no`, namespace deletion, and
 configuration cleanup have all been proven.
 
-Re-run the non-mutating runtime assertions at any point:
+Re-run the strict non-mutating runtime assertions while the admitted Ethernet
+uplink remains the root namespace's sole ordinary default:
 
 ```sh
 sudo ./fabric-observer-netns verify
 ```
+
+After setup, an unrelated root-namespace uplink may appear without weakening
+the moved PHY's isolation. A temporary service such as the cp3 Bootie station
+uses the alternate runtime verifier:
+
+```sh
+sudo ./fabric-observer-netns verify-isolation
+```
+
+That mode still proves the complete namespace link, address, route, resolver,
+sysctl, and no-NAT boundary and still forbids a root-side route for
+`10.66.0.0/24`; it relaxes only the setup-time sole-default admission check.
 
 When the attended fabric session is over, remove it with the explicit guard:
 

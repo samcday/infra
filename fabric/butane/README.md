@@ -56,8 +56,10 @@ included in the current hub Flux fan-out, and nothing merges the current
   initramfs will run the separator in the right phase. Remove the override only
   after that build is pinned and all three volumes pass a cold boot.
 - `common/discovery.yaml` is an SSH-only, non-cluster discovery profile kept as
-  a seed for a future worker provisioner. The three consensus nodes do not use
-  it. It deliberately contains no Tailscale, relaxed-security, Tang, or old
+  a seed for a future worker provisioner. The temporary cp3 consensus ceremony
+  does not publish this profile; it compiles the more restrictive
+  `fabric/installer/inventory-live.bu` as its discovery Ignition. This seed
+  deliberately contains no Tailscale, relaxed-security, Tang, or old
   disk-layout profile.
 - `kustomization.yaml` provides a structural render check and future profile
   packaging, but `fabric/butane` is not in the root Flux fan-out. Applying it
@@ -167,9 +169,19 @@ all-member mode, output paths inside the Git worktree, and existing output
 files. It forces the output directory to mode `0700`; its Ignition files
 contain private keys and remain mode `0600` on trusted storage. Decryption and
 merge work occurs only in a verified tmpfs directory; deletion on an SSD or
-CoW filesystem is not treated as secure erasure. The initial three consensus
-machines must use these offline-rendered Ignitions; do not load the consensus
-profiles into online Bootie.
+CoW filesystem is not treated as secure erasure. All three consensus Ignitions
+must still be rendered by this offline path; do not publish the constituent
+consensus profiles through Kubernetes Secrets or a general-purpose Bootie
+instance.
+
+Cp1 and cp2 carry their complete rendered Ignitions on node-local installer
+media. For the bounded cp3-only exception in `fabric/bootie/README.md`, one
+complete `fabric-az1-cp3.ign` may instead be mounted read-only from verified
+tmpfs into the temporary observer-hosted station. That file is served only
+after discovery has been cleared, the exact disk has been independently
+authorized, and a one-use install arm has been consumed. It must never be
+copied to Git, a Kubernetes Secret, the router, the PXE staging tree, or
+durable station storage. Cp1 and cp2 material must never be mounted there.
 
 The Ignitions fetch only pinned public assets from the router USB-backed
 `/static/` endpoint: `k3s`, its matching air-gap images and installer, the
@@ -178,13 +190,14 @@ official etcd 3.6.13 and node_exporter 1.11.1 archives. Every source has an Igni
 hash. K3s imports both image archives from its agent image directory. The
 kube-vip archive carries the exact `ghcr.io/kube-vip/kube-vip:v1.2.1` tag used
 by the DaemonSet, whose `imagePullPolicy: Never` prevents a GHCR fallback
-during bootstrap. Carry each rendered Ignition to its machine offline and
-invoke the installer against the physically verified stable root-disk by-id.
-For the preferred/default SATA devices this is an exact
+during bootstrap. Cp1 and cp2 receive their rendered Ignitions through their
+node-local media; cp3 may use the temporary network handoff above. In either
+case, invoke the installer only against the physically verified stable
+root-disk by-id. For the preferred/default SATA devices this is an exact
 `/dev/disk/by-id/ata-*` path; cp1 and cp2 use their respective exact admitted
 `nvme-eui` paths above.
-The router never stores rendered Ignitions or any keys. First boot layers the
-policy and reboots once before K3s may start.
+The router and persistent PXE staging tree never store rendered Ignitions or
+any keys. First boot layers the policy and reboots once before K3s may start.
 
 All three initial members are members of one declared static cluster, so boot
 at least two of them together to form quorum. Do not pet a lone first member

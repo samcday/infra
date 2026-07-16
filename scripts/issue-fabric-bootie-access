@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  issue-fabric-bootie-access \
+    --root-address 10.66.0.10 \
+    --known-hosts /trusted/cp1-known-hosts \
+    --identity /trusted/id_ed25519 \
+    --stage-dir /trusted/fabric-cp3-pxe \
+    --output-dir /trusted/fabric-cp3-bootie-access \
+    --confirm ISSUE:fabric-az1-cp3-bootie:4h
+
+Creates the exact-MAC, non-arming cp3 discovery Node and the temporary
+resourceName-scoped Bootie ServiceAccount/RBAC. It writes a four-hour projected
+token and kubeconfig to a new mode-0700 directory outside Git. This is a direct,
+attended mutation of the fabric Kubernetes API and requires the exact confirm.
+EOF
+}
+
+die() {
+  echo "issue-fabric-bootie-access: $*" >&2
+  exit 1
+}
+
+root_address=
+known_hosts=
+identity=
+stage_dir=
+output_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --root-address)
+      (($# >= 2)) || die '--root-address requires a value'
+      root_address=$2
+      shift 2
+      ;;
+    --known-hosts)
+      (($# >= 2)) || die '--known-hosts requires a value'
+      known_hosts=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity requires a value'
+      identity=$2
+      shift 2
+      ;;
+    --stage-dir)
+      (($# >= 2)) || die '--stage-dir requires a value'
+      stage_dir=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      output_dir=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+((EUID == 0)) || die 'run this credential-issuing mutation as root'
+
+[[ $root_address == 10.66.0.10 || $root_address == 10.66.0.11 ]] ||
+  die '--root-address must be a live commissioned root'
+[[ $confirmation == ISSUE:fabric-az1-cp3-bootie:4h ]] ||
+  die 'exact --confirm ISSUE:fabric-az1-cp3-bootie:4h is required'
+[[ -n $known_hosts && -n $identity && -n $stage_dir && -n $output_dir ]] || {
+  usage
+  exit 2
+}
+
+for command in base64 date git jq kubectl mktemp mv openssl realpath sha256sum ssh stat tr; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+known_hosts=$(realpath -e -- "$known_hosts")
+identity=$(realpath -e -- "$identity")
+stage_dir=$(realpath -e -- "$stage_dir")
+[[ -f $known_hosts && ! -L $known_hosts ]] || die 'known_hosts is not a regular file'
+[[ -f $identity && ! -L $identity ]] || die 'SSH identity is not a regular file'
+[[ $(stat -Lc '%a' "$known_hosts") == 600 ]] || die 'known_hosts must be mode 0600'
+[[ $(stat -Lc '%a' "$identity") == 600 ]] || die 'SSH identity must be mode 0600'
+[[ -d $stage_dir && ! -L $stage_dir ]] || die 'stage directory is invalid'
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+mac=$(< "$stage_dir/FABRIC_CP3_MAC")
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
+mac_hexhyp=${mac//:/-}
+[[ $(jq -r '.metadata.name' "$stage_dir/node-discovery.json") == fabric-az1-cp3 ]] ||
+  die 'staged discovery Node has the wrong name'
+node_mac=$(jq -r '.metadata.labels["samcday.com/mac"]' \
+  "$stage_dir/node-discovery.json")
+[[ $node_mac == "$mac_hexhyp" ]] ||
+  die 'staged discovery Node does not match the staged MAC'
+discovery=$(jq -r '.metadata.labels["samcday.com/discovery"]' \
+  "$stage_dir/node-discovery.json")
+[[ $discovery == true ]] ||
+  die 'staged discovery Node is not fail-closed in discovery mode'
+
+output_dir=$(realpath -m -- "$output_dir")
+case $output_dir in
+  "$repo_root" | "$repo_root"/*) die 'access output must remain outside Git' ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || die 'access output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'access output parent must be an existing non-symlink directory'
+[[ $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'access output must be created on tmpfs, such as /dev/shm'
+
+ssh_options=(
+  -o BatchMode=yes
+  -o ClearAllForwardings=yes
+  -o ConnectTimeout=5
+  -o ForwardAgent=no
+  -o IdentitiesOnly=yes
+  -o PermitLocalCommand=no
+  -o ProxyCommand=none
+  -o ProxyJump=none
+  -o RequestTTY=no
+  -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$known_hosts"
+  -i "$identity"
+)
+
+ssh_root() {
+  # shellcheck disable=SC2029
+  ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+}
+
+root_kubectl() {
+  ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml \
+    --request-timeout=10s \
+    "$@"
+}
+
+[[ $(root_kubectl get --raw=/readyz) == ok ]] || die 'selected root API is not ready'
+if root_kubectl get namespace bootie >/dev/null 2>&1; then
+  die 'namespace bootie already exists; refusing to adopt it'
+fi
+for cluster_resource in clusterrole clusterrolebinding; do
+  if root_kubectl get "$cluster_resource" fabric-cp3-bootie >/dev/null 2>&1; then
+    die "$cluster_resource fabric-cp3-bootie already exists; refusing to adopt it"
+  fi
+done
+existing_node=false
+if existing_node_json=$(root_kubectl get node fabric-az1-cp3 --output=json 2>/dev/null); then
+  existing_node=true
+  existing_mac=$(jq -r '.metadata.labels["samcday.com/mac"] // ""' <<< "$existing_node_json")
+  existing_placeholder=$(jq -r \
+    '.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // ""' \
+    <<< "$existing_node_json")
+  existing_machine=$(jq -r '.status.nodeInfo.machineID // ""' <<< "$existing_node_json")
+  existing_discovery=$(jq -r \
+    '.metadata.labels["samcday.com/discovery"] // ""' <<< "$existing_node_json")
+  existing_boot_device=$(jq -r \
+    '.metadata.annotations["samcday.com/boot-device"] // ""' <<< "$existing_node_json")
+  existing_install=$(jq -r \
+    '.metadata.annotations["samcday.com/install"] // ""' <<< "$existing_node_json")
+  existing_ignition_token=$(jq -r \
+    '.metadata.annotations["samcday.com/ignition-token"] // ""' <<< "$existing_node_json")
+  existing_ignition_mode=$(jq -r \
+    '.metadata.annotations["samcday.com/ignition-mode"] // ""' <<< "$existing_node_json")
+  existing_bootstrap_state=$(jq -r \
+    '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
+    <<< "$existing_node_json")
+  [[ $existing_mac == "$mac_hexhyp" && $existing_placeholder == true &&
+     $existing_discovery == true && $existing_bootstrap_state == discovery &&
+     -z $existing_machine ]] ||
+    die 'existing cp3 Node is not the same unjoined exact-MAC bootstrap placeholder'
+  [[ -z $existing_boot_device && -z $existing_install &&
+     -z $existing_ignition_token && -z $existing_ignition_mode ]] ||
+    die 'existing cp3 placeholder carries stale boot or one-use annotations'
+fi
+
+rbac=$repo_root/fabric/bootie/rbac.yaml
+[[ -f $rbac && ! -L $rbac ]] || die 'Bootie RBAC manifest is unavailable'
+work=$(mktemp -d -- "$output_parent/.fabric-bootie-access.XXXXXXXX")
+chmod 0700 "$work"
+cluster_mutated=false
+node_created=false
+succeeded=false
+cleanup() {
+  if [[ $succeeded != true && $cluster_mutated == true ]]; then
+    if [[ $node_created == true ]]; then
+      root_kubectl delete node fabric-az1-cp3 --ignore-not-found >/dev/null 2>&1 || true
+    fi
+    root_kubectl delete --filename=- --ignore-not-found < "$rbac" >/dev/null 2>&1 || true
+  fi
+  if [[ $succeeded != true ]]; then
+    rm -rf -- "$work"
+  fi
+}
+trap cleanup EXIT
+
+# kubectl processes a multi-document stream one object at a time. Arm rollback
+# before starting so a transport or admission failure after an earlier object
+# was created cannot strand a partial Namespace/RBAC set. The absence checks
+# above make every fixed-name object in this manifest ours to remove.
+cluster_mutated=true
+root_kubectl apply --server-side \
+  --field-manager=fabric-cp3-bootie-bootstrap \
+  --filename=- < "$rbac" >/dev/null
+if [[ $existing_node != true ]]; then
+  # The preflight proved this name absent. Mark it for rollback before create
+  # so a lost success response cannot strand the bootstrap placeholder either.
+  node_created=true
+  root_kubectl create --filename=- < "$stage_dir/node-discovery.json" >/dev/null
+fi
+
+root_kubectl --namespace bootie create token fabric-cp3-bootie \
+  --duration=4h > "$work/token"
+[[ -s $work/token && $(stat -Lc '%a' "$work/token") == 600 ]] ||
+  die 'the projected ServiceAccount token was not written safely'
+
+token=$(< "$work/token")
+IFS=. read -r jwt_header jwt_payload jwt_signature extra <<< "$token"
+[[ -n $jwt_header && -n $jwt_payload && -n $jwt_signature && -z ${extra:-} ]] ||
+  die 'the TokenRequest response is not a three-segment JWT'
+jwt_payload=${jwt_payload//-/+}
+jwt_payload=${jwt_payload//_/\/}
+case $((${#jwt_payload} % 4)) in
+  0) ;;
+  2) jwt_payload+='==' ;;
+  3) jwt_payload+='=' ;;
+  *) die 'the TokenRequest JWT payload has invalid base64url length' ;;
+esac
+claims=$(printf '%s' "$jwt_payload" | base64 --decode) ||
+  die 'the TokenRequest JWT payload could not be decoded'
+now=$(date --utc +%s)
+jq -e \
+  --arg sub system:serviceaccount:bootie:fabric-cp3-bootie \
+  --argjson now "$now" \
+  '
+    .sub == $sub and
+    (.aud | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
+    (.iat | type == "number" and . <= $now + 60 and . >= $now - 60) and
+    (.exp | type == "number" and . > $now) and
+    ((.exp - .iat) >= 13800 and (.exp - .iat) <= 15000) and
+    (."kubernetes.io".namespace == "bootie") and
+    (."kubernetes.io".serviceaccount.name == "fabric-cp3-bootie") and
+    (."kubernetes.io".serviceaccount.uid | type == "string" and length > 0)
+  ' <<< "$claims" >/dev/null || die 'the projected token claims are not the requested scoped 4h identity'
+unset claims jwt_header jwt_payload jwt_signature token
+
+ssh_root sudo --non-interactive /usr/bin/base64 --wrap=0 -- \
+  /var/lib/rancher/k3s/server/tls/server-ca.crt |
+  base64 --decode > "$work/ca.crt"
+openssl x509 -in "$work/ca.crt" -noout -subject >/dev/null ||
+  die 'the retrieved Kubernetes serving CA is invalid'
+ca_data=$(base64 --wrap=0 < "$work/ca.crt")
+
+jq -n \
+  --arg ca "$ca_data" \
+  '{
+    apiVersion: "v1",
+    kind: "Config",
+    clusters: [{
+      name: "fabric",
+      cluster: {
+        server: "https://10.66.0.254:6443",
+        "certificate-authority-data": $ca
+      }
+    }],
+    users: [{
+      name: "fabric-cp3-bootie",
+      user: {tokenFile: "token"}
+    }],
+    contexts: [{
+      name: "fabric-cp3-bootie@fabric",
+      context: {cluster: "fabric", user: "fabric-cp3-bootie"}
+    }],
+    "current-context": "fabric-cp3-bootie@fabric"
+  }' > "$work/kubeconfig"
+chmod 0600 "$work/ca.crt" "$work/kubeconfig" "$work/token"
+
+sudo ip netns exec fabric-observer \
+  kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
+  get node fabric-az1-cp3 --output=name >/dev/null ||
+  die 'the scoped token cannot read the cp3 placeholder through the observer path'
+if sudo ip netns exec fabric-observer \
+  kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
+  get node fabric-az1-cp1 --output=name >/dev/null 2>&1; then
+  die 'the scoped token can unexpectedly read cp1'
+fi
+if sudo ip netns exec fabric-observer \
+  kubectl --kubeconfig "$work/kubeconfig" --request-timeout=10s \
+  get nodes --output=name >/dev/null 2>&1; then
+  die 'the scoped token can unexpectedly list Nodes'
+fi
+
+jq -n \
+  --arg mac "$mac" \
+  --arg root "$root_address" \
+  --arg issued "$(date --utc --iso-8601=seconds)" \
+  '{
+    schema: 1,
+    node: "fabric-az1-cp3",
+    mac: $mac,
+    rootAddress: $root,
+    issuedAt: $issued,
+    requestedLifetime: "4h"
+  }' > "$work/identity.json"
+chmod 0600 "$work/identity.json"
+
+mv -T -- "$work" "$output_dir"
+work=$output_dir
+succeeded=true
+printf 'issued scoped four-hour cp3 Bootie access at %s\n' "$output_dir"
+if [[ $node_created == true ]]; then
+  printf 'predeclared fabric-az1-cp3 in discovery mode for MAC %s\n' "$mac"
+else
+  printf 'reused the exact unjoined fabric-az1-cp3 placeholder for MAC %s\n' "$mac"
+fi

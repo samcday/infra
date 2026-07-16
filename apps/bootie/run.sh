@@ -9,5 +9,5 @@ if [[ -d /butane ]]; then
     done
 fi
 
-fcgiwrap -s 'tcp:0.0.0.0:9000' &
-nginx
+fcgiwrap -s 'tcp:127.0.0.1:9000' &
+exec nginx
