@@ -1,5 +1,9 @@
 # M710q Infineon TPM 1.2 to 2.0 conversion
 
+> This runbook does not apply to the selected HP ProDesk 600 G4 DM cp2
+> candidate, which already exposes a usable native TPM 2.0. It remains only for
+> separately inventoried Lenovo M710q candidates matching every gate below.
+
 This is a deliberately narrow, console-attended runbook for a Lenovo
 ThinkCentre M710q whose Infineon TPM reports specification `1.2` and firmware
 `6.43`. The only admitted sequence is:

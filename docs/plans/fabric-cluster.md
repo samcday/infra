@@ -14,10 +14,12 @@ more valuable as worker failure domains and tested cold spares. Five voters are
 only justified by a requirement to survive two simultaneous physical-node
 failures and five genuinely independent machines.
 
-The selected provisional consensus hardware is three Lenovo ThinkCentre M710q
-systems with Intel Core i3 CPUs. Fit each with at least 8 GiB RAM and one
-admitted root SSD; 128/256 GB SATA devices remain the preferred default. Each
-chassis is expected to expose TPM 2.0, but the model
+The selected provisional consensus hardware is a heterogeneous set of
+inventory-qualified business mini PCs. The admitted cp2 candidate is an HP
+ProDesk 600 G4 DM with an Intel Core i3-8100T; other slots may use qualified
+Lenovo ThinkCentre or comparable systems. Fit each with at least 8 GiB RAM and
+one admitted root SSD; 128/256 GB SATA devices remain the preferred default.
+Each chassis is expected to expose TPM 2.0, but the model
 name is not proof: presence, enabled state, usable capabilities, and firmware
 posture remain per-machine inventory and admission gates. Stable wired
 networking, memory health, temperature, and synchronous disk latency matter
@@ -83,7 +85,7 @@ devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1` and
 `fabric-az1-cp2`, Sam has explicitly repurposed the inventoried internal 256 GB
 Samsung NVMes at exact lowercase
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. A currently admitted
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`, respectively. A currently admitted
 node may be manufactured independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
 (or the corresponding cp2 pair). Cp3 and the all-three build remain disabled
@@ -369,7 +371,7 @@ they pass inventory and latency gates. Continue using exact
 repurposed the inventoried internal 256 GB Samsung NVMes in
 `fabric-az1-cp1` and `fabric-az1-cp2` as their root disks, using only the exact
 lowercase stable identities `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. Do not substitute a
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`, respectively. Do not substitute a
 model/serial alias or kernel name. Sam has authorized installation over both
 devices' existing contents. Cp1 and cp2 are each bound to their exact EUI;
 cp3 remains unadmitted until its exact ATA or lowercase NVMe-EUI whole-disk

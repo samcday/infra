@@ -65,7 +65,7 @@ reject_pinned() {
 }
 
 accept fabric-az1-cp1 "$FABRIC_CP1_NVME_DESTINATION" nvme eui.002538839100c827
-accept fabric-az1-cp2 "$FABRIC_CP2_NVME_DESTINATION" nvme eui.002538bb71b4bb45
+accept fabric-az1-cp2 "$FABRIC_CP2_NVME_DESTINATION" nvme eui.002538b971048a4f
 [[ -z $FABRIC_CP3_DESTINATION ]] || {
   echo 'cp3 must remain unadmitted until its exact disk identity is committed' >&2
   ((failures += 1))
@@ -101,9 +101,10 @@ reject fabric-az1-cp3 "$FABRIC_CP1_NVME_DESTINATION"
 reject fabric-az1-cp3 "$FABRIC_CP2_NVME_DESTINATION"
 reject fabric-az1-cp1 "$FABRIC_CP2_NVME_DESTINATION"
 reject fabric-az1-cp2 "$FABRIC_CP1_NVME_DESTINATION"
+reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.002538bb71b4bb45
 reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.0123456789abcdef
-reject fabric-az1-cp2 /dev/disk/by-id/nvme-S35ENX0JB81948
-reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.002538BB71B4BB45
+reject fabric-az1-cp2 /dev/disk/by-id/nvme-S35ENA0J989393
+reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.002538B971048A4F
 reject fabric-az1-cp2 "$FABRIC_CP2_NVME_DESTINATION-part1"
 reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.0000000000000000
 reject fabric-az1-cp2 /dev/disk/by-id/nvme-eui.ffffffffffffffff

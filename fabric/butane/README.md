@@ -81,7 +81,7 @@ default root devices. Sam has explicitly repurposed the inventoried internal
 256 GB Samsung NVMes in `fabric-az1-cp1` and `fabric-az1-cp2`. Their sole
 accepted identities are, respectively,
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`. Sam has authorized installation
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`. Sam has authorized installation
 over both devices' existing contents. The armed gate must revalidate the
 node-specific exact identity and receive the device-specific confirmation
 first. Cp3 remains unadmitted until its reviewed exact ATA or lowercase

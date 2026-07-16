@@ -8,7 +8,7 @@
 # until one exact ATA or lowercase NVMe-EUI whole-disk identity is reviewed and
 # committed here.
 FABRIC_CP1_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538839100c827
-FABRIC_CP2_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538bb71b4bb45
+FABRIC_CP2_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538b971048a4f
 FABRIC_CP3_DESTINATION=
 readonly FABRIC_CP1_NVME_DESTINATION FABRIC_CP2_NVME_DESTINATION
 readonly FABRIC_CP3_DESTINATION

@@ -135,35 +135,29 @@ device-specific confirmation first.
 
 Sam has also explicitly repurposed `fabric-az1-cp2`'s inventoried internal
 256 GB Samsung NVMe (model `MZVLW256HEHP-000L7`, serial
-`S35ENX0JB81948`). Its only accepted identity is the exact lowercase
-`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`; do not substitute its serial
-alias or a kernel name. Its existing contents are authorized for destruction
-by the temporary TPM conversion workflow and the subsequent cp2 installation.
-The armed pre-install gate must still revalidate this exact identity and
-receive its device-specific confirmation. The model-specific, attended TPM
-conversion ceremony is documented in `m710q-tpm12-to-tpm20.md`; it is not a
-general-purpose TPM update procedure.
+`S35ENA0J989393`) in the HP ProDesk 600 G4 DM candidate. Its only accepted
+identity is the exact lowercase
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`; do not substitute its serial alias
+or a kernel name. Its existing EFI, boot, and two LUKS2 partitions are
+authorized for destruction by the cp2 installation. The armed pre-install gate
+must still revalidate this exact identity and receive its device-specific
+confirmation.
 
-Before cp2's admitted disk has ever completed a fabric installation or
-initialized a local durable `/var/lib/etcd`, its logical identity may instead
-follow that exact NVMe into a compatible native-TPM2 chassis. Cp2 already
-appears in every node's declared initial three-member map; that static entry
-does not mean cp2 has initialized local state and does not turn this pre-install
-chassis substitution into an etcd replacement-member operation. Power off and
-unplug both machines, install only the admitted NVMe in the replacement,
-disconnect every other internal disk, and keep the original chassis powered
-off.
+The earlier Lenovo M710q TPM-conversion and disk-transplant path is not the
+selected cp2 procedure. Its model-specific attended runbook remains in
+`m710q-tpm12-to-tpm20.md` for separately inventoried M710q candidates only.
+The previously considered cp2 EUI is no longer admitted by the installer disk
+policy.
 
-Boot the non-installing inventory media and preserve the replacement's initial
-discovery capture. Complete its normal firmware, memory, NIC, disk, thermal,
-and RTC qualification, then preserve a separate reviewed final recapture
-proving the replacement DMI/chassis identity, usable TPM2, UEFI/clock state,
-permanent and current wired MAC, and the unchanged EUI, serial
-`S35ENX0JB81948`, and byte size `256060514304`. Render cp2 only from that final
-replacement MAC. Stop if the disk identity differs, a fabric install ever
-completed on it, or local durable etcd state ever initialized; those cases are
-not covered by the existing exact-disk authorization and require a separately
-reviewed etcd recovery/replacement procedure.
+Boot the non-installing inventory media and preserve the HP's initial discovery
+capture. Complete its normal firmware, memory, NIC, disk, thermal, and RTC
+qualification, then preserve a separate reviewed final recapture proving the
+HP DMI/chassis identity, usable native TPM2, UEFI/clock state, permanent and
+current wired MAC, exact EUI, serial `S35ENA0J989393`, and byte size
+`256060514304`. Render cp2 only from that final MAC. Stop if any identity
+differs, a fabric install ever completed on it, or local durable
+`/var/lib/etcd` state ever initialized; those cases require a separately
+reviewed etcd recovery or replacement procedure.
 
 One physical thumb drive may be used for inventory first and then rewritten
 between node installers, but no ISO may contain multiple node Ignitions. After
@@ -273,13 +267,12 @@ scripts/build-fabric-node-isos \
   --cp1-disk /dev/disk/by-id/nvme-eui.002538839100c827
 ```
 
-After cp2 has either completed the authorized TPM conversion or passed the
-native-TPM2 pre-install substitution procedure above, and has a reviewed final
-capture, render its Ignition from that capture's permanent wired MAC and build
-its installer against only its admitted EUI identity:
+After cp2 has a reviewed final HP capture, render its Ignition from that
+capture's permanent wired MAC and build its installer against only its admitted
+EUI identity:
 
 ```sh
-FABRIC_CP2_MAC=aa:bb:cc:dd:ee:02 \
+FABRIC_CP2_MAC="$CP2_INVENTORY_MAC" \
   ./fabric/butane/bootstrap.sh --node fabric-az1-cp2 \
   /secure/fabric-bootstrap
 
@@ -288,7 +281,7 @@ scripts/build-fabric-node-isos \
   --ignition-dir /secure/fabric-bootstrap \
   --output-dir /secure/fabric-installers \
   --cache-dir /secure/fabric-installer-cache \
-  --cp2-disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45
+  --cp2-disk /dev/disk/by-id/nvme-eui.002538b971048a4f
 ```
 
 After cp3's exact ATA or lowercase NVMe-EUI identity has been inventoried,
