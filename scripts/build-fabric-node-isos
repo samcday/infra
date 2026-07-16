@@ -944,14 +944,16 @@ EOF
     --pre-install "$pre_install" \
     --post-install "$post_install" \
     --live-karg-append coreos.inst.skip_reboot \
+    --live-karg-append systemd.show_status=false \
     --output "$temporary" \
     "$iso"
 
   # coreos-installer reports that a configured destination installs without
   # its own interactive prompt.  Our destructive gate is the generated
   # pre-install unit, so re-open the completed ISO and prove that the unit,
-  # exact destination Ignition, device identity, and network keyfile all made
-  # it into the boot media before publishing the temporary output.
+  # exact live kernel arguments, destination Ignition, device identity, and
+  # network keyfile all made it into the boot media before publishing the
+  # temporary output.
   verified_live_ignition=$workdir/$node-verified-live.ign
   verified_destination_ignition=$workdir/$node-verified-destination.ign
   verified_pre_install=$workdir/$node-verified-pre-install.sh
@@ -960,6 +962,16 @@ EOF
   verified_customize_config=$workdir/$node-verified-customize.yaml
   verified_live_access_ignition=$workdir/$node-verified-live-access.ign
   verified_network_dir=$workdir/$node-verified-network
+
+  verified_default_live_kargs=$(coreos-installer iso kargs show --default "$temporary")
+  verified_live_kargs=$(coreos-installer iso kargs show "$temporary")
+  expected_live_kargs="$verified_default_live_kargs coreos.inst.skip_reboot systemd.show_status=false"
+  [[ $verified_live_kargs == "$expected_live_kargs" ]] || {
+    echo "customized ISO live kernel arguments are unexpected: $node" >&2
+    printf 'expected: %s\nactual:   %s\n' \
+      "$expected_live_kargs" "$verified_live_kargs" >&2
+    exit 1
+  }
 
   coreos-installer iso ignition show "$temporary" > "$verified_live_ignition"
   chmod 0600 -- "$verified_live_ignition"
