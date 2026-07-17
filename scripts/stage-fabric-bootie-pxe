@@ -145,6 +145,15 @@ chmod 0644 \
   "$output_dir/tftp/EFI/BOOT/grubx64.efi" \
   "$output_dir/tftp/EFI/BOOT/mmx64.efi"
 
+# UEFI PXE clients fetch the nested bootfile named by DHCP, but shim requests
+# its GRUB and MokManager peers from the TFTP root rather than retaining the
+# bootfile's EFI/BOOT directory. Keep both layouts so the same signed Fedora
+# payloads work from removable media and over TFTP.
+install -m 0644 "$output_dir/tftp/EFI/BOOT/grubx64.efi" \
+  "$output_dir/tftp/grubx64.efi"
+install -m 0644 "$output_dir/tftp/EFI/BOOT/mmx64.efi" \
+  "$output_dir/tftp/mmx64.efi"
+
 shim_signatures=$(sbverify --list "$output_dir/tftp/EFI/BOOT/BOOTX64.EFI" 2>&1)
 grub_signatures=$(sbverify --list "$output_dir/tftp/EFI/BOOT/grubx64.efi" 2>&1)
 kernel_signatures=$(sbverify --list "$kernel_source" 2>&1)
@@ -161,6 +170,8 @@ sed -i "s/@FABRIC_CP3_MAC_HEXHYP@/$mac_hexhyp/g" \
   "$output_dir/tftp/EFI/BOOT/grub.cfg"
 grep -Fq "mac=$mac_hexhyp" "$output_dir/tftp/EFI/BOOT/grub.cfg" ||
   die 'the GRUB request was not bound to the selected MAC'
+install -m 0644 "$output_dir/tftp/EFI/BOOT/grub.cfg" \
+  "$output_dir/tftp/grub.cfg"
 
 install -m 0644 "$repo_root/fabric/bootie/dnsmasq.conf.in" \
   "$output_dir/dnsmasq.conf"
@@ -212,6 +223,9 @@ fi
   install-policy \
   node-discovery.json \
   static/* \
+  tftp/grub.cfg \
+  tftp/grubx64.efi \
+  tftp/mmx64.efi \
   tftp/EFI/BOOT/*) > "$output_dir/SHA256SUMS"
 chmod 0644 "$output_dir/SHA256SUMS"
 

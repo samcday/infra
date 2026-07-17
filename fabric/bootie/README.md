@@ -100,7 +100,9 @@ scripts/stage-fabric-bootie-pxe \
 The helper refuses an existing output directory, a mismatched ISO, a local or
 multicast MAC, and output inside this worktree. The resulting tree is public
 and non-arming: its `install-policy` is empty and its placeholder Node remains
-in discovery mode.
+in discovery mode. It retains the ISO's `EFI/BOOT` layout and also snapshots
+GRUB, MokManager, and the MAC-bound GRUB configuration at the TFTP root because
+PXE-loaded shim requests its peer files there.
 
 Build and test the pinned Bootie image before the ceremony, then make that
 exact image available in root's Podman store as

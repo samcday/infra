@@ -312,12 +312,17 @@ cleanup() {
       "$runtime_dir/handoff/install-policy" "$runtime_dir/handoff/handoff.json"
     rmdir -- "$runtime_dir/handoff" 2>/dev/null || true
   fi
-  if [[ -d $runtime_dir/tftp/EFI/BOOT && ! -L $runtime_dir/tftp/EFI/BOOT ]]; then
-    for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
-      rm -f -- "$runtime_dir/tftp/EFI/BOOT/$efi_file"
+  if [[ -d $runtime_dir/tftp && ! -L $runtime_dir/tftp ]]; then
+    for efi_peer in grub.cfg grubx64.efi mmx64.efi; do
+      rm -f -- "$runtime_dir/tftp/$efi_peer"
     done
-    rmdir -- "$runtime_dir/tftp/EFI/BOOT" 2>/dev/null || true
-    rmdir -- "$runtime_dir/tftp/EFI" 2>/dev/null || true
+    if [[ -d $runtime_dir/tftp/EFI/BOOT && ! -L $runtime_dir/tftp/EFI/BOOT ]]; then
+      for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
+        rm -f -- "$runtime_dir/tftp/EFI/BOOT/$efi_file"
+      done
+      rmdir -- "$runtime_dir/tftp/EFI/BOOT" 2>/dev/null || true
+      rmdir -- "$runtime_dir/tftp/EFI" 2>/dev/null || true
+    fi
     rmdir -- "$runtime_dir/tftp" 2>/dev/null || true
   fi
   if [[ -d $runtime_dir/ignition/common && ! -L $runtime_dir/ignition/common ]]; then
@@ -389,6 +394,10 @@ done
 for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
   snapshot_stage_file "tftp/EFI/BOOT/$efi_file" \
     "$runtime_dir/tftp/EFI/BOOT/$efi_file" 0644
+done
+for efi_peer in grub.cfg grubx64.efi mmx64.efi; do
+  snapshot_stage_file "tftp/$efi_peer" \
+    "$runtime_dir/tftp/$efi_peer" 0644
 done
 ignition_dir=$runtime_dir/ignition
 if [[ $mode == install ]]; then
