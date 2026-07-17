@@ -233,15 +233,32 @@ sudo rm -rf -- /dev/shm/fabric-cp3-bootie-access
 ## 5. Prepare the one-use install handoff
 
 Do not proceed until the inventory is reviewed, cp3 has passed its TPM,
-firmware, memory, NIC, disk, thermal, RTC, SMART, and synchronous-write gates,
-and the exact whole-disk by-id is committed to the cp3 disk policy. Disconnect
-every non-target internal disk. Sam must authorize destruction of that exact
-path; model, serial alias, `/dev/nvme0n1`, and `/dev/sdX` are not substitutes.
+firmware, memory, NIC, disk, thermal, RTC, and SMART gates, and every accepted
+synchronous-write exception is separately preserved. The exact whole-disk
+by-id must be committed to the cp3 disk policy. Disconnect every non-target
+internal disk. Sam must authorize destruction of that exact path; model, serial
+alias, `/dev/nvme0n1`, and `/dev/sdX` are not substitutes.
+
+The admitted cp3 device is the 256 GB Samsung `MZVLW256HEHP-000L7`, serial
+`S35ENX0JB81948`, with exact size `256060514304` and sole accepted identity
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, now installed in the native-TPM2
+replacement M710q chassis `S4FQ1133`. Its etcd-style synchronous-write run
+recorded 77,563 samples and missed the deliberately strict synthetic 100,000
+sample, 500-IOPS, 5 ms p95, and 10 ms p99 targets, but its flush trace,
+kernel/SMART integrity, p99.9, and maximum-latency checks passed. Sam accepted
+that result only through a separately preserved
+external evidence exception. The exception admits this exact disk; it does not
+authorize installation, replace the exact one-use `ARM:` ceremony below, or
+waive the later power-loss/restore validation.
+
+```sh
+AUTHORIZED_CP3_DISK_BY_ID=/dev/disk/by-id/nvme-eui.002538bb71b4bb45
+```
 
 Create the final handoff with the reviewed helper. It renders cp3 in verified
 tmpfs, calls the repository's canonical disk-policy validator, and produces
 the required Ignition, one-record policy, and hash-binding manifest. It
-refuses every cp3 disk while the committed cp3 pin is empty. This step contains
+refuses every disk except the committed cp3 identity above. This step contains
 secrets but does not mutate Kubernetes, arm an install, or write a disk.
 
 ```sh

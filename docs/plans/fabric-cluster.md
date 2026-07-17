@@ -16,9 +16,11 @@ failures and five genuinely independent machines.
 
 The selected provisional consensus hardware is a heterogeneous set of
 inventory-qualified business mini PCs. The admitted cp2 candidate is an HP
-ProDesk 600 G4 DM with an Intel Core i3-8100T; other slots may use qualified
-Lenovo ThinkCentre or comparable systems. Fit each with at least 8 GiB RAM and
-one admitted root SSD; 128/256 GB SATA devices remain the preferred default.
+ProDesk 600 G4 DM with an Intel Core i3-8100T. The admitted cp3 candidate is a
+native-TPM2 Lenovo ThinkCentre M710q, chassis `S4FQ1133`, with an Intel Core
+i3-6100T; other slots may use qualified Lenovo ThinkCentre or comparable
+systems. Fit each with at least 8 GiB RAM and one admitted root SSD; 128/256 GB
+SATA devices remain the preferred default.
 Each chassis is expected to expose TPM 2.0, but the model
 name is not proof: presence, enabled state, usable capabilities, and firmware
 posture remain per-machine inventory and admission gates. Stable wired
@@ -85,12 +87,13 @@ devices use `/dev/disk/by-id/ata-*`. For `fabric-az1-cp1` and
 `fabric-az1-cp2`, Sam has explicitly repurposed the inventoried internal 256 GB
 Samsung NVMes at exact lowercase
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538b971048a4f`, respectively. A currently admitted
-node may be manufactured independently with
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`, respectively. Cp3 uses the exact
+reviewed lowercase identity
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`. An admitted node may be
+manufactured independently with
 `scripts/build-fabric-node-isos --node fabric-az1-cp1` and only `--cp1-disk`
-(or the corresponding cp2 pair). Cp3 and the all-three build remain disabled
-until cp3's reviewed exact ATA or lowercase NVMe-EUI identity is committed to
-the disk policy.
+(or the corresponding cp2/cp3 pair), and the all-three build is now available
+with all three exact identities.
 Never use `/dev/sdX`. The same physical thumb drive may be used for inventory
 first and then rewritten between individual nodes, but a multi-node image
 containing all three Ignitions is forbidden. Once the first secret installer
@@ -369,14 +372,20 @@ The 128/256 GB 2.5-inch SATA SSDs are the preferred consensus-node devices if
 they pass inventory and latency gates. Continue using exact
 `/dev/disk/by-id/ata-*` identities for those default devices. Sam has explicitly
 repurposed the inventoried internal 256 GB Samsung NVMes in
-`fabric-az1-cp1` and `fabric-az1-cp2` as their root disks, using only the exact
-lowercase stable identities `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538b971048a4f`, respectively. Do not substitute a
-model/serial alias or kernel name. Sam has authorized installation over both
-devices' existing contents. Cp1 and cp2 are each bound to their exact EUI;
-cp3 remains unadmitted until its exact ATA or lowercase NVMe-EUI whole-disk
-identity is reviewed and pinned. Installation requires the armed pre-install
-gate to revalidate the node-specific identity and receive its device-specific
+`fabric-az1-cp1`, `fabric-az1-cp2`, and `fabric-az1-cp3` as their root disks,
+using only the exact lowercase stable identities
+`/dev/disk/by-id/nvme-eui.002538839100c827`,
+`/dev/disk/by-id/nvme-eui.002538b971048a4f`, and
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`, respectively. Cp3's disk is model
+`MZVLW256HEHP-000L7`, serial `S35ENX0JB81948`, exact size `256060514304`, in
+replacement chassis `S4FQ1133`. Do not substitute a model/serial alias or
+kernel name. Cp3 recorded 77,563 samples and missed the deliberately strict
+synthetic 100,000-sample, 500-IOPS, 5 ms p95, and 10 ms p99 thresholds but
+passed the flush/FUA trace and kernel/SMART integrity checks; Sam accepted it
+only through a separately preserved external evidence exception. The exception
+does not authorize installation or waive its exact one-use arm or later
+power-loss/restore validation. Installation requires the armed pre-install gate
+to revalidate each node-specific identity and receive its device-specific
 confirmation.
 Disconnect every non-target internal disk before booting the armed installer.
 Other approximately 1 TB NVMe devices remain reserved for fabric workers and
@@ -635,8 +644,10 @@ Zincati remains disabled until this cadence and rollback evidence exist.
 5. Generate independent fabric PKI/secrets. Render and build one node at a time;
    for example, use `fabric/butane/bootstrap.sh --node fabric-az1-cp1` for cp1
    and pass exact `/dev/disk/by-id/nvme-eui.002538839100c827` to the builder's
-   `--cp1-disk`. Retain the legacy all-three mode by omitting `--node` after all
-   inputs are available. Keep the sensitive Ignitions and per-node customized
+   `--cp1-disk`; cp3 uses
+   `/dev/disk/by-id/nvme-eui.002538bb71b4bb45` with `--cp3-disk`. The all-three
+   mode is available by omitting `--node` and supplying all three exact inputs.
+   Keep the sensitive Ignitions and per-node customized
    FCOS ISOs on trusted storage outside Git. Use
    `scripts/write-fabric-installer-usb` and its device-specific confirmation to
    reimage the installer thumb drive for exactly one node at a time. With only

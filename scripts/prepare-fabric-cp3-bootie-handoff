@@ -13,7 +13,7 @@ usage() {
 Usage:
   prepare-fabric-cp3-bootie-handoff \
     --stage-dir /trusted/fabric-cp3-pxe \
-    --disk /dev/disk/by-id/EXACT_COMMITTED_CP3_DISK \
+    --disk /dev/disk/by-id/nvme-eui.002538bb71b4bb45 \
     --output-dir /dev/shm/fabric-cp3-install
 
 Renders the complete cp3 Ignition and an independently checked one-record

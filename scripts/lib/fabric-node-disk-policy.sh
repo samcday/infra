@@ -3,13 +3,11 @@
 # outputs and are consumed by the caller after validation.
 # shellcheck disable=SC2034
 
-# Exact, reviewed identities for admitted consensus-node disks. Cp3 has not
-# completed inventory, so its empty pin deliberately rejects every destination
-# until one exact ATA or lowercase NVMe-EUI whole-disk identity is reviewed and
-# committed here.
+# Exact, reviewed identities for admitted consensus-node disks. Every pin is a
+# stable whole-disk NVMe EUI captured from the node's final inventory.
 FABRIC_CP1_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538839100c827
 FABRIC_CP2_NVME_DESTINATION=/dev/disk/by-id/nvme-eui.002538b971048a4f
-FABRIC_CP3_DESTINATION=
+FABRIC_CP3_DESTINATION=/dev/disk/by-id/nvme-eui.002538bb71b4bb45
 readonly FABRIC_CP1_NVME_DESTINATION FABRIC_CP2_NVME_DESTINATION
 readonly FABRIC_CP3_DESTINATION
 

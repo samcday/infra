@@ -17,7 +17,7 @@ Usage (run only after the install-mode station reports ready):
     --stage-dir /trusted/fabric-cp3-pxe \
     --access-dir /dev/shm/fabric-cp3-bootie-access-install \
     --handoff-dir /dev/shm/fabric-cp3-install \
-    --confirm ARM:fabric-az1-cp3:/dev/disk/by-id/EXACT_COMMITTED_CP3_DISK
+    --confirm ARM:fabric-az1-cp3:/dev/disk/by-id/nvme-eui.002538bb71b4bb45
 
 This is the destructive authorization boundary. It atomically changes only
 the predeclared unjoined cp3 placeholder from discovery to one armed install.

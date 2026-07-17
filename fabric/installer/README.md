@@ -159,12 +159,10 @@ images. Cp1 and cp2 use this path; cp3 media remains the offline fallback:
 - `fabric-az1-cp3-installer.iso`
 
 Each image embeds only its matching Ignition and one admitted whole-disk
-identity. Cp1 and cp2 are bound to their respective exact NVMe EUIs below.
-Cp3 prefers a SATA SSD named by an exact `/dev/disk/by-id/ata-*` path, but an
-exact lowercase `/dev/disk/by-id/nvme-eui.*` identity is also supported after
-final inventory.
-Until cp3's final inventory is reviewed, the disk-policy pin is intentionally
-empty and the builder refuses every cp3 destination.
+identity. All three nodes are now bound to their respective exact NVMe EUIs
+below. SATA SSDs named by exact `/dev/disk/by-id/ata-*` paths remain the
+preferred default for future consensus hardware, but cp3's reviewed lowercase
+NVMe-EUI identity is admitted for this installation.
 
 Sam has explicitly repurposed `fabric-az1-cp1`'s inventoried internal 256 GB
 Samsung NVMe as that node's root disk. Its only accepted identity is the exact
@@ -184,11 +182,26 @@ authorized for destruction by the cp2 installation. The armed pre-install gate
 must still revalidate this exact identity and receive its device-specific
 confirmation.
 
-The earlier Lenovo M710q TPM-conversion and disk-transplant path is not the
-selected cp2 procedure. Its model-specific attended runbook remains in
-`m710q-tpm12-to-tpm20.md` for separately inventoried M710q candidates only.
-The previously considered cp2 EUI is no longer admitted by the installer disk
-policy.
+For `fabric-az1-cp3`, Sam selected the transplanted 256 GB Samsung NVMe (model
+`MZVLW256HEHP-000L7`, serial `S35ENX0JB81948`, exact size `256060514304`) in the
+native-TPM2 replacement Lenovo M710q chassis `S4FQ1133`. Its only accepted
+identity is the exact lowercase
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45`; the serial alias, a kernel name,
+and every other disk remain refused. Its etcd-style synchronous-write run
+sustained approximately 258 syncs/second with p95 `7.831552` ms, p99
+`10.289152` ms, p99.9 `14.090240` ms, and maximum `18.818445` ms across 77,563
+samples. That missed the deliberately strict synthetic 100,000-sample,
+500-IOPS, 5 ms p95, and 10 ms p99 targets; Sam admitted it only through a
+separately preserved external evidence exception after the flush/FUA trace and
+kernel/SMART integrity checks passed.
+This exception admits only the disk policy identity. It does not authorize or
+arm installation and does not waive the later power-loss/restore validation.
+
+The earlier Lenovo M710q TPM-conversion path was not selected for cp2, and the
+original TPM1.2 chassis is not admitted. Its model-specific attended runbook
+remains in `m710q-tpm12-to-tpm20.md` for separately inventoried M710q candidates
+only. The EUI previously considered for cp2 is now admitted only for cp3 in the
+replacement native-TPM2 chassis above.
 
 Boot the non-installing inventory media and preserve the HP's initial discovery
 capture. Complete its normal firmware, memory, NIC, disk, thermal, and RTC
@@ -325,18 +338,16 @@ scripts/build-fabric-node-isos \
   --cp2-disk /dev/disk/by-id/nvme-eui.002538b971048a4f
 ```
 
-After cp3's exact ATA or lowercase NVMe-EUI identity has been inventoried,
-reviewed, and committed to the disk policy, the original all-three mode becomes
-available: omit `--node`, provide all three `FABRIC_CP*_MAC` variables when
-rendering, and provide `--cp1-disk`, `--cp2-disk`, and `--cp3-disk` when
-building. Until then,
-both cp3 and all-three builds are deliberately refused. Selected-node mode
-changes only which secret artifact is manufactured. Every Ignition retains the
-fixed declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
+Cp3's exact lowercase NVMe-EUI identity is now inventoried, reviewed, and
+committed to the disk policy, so the original all-three mode is available:
+omit `--node`, provide all three `FABRIC_CP*_MAC` variables when rendering, and
+provide `--cp1-disk`, `--cp2-disk`, and `--cp3-disk` when building. Selected-node
+mode changes only which secret artifact is manufactured. Every Ignition retains
+the fixed declared `fabric-az1-cp1`/`cp2`/`cp3` etcd membership and
 `initial-cluster-state=new`. A lone installed voter cannot form etcd quorum,
 so the K3s API cannot become available until at least one other declared
 member is brought up with it. Cp2 uses its exact admitted NVMe EUI above; cp3
-uses one exact reviewed `ata-*` or lowercase `nvme-eui.*` whole-disk path.
+uses only `/dev/disk/by-id/nvme-eui.002538bb71b4bb45`.
 
 After customization, normal mode re-opens every temporary ISO before it is
 published. It verifies that the confirmation-gated pre-install unit runs

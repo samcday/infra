@@ -80,15 +80,20 @@ etcd consensus.
 
 SATA SSDs identified by exact `/dev/disk/by-id/ata-*` paths remain the preferred
 default root devices. Sam has explicitly repurposed the inventoried internal
-256 GB Samsung NVMes in `fabric-az1-cp1` and `fabric-az1-cp2`. Their sole
-accepted identities are, respectively,
+256 GB Samsung NVMes in all three initial members. Their sole accepted
+identities are, respectively,
 `/dev/disk/by-id/nvme-eui.002538839100c827` and
-`/dev/disk/by-id/nvme-eui.002538b971048a4f`. Sam has authorized installation
-over both devices' existing contents. The armed gate must revalidate the
-node-specific exact identity and receive the device-specific confirmation
-first. Cp3 remains unadmitted until its reviewed exact ATA or lowercase
-NVMe-EUI identity is committed; every non-target internal disk must be
-disconnected.
+`/dev/disk/by-id/nvme-eui.002538b971048a4f` for cp1 and cp2, and
+`/dev/disk/by-id/nvme-eui.002538bb71b4bb45` for cp3. Cp3's device is model
+`MZVLW256HEHP-000L7`, serial `S35ENX0JB81948`, exact size `256060514304`, in
+the native-TPM2 replacement M710q chassis `S4FQ1133`. Its synthetic
+synchronous-write targets were accepted only through a separately preserved
+external evidence exception after flush/FUA and integrity checks passed. That
+exception admits the exact disk but does not replace the separate one-use
+installation arm. Sam has authorized installation over the cp1 and cp2
+devices' existing contents; every node's armed gate must revalidate its exact
+identity and receive its device-specific confirmation first. Every non-target
+internal disk must be disconnected.
 
 ## Offline secret boundary
 
@@ -194,8 +199,8 @@ during bootstrap. Cp1 and cp2 receive their rendered Ignitions through their
 node-local media; cp3 may use the temporary network handoff above. In either
 case, invoke the installer only against the physically verified stable
 root-disk by-id. For the preferred/default SATA devices this is an exact
-`/dev/disk/by-id/ata-*` path; cp1 and cp2 use their respective exact admitted
-`nvme-eui` paths above.
+`/dev/disk/by-id/ata-*` path; cp1, cp2, and cp3 use their respective exact
+admitted `nvme-eui` paths above.
 The router and persistent PXE staging tree never store rendered Ignitions or
 any keys. First boot layers the policy and reboots once before K3s may start.
 
