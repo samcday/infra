@@ -1,12 +1,8 @@
 {
   "mcpServers": {
     "kubernetes": {
-      "command": "npx",
+      "command": "./scripts/kubernetes-mcp",
       "args": [
-        "-y",
-        "kubernetes-mcp-server@0.0.59",
-        "--kubeconfig",
-        "./kubeconfig",
         "--read-only",
         "--toolsets",
         "core,config,helm"

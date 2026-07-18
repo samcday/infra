@@ -99,28 +99,30 @@ accepted by the live `sam-desktop` client; Headscale's server-side approvals
 and other clients remain unverified. The fabric router overlay explicitly
 removes Tailscale.
 
-## Proposed and reserved fabric space
+## Allocated fabric space
 
 Fabric is additive and is not in the hub Flux fan-out. These ranges are
-reserved by the bootstrap sources but remain provisional. Check them against
-the live home, hub, WAN, ISP, and Tailscale routes and allocations before the
-first installation; an untested provisional range is not approved for use.
+allocated by the bootstrap sources and have been live since the three-root
+qualification completed on 2026-07-18. They remain intentionally
+non-advertised outside the isolated fabric boundary. Recheck new home, hub,
+WAN, ISP, and Tailscale allocations before adding any route advertisement or
+cross-cluster transport.
 
 | Purpose | Range or address | Status |
 | --- | --- | --- |
-| Consensus and provisioning LAN | `10.66.0.0/24` | Reserved; no Git, live hub/cloud, or operator-route collision found; intentionally not advertised. |
-| Fabric Pod network | `172.22.0.0/16` | Reserved in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
-| Fabric Service network | `172.21.0.0/16` | Reserved in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
-| Router and offline asset server | `10.66.0.1` | Reserved. |
-| Operations laptop and temporary soak observer | `10.66.0.2` | Reserved for attended use, without forwarding. |
+| Consensus and provisioning LAN | `10.66.0.0/24` | Live; no Git, live hub/cloud, or operator-route collision found; intentionally not advertised. |
+| Fabric Pod network | `172.22.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
+| Fabric Service network | `172.21.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
+| Router and offline asset server | `10.66.0.1` | Live router address. |
+| Operations laptop and temporary soak observer | `10.66.0.2` | Live attended observer attachment, without forwarding. |
 | Low-address holdback | `10.66.0.3-10.66.0.9` | Unallocated; LAN DHCP is disabled. |
-| Consensus nodes | `10.66.0.10-10.66.0.12` | Statically assigned. |
+| Consensus nodes | `10.66.0.10-10.66.0.12` | Live, statically assigned cp1-cp3 roots. |
 | Post-consensus holdback | `10.66.0.13-10.66.0.19` | Unallocated; not a worker pool. |
 | Consensus-segment holdback | `10.66.0.20-10.66.0.99` | Reserved; not a worker pool. |
 | Ephemeral live inventory | `10.66.0.100` | One non-installing candidate at a time; no gateway or DNS. |
 | Unallocated consensus-LAN holdback | `10.66.0.101-10.66.0.199` | Reserved; LAN DHCP is disabled. |
 | High-address holdback | `10.66.0.200-10.66.0.253` | Unallocated; not a publishing pool. |
-| Fabric API VIP | `10.66.0.254` | Reserved. |
+| Fabric API VIP | `10.66.0.254` | Live kube-vip API endpoint. |
 
 Evidence is in the [fabric plan](plans/fabric-cluster.md), [router
 configuration](../fabric/router/files/etc/uci-defaults/10-system), [node

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() {
+  printf 'kubernetes-mcp: %s\n' "$*" >&2
+  exit 1
+}
+
+for command in install kubectl mktemp npx sed; do
+  command -v "$command" >/dev/null 2>&1 ||
+    die "required command not found: $command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+runtime_parent=${XDG_RUNTIME_DIR:-$HOME/.cache/infra-runtime}
+
+if [[ ! -e $runtime_parent ]]; then
+  mkdir -p -- "$runtime_parent"
+  chmod 0700 -- "$runtime_parent"
+fi
+[[ -d $runtime_parent && ! -L $runtime_parent ]] ||
+  die "runtime parent is missing or unsafe: $runtime_parent"
+[[ $(stat -Lc '%u:%a' -- "$runtime_parent") == "$(id -u):700" ]] ||
+  die "runtime parent must be owned by the caller with mode 0700: $runtime_parent"
+
+kubeconfig=$(mktemp "$runtime_parent/infra-kubernetes-mcp.XXXXXXXX")
+child=
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [[ -n $child ]]; then
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+  rm -f -- "$kubeconfig"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+# The tracked kubeconfig intentionally defaults ordinary kubectl to fabric.
+# Keep the repository's read-only MCP server defaulting to hub while retaining
+# all contexts for its explicit multi-cluster tools.
+install -m 0600 -- "$repo_root/kubeconfig" "$kubeconfig"
+# Once the copy lives in XDG_RUNTIME_DIR, make repo-relative public CA paths
+# absolute. Some optional generated child CAs may not exist yet, so do not use
+# `kubectl config view --flatten`, which would reject the whole multi-context
+# file while trying to read them.
+sed -i \
+  -e "s#certificate-authority: hub/#certificate-authority: $repo_root/hub/#" \
+  -e "s#certificate-authority: fabric/#certificate-authority: $repo_root/fabric/#" \
+  "$kubeconfig"
+kubectl --kubeconfig "$kubeconfig" config use-context hub >/dev/null
+
+(
+  cd -- "$repo_root"
+  exec npx -y kubernetes-mcp-server@0.0.59 \
+    --kubeconfig "$kubeconfig" \
+    "$@"
+) &
+child=$!
+wait "$child"
+status=$?
+child=
+exit "$status"

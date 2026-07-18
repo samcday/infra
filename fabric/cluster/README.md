@@ -29,16 +29,16 @@ worker workloads and are never scheduled on the root trio.
 
 ## Provisioning boundary
 
-Cp1 and cp2 were bootstrapped from node-local media and are never exposed to
-Bootie. Completing the already-declared third member may use the bounded,
-temporary cp3-only PXE station documented in `fabric/bootie/README.md`. That
-station runs on the observer machine, not in this cluster or on the router. It
-accepts one predeclared Node and one exact permanent MAC, cannot create or list
-Nodes, and receives a four-hour ServiceAccount token that can get and patch
-only `fabric-az1-cp3`.
+Cp1 and cp2 were bootstrapped from node-local media and were never exposed to
+Bootie. Cp3 was commissioned on 2026-07-18 with the bounded, temporary cp3-only
+PXE station documented in `fabric/bootie/README.md`. The station and its API
+access were torn down after qualification; all three roots now boot locally
+and form the live consensus/control-plane set. The retained runbook is an
+audit record, not an active provisioning service.
 
-Discovery receives only the non-installing guarded inventory Ignition. The
-complete cp3 Ignition may be mounted read-only from verified tmpfs only after
+During that ceremony, discovery received only the non-installing guarded
+inventory Ignition. The complete cp3 Ignition was mounted read-only from
+verified tmpfs only after
 the candidate has passed inventory, its exact whole-disk by-id has been
 reviewed, and Sam has authorized that device for destruction. The exact device
 must agree in the Node annotation and a separate read-only install policy; an
@@ -54,7 +54,7 @@ authentication. The isolated, physically trusted fabric L2 is therefore part
 of the security boundary. Stop the station, revoke its RBAC, zero its projected
 token, and discard the tmpfs handoff after the single cp3 ceremony.
 
-This exception does not install a durable provisioner and does not make cp3
+This completed exception did not install a durable provisioner and does not make cp3
 boot, etcd, or the root K3s control plane depend on Bootie. Before worker
 induction, design a separate worker-only profile set, constrain Node creation,
 and choose an authenticated transport. None of those later choices may make

@@ -1,5 +1,11 @@
 # Temporary cp3 Bootie station
 
+> **Status: retired.** Cp3 joined the live three-member fabric cluster on
+> 2026-07-18, and the temporary station, token, RBAC and tmpfs handoff were
+> removed after qualification. This document is retained as the audited
+> ceremony record. Do not rerun it without a new, explicit commissioning
+> authorization and fresh bounded credentials.
+
 This directory defines a bounded network-boot exception for completing
 `fabric-az1-cp3`. It is not the fabric's permanent provisioner and is not a
 worker-enrollment design. Cp1 and cp2 stay untouched and never expose their
@@ -57,11 +63,10 @@ The remaining limits reduce the consequence of a mistake or compromise:
   removes the temporary ServiceAccount/RBAC, clears stale one-use annotations,
   and zeroes the local projected token.
 
-The station needs the current two-member K3s API only during this attended
-ceremony. Once cp3 is installed it boots from local disk and joins the static
-three-member etcd map already present in its Ignition. Do not run `etcdctl
-member add`. If either current voter is lost before cp3 joins, recover quorum;
-Bootie is not an out-of-band replacement for consensus.
+The station needed the then-current two-member K3s API only during the attended
+ceremony. Cp3 now boots from local disk and participates in the static
+three-member etcd map already present in its Ignition; no `etcdctl member add`
+was used. Bootie is not an out-of-band replacement for consensus.
 
 ## 1. Identify cp3 without starting DHCP
 

@@ -1,5 +1,10 @@
 # Fabric root cluster
 
+> **Bootstrap status (2026-07-18):** the initial cp1-cp3 consensus and root
+> K3s cluster is installed and qualified. This plan remains the design and
+> admission record; “before first installation” gates below describe the
+> completed ceremony, while worker/hosted-cluster gates remain prospective.
+
 This is the additive replacement foundation for the current physical `hub`.
 The existing hub remains authoritative until a separately bootstrapped fabric
 cluster and a fresh managed hub have passed the failure, authorization,

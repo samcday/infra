@@ -1,5 +1,10 @@
 # Fabric consensus installer media
 
+> **Status (2026-07-18):** cp1, cp2 and cp3 are installed and booting from
+> their admitted local disks. This installer runbook is retained for audit and
+> disaster recovery; the temporary cp3 PXE exception is retired as documented
+> in `fabric/bootie/README.md`.
+
 ## Read-only inventory live media
 
 Before assigning a root disk, MAC address, or node name, build the reusable
