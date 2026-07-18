@@ -151,6 +151,9 @@ add_list firewall.fabric_router_http.src_ip='10.66.0.2/32'
 add_list firewall.fabric_router_http.src_ip='10.66.0.10/32'
 add_list firewall.fabric_router_http.src_ip='10.66.0.11/32'
 add_list firewall.fabric_router_http.src_ip='10.66.0.12/32'
+# Bootie reserves this address for installed first-boot Ignition before the
+# candidate's static control-plane address can take effect.
+add_list firewall.fabric_router_http.src_ip='10.66.0.100/32'
 set firewall.fabric_router_http.proto='tcp'
 set firewall.fabric_router_http.dest_port='80'
 set firewall.fabric_router_http.target='ACCEPT'
