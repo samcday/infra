@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Use the fabric Kubernetes API through a short-lived SSH/sudo session.
+
+Usage:
+  fk [--node cp1|cp2] <kubectl arguments...>
+  fk [--node cp1|cp2] k9s [k9s arguments...]
+
+Examples:
+  scripts/fk get nodes -o wide
+  scripts/fk --node cp1 get --raw=/readyz
+  scripts/fk k9s
+
+The helper reaches the selected root through sam-desktop's Headscale address,
+starts root-local `k3s kubectl proxy`, forwards it only to a loopback port on
+this machine, and creates a credential-free runtime kubeconfig. The proxy,
+forward, and kubeconfig disappear when the invoked client exits.
+EOF
+}
+
+die() {
+  printf 'fk: %s\n' "$*" >&2
+  exit 1
+}
+
+node=cp2
+while (($#)); do
+  case $1 in
+    --node)
+      (($# >= 2)) || die '--node requires cp1 or cp2'
+      node=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *) break ;;
+  esac
+done
+
+case $node in
+  cp1 | fabric-az1-cp1) address=10.66.0.10 ;;
+  cp2 | fabric-az1-cp2) address=10.66.0.11 ;;
+  *) die 'node must be cp1 or cp2; cp3 is not commissioned and pinned yet' ;;
+esac
+
+(($# > 0)) || {
+  usage >&2
+  exit 2
+}
+
+client=kubectl
+if [[ $1 == k9s ]]; then
+  client=k9s
+  shift
+fi
+
+for command in curl flock mkfifo ssh tail "$client"; do
+  command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+known_hosts=$repo_root/fabric/access/known_hosts
+proxy_command="$script_dir/fabric-ssh-proxy %h %p"
+identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+
+[[ -f $known_hosts && ! -L $known_hosts ]] ||
+  die "strict host-key file is missing or unsafe: $known_hosts"
+[[ -r $identity ]] || die "SSH identity is not readable: $identity"
+
+runtime_parent=${XDG_RUNTIME_DIR:-$HOME/.cache/infra-runtime}
+if [[ ! -e $runtime_parent ]]; then
+  mkdir -p -- "$runtime_parent"
+  chmod 0700 -- "$runtime_parent"
+fi
+[[ -d $runtime_parent && ! -L $runtime_parent ]] ||
+  die "runtime parent is missing or unsafe: $runtime_parent"
+runtime_owner_mode=$(stat -Lc '%u:%a' -- "$runtime_parent")
+[[ $runtime_owner_mode == "$(id -u):700" ]] ||
+  die "runtime parent must be owned by the caller with mode 0700: $runtime_parent"
+
+exec {lock_fd}>"$runtime_parent/infra-fabric-kube.lock"
+chmod 0600 -- "$runtime_parent/infra-fabric-kube.lock"
+flock --nonblock "$lock_fd" ||
+  die 'another local fabric Kubernetes session already owns the tunnel'
+
+session=$(mktemp -d "$runtime_parent/infra-fabric-kube.XXXXXXXX")
+chmod 0700 -- "$session"
+kubeconfig=$session/kubeconfig
+ssh_log=$session/ssh.log
+control_fifo=$session/control
+local_port=16443
+remote_port=$((20000 + (RANDOM % 30000)))
+ssh_pid=
+control_pid=
+
+mkfifo -m 0600 -- "$control_fifo"
+
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [[ -n $control_pid ]]; then
+    kill "$control_pid" 2>/dev/null || true
+    wait "$control_pid" 2>/dev/null || true
+  fi
+  if [[ -n $ssh_pid ]]; then
+    for _attempt in {1..20}; do
+      kill -0 "$ssh_pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    kill "$ssh_pid" 2>/dev/null || true
+    wait "$ssh_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$session"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+read -r -d '' remote_script <<'EOF' || true
+set -euo pipefail
+port=$1
+proxy_pid=
+stdin_pid=
+
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [[ -n $proxy_pid ]]; then
+    kill "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+  fi
+  if [[ -n $stdin_pid ]]; then
+    kill "$stdin_pid" 2>/dev/null || true
+    wait "$stdin_pid" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+/usr/local/bin/k3s kubectl \
+  --kubeconfig /etc/rancher/k3s/k3s.yaml \
+  proxy \
+  --address=127.0.0.1 \
+  --port="$port" \
+  --accept-hosts='^127\.0\.0\.1(:[0-9]+)?$' \
+  --reject-paths='^$' &
+proxy_pid=$!
+/usr/bin/cat <&0 >/dev/null &
+stdin_pid=$!
+wait -n "$proxy_pid" "$stdin_pid"
+EOF
+printf -v remote_command \
+  'exec sudo --non-interactive /usr/bin/bash -c %q fabric-kube-proxy %q' \
+  "$remote_script" "$remote_port"
+
+tail -f /dev/null >"$control_fifo" &
+control_pid=$!
+
+ssh \
+  -F /dev/null \
+  -i "$identity" \
+  -o BatchMode=yes \
+  -o CanonicalizeHostname=no \
+  -o CheckHostIP=no \
+  -o ConnectTimeout=10 \
+  -o ControlMaster=no \
+  -o ControlPath=none \
+  -o ControlPersist=no \
+  -o ExitOnForwardFailure=yes \
+  -o ForwardAgent=no \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o HostKeyAlgorithms=ssh-ed25519 \
+  -o IdentitiesOnly=yes \
+  -o KbdInteractiveAuthentication=no \
+  -o PasswordAuthentication=no \
+  -o PermitLocalCommand=no \
+  -o "ProxyCommand=$proxy_command" \
+  -o RequestTTY=no \
+  -o ServerAliveCountMax=2 \
+  -o ServerAliveInterval=15 \
+  -o StrictHostKeyChecking=yes \
+  -o UpdateHostKeys=no \
+  -o UserKnownHostsFile="$known_hosts" \
+  -L "127.0.0.1:$local_port:127.0.0.1:$remote_port" \
+  "sam@$address" \
+  "$remote_command" \
+  <"$control_fifo" \
+  >"$ssh_log" 2>&1 &
+ssh_pid=$!
+
+ready=false
+for _attempt in {1..100}; do
+  if ! kill -0 "$ssh_pid" 2>/dev/null; then
+    wait "$ssh_pid" || true
+    sed -n '1,80p' "$ssh_log" >&2
+    die 'fabric SSH/API proxy exited before becoming ready'
+  fi
+  if curl \
+    --fail \
+    --noproxy '*' \
+    --silent \
+    --show-error \
+    --max-time 1 \
+    "http://127.0.0.1:$local_port/version" \
+    >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  sleep 0.1
+done
+$ready || {
+  sed -n '1,80p' "$ssh_log" >&2
+  die 'timed out waiting for the fabric SSH/API proxy'
+}
+
+umask 077
+cat >"$kubeconfig" <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+  - name: fabric
+    cluster:
+      server: http://127.0.0.1:$local_port
+users:
+  - name: fabric-ssh-sudo
+    user: {}
+contexts:
+  - name: fabric
+    context:
+      cluster: fabric
+      user: fabric-ssh-sudo
+current-context: fabric
+EOF
+chmod 0600 -- "$kubeconfig"
+
+case $client in
+  kubectl)
+    kubectl --kubeconfig="$kubeconfig" --context=fabric "$@"
+    ;;
+  k9s)
+    k9s --kubeconfig "$kubeconfig" --context fabric "$@"
+    ;;
+esac

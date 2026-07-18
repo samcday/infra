@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: fabric-ssh-proxy <fabric-root-ip> 22
+
+Open a raw SSH transport to one commissioned fabric root through
+sam-desktop's Headscale address and its isolated fabric-observer network
+namespace. This is intended for OpenSSH ProxyCommand; it is not a general
+TCP or subnet forwarding helper.
+EOF
+}
+
+die() {
+  printf 'fabric-ssh-proxy: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 2 ]] || {
+  usage
+  exit 2
+}
+
+target_address=$1
+target_port=$2
+case "$target_address:$target_port" in
+  10.66.0.10:22 | 10.66.0.11:22) ;;
+  *) die 'target must be commissioned cp1 or cp2 on TCP/22' ;;
+esac
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+known_hosts=$repo_root/fabric/access/known_hosts
+relay=sam-desktop.tailnet.hub.samcday.com
+identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+
+[[ -f $known_hosts && ! -L $known_hosts ]] ||
+  die "strict host-key file is missing or unsafe: $known_hosts"
+[[ -r $identity ]] || die "SSH identity is not readable: $identity"
+
+exec ssh \
+  -F /dev/null \
+  -i "$identity" \
+  -o BatchMode=yes \
+  -o CanonicalizeHostname=no \
+  -o CheckHostIP=no \
+  -o ClearAllForwardings=yes \
+  -o ConnectTimeout=10 \
+  -o ControlMaster=no \
+  -o ControlPath=none \
+  -o ControlPersist=no \
+  -o ForwardAgent=no \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o HostKeyAlgorithms=ssh-ed25519 \
+  -o IdentitiesOnly=yes \
+  -o KbdInteractiveAuthentication=no \
+  -o LogLevel=ERROR \
+  -o PasswordAuthentication=no \
+  -o PermitLocalCommand=no \
+  -o ProxyCommand=none \
+  -o ProxyJump=none \
+  -o RequestTTY=no \
+  -o StrictHostKeyChecking=yes \
+  -o UpdateHostKeys=no \
+  -o UserKnownHostsFile="$known_hosts" \
+  "sam@$relay" \
+  sudo --non-interactive \
+    /usr/sbin/ip netns exec fabric-observer \
+    /usr/bin/socat STDIO \
+    "TCP4:$target_address:$target_port,connect-timeout=5"
