@@ -8,40 +8,18 @@
 #   ik --context=cloud get pods -n fastboop
 #   ik --context=edge-au-east get nodes
 #   ik --context=fabric get nodes
-#   ik get pods -A   (uses current-context, defaults to hub)
+#   ik get pods -A   (explicitly defaults to hub)
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-
-fabric_context=false
-arguments=()
-while (($#)); do
-  case $1 in
-    --context=fabric)
-      fabric_context=true
-      shift
-      ;;
-    --context)
-      if [[ ${2:-} == fabric ]]; then
-        fabric_context=true
-        shift 2
-      else
-        arguments+=("$1")
-        shift
-      fi
-      ;;
-    --)
-      arguments+=("$@")
-      break
-      ;;
-    *)
-      arguments+=("$1")
-      shift
-      ;;
+export FABRIC_INFRA_ROOT=$REPO_ROOT
+arguments=("$@")
+has_context=false
+for argument in "${arguments[@]}"; do
+  case $argument in
+    --context | --context=*) has_context=true ;;
   esac
 done
-
-if $fabric_context; then
-  exec "$REPO_ROOT/scripts/fk" "${arguments[@]}"
+if ! $has_context; then
+  arguments=(--context=hub "${arguments[@]}")
 fi
-
 exec kubectl --kubeconfig="$REPO_ROOT/kubeconfig" "${arguments[@]}"

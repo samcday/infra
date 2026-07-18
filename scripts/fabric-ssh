@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: fabric-ssh <cp1|cp2> [remote-command [argument ...]]
+Usage: fabric-ssh <cp1|cp2|cp3> [remote-command [argument ...]]
 
 Connect end-to-end to a commissioned fabric root through sam-desktop's
 Tailnet identity and isolated fabric-observer namespace.
@@ -25,7 +25,8 @@ shift
 case $node in
   cp1 | fabric-az1-cp1) address=10.66.0.10 ;;
   cp2 | fabric-az1-cp2) address=10.66.0.11 ;;
-  *) die 'node must be cp1 or cp2; cp3 is not commissioned and pinned yet' ;;
+  cp3 | fabric-az1-cp3) address=10.66.0.12 ;;
+  *) die 'node must be cp1, cp2, or cp3' ;;
 esac
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

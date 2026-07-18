@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Manage the supervised local transport to the fabric Kubernetes API.
+
+Usage: fabric-kube-tunnel <ensure|serve|status|stop>
+
+`ensure` starts a transient user-systemd service when needed. The service
+keeps an end-to-end TLS TCP forward on 127.0.0.1:16443 and reconnects through
+cp2, cp1, then cp3 without advertising or routing the fabric subnet.
+EOF
+}
+
+die() {
+  printf 'fabric-kube-tunnel: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 1 ]] || {
+  usage >&2
+  exit 2
+}
+action=$1
+
+for command in curl flock journalctl mkdir ssh stat systemctl systemd-run; do
+  command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+known_hosts=$repo_root/fabric/access/known_hosts
+server_ca=$repo_root/fabric/access/server-ca.crt
+proxy_command="$script_dir/fabric-ssh-proxy %h %p"
+identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+unit=infra-fabric-kube-tunnel.service
+local_port=16443
+api_name=api.fabric.internal
+api_address=10.66.0.254
+
+[[ -f $known_hosts && ! -L $known_hosts ]] ||
+  die "strict host-key file is missing or unsafe: $known_hosts"
+[[ -f $server_ca && ! -L $server_ca ]] ||
+  die "fabric serving CA is missing or unsafe: $server_ca"
+[[ -r $identity ]] || die "SSH identity is not readable: $identity"
+
+runtime_parent=${XDG_RUNTIME_DIR:-$HOME/.cache/infra-runtime}
+if [[ ! -e $runtime_parent ]]; then
+  mkdir -p -- "$runtime_parent"
+  chmod 0700 -- "$runtime_parent"
+fi
+[[ -d $runtime_parent && ! -L $runtime_parent ]] ||
+  die "runtime parent is missing or unsafe: $runtime_parent"
+runtime_owner_mode=$(stat -Lc '%u:%a' -- "$runtime_parent")
+[[ $runtime_owner_mode == "$(id -u):700" ]] ||
+  die "runtime parent must be owned by the caller with mode 0700: $runtime_parent"
+
+tunnel_ready() {
+  local status
+  status=$(curl \
+    --cacert "$server_ca" \
+    --connect-timeout 1 \
+    --max-time 2 \
+    --noproxy '*' \
+    --output /dev/null \
+    --resolve "$api_name:$local_port:127.0.0.1" \
+    --silent \
+    --show-error \
+    --write-out '%{http_code}' \
+    "https://$api_name:$local_port/readyz" 2>/dev/null) || return 1
+  [[ $status == 200 || $status == 401 || $status == 403 ]]
+}
+
+case $action in
+  ensure)
+    exec {lock_fd}>"$runtime_parent/infra-fabric-kube-tunnel.lock"
+    chmod 0600 -- "$runtime_parent/infra-fabric-kube-tunnel.lock"
+    flock --exclusive "$lock_fd"
+
+    tunnel_ready && exit 0
+    if systemctl --user is-active --quiet "$unit"; then
+      for _attempt in {1..50}; do
+        tunnel_ready && exit 0
+        sleep 0.1
+      done
+      systemctl --user stop "$unit"
+    fi
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    if ! run_output=$(systemd-run \
+      --user \
+      --unit="${unit%.service}" \
+      --collect \
+      --service-type=exec \
+      --setenv="FABRIC_SSH_IDENTITY=$identity" \
+      --property=KillMode=control-group \
+      --property=Restart=no \
+      --property=TimeoutStopSec=5s \
+      "$script_dir/fabric-kube-tunnel" serve 2>&1); then
+      printf '%s\n' "$run_output" >&2
+      die 'could not start the supervised fabric API tunnel'
+    fi
+
+    for _attempt in {1..150}; do
+      tunnel_ready && exit 0
+      if systemctl --user is-failed --quiet "$unit"; then
+        journalctl --user --no-pager --unit "$unit" -n 30 >&2 || true
+        die 'supervised tunnel failed before the API became ready'
+      fi
+      sleep 0.1
+    done
+    journalctl --user --no-pager --unit "$unit" -n 30 >&2 || true
+    die 'timed out waiting for the supervised fabric API tunnel'
+    ;;
+  serve)
+    stopping=false
+    child=
+    stop_child() {
+      stopping=true
+      [[ -z $child ]] || kill "$child" 2>/dev/null || true
+    }
+    trap stop_child HUP INT TERM
+
+    ssh_arguments=(
+      -F /dev/null
+      -i "$identity"
+      -N
+      -T
+      -o BatchMode=yes
+      -o CanonicalizeHostname=no
+      -o CheckHostIP=no
+      -o ConnectTimeout=8
+      -o ControlMaster=no
+      -o ControlPath=none
+      -o ControlPersist=no
+      -o ExitOnForwardFailure=yes
+      -o ForwardAgent=no
+      -o GlobalKnownHostsFile=/dev/null
+      -o HostKeyAlgorithms=ssh-ed25519
+      -o IdentitiesOnly=yes
+      -o KbdInteractiveAuthentication=no
+      -o PasswordAuthentication=no
+      -o PermitLocalCommand=no
+      -o "ProxyCommand=$proxy_command"
+      -o RequestTTY=no
+      -o ServerAliveCountMax=2
+      -o ServerAliveInterval=15
+      -o StrictHostKeyChecking=yes
+      -o UpdateHostKeys=no
+      -o UserKnownHostsFile="$known_hosts"
+      -L "127.0.0.1:$local_port:$api_address:6443"
+    )
+
+    while ! $stopping; do
+      for address in 10.66.0.11 10.66.0.10 10.66.0.12; do
+        $stopping && break
+        printf 'fabric-kube-tunnel: connecting through %s\n' "$address" >&2
+        # The selected destination is a locally constrained root address; no
+        # part of it is supplied to or expanded by the remote shell.
+        # shellcheck disable=SC2029
+        ssh "${ssh_arguments[@]}" "sam@$address" &
+        child=$!
+        wait "$child" || true
+        child=
+        $stopping && break
+        sleep 1
+      done
+    done
+    ;;
+  status)
+    systemctl --user --no-pager status "$unit" || true
+    tunnel_ready || exit 1
+    ;;
+  stop)
+    systemctl --user stop "$unit"
+    ;;
+  -h | --help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
