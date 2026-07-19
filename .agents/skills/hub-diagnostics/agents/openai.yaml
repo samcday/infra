@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hub Diagnostics"
+  short_description: "Read-only hub and cloud cluster diagnostics"
+  default_prompt: "Use $hub-diagnostics to diagnose this Kubernetes or Flux issue with compact, read-only evidence."

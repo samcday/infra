@@ -1,0 +1,7 @@
+# Keep generic resource inspection from returning Kubernetes Secret contents.
+# The CLI still supplies --read-only and the explicit toolsets as visible,
+# defense-in-depth launch arguments in config.toml.
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"

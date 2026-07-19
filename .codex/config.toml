@@ -1,0 +1,35 @@
+[mcp_servers.kubernetes]
+command = "npx"
+args = [
+  "-y",
+  "kubernetes-mcp-server@0.0.59",
+  "--config", "./.codex/kubernetes-mcp.toml",
+  "--kubeconfig", "./.codex/kubeconfig",
+  "--read-only",
+  "--toolsets", "core,config",
+]
+cwd = "/var/home/sam/src/infra"
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+enabled = true
+
+# Deliberately exclude configuration_view, which can expose kubeconfig auth
+# material; nodes_log, which accepts an unbounded node-proxy log query; and
+# pods_list, which is inherently cluster-wide.
+enabled_tools = [
+  "configuration_contexts_list",
+  "events_list",
+  "namespaces_list",
+  "nodes_stats_summary",
+  "nodes_top",
+  "pods_get",
+  "pods_list_in_namespace",
+  "pods_log",
+  "pods_top",
+  "resources_get",
+  "resources_list",
+]
+
+# Every enabled tool above is exposed by the server only in --read-only mode
+# and has been checked to use local reads or Kubernetes GET/LIST operations.
+default_tools_approval_mode = "approve"
