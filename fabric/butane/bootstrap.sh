@@ -12,7 +12,7 @@ cp -a -- "$script_dir/files" "$workdir/files"
 
 nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
 mac_variables=(FABRIC_CP1_MAC FABRIC_CP2_MAC FABRIC_CP3_MAC)
-common_profiles=(base firewall time etcd control-plane node-exporter observer-agent)
+common_profiles=(base network firewall time etcd control-plane node-exporter observer-agent)
 check_only=false
 selected_node=
 
@@ -167,7 +167,7 @@ fi
 
 for profile in "${common_profiles[@]}"; do
   case $profile in
-    firewall | node-exporter | time)
+    firewall | network | node-exporter | time)
       # These profiles contain only public policy and pinned public assets.
       # Keep the normal-mode plaintext exception explicit so a future secret
       # profile cannot silently bypass the SOPS boundary.
@@ -299,6 +299,7 @@ ignition:
   config:
     merge:
       - local: base.ign
+      - local: network.ign
       - local: firewall.ign
       - local: time.ign
       - local: etcd.ign

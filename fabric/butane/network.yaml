@@ -1,0 +1,15 @@
+variant: fcos
+version: 1.5.0
+storage:
+    files:
+        - path: /etc/NetworkManager/conf.d/90-fabric-ignore-carrier.conf
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                # Keep the dedicated static root link configured across carrier loss.
+                # This prevents kube-vip address updates from replacing fabric-static
+                # with a transient, externally assumed NetworkManager connection.
+                [device-fabric-root-ignore-carrier]
+                match-device=interface-name:eno1;interface-name:enp0s31f6
+                ignore-carrier=true

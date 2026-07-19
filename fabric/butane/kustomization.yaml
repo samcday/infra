@@ -4,6 +4,7 @@ secretGenerator:
   - name: butane
     files:
       - base.yaml
+      - network.yaml
       - control-plane.yaml
       - etcd.yaml
       - firewall.yaml
