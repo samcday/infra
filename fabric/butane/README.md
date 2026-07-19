@@ -9,6 +9,9 @@ included in the current hub Flux fan-out, and nothing merges the current
 
 - `base.yaml` supplies the administrator SSH key, hash-verified K3s and etcd
   release assets, cluster tokens, and static `/etc/hosts` peer mappings.
+- `network.yaml` keeps each dedicated static root link configured across
+  physical carrier loss. This prevents kube-vip address updates from replacing
+  `fabric-static` with a transient, externally assumed NetworkManager profile.
 - `etcd.yaml` runs one physical etcd member per machine. The service has
   `RequiresMountsFor=/var/lib/etcd`, uses a 2 GiB backend quota, and every
   fresh member explicitly starts with `initial-cluster-state=new`.
@@ -99,11 +102,11 @@ internal disk must be disconnected.
 
 The secret-bearing checked-in profiles are hydrated from fabric-only material
 and SOPS encrypted only to Sam's personal recovery identity. The explicitly
-public `firewall.yaml` and `node-exporter.yaml` profiles contain only policy and
-checksum-pinned public assets and remain plaintext for review. These are
-offline bootstrap inputs, not fabric Flux inputs: the live fabric SOPS identity
-must never be able to recover every etcd member key and LUKS recovery key from
-Git.
+public `firewall.yaml`, `network.yaml`, `node-exporter.yaml`, and `time.yaml`
+profiles contain only policy and checksum-pinned public assets and remain
+plaintext for review. These are offline bootstrap inputs, not fabric Flux
+inputs: the live fabric SOPS identity must never be able to recover every etcd
+member key and LUKS recovery key from Git.
 
 Required inputs are:
 
