@@ -1,0 +1,288 @@
+# The root taint remains the primary scheduling boundary. This policy catches
+# the dangerous ways a Pod can bypass it: a broad/root toleration or binding
+# directly to one of the three sacred nodes. The sole exception precisely
+# describes Pods emitted by the pinned, root-local kube-vip DaemonSet.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  name: fabric-root-consensus-placement
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+          - pods/ephemeralcontainers
+        scope: Namespaced
+  variables:
+    - name: rootNames
+      expression: >-
+        ['fabric-az1-cp1', 'fabric-az1-cp2', 'fabric-az1-cp3']
+    - name: kubeVipValueEnv
+      expression: >-
+        {
+          'vip_arp': 'true',
+          'port': '6443',
+          'vip_subnet': '32',
+          'dns_mode': 'first',
+          'cp_enable': 'true',
+          'cp_namespace': 'kube-system',
+          'vip_leaderelection': 'true',
+          'vip_leasename': 'plndr-cp-lock',
+          'vip_leaseduration': '30',
+          'vip_renewdeadline': '20',
+          'vip_retryperiod': '5',
+          'address': '10.66.0.254',
+          'prometheus_server': ':2112'
+        }
+    - name: approvedKubeVip
+      expression: >-
+        request.operation == 'CREATE' &&
+        request.userInfo.username == 'system:serviceaccount:kube-system:daemon-set-controller' &&
+        request.namespace == 'kube-system' &&
+        has(object.metadata.generateName) &&
+        object.metadata.generateName == 'kube-vip-ds-' &&
+        has(object.metadata.labels) &&
+        'app.kubernetes.io/name' in object.metadata.labels &&
+        'app.kubernetes.io/version' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/name'] == 'kube-vip-ds' &&
+        object.metadata.labels['app.kubernetes.io/version'] == 'v1.2.1' &&
+        has(object.metadata.ownerReferences) &&
+        object.metadata.ownerReferences.size() == 1 &&
+        object.metadata.ownerReferences[0].apiVersion == 'apps/v1' &&
+        object.metadata.ownerReferences[0].kind == 'DaemonSet' &&
+        object.metadata.ownerReferences[0].name == 'kube-vip-ds' &&
+        has(object.metadata.ownerReferences[0].uid) &&
+        object.metadata.ownerReferences[0].uid.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
+        has(object.metadata.ownerReferences[0].controller) &&
+        object.metadata.ownerReferences[0].controller == true &&
+        has(object.metadata.ownerReferences[0].blockOwnerDeletion) &&
+        object.metadata.ownerReferences[0].blockOwnerDeletion == true &&
+        object.spec.serviceAccountName == 'kube-vip' &&
+        (!has(object.spec.nodeName) || object.spec.nodeName == '') &&
+        object.spec.schedulerName == 'default-scheduler' &&
+        has(object.spec.affinity) &&
+        has(object.spec.affinity.nodeAffinity) &&
+        has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution) &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms.size() == 1 &&
+        (!has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions) ||
+         object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions.size() == 0) &&
+        has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields) &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields.size() == 1 &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields[0].key == 'metadata.name' &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields[0].operator == 'In' &&
+        has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields[0].values) &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields[0].values.size() == 1 &&
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchFields[0].values[0] in variables.rootNames &&
+        object.spec.hostNetwork == true &&
+        object.spec.priorityClassName == 'system-node-critical' &&
+        object.spec.containers.size() == 1 &&
+        object.spec.containers[0].name == 'kube-vip' &&
+        object.spec.containers[0].image == 'ghcr.io/kube-vip/kube-vip:v1.2.1' &&
+        object.spec.containers[0].imagePullPolicy == 'Never' &&
+        has(object.spec.containers[0].args) &&
+        object.spec.containers[0].args == ['manager'] &&
+        has(object.spec.containers[0].env) &&
+        object.spec.containers[0].env.size() == 14 &&
+        object.spec.containers[0].env.filter(e, e.name != 'vip_nodename').size() == 13 &&
+        object.spec.containers[0].env.filter(e, e.name != 'vip_nodename').all(e,
+          e.name in variables.kubeVipValueEnv &&
+          has(e.value) &&
+          e.value == variables.kubeVipValueEnv[e.name] &&
+          !has(e.valueFrom) &&
+          object.spec.containers[0].env.filter(other, other.name == e.name).size() == 1
+        ) &&
+        object.spec.containers[0].env.exists(e,
+          e.name == 'vip_nodename' &&
+          (!has(e.value) || e.value == '') &&
+          has(e.valueFrom) &&
+          has(e.valueFrom.fieldRef) &&
+          has(e.valueFrom.fieldRef.apiVersion) &&
+          e.valueFrom.fieldRef.apiVersion == 'v1' &&
+          has(e.valueFrom.fieldRef.fieldPath) &&
+          e.valueFrom.fieldRef.fieldPath == 'spec.nodeName' &&
+          !has(e.valueFrom.resourceFieldRef) &&
+          !has(e.valueFrom.configMapKeyRef) &&
+          !has(e.valueFrom.secretKeyRef)
+        ) &&
+        (!has(object.spec.containers[0].envFrom) || object.spec.containers[0].envFrom.size() == 0) &&
+        (!has(object.spec.containers[0].command) || object.spec.containers[0].command.size() == 0) &&
+        (!has(object.spec.containers[0].ports) || object.spec.containers[0].ports.size() == 0) &&
+        has(object.spec.containers[0].securityContext) &&
+        has(object.spec.containers[0].securityContext.allowPrivilegeEscalation) &&
+        object.spec.containers[0].securityContext.allowPrivilegeEscalation == false &&
+        (!has(object.spec.containers[0].securityContext.privileged) || object.spec.containers[0].securityContext.privileged == false) &&
+        has(object.spec.containers[0].securityContext.capabilities) &&
+        has(object.spec.containers[0].securityContext.capabilities.add) &&
+        object.spec.containers[0].securityContext.capabilities.add.size() == 2 &&
+        object.spec.containers[0].securityContext.capabilities.add.exists(c, c == 'NET_ADMIN') &&
+        object.spec.containers[0].securityContext.capabilities.add.exists(c, c == 'NET_RAW') &&
+        has(object.spec.containers[0].securityContext.capabilities.drop) &&
+        object.spec.containers[0].securityContext.capabilities.drop == ['ALL'] &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.size() == 0) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.size() == 0) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.shareProcessNamespace) || object.spec.shareProcessNamespace == false) &&
+        (!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath)))
+  validations:
+    - expression: >-
+        variables.approvedKubeVip ||
+        !has(object.spec.nodeName) ||
+        !(object.spec.nodeName in variables.rootNames)
+      message: ordinary Pods may not bind directly to a fabric root consensus node
+    - expression: >-
+        variables.approvedKubeVip ||
+        !has(object.spec.nodeSelector) ||
+        !('fabric.samcday.com/root-consensus' in object.spec.nodeSelector) ||
+        object.spec.nodeSelector['fabric.samcday.com/root-consensus'] != 'true'
+      message: ordinary Pods may not select fabric root consensus nodes
+    - expression: >-
+        variables.approvedKubeVip ||
+        !has(object.spec.nodeSelector) ||
+        !('kubernetes.io/hostname' in object.spec.nodeSelector) ||
+        !(object.spec.nodeSelector['kubernetes.io/hostname'] in variables.rootNames)
+      message: ordinary Pods may not select a fabric root consensus hostname
+    - expression: >-
+        variables.approvedKubeVip ||
+        !has(object.spec.tolerations) ||
+        object.spec.tolerations.all(t,
+          !(
+            (!has(t.key) || t.key == '') &&
+            has(t.operator) && t.operator == 'Exists' &&
+            (!has(t.effect) || t.effect == '' || t.effect == 'NoSchedule')
+          ) &&
+          !(
+            has(t.key) && t.key == 'fabric.samcday.com/root-consensus' &&
+            (!has(t.effect) || t.effect == '' || t.effect == 'NoSchedule') &&
+            (
+              (has(t.operator) && t.operator == 'Exists') ||
+              ((!has(t.operator) || t.operator == 'Equal') &&
+               has(t.value) && t.value == 'true')
+            )
+          )
+        )
+      message: ordinary Pods may not broadly tolerate NoSchedule taints or tolerate the fabric root consensus taint
+    - expression: >-
+        variables.approvedKubeVip ||
+        !has(object.spec.affinity) ||
+        !has(object.spec.affinity.nodeAffinity) ||
+        !has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution) ||
+        object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms.all(term,
+          (!has(term.matchExpressions) || term.matchExpressions.all(e,
+            !(
+              e.key == 'fabric.samcday.com/root-consensus' &&
+              (
+                e.operator == 'Exists' ||
+                (e.operator == 'In' && has(e.values) && e.values.exists(v, v == 'true'))
+              )
+            ) &&
+            !(
+              e.key == 'kubernetes.io/hostname' &&
+              e.operator == 'In' && has(e.values) &&
+              e.values.exists(v, v in variables.rootNames)
+            )
+          )) &&
+          (!has(term.matchFields) || term.matchFields.all(e,
+            !(
+              e.key == 'metadata.name' && e.operator == 'In' &&
+              has(e.values) && e.values.exists(v, v in variables.rootNames)
+            )
+          ))
+        )
+      message: ordinary Pods may not use node affinity to select fabric root consensus nodes
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  name: fabric-root-consensus-binding
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - bindings
+          - pods/binding
+        scope: Namespaced
+  variables:
+    - name: rootNames
+      expression: >-
+        ['fabric-az1-cp1', 'fabric-az1-cp2', 'fabric-az1-cp3']
+    - name: approvedKubeVipBinding
+      expression: >-
+        request.userInfo.username == 'system:kube-scheduler' &&
+        request.namespace == 'kube-system' &&
+        has(object.metadata.name) &&
+        object.metadata.name.matches('^kube-vip-ds-[a-z0-9]{5,16}$') &&
+        has(object.metadata.uid) &&
+        object.metadata.uid.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
+        has(object.target) &&
+        (!has(object.target.apiVersion) || object.target.apiVersion == '' || object.target.apiVersion == 'v1') &&
+        has(object.target.kind) &&
+        object.target.kind == 'Node' &&
+        has(object.target.name) &&
+        object.target.name in variables.rootNames
+  validations:
+    - expression: >-
+        variables.approvedKubeVipBinding ||
+        !(object.target.name in variables.rootNames)
+      message: Pods may not be bound directly to a fabric root consensus node
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  name: fabric-root-consensus-node-invariant
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - nodes
+        scope: Cluster
+  variables:
+    - name: rootNames
+      expression: >-
+        ['fabric-az1-cp1', 'fabric-az1-cp2', 'fabric-az1-cp3']
+  validations:
+    - expression: >-
+        !(object.metadata.name in variables.rootNames) ||
+        (
+          has(object.metadata.labels) &&
+          object.metadata.labels['fabric.samcday.com/root-consensus'] == 'true' &&
+          has(object.spec.taints) &&
+          object.spec.taints.exists(t,
+            t.key == 'fabric.samcday.com/root-consensus' &&
+            t.value == 'true' &&
+            t.effect == 'NoSchedule'
+          )
+        )
+      message: fabric roots must retain their root-consensus label and exact NoSchedule taint

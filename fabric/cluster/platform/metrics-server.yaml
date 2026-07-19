@@ -1,0 +1,79 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: metrics-server
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://kubernetes-sigs.github.io/metrics-server/
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  chart:
+    spec:
+      chart: metrics-server
+      sourceRef:
+        kind: HelmRepository
+        name: metrics-server
+        namespace: flux-system
+      version: 3.13.1
+  driftDetection:
+    mode: enabled
+  install:
+    remediation:
+      retries: 3
+  interval: 1h
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    apiService:
+      insecureSkipTLSVerify: false
+    args:
+      - --kubelet-certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: metrics-server
+                app.kubernetes.io/name: metrics-server
+            namespaces:
+              - kube-system
+            topologyKey: kubernetes.io/hostname
+    hostNetwork:
+      enabled: false
+    image:
+      pullPolicy: Never
+      repository: docker.io/rancher/mirrored-metrics-server
+      tag: v0.8.1
+    metrics:
+      enabled: true
+    nodeSelector:
+      fabric.samcday.com/platform: "true"
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    priorityClassName: system-cluster-critical
+    replicas: 2
+    serviceMonitor:
+      enabled: false
+    tls:
+      clusterDomain: cluster.fabric.internal
+      helm:
+        lookup: true
+      type: helm
+    tolerations:
+      - effect: NoSchedule
+        key: fabric.samcday.com/platform
+        operator: Equal
+        value: "true"
+    updateStrategy:
+      rollingUpdate:
+        maxUnavailable: 1
+      type: RollingUpdate

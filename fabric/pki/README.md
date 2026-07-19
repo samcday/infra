@@ -10,8 +10,9 @@ they are deliberately outside the live fabric identity's trust boundary.
 Never decrypt private material into this directory. Bootstrap scripts use a
 mode-0700 temporary directory and remove it on exit.
 
-`flux-deploy-key.pub` is the reserved public half of the future read-only
-GitHub deploy key. It is deliberately not embedded in the phase-one consensus
-Ignitions. Add it to `samcday/infra` without write access only when Flux is
-ready to be placed on workers. Its expected SHA256 fingerprint is
+`flux-deploy-key.pub` is retained as unused recovery history. The live Flux
+design reads the public `samcday/infra` repository over HTTPS and therefore
+does not install a long-lived GitHub credential. Do not add the reserved key to
+GitHub unless the repository later becomes private and the trust boundary is
+reviewed again. Its expected SHA256 fingerprint is
 `ZVbsCrsuAzDJv+dcthCVSyEW1USRSxy/nkKTnxC33dU`.

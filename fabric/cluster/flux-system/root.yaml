@@ -1,0 +1,15 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-root
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./fabric/cluster/flux-system
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+  wait: false

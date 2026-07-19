@@ -1,0 +1,694 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+for command in cat grep jq sleep yq; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "required command is unavailable: $command" >&2
+    exit 1
+  }
+done
+live_only=false
+case $# in
+  0) ;;
+  1)
+    [[ $1 == --live-only ]] || {
+      echo 'usage: scripts/verify-fabric-root-placement-policy [--live-only]' >&2
+      exit 2
+    }
+    live_only=true
+    ;;
+  *)
+    echo 'usage: scripts/verify-fabric-root-placement-policy [--live-only]' >&2
+    exit 2
+    ;;
+esac
+
+ik=("$repo_root/scripts/ik" --context=fabric)
+controller=system:serviceaccount:kube-system:daemon-set-controller
+scheduler=system:kube-scheduler
+roots='["fabric-az1-cp1","fabric-az1-cp2","fabric-az1-cp3"]'
+live_daemonset=$("${ik[@]}" -n kube-system get daemonset kube-vip-ds -o json)
+daemonset_uid=$(jq -r '.metadata.uid' <<<"$live_daemonset")
+[[ $daemonset_uid =~ ^[0-9a-f-]{36}$ ]] || {
+  echo 'cannot read the live kube-vip DaemonSet UID' >&2
+  exit 1
+}
+
+expected_env=$(cat <<'EOF'
+[
+  {"name":"vip_arp","value":"true"},
+  {"name":"port","value":"6443"},
+  {"name":"vip_nodename","valueFrom":{"fieldRef":{"apiVersion":"v1","fieldPath":"spec.nodeName"}}},
+  {"name":"vip_subnet","value":"32"},
+  {"name":"dns_mode","value":"first"},
+  {"name":"cp_enable","value":"true"},
+  {"name":"cp_namespace","value":"kube-system"},
+  {"name":"vip_leaderelection","value":"true"},
+  {"name":"vip_leasename","value":"plndr-cp-lock"},
+  {"name":"vip_leaseduration","value":"30"},
+  {"name":"vip_renewdeadline","value":"20"},
+  {"name":"vip_retryperiod","value":"5"},
+  {"name":"address","value":"10.66.0.254"},
+  {"name":"prometheus_server","value":":2112"}
+]
+EOF
+)
+committed_daemonset=$(yq -er '
+  .storage.files[]
+  | select(.path == "/var/lib/rancher/k3s/server/manifests/kube-vip.yaml")
+  | .contents.inline
+' "$repo_root/fabric/butane/control-plane.yaml" |
+  yq -o=json -I=0 \
+    'select(.kind == "DaemonSet" and .metadata.name == "kube-vip-ds")' - |
+  jq -c '
+    (.spec.template.spec.containers[].env[]
+      | select(.name == "vip_nodename")
+      | .valueFrom.fieldRef.apiVersion) //= "v1"
+  ')
+
+# Treat the embedded manifest as the canonical contract, but pin its complete
+# security-relevant shape here as well. This prevents a compromised or stale
+# DaemonSet from being blessed merely because its image and environment still
+# happen to look familiar.
+jq -e --argjson expectedEnv "$expected_env" '
+  def exact_keys($wanted): (keys | sort) == ($wanted | sort);
+  exact_keys(["apiVersion", "kind", "metadata", "spec"]) and
+  .apiVersion == "apps/v1" and .kind == "DaemonSet" and
+  (.metadata | exact_keys(["labels", "name", "namespace"])) and
+  .metadata.name == "kube-vip-ds" and .metadata.namespace == "kube-system" and
+  .metadata.labels == {
+    "app.kubernetes.io/name": "kube-vip-ds",
+    "app.kubernetes.io/version": "v1.2.1"
+  } and
+  (.spec | exact_keys(["selector", "template"])) and
+  .spec.selector == {matchLabels: {"app.kubernetes.io/name": "kube-vip-ds"}} and
+  (.spec.template | exact_keys(["metadata", "spec"])) and
+  .spec.template.metadata == {labels: {
+    "app.kubernetes.io/name": "kube-vip-ds",
+    "app.kubernetes.io/version": "v1.2.1"
+  }} and
+  (.spec.template.spec | exact_keys([
+    "affinity", "containers", "hostNetwork", "priorityClassName",
+    "serviceAccountName", "terminationGracePeriodSeconds", "tolerations"
+  ])) and
+  .spec.template.spec.affinity == {nodeAffinity: {
+    requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{
+      matchExpressions: [{
+        key: "fabric.samcday.com/root-consensus",
+        operator: "In",
+        values: ["true"]
+      }]
+    }]}
+  }} and
+  .spec.template.spec.hostNetwork == true and
+  .spec.template.spec.priorityClassName == "system-node-critical" and
+  .spec.template.spec.serviceAccountName == "kube-vip" and
+  .spec.template.spec.terminationGracePeriodSeconds == 5 and
+  .spec.template.spec.tolerations == [
+    {operator: "Exists", effect: "NoSchedule"},
+    {operator: "Exists", effect: "NoExecute"}
+  ] and
+  (.spec.template.spec.containers | length) == 1 and
+  (.spec.template.spec.containers[0] | exact_keys([
+    "args", "env", "image", "imagePullPolicy", "name", "resources",
+    "securityContext"
+  ])) and
+  .spec.template.spec.containers[0].name == "kube-vip" and
+  .spec.template.spec.containers[0].image == "ghcr.io/kube-vip/kube-vip:v1.2.1" and
+  .spec.template.spec.containers[0].imagePullPolicy == "Never" and
+  .spec.template.spec.containers[0].args == ["manager"] and
+  .spec.template.spec.containers[0].env == $expectedEnv and
+  .spec.template.spec.containers[0].resources == {
+    requests: {cpu: "20m", memory: "32Mi"},
+    limits: {memory: "128Mi"}
+  } and
+  .spec.template.spec.containers[0].securityContext == {
+    allowPrivilegeEscalation: false,
+    capabilities: {add: ["NET_ADMIN", "NET_RAW"], drop: ["ALL"]}
+  }
+' <<<"$committed_daemonset" >/dev/null || {
+  echo 'committed kube-vip DaemonSet differs from the exact root contract' >&2
+  exit 1
+}
+
+jq -e --argjson expectedEnv "$expected_env" '
+  def exact_keys($wanted): (keys | sort) == ($wanted | sort);
+  .metadata.name == "kube-vip-ds" and
+  .metadata.namespace == "kube-system" and
+  .metadata.deletionTimestamp == null and
+  .metadata.labels["app.kubernetes.io/name"] == "kube-vip-ds" and
+  .metadata.labels["app.kubernetes.io/version"] == "v1.2.1" and
+  (.spec | exact_keys(["revisionHistoryLimit", "selector", "template", "updateStrategy"])) and
+  .spec.revisionHistoryLimit == 10 and
+  .spec.selector == {matchLabels: {"app.kubernetes.io/name": "kube-vip-ds"}} and
+  .spec.updateStrategy == {
+    type: "RollingUpdate",
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 0}
+  } and
+  (.spec.template | exact_keys(["metadata", "spec"])) and
+  .spec.template.metadata == {labels: {
+    "app.kubernetes.io/name": "kube-vip-ds",
+    "app.kubernetes.io/version": "v1.2.1"
+  }} and
+  (.spec.template.spec | exact_keys([
+    "affinity", "containers", "dnsPolicy", "hostNetwork", "priorityClassName",
+    "restartPolicy", "schedulerName", "securityContext", "serviceAccount",
+    "serviceAccountName", "terminationGracePeriodSeconds", "tolerations"
+  ])) and
+  .spec.template.spec.affinity == {nodeAffinity: {
+    requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{
+      matchExpressions: [{
+        key: "fabric.samcday.com/root-consensus",
+        operator: "In",
+        values: ["true"]
+      }]
+    }]}
+  }} and
+  .spec.template.spec.dnsPolicy == "ClusterFirst" and
+  .spec.template.spec.hostNetwork == true and
+  .spec.template.spec.priorityClassName == "system-node-critical" and
+  .spec.template.spec.restartPolicy == "Always" and
+  .spec.template.spec.schedulerName == "default-scheduler" and
+  .spec.template.spec.securityContext == {} and
+  .spec.template.spec.serviceAccount == "kube-vip" and
+  .spec.template.spec.serviceAccountName == "kube-vip" and
+  .spec.template.spec.terminationGracePeriodSeconds == 5 and
+  .spec.template.spec.tolerations == [
+    {effect: "NoSchedule", operator: "Exists"},
+    {effect: "NoExecute", operator: "Exists"}
+  ] and
+  (.spec.template.spec.containers | length) == 1 and
+  (.spec.template.spec.containers[0] | exact_keys([
+    "args", "env", "image", "imagePullPolicy", "name", "resources",
+    "securityContext", "terminationMessagePath", "terminationMessagePolicy"
+  ])) and
+  .spec.template.spec.containers[0].name == "kube-vip" and
+  .spec.template.spec.containers[0].image == "ghcr.io/kube-vip/kube-vip:v1.2.1" and
+  .spec.template.spec.containers[0].imagePullPolicy == "Never" and
+  .spec.template.spec.containers[0].args == ["manager"] and
+  .spec.template.spec.containers[0].env == $expectedEnv and
+  .spec.template.spec.containers[0].resources == {
+    limits: {memory: "128Mi"},
+    requests: {cpu: "20m", memory: "32Mi"}
+  } and
+  .spec.template.spec.containers[0].securityContext == {
+    allowPrivilegeEscalation: false,
+    capabilities: {add: ["NET_ADMIN", "NET_RAW"], drop: ["ALL"]}
+  } and
+  .spec.template.spec.containers[0].terminationMessagePath == "/dev/termination-log" and
+  .spec.template.spec.containers[0].terminationMessagePolicy == "File" and
+  .status.observedGeneration == .metadata.generation and
+  .status.desiredNumberScheduled == 3 and
+  .status.currentNumberScheduled == 3 and
+  .status.updatedNumberScheduled == 3 and
+  .status.numberReady == 3 and
+  .status.numberAvailable == 3 and
+  .status.numberMisscheduled == 0 and
+  (.status.numberUnavailable // 0) == 0
+' <<<"$live_daemonset" >/dev/null || {
+  echo 'live kube-vip DaemonSet or its 3/3 rollout differs from the committed contract' >&2
+  exit 1
+}
+
+root_nodes=$("${ik[@]}" get nodes \
+  fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3 -o json)
+jq -e --argjson roots "$roots" '
+  (.items | length) == 3 and
+  ([.items[].metadata.name] | sort) == ($roots | sort) and
+  all(.items[];
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+    any(.spec.taints[]?;
+      .key == "fabric.samcday.com/root-consensus" and
+      .value == "true" and
+      .effect == "NoSchedule"
+    ) and
+    any(.status.conditions[]?; .type == "Ready" and .status == "True")
+  )
+' <<<"$root_nodes" >/dev/null || {
+  echo 'the three fabric roots are not Ready with their exact consensus label and taint' >&2
+  exit 1
+}
+
+all_pods=$("${ik[@]}" get pods --all-namespaces -o json)
+jq -e \
+  --arg daemonsetUid "$daemonset_uid" \
+  --argjson expectedEnv "$expected_env" \
+  --argjson roots "$roots" '
+  def exact_keys($wanted): (keys | sort) == ($wanted | sort);
+  def approved($pod):
+    ($pod.metadata.name | test("^kube-vip-ds-[a-z0-9]{5,16}$")) and
+    $pod.metadata.generateName == "kube-vip-ds-" and
+    $pod.metadata.namespace == "kube-system" and
+    $pod.metadata.deletionTimestamp == null and
+    ($pod.metadata.annotations // {}) == {} and
+    ($pod.metadata.labels | exact_keys([
+      "app.kubernetes.io/name", "app.kubernetes.io/version",
+      "controller-revision-hash", "pod-template-generation"
+    ])) and
+    $pod.metadata.labels["app.kubernetes.io/name"] == "kube-vip-ds" and
+    $pod.metadata.labels["app.kubernetes.io/version"] == "v1.2.1" and
+    ($pod.metadata.ownerReferences | length) == 1 and
+    $pod.metadata.ownerReferences[0] == {
+      apiVersion: "apps/v1",
+      blockOwnerDeletion: true,
+      controller: true,
+      kind: "DaemonSet",
+      name: "kube-vip-ds",
+      uid: $daemonsetUid
+    } and
+    ($pod.spec | exact_keys([
+      "affinity", "containers", "dnsPolicy", "enableServiceLinks", "hostNetwork",
+      "nodeName", "preemptionPolicy", "priority", "priorityClassName",
+      "restartPolicy", "schedulerName", "securityContext", "serviceAccount",
+      "serviceAccountName", "terminationGracePeriodSeconds", "tolerations", "volumes"
+    ])) and
+    ($roots | index($pod.spec.nodeName)) != null and
+    $pod.spec.affinity == {nodeAffinity: {
+      requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{
+        matchFields: [{
+          key: "metadata.name",
+          operator: "In",
+          values: [$pod.spec.nodeName]
+        }]
+      }]}
+    }} and
+    $pod.spec.dnsPolicy == "ClusterFirst" and
+    $pod.spec.enableServiceLinks == true and
+    $pod.spec.hostNetwork == true and
+    $pod.spec.preemptionPolicy == "PreemptLowerPriority" and
+    $pod.spec.priority == 2000001000 and
+    $pod.spec.priorityClassName == "system-node-critical" and
+    $pod.spec.restartPolicy == "Always" and
+    $pod.spec.schedulerName == "default-scheduler" and
+    $pod.spec.securityContext == {} and
+    $pod.spec.serviceAccount == "kube-vip" and
+    $pod.spec.serviceAccountName == "kube-vip" and
+    $pod.spec.terminationGracePeriodSeconds == 5 and
+    $pod.spec.tolerations == [
+      {effect: "NoSchedule", operator: "Exists"},
+      {effect: "NoExecute", operator: "Exists"},
+      {effect: "NoExecute", key: "node.kubernetes.io/not-ready", operator: "Exists"},
+      {effect: "NoExecute", key: "node.kubernetes.io/unreachable", operator: "Exists"},
+      {effect: "NoSchedule", key: "node.kubernetes.io/disk-pressure", operator: "Exists"},
+      {effect: "NoSchedule", key: "node.kubernetes.io/memory-pressure", operator: "Exists"},
+      {effect: "NoSchedule", key: "node.kubernetes.io/pid-pressure", operator: "Exists"},
+      {effect: "NoSchedule", key: "node.kubernetes.io/unschedulable", operator: "Exists"},
+      {effect: "NoSchedule", key: "node.kubernetes.io/network-unavailable", operator: "Exists"}
+    ] and
+    ($pod.spec.containers | length) == 1 and
+    ($pod.spec.containers[0] | exact_keys([
+      "args", "env", "image", "imagePullPolicy", "name", "resources",
+      "securityContext", "terminationMessagePath", "terminationMessagePolicy",
+      "volumeMounts"
+    ])) and
+    $pod.spec.containers[0].name == "kube-vip" and
+    $pod.spec.containers[0].image == "ghcr.io/kube-vip/kube-vip:v1.2.1" and
+    $pod.spec.containers[0].imagePullPolicy == "Never" and
+    $pod.spec.containers[0].args == ["manager"] and
+    $pod.spec.containers[0].env == $expectedEnv and
+    $pod.spec.containers[0].resources == {
+      limits: {memory: "128Mi"},
+      requests: {cpu: "20m", memory: "32Mi"}
+    } and
+    $pod.spec.containers[0].securityContext == {
+      allowPrivilegeEscalation: false,
+      capabilities: {add: ["NET_ADMIN", "NET_RAW"], drop: ["ALL"]}
+    } and
+    $pod.spec.containers[0].terminationMessagePath == "/dev/termination-log" and
+    $pod.spec.containers[0].terminationMessagePolicy == "File" and
+    ($pod.spec.volumes | length) == 1 and
+    ($pod.spec.volumes[0] | exact_keys(["name", "projected"])) and
+    ($pod.spec.volumes[0].name | test("^kube-api-access-[a-z0-9]{5}$")) and
+    $pod.spec.volumes[0].projected.defaultMode == 420 and
+    ($pod.spec.volumes[0].projected.sources | length) == 3 and
+    ($pod.spec.volumes[0].projected.sources[0] | exact_keys(["serviceAccountToken"])) and
+    $pod.spec.volumes[0].projected.sources[0].serviceAccountToken.path == "token" and
+    ($pod.spec.volumes[0].projected.sources[0].serviceAccountToken.expirationSeconds >= 3600) and
+    ($pod.spec.volumes[0].projected.sources[0].serviceAccountToken.expirationSeconds <= 7200) and
+    $pod.spec.volumes[0].projected.sources[1] == {configMap: {
+      items: [{key: "ca.crt", path: "ca.crt"}], name: "kube-root-ca.crt"
+    }} and
+    $pod.spec.volumes[0].projected.sources[2] == {downwardAPI: {items: [{
+      fieldRef: {apiVersion: "v1", fieldPath: "metadata.namespace"},
+      path: "namespace"
+    }]}} and
+    $pod.spec.containers[0].volumeMounts == [{
+      mountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+      name: $pod.spec.volumes[0].name,
+      readOnly: true
+    }] and
+    $pod.status.phase == "Running" and
+    any($pod.status.conditions[]?; .type == "Ready" and .status == "True") and
+    ($pod.status.containerStatuses | length) == 1 and
+    $pod.status.containerStatuses[0].name == "kube-vip" and
+    $pod.status.containerStatuses[0].ready == true;
+
+  [.items[] | select(.spec.nodeName as $node | ($roots | index($node)) != null)] as $rootPods |
+  [.items[] | select(.metadata.ownerReferences[]?.uid == $daemonsetUid)] as $ownedPods |
+  [.items[] | select(
+    .metadata.namespace == "kube-system" and
+    .metadata.labels["app.kubernetes.io/name"] == "kube-vip-ds"
+  )] as $labeledPods |
+  ($rootPods | length) == 3 and
+  ($ownedPods | length) == 3 and
+  ($labeledPods | length) == 3 and
+  ([ $rootPods[].metadata.uid ] | sort) == ([ $ownedPods[].metadata.uid ] | sort) and
+  ([ $rootPods[].metadata.uid ] | sort) == ([ $labeledPods[].metadata.uid ] | sort) and
+  ([ $rootPods[].spec.nodeName ] | sort) == ($roots | sort) and
+  all($rootPods[]; approved(.))
+' <<<"$all_pods" >/dev/null || {
+  echo 'root placement is not exactly one Ready approved kube-vip Pod on each root with no extras' >&2
+  exit 1
+}
+
+if $live_only; then
+  echo 'verified exact committed/live kube-vip contract and one Ready approved Pod on every fabric root'
+  exit 0
+fi
+
+manifest() {
+  local image=$1
+  cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: kube-vip-ds-
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-vip-ds
+    app.kubernetes.io/version: v1.2.1
+  ownerReferences:
+    - apiVersion: apps/v1
+      blockOwnerDeletion: true
+      controller: true
+      kind: DaemonSet
+      name: kube-vip-ds
+      uid: $daemonset_uid
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchFields:
+              - key: metadata.name
+                operator: In
+                values:
+                  - fabric-az1-cp1
+  containers:
+    - args:
+        - manager
+      env:
+        - name: vip_arp
+          value: "true"
+        - name: port
+          value: "6443"
+        - name: vip_nodename
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: vip_subnet
+          value: "32"
+        - name: dns_mode
+          value: first
+        - name: cp_enable
+          value: "true"
+        - name: cp_namespace
+          value: kube-system
+        - name: vip_leaderelection
+          value: "true"
+        - name: vip_leasename
+          value: plndr-cp-lock
+        - name: vip_leaseduration
+          value: "30"
+        - name: vip_renewdeadline
+          value: "20"
+        - name: vip_retryperiod
+          value: "5"
+        - name: address
+          value: 10.66.0.254
+        - name: prometheus_server
+          value: ":2112"
+      image: $image
+      imagePullPolicy: Never
+      name: kube-vip
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add:
+            - NET_ADMIN
+            - NET_RAW
+          drop:
+            - ALL
+  hostNetwork: true
+  priorityClassName: system-node-critical
+  schedulerName: default-scheduler
+  serviceAccountName: kube-vip
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
+    - effect: NoExecute
+      operator: Exists
+EOF
+}
+
+"${ik[@]}" auth can-i create pods --namespace=kube-system --as="$controller" |
+  grep -Fxq yes || {
+    echo 'daemon-set-controller cannot create kube-vip Pods' >&2
+    exit 1
+  }
+"${ik[@]}" auth can-i create bindings --namespace=kube-system \
+  --as="$scheduler" | grep -Fxq yes || {
+    echo 'system:kube-scheduler cannot create legacy Binding resources' >&2
+    exit 1
+  }
+"${ik[@]}" auth can-i create pods --subresource=binding --namespace=kube-system \
+  --as="$scheduler" | grep -Fxq yes || {
+    echo 'system:kube-scheduler cannot create the Pod binding subresource' >&2
+    exit 1
+  }
+
+kube_vip_pod=$("${ik[@]}" -n kube-system get pods \
+  --field-selector=spec.nodeName=fabric-az1-cp1 \
+  -l app.kubernetes.io/name=kube-vip-ds -o json | jq -e '
+    .items as $items
+    | select(($items | length) == 1)
+    | $items[0]
+  ')
+kube_vip_name=$(jq -r '.metadata.name' <<<"$kube_vip_pod")
+kube_vip_uid=$(jq -r '.metadata.uid' <<<"$kube_vip_pod")
+[[ $kube_vip_name =~ ^kube-vip-ds-[a-z0-9]{5,16}$ &&
+   $kube_vip_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
+  echo 'cannot identify the bound cp1 kube-vip Pod for Binding probes' >&2
+  exit 1
+}
+
+binding_manifest() {
+  local name=$1
+  local uid=$2
+  local target_api_version=${3:-}
+  local target_api_line=
+  [[ -z $target_api_version ]] || target_api_line="  apiVersion: $target_api_version"
+  cat <<EOF
+apiVersion: v1
+kind: Binding
+metadata:
+  name: $name
+  namespace: kube-system
+  uid: $uid
+target:
+$target_api_line
+  kind: Node
+  name: fabric-az1-cp1
+EOF
+}
+
+legacy_binding_request() {
+  local name=$1
+  local uid=$2
+  local target_api_version=$3
+  binding_manifest "$name" "$uid" "$target_api_version" |
+    "${ik[@]}" create --dry-run=server --validate=false --as="$scheduler" -f -
+}
+
+pod_binding_request() {
+  local name=$1
+  local uid=$2
+  local target_api_version=${3:-}
+  binding_manifest "$name" "$uid" "$target_api_version" |
+    yq -o=json -I=0 '.' - |
+    "${ik[@]}" create \
+      --raw="/api/v1/namespaces/kube-system/pods/$name/binding?dryRun=All" \
+      --as="$scheduler" -f -
+}
+
+# A binding has no readiness status. Prove each named Deny binding has reached
+# the API server's admission informer before running any positive probe.
+placement_active=false
+for _attempt in {1..50}; do
+  set +e
+  negative_output=$(manifest ghcr.io/kube-vip/kube-vip:v1.2.0 |
+    "${ik[@]}" create --dry-run=server --validate=false --as="$controller" -f - 2>&1)
+  negative_status=$?
+  set -e
+  if ((negative_status != 0)) &&
+     grep -Fq 'fabric-root-consensus-placement' <<<"$negative_output"; then
+    placement_active=true
+    break
+  fi
+  sleep 0.2
+done
+$placement_active || {
+  printf '%s\n' "$negative_output" >&2
+  echo 'root Pod placement Deny binding did not become active' >&2
+  exit 1
+}
+
+platform_pod=$(cat <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: fabric-platform-policy-probe-
+  namespace: default
+spec:
+  containers:
+    - image: docker.io/rancher/mirrored-pause:3.6
+      imagePullPolicy: Never
+      name: pause
+  nodeSelector:
+    fabric.samcday.com/platform: "true"
+  tolerations:
+    - effect: NoSchedule
+      key: fabric.samcday.com/platform
+      operator: Equal
+      value: "true"
+EOF
+)
+binding_active=false
+for _attempt in {1..50}; do
+  set +e
+  negative_output=$(legacy_binding_request \
+    fabric-binding-policy-probe 00000000-0000-0000-0000-000000000001 v1 2>&1)
+  negative_status=$?
+  set -e
+  if ((negative_status != 0)) &&
+     grep -Fq 'fabric-root-consensus-binding' <<<"$negative_output"; then
+    binding_active=true
+    break
+  fi
+  sleep 0.2
+done
+$binding_active || {
+  printf '%s\n' "$negative_output" >&2
+  echo 'root Binding Deny policy did not become active' >&2
+  exit 1
+}
+
+pod_binding_active=false
+for _attempt in {1..50}; do
+  set +e
+  negative_output=$(pod_binding_request "$kube_vip_name" "$kube_vip_uid" apps/v1 2>&1)
+  negative_status=$?
+  set -e
+  if ((negative_status != 0)) &&
+     grep -Fq 'fabric-root-consensus-binding' <<<"$negative_output"; then
+    pod_binding_active=true
+    break
+  fi
+  sleep 0.2
+done
+$pod_binding_active || {
+  printf '%s\n' "$negative_output" >&2
+  echo 'root Pod binding-subresource Deny policy did not become active' >&2
+  exit 1
+}
+
+root=$("${ik[@]}" get node fabric-az1-cp1 -o json)
+node_invariant_active=false
+for _attempt in {1..50}; do
+  set +e
+  negative_output=$(jq '
+    .spec.taints |= map(select(.key != "fabric.samcday.com/root-consensus"))
+  ' <<<"$root" | "${ik[@]}" replace --dry-run=server -f - 2>&1)
+  negative_status=$?
+  set -e
+  if ((negative_status != 0)) &&
+     grep -Fq 'fabric-root-consensus-node-invariant' <<<"$negative_output"; then
+    node_invariant_active=true
+    break
+  fi
+  sleep 0.2
+done
+$node_invariant_active || {
+  printf '%s\n' "$negative_output" >&2
+  echo 'root Node invariant Deny binding did not become active' >&2
+  exit 1
+}
+
+# With all three negative probes active, model the actual DaemonSet lifecycle:
+# controller CREATEs an unscheduled exact Pod, then scheduler submits Binding.
+manifest ghcr.io/kube-vip/kube-vip:v1.2.1 |
+  "${ik[@]}" create --dry-run=server --validate=false --as="$controller" -f - >/dev/null || {
+    echo 'the exact unscheduled kube-vip replacement Pod is blocked' >&2
+    exit 1
+  }
+
+set +e
+negative_output=$(manifest ghcr.io/kube-vip/kube-vip:v1.2.1 |
+  yq '(.spec.containers[0].env[] | select(.name == "address").value) = "10.66.0.253"' - |
+  "${ik[@]}" create --dry-run=server --validate=false --as="$controller" -f - 2>&1)
+negative_status=$?
+set -e
+if ((negative_status == 0)) ||
+   ! grep -Fq 'fabric-root-consensus-placement' <<<"$negative_output"; then
+  printf '%s\n' "$negative_output" >&2
+  echo 'root placement policy accepted a kube-vip Pod with a changed VIP environment' >&2
+  exit 1
+fi
+
+printf '%s\n' "$platform_pod" |
+  "${ik[@]}" create --dry-run=server -f - >/dev/null || {
+    echo 'root placement policy rejected an ordinary platform-only Pod' >&2
+    exit 1
+  }
+
+printf '%s\n' "$root" |
+  "${ik[@]}" replace --dry-run=server -f - >/dev/null || {
+    echo 'node invariant rejected the unchanged root Node' >&2
+    exit 1
+  }
+
+set +e
+positive_output=$(legacy_binding_request "$kube_vip_name" "$kube_vip_uid" v1 2>&1)
+positive_status=$?
+set -e
+if grep -Fq 'fabric-root-consensus-binding' <<<"$positive_output"; then
+  printf '%s\n' "$positive_output" >&2
+  echo 'root Binding policy rejected the scheduler kube-vip Binding identity' >&2
+  exit 1
+fi
+if ((positive_status != 0)) &&
+   ! grep -Eqi 'already (assigned|bound)|binding.*exists' <<<"$positive_output"; then
+  printf '%s\n' "$positive_output" >&2
+  echo 'approved kube-vip Binding failed somewhere other than existing assignment' >&2
+  exit 1
+fi
+
+set +e
+positive_output=$(pod_binding_request "$kube_vip_name" "$kube_vip_uid" 2>&1)
+positive_status=$?
+set -e
+if grep -Fq 'fabric-root-consensus-binding' <<<"$positive_output"; then
+  printf '%s\n' "$positive_output" >&2
+  echo 'root Binding policy rejected the real scheduler Pod-binding identity' >&2
+  exit 1
+fi
+if ((positive_status != 0)) &&
+   ! grep -Eqi 'already (assigned|bound)|binding.*exists' <<<"$positive_output"; then
+  printf '%s\n' "$positive_output" >&2
+  echo 'approved kube-vip Pod binding failed somewhere other than existing assignment' >&2
+  exit 1
+fi
+
+echo 'root placement policy admits only the pinned kube-vip Pod and both scheduler Binding paths'

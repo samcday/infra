@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+
+confirmation=
+workdir=
+rollback_new_bindings=false
+ik=()
+flux_controllers=(
+  source-controller
+  kustomize-controller
+  helm-controller
+  notification-controller
+)
+expected_flux_controller_images=
+
+cleanup() {
+  if $rollback_new_bindings && ((${#ik[@]})); then
+    "${ik[@]}" delete --ignore-not-found \
+      -f "$repo_root/fabric/cluster/foundation/root-placement-bindings.yaml" \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ -n $workdir && -d $workdir ]]; then
+    find "$workdir" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$workdir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+usage() {
+  cat >&2 <<'EOF'
+Bootstrap the Git-pinned fabric foundation and Flux controllers after both
+service nodes have joined and carry the platform label and taint.
+
+Usage:
+  scripts/bootstrap-fabric-flux \
+    --confirm BOOTSTRAP-FABRIC-FLUX:<pushed-main-commit>
+
+The script refuses a dirty tree, an unpushed main commit, missing service
+nodes, or any platform workload on a consensus root. Plaintext SOPS key
+material exists only in tmpfs while the flux-system Secret is seeded.
+EOF
+}
+
+die() {
+  echo "bootstrap-fabric-flux: $*" >&2
+  exit 1
+}
+
+render_flux_controller_images() {
+  kubectl kustomize "$repo_root/fabric/cluster/flux-system/components" |
+    yq -o=json -I=0 '
+      select(
+        .apiVersion == "apps/v1" and
+        .kind == "Deployment" and
+        .metadata.namespace == "flux-system"
+      ) |
+      {
+        "name": .metadata.name,
+        "containers": (
+          .spec.template.spec.containers |
+          map({"name": .name, "image": .image})
+        ),
+        "initContainers": (
+          (.spec.template.spec.initContainers // []) |
+          map({"name": .name, "image": .image})
+        )
+      }
+    ' |
+    jq -s -c '
+      if ([.[].name] | sort) != [
+        "helm-controller",
+        "kustomize-controller",
+        "notification-controller",
+        "source-controller"
+      ] then
+        error("rendered Flux Deployment set is not the expected four controllers")
+      elif (all(.[];
+        (.containers | length) == 1 and
+        .containers[0].name == "manager" and
+        (.containers[0].image | test("@sha256:[0-9a-f]{64}$")) and
+        (.initContainers | length) == 0
+      ) | not) then
+        error("a rendered Flux controller is not a single digest-pinned manager container")
+      else
+        map({
+          key: .name,
+          value: {
+            containers: .containers,
+            initContainers: .initContainers
+          }
+        }) | from_entries
+      end
+    '
+}
+
+assert_live_flux_controller_images() {
+  local controller
+  local expected
+  local state
+
+  for controller in "${flux_controllers[@]}"; do
+    expected=$(jq -ce --arg controller "$controller" '.[$controller]' \
+      <<<"$expected_flux_controller_images") ||
+      die "no rendered image contract exists for $controller"
+    state=$("${ik[@]}" -n flux-system get deployment "$controller" -o json) ||
+      die "could not read live Flux Deployment $controller"
+    jq -e --argjson expected "$expected" '
+      .metadata.generation as $generation |
+      (.spec.replicas // 1) as $desired |
+      .status.observedGeneration == $generation and
+      (.status.updatedReplicas // 0) == $desired and
+      (.status.readyReplicas // 0) == $desired and
+      (.status.availableReplicas // 0) == $desired and
+      (.status.unavailableReplicas // 0) == 0 and
+      ({
+        containers: (
+          .spec.template.spec.containers |
+          map({name: .name, image: .image})
+        ),
+        initContainers: (
+          (.spec.template.spec.initContainers // []) |
+          map({name: .name, image: .image})
+        )
+      } == $expected)
+    ' <<<"$state" >/dev/null ||
+      die "$controller is not fully rolled out with its exact rendered digest-pinned image contract"
+  done
+}
+
+while (($#)); do
+  case $1 in
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+for command in date find git jq kubectl rmdir sops yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+cd "$repo_root"
+[[ $(git branch --show-current) == main ]] || die 'run only from the main branch'
+[[ -z $(git status --porcelain) ]] || die 'worktree must be clean'
+git fetch --quiet origin main
+head=$(git rev-parse HEAD)
+remote=$(git rev-parse origin/main)
+[[ $head == "$remote" ]] || die "HEAD $head is not pushed origin/main $remote"
+[[ $confirmation == "BOOTSTRAP-FABRIC-FLUX:$head" ]] ||
+  die "exact --confirm BOOTSTRAP-FABRIC-FLUX:$head is required"
+
+expected_flux_controller_images=$(render_flux_controller_images) ||
+  die 'could not derive the exact Flux controller image contract from the committed manifests'
+
+ik=("$repo_root/scripts/ik" --context=fabric)
+for node in fabric-az1-svc1 fabric-az1-svc2; do
+  case $node in
+    fabric-az1-svc1) expected_ip=10.66.1.10 ;;
+    fabric-az1-svc2) expected_ip=10.66.1.11 ;;
+  esac
+  node_state=$("${ik[@]}" get node "$node" -o json) ||
+    die "$node is unavailable"
+  jq -e --arg node "$node" --arg expectedIp "$expected_ip" '
+    .metadata.name == $node and
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/platform"] == "true" and
+    .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+    (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
+    (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+    (.metadata.labels | has("node-role.kubernetes.io/master") | not) and
+    (.metadata.labels | has("node-role.kubernetes.io/etcd") | not) and
+    (.spec.unschedulable // false) == false and
+    (.spec.taints // []) == [{
+      effect: "NoSchedule",
+      key: "fabric.samcday.com/platform",
+      value: "true"
+    }] and
+    ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$expectedIp]) and
+    any(.status.conditions[]?; .type == "Ready" and .status == "True")
+  ' <<<"$node_state" >/dev/null ||
+    die "$node is not the exact Ready, worker-only platform identity at $expected_ip"
+done
+
+"$repo_root/scripts/verify-fabric-root-placement-policy" --live-only ||
+  die 'live roots or kube-vip differ from the exact pre-guard contract'
+
+echo 'Applying the root-placement guard and worker-hosted CoreDNS...'
+policies=(
+  fabric-root-consensus-placement \
+  fabric-root-consensus-binding \
+  fabric-root-consensus-node-invariant
+)
+existing_bindings=0
+for policy in "${policies[@]}"; do
+  if "${ik[@]}" get validatingadmissionpolicybinding "$policy" >/dev/null 2>&1; then
+    ((existing_bindings += 1))
+  fi
+done
+
+if ((existing_bindings == ${#policies[@]})); then
+  set +e
+  "${ik[@]}" diff -f fabric/cluster/foundation/root-placement-policy.yaml \
+    -f fabric/cluster/foundation/root-placement-bindings.yaml >/dev/null
+  diff_status=$?
+  set -e
+  ((diff_status == 0)) || {
+    ((diff_status == 1)) &&
+      die 'existing admission guards differ from Git; use an attended two-stage policy upgrade'
+    die 'could not compare the existing admission guards with Git'
+  }
+  "$repo_root/scripts/verify-fabric-root-placement-policy" ||
+    die 'existing root placement guards failed lifecycle probes and were preserved for inspection'
+elif ((existing_bindings == 0)); then
+  "${ik[@]}" apply --server-side --field-manager=fabric-bootstrap \
+    -f fabric/cluster/foundation/root-placement-policy.yaml
+  for policy in "${policies[@]}"; do
+    compiled=false
+    for _attempt in {1..60}; do
+      policy_status=$("${ik[@]}" get validatingadmissionpolicy "$policy" -o json)
+      if jq -e '
+        .status.observedGeneration == .metadata.generation and
+        .status.typeChecking != null and
+        ((.status.typeChecking.expressionWarnings // []) | length) == 0 and
+        all(.status.conditions[]?; .status != "False")
+      ' <<<"$policy_status" >/dev/null; then
+        compiled=true
+        break
+      fi
+      sleep 1
+    done
+    $compiled || die "$policy did not compile cleanly at its current generation"
+  done
+  rollback_new_bindings=true
+  if ! "${ik[@]}" apply --server-side --field-manager=fabric-bootstrap \
+    -f fabric/cluster/foundation/root-placement-bindings.yaml; then
+    die 'admission binding apply failed; any partial new bindings will be rolled back'
+  fi
+  "$repo_root/scripts/verify-fabric-root-placement-policy" ||
+    die 'new root placement binding probes failed; new bindings will be rolled back'
+  rollback_new_bindings=false
+else
+  die 'only some root placement bindings exist; preserve state and repair them in an attended operation'
+fi
+"${ik[@]}" apply --server-side --field-manager=fabric-bootstrap \
+  -f fabric/cluster/foundation/coredns.yaml
+"${ik[@]}" -n kube-system rollout status deployment/coredns --timeout=5m
+
+echo 'Installing Git-pinned Flux v2.9.2 controllers on service nodes...'
+"${ik[@]}" apply --server-side --field-manager=fabric-bootstrap -k fabric/cluster/flux-system/components
+"${ik[@]}" -n flux-system wait --for=condition=Established --timeout=3m \
+  crd/gitrepositories.source.toolkit.fluxcd.io \
+  crd/kustomizations.kustomize.toolkit.fluxcd.io \
+  crd/helmreleases.helm.toolkit.fluxcd.io
+"${ik[@]}" -n flux-system rollout status deployment/source-controller --timeout=5m
+"${ik[@]}" -n flux-system rollout status deployment/kustomize-controller --timeout=5m
+"${ik[@]}" -n flux-system rollout status deployment/helm-controller --timeout=5m
+"${ik[@]}" -n flux-system rollout status deployment/notification-controller --timeout=5m
+assert_live_flux_controller_images
+
+workdir=$(fabric_secure_tmpdir fabric-flux-bootstrap 1048576)
+sops --decrypt --extract '["data"]' fabric/pki/sops-age-key.txt.enc >"$workdir/age.agekey"
+chmod 0600 "$workdir/age.agekey"
+"${ik[@]}" -n flux-system create secret generic age-key \
+  --from-file=age.agekey="$workdir/age.agekey" \
+  --dry-run=client -o yaml |
+  "${ik[@]}" apply --server-side --field-manager=fabric-bootstrap -f -
+
+echo 'Handing reconciliation to the pushed main commit...'
+"${ik[@]}" apply --server-side --field-manager=fabric-bootstrap -f fabric/cluster/flux-system/source.yaml
+"${ik[@]}" apply --server-side --field-manager=fabric-bootstrap -f fabric/cluster/flux-system/root.yaml
+
+expected_revision="main@sha1:$head"
+reconcile_annotation="reconcile.fluxcd.io/requestedAt=$head"
+
+wait_for_git_revision() {
+  local attempts=$1
+  local attempt
+  local source=
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    source=$("${ik[@]}" -n flux-system get gitrepository infra -o json 2>/dev/null || true)
+    if jq -e --arg head "$head" --arg revision "$expected_revision" '
+      .metadata.generation as $generation |
+      .status.observedGeneration == $generation and
+      .status.lastHandledReconcileAt == $head and
+      .status.artifact.revision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and
+        .status == "True" and
+        .observedGeneration == $generation
+      )
+    ' <<<"$source" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((attempt == attempts)) || sleep 5
+  done
+  return 1
+}
+
+wait_for_kustomization_revision() {
+  local reconciliation=$1
+  local attempts=$2
+  local attempt
+  local state=
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    state=$("${ik[@]}" -n flux-system get kustomization "$reconciliation" -o json \
+      2>/dev/null || true)
+    if jq -e --arg head "$head" --arg revision "$expected_revision" '
+      .metadata.generation as $generation |
+      .status.observedGeneration == $generation and
+      .status.lastHandledReconcileAt == $head and
+      .status.lastAppliedRevision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and
+        .status == "True" and
+        .observedGeneration == $generation
+      )
+    ' <<<"$state" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((attempt == attempts)) || sleep 5
+  done
+  return 1
+}
+
+"${ik[@]}" -n flux-system annotate --overwrite gitrepository/infra \
+  "$reconcile_annotation" >/dev/null
+"${ik[@]}" -n flux-system annotate --overwrite kustomization/fabric-root \
+  "$reconcile_annotation" >/dev/null
+wait_for_git_revision 60 ||
+  die 'the fabric GitRepository did not freshly reconcile the confirmed main commit'
+wait_for_kustomization_revision fabric-root 120 ||
+  die 'fabric-root did not freshly apply the confirmed main commit'
+
+echo 'Proving the child loops and two-node platform services...'
+for reconciliation in fabric-foundation fabric-platform; do
+  "${ik[@]}" -n flux-system annotate --overwrite \
+    "kustomization/$reconciliation" "$reconcile_annotation" >/dev/null
+done
+wait_for_kustomization_revision fabric-foundation 120 ||
+  die 'fabric-foundation did not freshly apply the confirmed main commit'
+wait_for_kustomization_revision fabric-platform 180 ||
+  die 'fabric-platform did not freshly apply the confirmed main commit'
+
+"${ik[@]}" -n kube-system annotate --overwrite helmrelease/metrics-server \
+  "$reconcile_annotation" >/dev/null
+helm_ready=false
+for _attempt in {1..180}; do
+  helm_release=$("${ik[@]}" -n kube-system get helmrelease metrics-server -o json \
+    2>/dev/null || true)
+  if jq -e --arg head "$head" '
+    .metadata.generation as $generation |
+    .status.observedGeneration == $generation and
+    .status.lastHandledReconcileAt == $head and
+    any(.status.conditions[]?;
+      .type == "Ready" and
+      .status == "True" and
+      .observedGeneration == $generation
+    ) and
+    (.status.history | length) > 0 and
+    .status.history[0].chartName == "metrics-server" and
+    .status.history[0].chartVersion == "3.13.1" and
+    .status.history[0].appVersion == "0.8.1" and
+    .status.history[0].status == "deployed"
+  ' <<<"$helm_release" >/dev/null 2>&1; then
+    helm_ready=true
+    break
+  fi
+  sleep 5
+done
+$helm_ready || die 'metrics-server did not freshly deploy chart 3.13.1 / app 0.8.1'
+"${ik[@]}" -n kube-system rollout status deployment/metrics-server --timeout=10m
+"${ik[@]}" wait apiservice/v1beta1.metrics.k8s.io \
+  --for=condition=Available --timeout=10m
+
+api_service=$("${ik[@]}" get apiservice v1beta1.metrics.k8s.io -o json)
+jq -e '
+  ((.spec.caBundle // "") | length) > 0 and
+  (.spec.insecureSkipTLSVerify // false) == false and
+  any(.status.conditions[]?; .type == "Available" and .status == "True")
+' <<<"$api_service" >/dev/null ||
+  die 'metrics APIService is not Available with a pinned serving CA'
+
+metrics_deployment=$("${ik[@]}" -n kube-system get deployment metrics-server -o json)
+jq -e --arg caArg '--kubelet-certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt' '
+  all(.spec.template.spec.containers[];
+    ([.args[]? | select(. == $caArg)] | length) == 1 and
+    all((.args // [])[];
+      . != "--kubelet-insecure-tls" and
+      (startswith("--kubelet-insecure-tls=") | not)
+    )
+  )
+' <<<"$metrics_deployment" >/dev/null ||
+  die 'live metrics-server does not use the projected K3s server CA for strict kubelet TLS'
+
+for component in coredns metrics-server; do
+  case $component in
+    coredns) selector='k8s-app=kube-dns' ;;
+    metrics-server) selector='app.kubernetes.io/name=metrics-server' ;;
+  esac
+  pods=$("${ik[@]}" -n kube-system get pods -l "$selector" -o json)
+  jq -e '
+    [.items[] |
+      select(.status.phase == "Running") |
+      select(.status.containerStatuses | length == 1) |
+      select(.status.containerStatuses[0].ready == true) |
+      .spec.nodeName
+    ] | sort == ["fabric-az1-svc1", "fabric-az1-svc2"]
+  ' <<<"$pods" >/dev/null || die "$component is not Ready once on each service node"
+done
+
+metrics_ready=false
+for _attempt in {1..60}; do
+  metrics_nodes=$("${ik[@]}" get --raw=/apis/metrics.k8s.io/v1beta1/nodes 2>/dev/null || true)
+  now_epoch=$(date --utc +%s)
+  if jq -e --argjson now "$now_epoch" '
+    ([.items[].metadata.name] | sort) == [
+        "fabric-az1-cp1",
+        "fabric-az1-cp2",
+        "fabric-az1-cp3",
+        "fabric-az1-svc1",
+        "fabric-az1-svc2"
+      ] and
+    all(.items[];
+      ((.usage.cpu // "") | type == "string" and length > 0) and
+      ((.usage.memory // "") | type == "string" and length > 0) and
+      ((.timestamp | fromdateiso8601) as $sample_time |
+        $sample_time <= ($now + 5) and
+        ($now - $sample_time) <= 90
+      )
+    )
+  ' <<<"$metrics_nodes" >/dev/null 2>&1; then
+    metrics_ready=true
+    break
+  fi
+  sleep 5
+done
+$metrics_ready || die 'Metrics API lacks fresh CPU and memory samples for all five fabric nodes'
+
+# The branch source remains live throughout bootstrap. Reassert the handoff
+# revision after the slower Helm and metrics proofs so a concurrent main push
+# cannot make this run report the wrong commit as accepted.
+wait_for_git_revision 1 ||
+  die 'the fabric GitRepository advanced away from the confirmed main commit during bootstrap'
+for reconciliation in fabric-root fabric-foundation fabric-platform; do
+  wait_for_kustomization_revision "$reconciliation" 1 ||
+    die "$reconciliation advanced away from the confirmed main commit during bootstrap"
+done
+
+"$repo_root/scripts/verify-fabric-root-placement-policy" --live-only ||
+  die 'final root and kube-vip contract proof failed'
+assert_live_flux_controller_images
+
+echo "fabric Flux bootstrap is reconciled at $head"
