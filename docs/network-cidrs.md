@@ -111,6 +111,7 @@ cross-cluster transport.
 | Purpose | Range or address | Status |
 | --- | --- | --- |
 | Consensus and provisioning LAN | `10.66.0.0/24` | Live; no Git, live hub/cloud, or operator-route collision found; intentionally not advertised. |
+| Service-node LAN | `10.66.1.0/24` | Allocated for persistent fabric platform agents; activation awaits a physically enforceable routed or VLAN boundary. |
 | Fabric Pod network | `172.22.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
 | Fabric Service network | `172.21.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
 | Router and offline asset server | `10.66.0.1` | Live router address. |
@@ -123,13 +124,20 @@ cross-cluster transport.
 | Unallocated consensus-LAN holdback | `10.66.0.101-10.66.0.199` | Reserved; LAN DHCP is disabled. |
 | High-address holdback | `10.66.0.200-10.66.0.253` | Unallocated; not a publishing pool. |
 | Fabric API VIP | `10.66.0.254` | Live kube-vip API endpoint. |
+| Service-plane router | `10.66.1.1` | Allocated; not live until the service boundary is cabled and configured. |
+| Service-plane low-address holdback | `10.66.1.2-10.66.1.9` | Reserved; no DHCP allocation. |
+| Persistent platform agents | `10.66.1.10-10.66.1.11` | Allocated to `fabric-az1-svc1` and `fabric-az1-svc2`; not live yet. |
+| Service-plane holdback | `10.66.1.12-10.66.1.99` | Reserved for future reviewed service nodes; not a child-cluster pool. |
+| Service-plane inventory | `10.66.1.100` | Reserved for one non-installing candidate at a time. |
+| Remaining service-plane holdback | `10.66.1.101-10.66.1.254` | Unallocated; no DHCP allocation or publishing pool. |
 
 Evidence is in the [fabric plan](plans/fabric-cluster.md), [router
 configuration](../fabric/router/files/etc/uci-defaults/10-system), [node
 profiles](../fabric/butane/fabric-az1-cp1.yaml), and [K3s
-configuration](../fabric/butane/control-plane.yaml). No worker VLAN, worker
-subnet, child-cluster allocation block, or externally published fabric
-load-balancer pool has been allocated yet.
+configuration](../fabric/butane/control-plane.yaml). The service-node subnet is
+an allocation only: its router/switch realization must preserve the consensus
+boundary before either agent joins. No child-cluster allocation block or
+externally published fabric load-balancer pool has been allocated yet.
 
 ## Confirmed overlaps and sharp edges
 
@@ -164,8 +172,9 @@ load-balancer pool has been allocated yet.
 - The hub and ilumbaclusta OpenWrt DHCP ranges are inherited rather than
   explicitly recorded here; inspect the running routers before consuming
   additional addresses on those LANs.
-- Future fabric worker VLANs, worker subnets, child Pod/Service blocks, and
-  published VIP pools require new entries before deployment.
+- The allocated fabric service subnet still needs a concrete VLAN or dedicated
+  router-interface implementation. Future worker subnets, child Pod/Service
+  blocks, and published VIP pools require new entries before deployment.
 - `10.244.0.0/16`, `10.96.0.0/12`, and `10.0.0.10` occur only in chart defaults
   or a Helm-render example; they are not repository allocations.
 - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `0.0.0.0/0`, and `::/0`

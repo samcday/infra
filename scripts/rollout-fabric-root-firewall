@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+node=
+confirmation=
+
+usage() {
+  cat >&2 <<'EOF'
+Roll out the committed fabric root nftables policy to one consensus member.
+
+Usage:
+  scripts/rollout-fabric-root-firewall --node <cp1|cp2|cp3> \
+    --confirm ROLLOUT-FABRIC-ROOT-FIREWALL:<node>:<policy-sha256>
+
+Run one member at a time and prove target-local plus cluster-wide API/etcd
+health before proceeding to the next. The helper acquires a cluster-wide lock,
+requires a clean pushed main branch, and arms a target-local five-minute
+rollback timer before replacing the policy. A failed run deliberately leaves
+the cluster lock for attended inspection.
+EOF
+}
+
+die() {
+  echo "rollout-fabric-root-firewall: $*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --node)
+      (($# >= 2)) || die '--node requires a value'
+      node=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case $node in
+  cp1) full_node=fabric-az1-cp1 ;;
+  cp2) full_node=fabric-az1-cp2 ;;
+  cp3) full_node=fabric-az1-cp3 ;;
+  *) die '--node must be cp1, cp2, or cp3' ;;
+esac
+
+for command in git jq kubectl sha256sum yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+cd "$repo_root"
+[[ $(git branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(git status --porcelain) ]] || die 'worktree must be clean'
+git fetch --quiet origin main
+[[ $(git rev-parse HEAD) == "$(git rev-parse origin/main)" ]] ||
+  die 'HEAD must exactly match pushed origin/main'
+
+policy=$(yq -er \
+  '.storage.files[] | select(.path == "/etc/nftables/fabric-guard.nft") | .contents.inline' \
+  fabric/butane/firewall.yaml)
+[[ $policy == *'10.66.1.10, 10.66.1.11'* ]] ||
+  die 'committed policy does not contain the exact two service-node addresses'
+policy_hash=$(printf '%s' "$policy" | sha256sum | awk '{print $1}')
+expected="ROLLOUT-FABRIC-ROOT-FIREWALL:$node:$policy_hash"
+[[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
+
+ik=("$repo_root/scripts/ik" --context=fabric)
+ssh=("$repo_root/scripts/fabric-ssh" "$node")
+lock_name=fabric-root-firewall-rollout-lock
+lock_holder="$(hostname):$$:$node:$policy_hash"
+success=false
+
+"${ik[@]}" get --raw=/readyz >/dev/null || die 'fabric API is not ready before rollout'
+"${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
+  die 'fabric API does not report a healthy etcd check before rollout'
+lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+  -o jsonpath='{.spec.renewTime}')
+[[ -n $lease_before ]] || die "cannot read $full_node heartbeat Lease"
+
+if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
+  --from-literal="holder=$lock_holder" >/dev/null; then
+  current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+    -o jsonpath='{.data.holder}' 2>/dev/null || true)
+  die "another or stale root-firewall rollout lock exists: ${current_holder:-unknown}"
+fi
+
+cleanup() {
+  if $success; then
+    current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+      -o jsonpath='{.data.holder}' 2>/dev/null || true)
+    [[ $current_holder != "$lock_holder" ]] ||
+      "${ik[@]}" -n kube-system delete configmap "$lock_name" --wait=true >/dev/null || true
+  else
+    echo "rollout stopped; target-local rollback remains armed and $lock_name remains held by $lock_holder" >&2
+  fi
+}
+trap cleanup EXIT
+
+for remote_path in \
+  /run/fabric-guard.nft.next \
+  /run/fabric-guard.nft.previous \
+  /run/fabric-guard-rollback; do
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$remote_path" ||
+    die "stale remote rollout artifact requires inspection: $remote_path"
+done
+if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  fabric-guard-rollback.timer fabric-guard-rollback.service; then
+  die 'a target-local firewall rollback is already active'
+fi
+
+printf '%s' "$policy" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee /run/fabric-guard.nft.next >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 /run/fabric-guard.nft.next
+remote_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum /run/fabric-guard.nft.next | awk '{print $1}')
+[[ $remote_hash == "$policy_hash" ]] || die 'candidate changed in transport'
+"${ssh[@]}" sudo --non-interactive /usr/sbin/nft --check --file /run/fabric-guard.nft.next
+"${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
+  /etc/nftables/fabric-guard.nft /run/fabric-guard.nft.previous
+
+rollback_program='#!/usr/bin/env bash
+set -euo pipefail
+/usr/bin/install --mode=0644 /run/fabric-guard.nft.previous /etc/nftables/fabric-guard.nft
+/usr/bin/systemctl reload fabric-guard.service
+'
+printf '%s' "$rollback_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee /run/fabric-guard-rollback >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0700 /run/fabric-guard-rollback
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemd-run \
+  --quiet \
+  --collect \
+  --unit=fabric-guard-rollback \
+  --on-active=5m \
+  --timer-property=AccuracySec=1s \
+  /run/fabric-guard-rollback
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  fabric-guard-rollback.timer
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/install --mode=0644 \
+  /run/fabric-guard.nft.next /etc/nftables/fabric-guard.nft
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl reload fabric-guard.service
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet fabric-guard.service
+"${ssh[@]}" sudo --non-interactive /usr/sbin/nft list set inet fabric_guard service_nodes_v4 |
+  grep -Fq '10.66.1.10, 10.66.1.11'
+"${ssh[@]}" sudo --non-interactive /usr/local/bin/k3s kubectl get \
+  --raw='/readyz?verbose' | grep -Fq 'readyz check passed'
+"${ssh[@]}" sudo --non-interactive /usr/local/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
+  --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
+  --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+  --command-timeout=5s \
+  get /fabric-root/ --prefix --limit=1 --write-out=json |
+  jq -e '.count > 0 and .header.revision > 0' >/dev/null
+"${ik[@]}" get --raw=/readyz >/dev/null
+"${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok'
+
+heartbeat_advanced=false
+for _attempt in {1..30}; do
+  lease_after=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+    -o jsonpath='{.spec.renewTime}')
+  ready=$("${ik[@]}" get node "$full_node" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  if [[ $lease_after != "$lease_before" && $ready == True ]]; then
+    heartbeat_advanced=true
+    break
+  fi
+  sleep 2
+done
+$heartbeat_advanced || die "$full_node did not publish a fresh Ready heartbeat after reload"
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl stop fabric-guard-rollback.timer
+if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  fabric-guard-rollback.timer fabric-guard-rollback.service; then
+  die 'target-local rollback could not be disarmed'
+fi
+installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  /etc/nftables/fabric-guard.nft | awk '{print $1}')
+[[ $installed_hash == "$policy_hash" ]] || die 'installed policy changed or rolled back before acceptance'
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/rm --force \
+  /run/fabric-guard.nft.next \
+  /run/fabric-guard.nft.previous \
+  /run/fabric-guard-rollback
+success=true
+echo "$node now runs service-plane firewall policy $policy_hash"

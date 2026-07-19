@@ -23,8 +23,9 @@ storage:
       mode: 420
       contents:
         inline: |
-          # Root-only phase-one policy. The consensus switch is a trusted
-          # physical admission boundary until a worker VLAN exists.
+          # Consensus-root policy. The services plane is a separately routed
+          # admission boundary; only the two declared platform agents receive
+          # the narrow API, kubelet, and Flannel admissions below.
           # Recreate only this owned table; never flush the host ruleset or
           # modify tables and chains managed by K3s or kube-proxy.
           destroy table inet fabric_guard
@@ -34,6 +35,12 @@ storage:
                   type ipv4_addr
                   flags constant
                   elements = { 10.66.0.10, 10.66.0.11, 10.66.0.12 }
+              }
+
+              set service_nodes_v4 {
+                  type ipv4_addr
+                  flags constant
+                  elements = { 10.66.1.10, 10.66.1.11 }
               }
 
               set observer_v4 {
@@ -78,24 +85,26 @@ storage:
                   ip protocol icmp counter accept comment "IPv4 diagnostics and errors"
 
                   ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root peer and API traffic"
-              ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
+                  ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
 
-              ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
+                  ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
+                  ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+
+                  ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 
                   counter drop comment "deny all remaining input"
               }
 
               chain forward {
-                  # No ordinary Pods or workers belong on the roots in phase
-                  # one. Kube-vip is host-networked, so new forwarding is a
-                  # policy violation. Expand and test this chain before adding
-                  # a worker or any non-host-networked Pod.
+                  # No ordinary Pods belong on the roots. Kube-vip is
+                  # host-networked, so new forwarding through a root remains a
+                  # policy violation even after service agents join.
                   type filter hook forward priority 10; policy drop;
 
                   ct state invalid counter drop comment "invalid conntrack state"
                   ct state { established, related } counter accept comment "forwarded replies"
-              counter drop comment "deny all new forwarding"
-            }
+                  counter drop comment "deny all new forwarding"
+              }
           }
     - path: /usr/local/sbin/fabric-etcd-maintenance-window
       overwrite: true

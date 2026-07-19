@@ -1,0 +1,13 @@
+node: fabric-az1-svc2
+state: pending
+evidence:
+  inventory_sha256: FABRIC_REPLACE_FROM_REVIEWED_FINAL_CAPTURE
+identity:
+  chassis_serial: FABRIC_REPLACE_FROM_INVENTORY
+  product_uuid: FABRIC_REPLACE_FROM_INVENTORY
+  permanent_mac: FABRIC_REPLACE_FROM_INVENTORY
+  tpm2_usable: false
+root_disk:
+  by_id: FABRIC_REPLACE_FROM_INVENTORY
+  serial: FABRIC_REPLACE_FROM_INVENTORY
+  size_bytes: 0

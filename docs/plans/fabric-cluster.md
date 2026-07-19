@@ -5,6 +5,13 @@
 > admission record; “before first installation” gates below describe the
 > completed ceremony, while worker/hosted-cluster gates remain prospective.
 
+> **Services staging (2026-07-19):** Git now declares two persistent K3s
+> agents, `fabric-az1-svc1`/`svc2`, on allocated service subnet
+> `10.66.1.0/24`, plus worker-only CoreDNS, Flux, and metrics-server. Both
+> hardware admission records remain fail-closed `pending`; no service node or
+> reconciliation workload has been attached live. A managed VLAN trunk or a
+> dedicated router NIC plus second switch must realize the boundary first.
+
 This is the additive replacement foundation for the current physical `hub`.
 The existing hub remains authoritative until a separately bootstrapped fabric
 cluster and a fresh managed hub have passed the failure, authorization,
@@ -256,20 +263,22 @@ worker segment that 2380 is unreachable and 2379 is denied without an explicit
 rule, then power off the router and prove the three peers retain L2 consensus.
 No child etcd prefix may be created before this gate passes.
 
-The offline root profile already supplies the phase-one host half of this
-gate: a separate late-priority `inet fabric_guard` table defaults input and
-forwarding to drop, admits etcd/API/VXLAN only among `.10-.12`, and admits
-SSH/API/metrics only from observer `.2`. Kube-proxy is fixed to the bundled
-iptables implementation and NodePorts are unreachable on roots. The OpenWrt
-policy likewise defaults LAN/WAN input and forwarding to reject, admits public
-WAN egress only from `.10-.12`, and admits router SSH only from `.2`. These
-rules deny observer access to TCP/2379 in steady state; an explicit per-member
-helper can insert only `.2` into an in-memory, 15-minute maintenance set for
-authorization or recovery operations. The address allow-lists are sound only
-while the switch is a physically trusted
-root-only segment; they do not prevent a future same-L2 worker from spoofing a
-source address. The worker VLAN and its explicit API/VXLAN allowances remain
-a separate mandatory change before attaching any worker.
+The offline root profile supplies the host half of this gate: a separate
+late-priority `inet fabric_guard` table defaults input and forwarding to drop,
+admits etcd/API/VXLAN only among `.10-.12`, admits SSH/API/metrics only from
+observer `.2`, and stages API/kubelet/VXLAN access only for the two allocated
+service addresses `10.66.1.10-.11`. It does not admit those addresses to etcd,
+and new forwarding through a root remains denied. Kube-proxy is fixed to the
+bundled iptables implementation and NodePorts are unreachable on roots. The
+current OpenWrt policy still defaults LAN/WAN input and forwarding to reject,
+admits public WAN egress only from `.10-.12`, and admits router SSH only from
+`.2`; it must gain the reviewed service interface/VLAN and inter-zone rules
+before either staged host allowance is usable. The steady-state rules deny
+observer access to TCP/2379; an explicit per-member helper can insert only `.2`
+into an in-memory, 15-minute maintenance set for authorization or recovery
+operations. Address allow-lists are sound only behind the physically enforced
+consensus/service boundary and do not make a flat switch safe against source
+spoofing.
 
 ## Measured root power domain
 

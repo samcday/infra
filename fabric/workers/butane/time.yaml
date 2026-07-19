@@ -1,0 +1,16 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/chrony.conf
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          server 10.66.1.1 iburst prefer
+          driftfile /var/lib/chrony/drift
+          makestep 1.0 3
+          rtcsync
+          keyfile /etc/chrony.keys
+          leapsectz right/UTC
+          logdir /var/log/chrony

@@ -1,0 +1,29 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/rancher/k3s/config.yaml.d/10-agent.yaml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          prefer-bundled-bin: true
+          selinux: true
+          node-label:
+            - fabric.samcday.com/platform=true
+            - node-role.kubernetes.io/worker=true
+          node-taint:
+            - fabric.samcday.com/platform=true:NoSchedule
+          kubelet-arg:
+            - system-reserved=cpu=250m,memory=1Gi,ephemeral-storage=2Gi
+            - kube-reserved=cpu=250m,memory=512Mi,ephemeral-storage=2Gi
+            - eviction-hard=memory.available<500Mi,nodefs.available<10%,imagefs.available<10%
+    - path: /etc/rancher/k3s/config.yaml.d/25-proxy-boundary.yaml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          kube-proxy-arg:
+            - proxy-mode=iptables
+            - nodeport-addresses=127.0.0.0/8
+            - iptables-localhost-nodeports=false

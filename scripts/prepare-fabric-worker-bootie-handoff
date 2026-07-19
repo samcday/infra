@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+# shellcheck disable=SC1091
+source "$repo_root/fabric/workers/lib/admission.sh"
+
+check_only=false
+node=
+ignition_dir=
+output_dir=
+cache_dir=
+disk=
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/prepare-fabric-worker-bootie-handoff --check
+
+  scripts/prepare-fabric-worker-bootie-handoff \
+    --node fabric-az1-svc1 \
+    --ignition-dir /secure/fabric-worker-ignitions \
+    --output-dir /dev/shm/fabric-az1-svc1-pxe \
+    [--cache-dir /secure/fabric-installer-cache] \
+    --disk /dev/disk/by-id/EXACT_ADMITTED_WHOLE_DISK
+
+Build a one-node, confirmation-gated FCOS PXE initramfs from the same audited
+worker installer used by the local-media fallback. The handoff contains the
+K3s agent credential and must be created on tmpfs. It does not run DHCP,
+publish the initramfs, arm Bootie, mutate Kubernetes, or write a disk.
+EOF
+}
+
+die() {
+  printf 'prepare-fabric-worker-bootie-handoff: %s\n' "$*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      $check_only && die '--check may only be specified once'
+      check_only=true
+      shift
+      ;;
+    --node)
+      (($# >= 2)) || die '--node requires a value'
+      [[ -z $node ]] || die '--node may only be specified once'
+      node=$2
+      shift 2
+      ;;
+    --ignition-dir)
+      (($# >= 2)) || die '--ignition-dir requires a value'
+      [[ -z $ignition_dir ]] || die '--ignition-dir may only be specified once'
+      ignition_dir=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      [[ -z $output_dir ]] || die '--output-dir may only be specified once'
+      output_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      (($# >= 2)) || die '--cache-dir may only be specified once'
+      [[ -z $cache_dir ]] || die '--cache-dir may only be specified once'
+      cache_dir=$2
+      shift 2
+      ;;
+    --disk)
+      (($# >= 2)) || die '--disk requires a value'
+      [[ -z $disk ]] || die '--disk may only be specified once'
+      disk=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in awk chmod cmp coreos-installer date find git install jq mkdir \
+  mktemp mv python3 realpath rmdir sha256sum stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+if $check_only; then
+  [[ -z $node && -z $ignition_dir && -z $output_dir && -z $cache_dir && -z $disk ]] ||
+    die '--check cannot be combined with handoff arguments'
+  "$script_dir/build-fabric-worker-isos" --check
+  bash -n "$0"
+  echo 'validated worker PXE handoff prerequisites and canonical installer inputs'
+  exit 0
+fi
+
+case $node in
+  fabric-az1-svc1 | fabric-az1-svc2) ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+[[ -n $ignition_dir && -n $output_dir && -n $disk ]] || {
+  usage
+  exit 2
+}
+
+admission_rel=fabric/workers/inventory/$node.yaml
+admission=$repo_root/$admission_rel
+fabric_worker_load_admission "$node" "$admission"
+[[ $disk == "$FABRIC_WORKER_DISK" ]] ||
+  die "--disk does not exactly repeat the admitted identity for $node"
+
+# The manifest records a Git commit, so refuse a partly reviewed or locally
+# modified worker manufacturing surface. Public ignored download-cache files
+# do not participate in Git status.
+git -C "$repo_root" ls-files --error-unmatch -- \
+  "$admission_rel" scripts/build-fabric-worker-isos \
+  scripts/lib/fabric-secure-tempdir.sh \
+  scripts/prepare-fabric-worker-bootie-handoff >/dev/null 2>&1 ||
+  die 'worker admission and manufacturing helpers must be committed before handoff'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+  die 'worker PXE handoffs may only be manufactured from main'
+[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'worker PXE handoffs require a completely clean worktree'
+git -C "$repo_root" fetch --quiet origin main ||
+  die 'could not refresh origin/main before worker manufacturing'
+head_commit=$(git -C "$repo_root" rev-parse HEAD)
+origin_main=$(git -C "$repo_root" rev-parse refs/remotes/origin/main)
+[[ $head_commit == "$origin_main" ]] ||
+  die 'local main is not exactly the fetched origin/main'
+
+ignition_dir=$(realpath -e -- "$ignition_dir")
+output_dir=$(realpath -m -- "$output_dir")
+cache_dir=$(realpath -m -- "${cache_dir:-$repo_root/_build/fabric/installer}")
+case $ignition_dir in
+  "$repo_root" | "$repo_root"/*) die 'sensitive Ignition directory is inside Git' ;;
+esac
+case $output_dir in
+  "$repo_root" | "$repo_root"/*) die 'sensitive PXE handoff is inside Git' ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || die 'handoff output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'handoff parent must be an existing non-symlink directory'
+[[ $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'handoff output must be created on tmpfs, such as /dev/shm'
+
+# The canonical builder already validates the rendered Ignition, inventory,
+# disk, services address, TPM requirement, router asset set, and exact attended
+# confirmation. Build its ISO only as a transient manufacturing intermediate,
+# recover its verified live Ignition, wrap that into the pinned PXE initramfs,
+# and delete the ISO.
+work=$(fabric_secure_tmpdir fabric-worker-pxe-handoff 8589934592)
+staging=$(mktemp -d -- "$output_parent/.fabric-worker-pxe.XXXXXXXX")
+chmod 0700 "$staging"
+succeeded=false
+cleanup() {
+  find "$work" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$work" 2>/dev/null || true
+  if [[ $succeeded != true ]]; then
+    find "$staging" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$staging" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+mkdir -m 0700 "$work/media" "$work/base-pxe"
+builder=(
+  "$script_dir/build-fabric-worker-isos"
+  --node "$node"
+  --ignition-dir "$ignition_dir"
+  --output-dir "$work/media"
+  --cache-dir "$cache_dir"
+  --disk "$disk"
+)
+"${builder[@]}" >"$work/builder.log"
+
+custom_iso=$work/media/$node-installer.iso
+[[ -f $custom_iso && ! -L $custom_iso ]] || die 'canonical builder produced no installer ISO'
+
+pin=$repo_root/fabric/installer/fcos-live-iso.txt
+mapfile -t fcos_pin <"$pin"
+((${#fcos_pin[@]} == 4)) || die 'FCOS ISO pin must contain exactly four lines'
+iso_name=${fcos_pin[0]}
+iso_sha256=${fcos_pin[2]}
+[[ $iso_sha256 =~ ^[0-9a-f]{64}$ ]] || die 'pinned FCOS ISO SHA-256 is malformed'
+base_iso=$cache_dir/$iso_name
+[[ -f $base_iso && ! -L $base_iso ]] || die 'verified public FCOS cache entry disappeared'
+printf '%s  %s\n' "$iso_sha256" "$base_iso" | sha256sum --check --status - ||
+  die 'cached public FCOS ISO changed after the canonical build'
+coreos-installer iso extract pxe --output-dir "$work/base-pxe" "$base_iso"
+
+mapfile -t base_initramfs < <(find "$work/base-pxe" -maxdepth 1 -type f -name '*-initrd.img' -print)
+mapfile -t base_kernels < <(find "$work/base-pxe" -maxdepth 1 -type f -name '*-vmlinuz' -print)
+mapfile -t base_rootfs < <(find "$work/base-pxe" -maxdepth 1 -type f -name '*-rootfs.img' -print)
+for count in "${#base_initramfs[@]}" "${#base_kernels[@]}" "${#base_rootfs[@]}"; do
+  ((count == 1)) || die 'FCOS PXE extraction did not produce exactly one kernel/initramfs/rootfs set'
+done
+
+# ISO customization stores its live Ignition outside the ISO's stock PXE
+# initramfs. Recover the already-audited configuration and explicitly wrap it
+# into the pinned PXE initramfs; merely extracting PXE from the customized ISO
+# would silently return the uncustomized public initramfs.
+coreos-installer iso ignition show "$custom_iso" >"$work/canonical-live.ign"
+jq -e '
+  type == "object" and
+  (.ignition.version | type == "string" and startswith("3."))
+' "$work/canonical-live.ign" >/dev/null ||
+  die 'canonical installer ISO lacks a valid live Ignition'
+custom_initramfs=$work/custom-initramfs.img
+coreos-installer pxe customize \
+  --live-ignition "$work/canonical-live.ign" \
+  --output "$custom_initramfs" \
+  "${base_initramfs[0]}"
+! cmp --silent "$custom_initramfs" "${base_initramfs[0]}" ||
+  die 'custom installer initramfs is identical to the public base image'
+coreos-installer pxe ignition unwrap "$custom_initramfs" >"$work/live.ign"
+jq -e '
+  type == "object" and
+  (.ignition.version | type == "string" and startswith("3.")) and
+  ((.ignition.config.merge // []) | length == 1) and
+  ((.ignition.config.replace // null) == null)
+' "$work/live.ign" >/dev/null || die 'custom PXE initramfs lacks a valid live Ignition'
+
+# pxe customize wraps the supplied config as one compressed data-URL merge.
+# Decode that one child and prove semantic equality with the live Ignition
+# that the canonical ISO builder already exhaustively inspected.
+python3 - "$work/live.ign" "$work/wrapped-canonical-live.ign" <<'PY'
+import base64
+import gzip
+import json
+import sys
+from urllib.parse import unquote_to_bytes
+
+source_path, destination = sys.argv[1:]
+with open(source_path, encoding="utf-8") as source_file:
+    config = json.load(source_file)
+merge = config["ignition"]["config"]["merge"]
+if len(merge) != 1:
+    raise SystemExit("wrapped PXE Ignition does not contain exactly one merge")
+record = merge[0]
+source = record["source"]
+if not source.startswith("data:") or "," not in source:
+    raise SystemExit("wrapped PXE Ignition child is not a data URL")
+metadata, payload = source[5:].split(",", 1)
+data = (base64.b64decode(payload, validate=True)
+        if metadata.endswith(";base64") else unquote_to_bytes(payload))
+compression = record.get("compression", "")
+if compression == "gzip":
+    data = gzip.decompress(data)
+elif compression:
+    raise SystemExit("wrapped PXE Ignition uses unsupported compression")
+with open(destination, "wb") as output:
+    output.write(data)
+PY
+jq -e --slurpfile expected "$work/canonical-live.ign" \
+  '. == $expected[0]' "$work/wrapped-canonical-live.ign" >/dev/null ||
+  die 'PXE initramfs does not embed the canonical installer live Ignition'
+
+initramfs_name=$node-live-initramfs.x86_64.img
+install -m 0600 "$custom_initramfs" "$staging/$initramfs_name"
+printf '%s %s\n' "$node" "$disk" >"$staging/install-policy"
+chmod 0600 "$staging/install-policy"
+
+initramfs_sha256=$(sha256sum "$staging/$initramfs_name" | awk '{print $1}')
+policy_sha256=$(sha256sum "$staging/install-policy" | awk '{print $1}')
+admission_sha256=$(sha256sum "$admission" | awk '{print $1}')
+kernel_sha256=$(sha256sum "${base_kernels[0]}" | awk '{print $1}')
+rootfs_sha256=$(sha256sum "${base_rootfs[0]}" | awk '{print $1}')
+version=${iso_name#fedora-coreos-}
+version=${version%-live-iso.x86_64.iso}
+
+jq -n \
+  --arg node "$node" \
+  --arg mac "$FABRIC_WORKER_MAC" \
+  --arg address "$([[ $node == fabric-az1-svc1 ]] && printf 10.66.1.10 || printf 10.66.1.11)" \
+  --arg disk "$disk" \
+  --arg inventory_sha256 "$FABRIC_WORKER_INVENTORY_SHA256" \
+  --arg admission_sha256 "$admission_sha256" \
+  --arg initramfs_file "$initramfs_name" \
+  --arg initramfs_sha256 "$initramfs_sha256" \
+  --arg policy_sha256 "$policy_sha256" \
+  --arg fcos_version "$version" \
+  --arg fcos_iso_sha256 "$iso_sha256" \
+  --arg kernel_sha256 "$kernel_sha256" \
+  --arg rootfs_sha256 "$rootfs_sha256" \
+  --arg repo_commit "$head_commit" \
+  --arg created_at "$(date --utc --iso-8601=seconds)" \
+  '{
+    schema: 1,
+    delivery: "bootie-custom-pxe-initramfs",
+    node: $node,
+    permanentMac: $mac,
+    servicesAddress: $address,
+    bootDevice: $disk,
+    inventorySha256: $inventory_sha256,
+    admissionSha256: $admission_sha256,
+    initramfs: {file: $initramfs_file, sha256: $initramfs_sha256},
+    installPolicy: {file: "install-policy", sha256: $policy_sha256},
+    publicFcos: {
+      version: $fcos_version,
+      isoSha256: $fcos_iso_sha256,
+      kernelSha256: $kernel_sha256,
+      rootfsSha256: $rootfs_sha256
+    },
+    repoCommit: $repo_commit,
+    createdAt: $created_at
+  }' >"$staging/handoff.json"
+chmod 0600 "$staging/handoff.json"
+
+[[ $(find "$staging" -mindepth 1 -maxdepth 1 -type f | wc -l) == 3 ]] ||
+  die 'PXE handoff contains an unexpected top-level payload'
+mv -T -- "$staging" "$output_dir"
+staging=$output_dir
+succeeded=true
+
+printf 'prepared unarmed sensitive PXE handoff for %s at %s\n' "$node" "$output_dir"
+printf 'authorized destination: %s\n' "$disk"
+printf 'custom initramfs SHA-256: %s\n' "$initramfs_sha256"
+printf 'No DHCP/HTTP service was started, no install was armed, and no disk was written.\n'

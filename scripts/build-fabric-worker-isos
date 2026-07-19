@@ -1,0 +1,694 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+# shellcheck disable=SC1091
+source "$repo_root/fabric/workers/lib/admission.sh"
+
+manifest=$repo_root/fabric/installer/fcos-live-iso.txt
+asset_manifest=$repo_root/fabric/router/data-files.txt
+live_profile=$repo_root/fabric/workers/installer/live.bu
+butane_dir=$repo_root/fabric/workers/butane
+default_cache_dir=$repo_root/_build/fabric/installer
+router_asset_url=http://10.66.1.1/static
+network_keyfile_path=/etc/NetworkManager/system-connections/fabric-services.nmconnection
+expected_asset_count=7
+fedora_key=/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary
+fedora_key_fingerprint=36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6
+
+check_only=false
+node=
+ignition_dir=
+output_dir=
+cache_dir=
+disk=
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/build-fabric-worker-isos --check
+
+  scripts/build-fabric-worker-isos \
+    --node fabric-az1-svc1 \
+    --ignition-dir /secure/fabric-worker-ignitions \
+    --output-dir /secure/fabric-worker-installers \
+    [--cache-dir /secure/fabric-installer-cache] \
+    --disk /dev/disk/by-id/EXACT_ADMITTED_WHOLE_DISK
+
+Normal mode builds exactly one secret, confirmation-gated installer. NODE must
+have an admitted inventory record, DISK must exactly repeat that record, and
+the rendered Ignition plus adjacent checksum must come from the worker renderer.
+Booting the output and typing its displayed confirmation destroys DISK.
+EOF
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+decode_data_url() {
+  local source=$1
+  local compression=$2
+  local destination=$3
+
+  [[ $source == data:*,* ]] || die 'refusing non-data URL in embedded Ignition graph'
+  [[ -z $compression || $compression == gzip ]] ||
+    die "unsupported embedded Ignition compression: $compression"
+  printf '%s' "$source" | python3 -c '
+import base64
+import gzip
+import sys
+from urllib.parse import unquote_to_bytes
+
+compression, destination = sys.argv[1:]
+source = sys.stdin.read()
+metadata, payload = source[5:].split(",", 1)
+data = base64.b64decode(payload, validate=True) if metadata.endswith(";base64") else unquote_to_bytes(payload)
+if compression == "gzip":
+    data = gzip.decompress(data)
+with open(destination, "wb") as output:
+    output.write(data)
+' "$compression" "$destination"
+}
+
+extract_embedded_ignition_file() {
+  local root_config=$1
+  local target_path=$2
+  local destination=$3
+  local walk_dir=$4
+  local config
+  local config_index=0
+  local child_index=1
+  local match_count=0
+  local match
+  local source
+  local compression
+  local child
+
+  mkdir -m 0700 -- "$walk_dir"
+  cp -- "$root_config" "$walk_dir/0.ign"
+  while [[ -f $walk_dir/$config_index.ign ]]; do
+    config=$walk_dir/$config_index.ign
+    jq -e '.ignition.version | startswith("3.")' "$config" >/dev/null
+    jq -e '(.ignition.config.replace // null) == null' "$config" >/dev/null ||
+      die "Ignition replace is forbidden while resolving $target_path"
+
+    while IFS= read -r match; do
+      source=$(printf '%s' "$match" | base64 --decode | jq -r '.source')
+      compression=$(printf '%s' "$match" | base64 --decode | jq -r '.compression // ""')
+      ((match_count += 1))
+      ((match_count == 1)) || die "multiple Ignition files target $target_path"
+      decode_data_url "$source" "$compression" "$destination"
+    done < <(jq -r --arg path "$target_path" '
+      .storage.files[]?
+      | select(.path == $path)
+      | {source: .contents.source, compression: (.contents.compression // "")}
+      | @base64
+    ' "$config")
+
+    while IFS= read -r match; do
+      ((child_index <= 64)) || die 'embedded Ignition graph exceeds 64 configs'
+      source=$(printf '%s' "$match" | base64 --decode | jq -r '.source')
+      compression=$(printf '%s' "$match" | base64 --decode | jq -r '.compression // ""')
+      child=$walk_dir/$child_index.ign
+      decode_data_url "$source" "$compression" "$child"
+      ((child_index += 1))
+    done < <(jq -r '
+      .ignition.config.merge[]?
+      | {source, compression: (.compression // "")}
+      | @base64
+    ' "$config")
+    ((config_index += 1))
+  done
+  ((match_count == 1)) || die "cannot find exactly one Ignition file at $target_path"
+}
+
+build_expected_asset_manifest() {
+  local source=$1
+  local destination=$2
+  local filename
+  local url
+  local sha256
+  local separator
+  local count=0
+
+  : >"$destination"
+  while IFS= read -r filename; do
+    [[ -n $filename ]] || continue
+    ((count += 1))
+    IFS= read -r url || die "asset record $count lacks a URL"
+    IFS= read -r sha256 || die "asset record $count lacks a SHA-256"
+    separator=
+    IFS= read -r separator || true
+    [[ $filename =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "unsafe asset filename: $filename"
+    [[ $url == https://* || $url == oci://* ]] || die "unsupported asset URL: $url"
+    [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || die "invalid asset SHA-256: $filename"
+    [[ -z $separator ]] || die "asset record $count lacks its blank separator"
+    printf '%s  %s\n' "$sha256" "$filename" >>"$destination"
+  done <"$source"
+  ((count == expected_asset_count)) ||
+    die "expected $expected_asset_count router assets, found $count"
+}
+
+validate_live_ignition() {
+  local ignition=$1
+  local sshd=$workdir/live-sshd.conf
+  local source
+  local compression
+
+  jq -e --arg key "$sam_ssh_key" '
+    (.ignition.version | startswith("3.")) and
+    ((.ignition.config.merge // []) | length == 0) and
+    ((.ignition.config.replace // null) == null) and
+    ([.passwd.users[]?.name] == ["core"]) and
+    ([.passwd.users[]?.sshAuthorizedKeys[]? | select(. == $key)] | length == 1) and
+    ([.storage.files[]?.path] ==
+      ["/etc/ssh/sshd_config.d/90-fabric-worker-installer-live.conf"]) and
+    ([.systemd.units[]?.name] | sort) ==
+      (["fabric-worker-installer-live-ssh.service", "sshd.service"] | sort)
+  ' "$ignition" >/dev/null || die 'live worker-installer Ignition has an unexpected shape'
+  source=$(jq -r '.storage.files[0].contents.source' "$ignition")
+  compression=$(jq -r '.storage.files[0].contents.compression // ""' "$ignition")
+  decode_data_url "$source" "$compression" "$sshd"
+  cmp --silent "$sshd" <(printf '%s\n' \
+    'AuthenticationMethods publickey' \
+    'PubkeyAuthentication yes' \
+    'PasswordAuthentication no' \
+    'KbdInteractiveAuthentication no' \
+    'PermitEmptyPasswords no' \
+    'PermitRootLogin no' \
+    'AllowUsers core@10.66.0.2' \
+    'DisableForwarding yes' \
+    'AllowAgentForwarding no' \
+    'AllowTcpForwarding no' \
+    'GatewayPorts no' \
+    'PermitTunnel no' \
+    'X11Forwarding no' \
+    'UseDNS no') || die 'live worker-installer SSH policy changed unexpectedly'
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      $check_only && die '--check may only be specified once'
+      check_only=true
+      shift
+      ;;
+    --node)
+      (($# >= 2)) || die '--node requires a value'
+      [[ -z $node ]] || die '--node may only be specified once'
+      node=$2
+      shift 2
+      ;;
+    --ignition-dir)
+      (($# >= 2)) || die '--ignition-dir requires a value'
+      [[ -z $ignition_dir ]] || die '--ignition-dir may only be specified once'
+      ignition_dir=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      [[ -z $output_dir ]] || die '--output-dir may only be specified once'
+      output_dir=$2
+      shift 2
+      ;;
+    --cache-dir)
+      (($# >= 2)) || die '--cache-dir requires a value'
+      [[ -z $cache_dir ]] || die '--cache-dir may only be specified once'
+      cache_dir=$2
+      shift 2
+      ;;
+    --disk)
+      (($# >= 2)) || die '--disk requires a value'
+      [[ -z $disk ]] || die '--disk may only be specified once'
+      disk=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+for command in awk base64 bash butane cmp coreos-installer cp curl find flock gpg gpgv \
+  install jq mkdir mv python3 realpath sed sha256sum stat xargs yq; do
+  need_command "$command"
+done
+
+workdir=$(fabric_secure_tmpdir fabric-worker-iso-build 67108864)
+current_iso_temporary=
+current_checksum_temporary=
+current_published_output=
+cleanup() {
+  [[ -z $current_iso_temporary ]] ||
+    find "$current_iso_temporary" -maxdepth 0 -type f -delete 2>/dev/null || true
+  [[ -z $current_checksum_temporary ]] ||
+    find "$current_checksum_temporary" -maxdepth 0 -type f -delete 2>/dev/null || true
+  [[ -z $current_published_output ]] ||
+    find "$current_published_output" -maxdepth 0 -type f -delete 2>/dev/null || true
+  find "$workdir" -mindepth 1 -delete 2>/dev/null || true
+}
+trap cleanup EXIT
+mkdir -m 0700 -- "$workdir/gnupg"
+expected_asset_manifest=$workdir/expected-SHASUMS.txt
+build_expected_asset_manifest "$asset_manifest" "$expected_asset_manifest"
+
+mapfile -t media_record <"$manifest"
+[[ ${#media_record[@]} -eq 4 ]] || die 'FCOS manifest must have exactly four records'
+iso_filename=${media_record[0]}
+iso_url=${media_record[1]}
+iso_sha256=${media_record[2]}
+iso_signature_url=${media_record[3]}
+[[ $iso_filename =~ ^fedora-coreos-[A-Za-z0-9._-]+-live-iso\.x86_64\.iso$ ]] ||
+  die 'FCOS filename is unexpected'
+[[ $iso_url == https://builds.coreos.fedoraproject.org/*/$iso_filename ]] ||
+  die 'FCOS URL is unexpected'
+[[ $iso_sha256 =~ ^[0-9a-f]{64}$ && $iso_signature_url == "$iso_url.sig" ]] ||
+  die 'FCOS checksum or signature URL is invalid'
+
+[[ -s $fedora_key ]] || die "missing Fedora signing key: $fedora_key"
+actual_fingerprint=$(gpg --quiet --homedir "$workdir/gnupg" --batch \
+  --show-keys --with-colons "$fedora_key" | awk -F: '$1 == "fpr" { print $10; exit }')
+[[ $actual_fingerprint == "$fedora_key_fingerprint" ]] ||
+  die "unexpected Fedora signing-key fingerprint: ${actual_fingerprint:-missing}"
+
+sam_ssh_key=$(yq -er '.passwd.users[] | select(.name == "sam") | .ssh_authorized_keys[0]' \
+  "$butane_dir/base.yaml")
+[[ $sam_ssh_key =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/]+={0,3}$ ]] ||
+  die 'worker base does not contain one canonical comment-free Ed25519 key'
+live_ignition=$workdir/worker-installer-live.ign
+butane --strict --pretty --output "$live_ignition" "$live_profile"
+validate_live_ignition "$live_ignition"
+
+if $check_only; then
+  [[ -z $node && -z $ignition_dir && -z $output_dir && -z $cache_dir && -z $disk ]] ||
+    die '--check cannot be combined with build arguments'
+  "$butane_dir/bootstrap.sh" --check
+  echo "validated pinned worker-installer FCOS manifest for $iso_filename"
+  echo "validated exact $expected_asset_count-payload router manifest"
+  echo 'validated fail-closed admission records and live-only SSH policy'
+  exit 0
+fi
+
+case $node in
+  fabric-az1-svc1)
+    expected_ip=10.66.1.10
+    ;;
+  fabric-az1-svc2)
+    expected_ip=10.66.1.11
+    ;;
+  *)
+    usage
+    die '--node must be fabric-az1-svc1 or fabric-az1-svc2'
+    ;;
+esac
+[[ -n $ignition_dir && -n $output_dir && -n $disk ]] || {
+  usage
+  exit 2
+}
+
+admission=$repo_root/fabric/workers/inventory/$node.yaml
+fabric_worker_load_admission "$node" "$admission"
+[[ $disk == "$FABRIC_WORKER_DISK" ]] ||
+  die "--disk does not exactly repeat the admitted identity for $node"
+
+ignition_dir=$(realpath -e -- "$ignition_dir")
+output_dir=$(realpath -m -- "$output_dir")
+cache_dir=$(realpath -m -- "${cache_dir:-$default_cache_dir}")
+for sensitive_dir in "$ignition_dir" "$output_dir"; do
+  case $sensitive_dir in
+    "$repo_root" | "$repo_root"/*) die "sensitive worker media path is inside Git: $sensitive_dir" ;;
+  esac
+done
+
+ignition=$ignition_dir/$node.ign
+ignition_checksum=$ignition.sha256
+[[ -f $ignition && ! -L $ignition ]] || die "missing regular worker Ignition: $ignition"
+[[ $(stat -Lc '%a' "$ignition") == 600 ]] || die 'worker Ignition mode must be exactly 0600'
+[[ -f $ignition_checksum && ! -L $ignition_checksum ]] ||
+  die "missing worker Ignition checksum: $ignition_checksum"
+[[ $(stat -Lc '%a' "$ignition_checksum") == 600 ]] ||
+  die 'worker Ignition checksum mode must be exactly 0600'
+mapfile -t ignition_checksum_lines <"$ignition_checksum"
+[[ ${#ignition_checksum_lines[@]} -eq 1 ]] || die 'worker Ignition checksum must contain one line'
+ignition_sha=${ignition_checksum_lines[0]:0:64}
+[[ $ignition_sha =~ ^[0-9a-f]{64}$ &&
+   ${ignition_checksum_lines[0]} == "$ignition_sha  $node.ign" ]] ||
+  die 'worker Ignition checksum record is malformed'
+supplied_ignition=$workdir/supplied-worker.ign
+install -m 0600 "$ignition" "$supplied_ignition"
+echo "$ignition_sha  $supplied_ignition" | sha256sum --check --status - ||
+  die 'worker Ignition does not match its renderer checksum'
+
+network_keyfile=$workdir/fabric-services.nmconnection
+embedded_hostname=$workdir/hostname
+embedded_token=$workdir/agent.token
+extract_embedded_ignition_file "$supplied_ignition" "$network_keyfile_path" "$network_keyfile" \
+  "$workdir/source-network-walk"
+extract_embedded_ignition_file "$supplied_ignition" /etc/hostname "$embedded_hostname" \
+  "$workdir/source-hostname-walk"
+extract_embedded_ignition_file "$supplied_ignition" /etc/rancher/k3s/agent.token "$embedded_token" \
+  "$workdir/source-token-walk"
+[[ $(<"$embedded_hostname") == "$node" ]] || die 'worker Ignition hostname does not match NODE'
+embedded_agent_token=$(<"$embedded_token")
+if [[ ! $embedded_agent_token =~ ^K10[0-9a-f]{64}::node:[A-Za-z0-9]{16,512}$ &&
+      ! $embedded_agent_token =~ ^K10[0-9a-f]{64}::[a-z0-9]{6}\.[a-z0-9]{16}$ ]]; then
+  die 'worker Ignition does not contain a CA-pinned K3s agent or bootstrap token'
+fi
+
+# The adjacent checksum proves only that the supplied pair agrees with itself.
+# Re-render through the current canonical manufacturing path using the exact
+# embedded credential, then require byte identity before this file can be
+# stamped into media (and, later, attributed to the current Git commit).
+# printf is a shell builtin: the token is never placed in a child argv or in an
+# environment value; only this protected tmpfs pathname is exported.
+canonical_token=$workdir/canonical-agent.token
+printf '%s\n' "$embedded_agent_token" >"$canonical_token"
+chmod 0600 "$canonical_token"
+unset embedded_agent_token
+canonical_render=$workdir/canonical-render
+FABRIC_AGENT_TOKEN_FILE="$canonical_token" \
+  "$butane_dir/bootstrap.sh" --node "$node" "$canonical_render" \
+  >"$workdir/canonical-render.log"
+find "$canonical_token" -maxdepth 0 -type f -delete
+canonical_ignition=$canonical_render/$node.ign
+[[ -f $canonical_ignition && ! -L $canonical_ignition &&
+   $(stat -Lc '%a' "$canonical_ignition") == 600 ]] ||
+  die 'canonical worker renderer did not produce one protected Ignition'
+cmp --silent "$canonical_ignition" "$supplied_ignition" ||
+  die 'supplied worker Ignition is not byte-identical to the current canonical render'
+
+mapfile -t mac_records < <(awk -F= '$1 == "mac-address" { print tolower($2) }' "$network_keyfile")
+mapfile -t address_records < <(awk -F= '$1 == "address1" { print $2 }' "$network_keyfile")
+mapfile -t uuid_records < <(awk -F= '$1 == "uuid" { print tolower($2) }' "$network_keyfile")
+[[ ${#mac_records[@]} -eq 1 && ${mac_records[0]} == "$FABRIC_WORKER_MAC" ]] ||
+  die 'worker Ignition MAC differs from admitted inventory'
+[[ ${#address_records[@]} -eq 1 && ${address_records[0]} == "$expected_ip/24,10.66.1.1" ]] ||
+  die 'worker Ignition has an unexpected services address or gateway'
+[[ ${#uuid_records[@]} -eq 1 && ${uuid_records[0]} =~ ^[0-9a-f-]{36}$ ]] ||
+  die 'worker Ignition lacks one NetworkManager UUID'
+expected_connection_uuid=${uuid_records[0]}
+
+if find "$workdir/source-network-walk" "$workdir/source-hostname-walk" "$workdir/source-token-walk" \
+    -name '*.ign' -print0 | xargs -0 jq -r '.. | strings' |
+    grep -Eqi '(^|/)(etc|var/lib)/etcd|kube-vip|server\.token|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'; then
+  die 'worker Ignition graph contains forbidden root/etcd material'
+fi
+
+mkdir -p -- "$cache_dir"
+iso=$cache_dir/$iso_filename
+signature=$iso.sig
+exec {cache_lock_fd}>"$cache_dir/.download.lock"
+flock "$cache_lock_fd"
+download() {
+  local url=$1
+  local destination=$2
+  local temporary=$destination.tmp.$$
+  [[ -f $destination ]] && return
+  find "$temporary" -maxdepth 0 -type f -delete 2>/dev/null || true
+  curl --retry 3 --fail --location --output "$temporary" "$url"
+  mv -- "$temporary" "$destination"
+}
+download "$iso_url" "$iso"
+echo "$iso_sha256  $iso" | sha256sum --check --status - || die 'cached FCOS ISO checksum mismatch'
+download "$iso_signature_url" "$signature"
+fedora_keyring=$workdir/fedora-44-primary.gpg
+gpg --quiet --homedir "$workdir/gnupg" --batch --yes --dearmor \
+  --output "$fedora_keyring" "$fedora_key"
+gpgv --keyring "$fedora_keyring" "$signature" "$iso"
+flock -u "$cache_lock_fd"
+
+mkdir -p -- "$output_dir"
+chmod 0700 -- "$output_dir"
+output=$output_dir/$node-installer.iso
+checksum=$output.sha256
+temporary=$output.tmp
+checksum_temporary=$checksum.tmp
+current_iso_temporary=$temporary
+current_checksum_temporary=$checksum_temporary
+[[ ! -e $output && ! -e $checksum && ! -e $temporary && ! -e $checksum_temporary ]] ||
+  die "refusing to overwrite worker installer output: $output"
+
+asset_manifest_b64=$(base64 --wrap=0 "$expected_asset_manifest")
+mapfile -t asset_names < <(awk '{ print $2 }' "$expected_asset_manifest")
+printf -v asset_names_shell '%q ' "${asset_names[@]}"
+confirmation=INSTALL-SVC:$node:${disk##*/}:$FABRIC_WORKER_INVENTORY_SHA256
+pre_install=$workdir/$node-pre-install.sh
+post_install=$workdir/$node-post-install.sh
+installer_config=$workdir/$node-installer.yaml
+
+cat >"$pre_install" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec </dev/console >/dev/console 2>&1
+
+node='$node'
+target='$disk'
+expected_disk_kind='$FABRIC_WORKER_DISK_KIND'
+expected_disk_wwn='$FABRIC_WORKER_DISK_WWN'
+expected_disk_serial='$FABRIC_WORKER_DISK_SERIAL'
+expected_disk_bytes='$FABRIC_WORKER_DISK_SIZE_BYTES'
+expected_chassis_serial='$FABRIC_WORKER_CHASSIS_SERIAL'
+expected_product_uuid='$FABRIC_WORKER_PRODUCT_UUID'
+expected_inventory_sha256='$FABRIC_WORKER_INVENTORY_SHA256'
+expected_mac='$FABRIC_WORKER_MAC'
+expected_ip='$expected_ip'
+expected_cidr='$expected_ip/24'
+expected_connection_uuid='$expected_connection_uuid'
+expected_confirmation='$confirmation'
+router_asset_url='$router_asset_url'
+expected_asset_manifest_b64='$asset_manifest_b64'
+asset_names=($asset_names_shell)
+
+fail() {
+  printf 'ADMISSION FAILED: %s\n' "\$*" >&2
+  exit 1
+}
+
+printf '\nDANGER: armed fabric services-worker installer\n'
+printf 'Node:        %s\n' "\$node"
+printf 'Chassis:     %s\n' "\$expected_chassis_serial"
+printf 'Destination: %s\n' "\$target"
+printf 'Wired MAC:   %s\n' "\$expected_mac"
+printf 'Static IP:   %s\n' "\$expected_cidr"
+printf 'Evidence:    %s\n\n' "\$expected_inventory_sha256"
+
+[[ -d /sys/firmware/efi/efivars ]] || fail 'installer was not booted in UEFI mode'
+[[ -c /dev/tpmrm0 ]] || fail 'TPM2 resource-manager device /dev/tpmrm0 is absent'
+[[ \$(cat /sys/class/tpm/tpm0/tpm_version_major 2>/dev/null) == 2 ]] ||
+  fail 'the admitted TPM is not reported as TPM 2.0'
+systemd-analyze has-tpm2 | grep -qx yes || fail 'systemd cannot use this TPM2 stack'
+systemd-cryptenroll --tpm2-device=list | grep -Fq /dev/tpmrm0 ||
+  fail 'systemd-cryptenroll cannot enumerate /dev/tpmrm0'
+
+actual_chassis_serial=\$(tr -d '\000\r\n' </sys/class/dmi/id/chassis_serial)
+[[ \$actual_chassis_serial == "\$expected_chassis_serial" ]] ||
+  fail "chassis serial mismatch: \$actual_chassis_serial"
+actual_product_uuid=\$(tr '[:upper:]' '[:lower:]' </sys/class/dmi/id/product_uuid | tr -d '\000\r\n')
+[[ \$actual_product_uuid == "\$expected_product_uuid" ]] ||
+  fail "DMI product UUID mismatch: \$actual_product_uuid"
+
+[[ -L \$target ]] || fail 'stable destination by-id link is absent'
+resolved=\$(readlink -e -- "\$target") || fail 'stable destination link does not resolve'
+[[ \$(lsblk --nodeps -dnro TYPE -- "\$resolved") == disk ]] || fail 'destination is not a whole disk'
+[[ \$(lsblk --nodeps -dnro RM -- "\$resolved") == 0 ]] || fail 'destination is removable media'
+udev_properties=\$(udevadm info --query=property --name "\$resolved") ||
+  fail 'destination udev identity cannot be inspected'
+case \$expected_disk_kind in
+  ata)
+    grep -Fxq 'ID_BUS=ata' <<<"\$udev_properties" || fail 'destination is not admitted ATA storage'
+    ;;
+  nvme)
+    grep -Fxq "ID_WWN=\$expected_disk_wwn" <<<"\$udev_properties" ||
+      fail 'destination NVMe EUI differs from admission'
+    [[ \$(lsblk --nodeps -dnro TRAN -- "\$resolved") == nvme ]] ||
+      fail 'destination does not use the NVMe transport'
+    ;;
+  *) fail 'embedded destination kind is invalid' ;;
+esac
+actual_disk_serial=\$(lsblk --nodeps -dnro SERIAL -- "\$resolved" |
+  sed 's/^[[:space:]]*//;s/[[:space:]]*\$//')
+[[ \$actual_disk_serial == "\$expected_disk_serial" ]] ||
+  fail "disk serial mismatch: \$actual_disk_serial"
+actual_disk_bytes=\$(blockdev --getsize64 "\$resolved")
+[[ \$actual_disk_bytes == "\$expected_disk_bytes" ]] ||
+  fail "disk size mismatch: \$actual_disk_bytes"
+[[ \$(blockdev --getro "\$resolved") == 0 ]] || fail 'destination is read-only'
+if lsblk -nrpo MOUNTPOINTS -- "\$resolved" | grep -q '[^[:space:]]'; then
+  fail 'destination or one of its partitions is mounted'
+fi
+while IFS= read -r block_path; do
+  block_name=\${block_path##*/}
+  if find "/sys/class/block/\$block_name/holders" -mindepth 1 -maxdepth 1 -print -quit |
+      grep -q .; then
+    fail "destination component has active holders: \$block_path"
+  fi
+done < <(lsblk -nrpo NAME -- "\$resolved")
+
+command -v ethtool >/dev/null || fail 'ethtool is unavailable'
+interface=
+for interface_path in /sys/class/net/*; do
+  candidate_interface=\${interface_path##*/}
+  [[ \$candidate_interface == lo ]] && continue
+  permanent_record=\$(LC_ALL=C ethtool -P "\$candidate_interface" 2>/dev/null) || continue
+  permanent_record=\${permanent_record,,}
+  if [[ \$permanent_record =~ ^permanent[[:space:]]+address:[[:space:]]+(([0-9a-f]{2}:){5}[0-9a-f]{2})\$ &&
+        \${BASH_REMATCH[1]} == "\$expected_mac" ]]; then
+    [[ -z \$interface ]] || fail 'expected permanent MAC appears on multiple interfaces'
+    interface=\$candidate_interface
+  fi
+done
+[[ -n \$interface ]] || fail 'admitted permanent MAC is absent'
+current_mac=\$(<"/sys/class/net/\$interface/address")
+[[ \${current_mac,,} == "\$expected_mac" ]] || fail "current MAC differs: \$current_mac"
+
+systemctl is-active --quiet NetworkManager.service || systemctl start NetworkManager.service ||
+  fail 'NetworkManager could not start'
+nmcli connection reload || fail 'NetworkManager could not reload profiles'
+nmcli --wait 30 connection up uuid "\$expected_connection_uuid" ifname "\$interface" >/dev/null ||
+  fail 'the exact services profile could not activate'
+active_uuid=\$(nmcli --get-values GENERAL.CON-UUID device show "\$interface")
+[[ \$active_uuid == "\$expected_connection_uuid" ]] || fail 'an unexpected network profile activated'
+network_ready=false
+for _ in {1..30}; do
+  if ip -4 -o address show dev "\$interface" | awk '{ print \$4 }' | grep -Fxq "\$expected_cidr" &&
+      ip -4 route get 10.66.1.1 | grep -Eq "dev \$interface( |\$).*src \$expected_ip( |\$)"; then
+    network_ready=true
+    break
+  fi
+  sleep 1
+done
+\$network_ready || fail 'services address and router route did not become ready'
+
+if systemctl start sshd.service; then
+  for _ in {1..20}; do
+    [[ -s /etc/ssh/ssh_host_ed25519_key.pub ]] && break
+    sleep 0.25
+  done
+  [[ ! -s /etc/ssh/ssh_host_ed25519_key.pub ]] ||
+    printf 'Live SSH:   core@%s from 10.66.0.2; host key %s\n' \
+      "\$expected_ip" "\$(ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub)"
+fi
+
+expected_manifest=\$(mktemp)
+actual_manifest=\$(mktemp)
+trap 'find "\$expected_manifest" "\$actual_manifest" -maxdepth 0 -type f -delete 2>/dev/null || true' EXIT
+printf '%s' "\$expected_asset_manifest_b64" | base64 --decode >"\$expected_manifest"
+curl --fail --silent --show-error --connect-timeout 5 --max-time 15 --retry 2 \
+  --output "\$actual_manifest" "\$router_asset_url/SHASUMS.txt" ||
+  fail 'future services router asset manifest is unreachable'
+cmp --silent "\$expected_manifest" "\$actual_manifest" ||
+  fail 'router asset manifest differs from the installer expectation'
+for asset_name in "\${asset_names[@]}"; do
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    --head --output /dev/null "\$router_asset_url/\$asset_name" ||
+    fail "router asset is unreadable: \$asset_name"
+done
+
+lsblk -dn -o PATH,SIZE,MODEL,SERIAL,TRAN -- "\$resolved"
+printf '\nCompare chassis, node, IP, MAC, disk identity, serial, size, and evidence hash.\n'
+printf 'Type exactly: %s\n> ' "\$expected_confirmation"
+IFS= read -r reply
+[[ \$reply == "\$expected_confirmation" ]] || fail 'confirmation mismatch'
+echo 'confirmation accepted; destructive services-worker installation begins now'
+EOF
+chmod 0700 -- "$pre_install"
+
+cat >"$post_install" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec </dev/console >/dev/console 2>&1
+printf '\nINSTALL SUCCEEDED: %s is installed on %s.\n' '$node' '$disk'
+printf 'Powering off. Remove the armed installer before booting the local disk.\n'
+sync
+systemctl --no-block poweroff
+while :; do sleep 60; done
+EOF
+chmod 0700 -- "$post_install"
+bash -n "$pre_install"
+bash -n "$post_install"
+printf 'offline: true\n' >"$installer_config"
+
+coreos-installer iso customize \
+  --live-ignition "$live_ignition" \
+  --dest-device "$disk" \
+  --dest-ignition "$canonical_ignition" \
+  --installer-config "$installer_config" \
+  --network-keyfile "$network_keyfile" \
+  --pre-install "$pre_install" \
+  --post-install "$post_install" \
+  --live-karg-append coreos.inst.skip_reboot \
+  --live-karg-append systemd.show_status=false \
+  --output "$temporary" \
+  "$iso"
+
+default_kargs=$(coreos-installer iso kargs show --default "$temporary")
+actual_kargs=$(coreos-installer iso kargs show "$temporary")
+[[ $actual_kargs == "$default_kargs coreos.inst.skip_reboot systemd.show_status=false" ]] ||
+  die 'customized worker ISO has unexpected live kernel arguments'
+
+verified_live=$workdir/verified-live.ign
+verified_pre=$workdir/verified-pre.sh
+verified_post=$workdir/verified-post.sh
+verified_dest=$workdir/verified-dest.ign
+verified_installer=$workdir/verified-installer.yaml
+verified_customize=$workdir/verified-customize.yaml
+coreos-installer iso ignition show "$temporary" >"$verified_live"
+extract_embedded_ignition_file "$verified_live" \
+  "/usr/local/bin/pre-install-$node-pre-install.sh" "$verified_pre" "$workdir/verify-pre-walk"
+extract_embedded_ignition_file "$verified_live" \
+  "/usr/local/bin/post-install-$node-post-install.sh" "$verified_post" "$workdir/verify-post-walk"
+extract_embedded_ignition_file "$verified_live" /etc/coreos/dest.ign \
+  "$verified_dest" "$workdir/verify-dest-walk"
+extract_embedded_ignition_file "$verified_live" \
+  "/etc/coreos/installer.d/0000-${installer_config##*/}" "$verified_installer" \
+  "$workdir/verify-installer-walk"
+extract_embedded_ignition_file "$verified_live" /etc/coreos/installer.d/0001-customize.yaml \
+  "$verified_customize" "$workdir/verify-customize-walk"
+cmp --silent "$pre_install" "$verified_pre" || die 'embedded pre-install gate differs from source'
+cmp --silent "$post_install" "$verified_post" || die 'embedded post-install gate differs from source'
+cmp --silent "$canonical_ignition" "$verified_dest" ||
+  die 'embedded destination Ignition differs from canonical render'
+cmp --silent "$installer_config" "$verified_installer" || die 'embedded offline installer config differs'
+cmp --silent <(printf '%s\n' \
+  'ignition-file: /etc/coreos/dest.ign' \
+  'copy-network: true' \
+  "dest-device: $disk") "$verified_customize" ||
+  die 'embedded destination device or copy-network config differs'
+
+verified_network_dir=$workdir/verified-network
+mkdir -m 0700 -- "$verified_network_dir"
+coreos-installer iso network extract --directory "$verified_network_dir" "$temporary" >/dev/null
+mapfile -d '' network_entries < <(find "$verified_network_dir" -mindepth 1 -maxdepth 1 -print0)
+[[ ${#network_entries[@]} -eq 1 && -f ${network_entries[0]} && ! -L ${network_entries[0]} ]] ||
+  die 'customized worker ISO does not contain exactly one regular network keyfile'
+cmp --silent "$network_keyfile" "${network_entries[0]}" ||
+  die 'embedded worker network keyfile differs from source'
+
+chmod 0600 -- "$temporary"
+output_sha256=$(sha256sum "$temporary" | awk '{ print $1 }')
+printf '%s  %s\n' "$output_sha256" "${output##*/}" >"$checksum_temporary"
+chmod 0600 -- "$checksum_temporary"
+mv -- "$temporary" "$output"
+current_iso_temporary=
+current_published_output=$output
+mv -- "$checksum_temporary" "$checksum"
+current_checksum_temporary=
+current_published_output=
+printf '%s  %s\n' "$output_sha256" "$output"
+echo "wrote one verified, confirmation-gated worker installer for $node" >&2

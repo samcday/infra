@@ -28,8 +28,11 @@ included in the current hub Flux fan-out, and nothing merges the current
 - `firewall.yaml` installs a root-only, default-drop nftables guard before
   etcd or K3s. It admits consensus traffic only among the three declared root
   addresses, admits operational/API metrics only from observer `10.66.0.2`,
-  fixes kube-proxy to iptables, and makes NodePorts unreachable on roots. Its
-  forwarding policy must be redesigned before any worker joins.
+  and stages only API, kubelet, and Flannel access for the two declared
+  service-node addresses. It fixes kube-proxy to iptables, keeps new root
+  forwarding denied, and makes NodePorts unreachable on roots. The staged
+  service rules are inert until the separate routed boundary exists and has
+  passed its negative etcd-access tests.
 - `time.yaml` makes the dedicated router the sole configured chrony source.
   The roots retain their own RTC and persisted drift when the router or WAN is
   unavailable after initial synchronization.
@@ -218,10 +221,11 @@ physical latency domain: it still shares the selected root device with root and
 Inventory, SMART health, and a synchronous-write test remain hard gates before
 authorizing a destructive installation.
 
-The phase-one host guard is part of every rendered root Ignition. After quorum,
+The root host guard is part of every rendered root Ignition. After quorum,
 etcd auth/RBAC, negative host-policy tests, and the separate worker/inter-VLAN
-consensus boundary are hard gates before adding any worker or child prefix. The K3s client is limited
-to `/fabric-root/` and its required `/bootstrap/` prefix; TCP/2380 is peer-only.
+consensus boundary are hard gates before adding any worker or child prefix.
+The K3s client is limited to `/fabric-root/` and its required `/bootstrap/`
+prefix; TCP/2380 is peer-only.
 A controlled K3s restart, server rejoin, and token-rotation test must pass after
 authorization is enabled. Ceph, KubeVirt, hosted control planes, and
 applications never run on these three nodes.

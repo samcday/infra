@@ -1,0 +1,60 @@
+variant: fcos
+version: 1.5.0
+boot_device:
+  luks:
+    tpm2: true
+storage:
+  files:
+    - path: /etc/hostname
+      overwrite: true
+      mode: 420
+      contents:
+        inline: fabric-az1-svc2
+    - path: /etc/NetworkManager/system-connections/fabric-services.nmconnection
+      overwrite: true
+      mode: 384
+      contents:
+        inline: |
+          [connection]
+          id=fabric-services
+          uuid=b8ee0dd1-ff31-4bd6-8901-660000000111
+          type=ethernet
+          autoconnect=true
+          autoconnect-priority=100
+          autoconnect-retries=0
+
+          [ethernet]
+          mac-address=@FABRIC_NODE_MAC@
+
+          [ipv4]
+          method=manual
+          dad-timeout=3000
+          address1=10.66.1.11/24,10.66.1.1
+          dns=10.66.1.1;
+          dns-search=fabric.internal;
+          may-fail=false
+          route-metric=10
+
+          [ipv6]
+          method=disabled
+    - path: /etc/NetworkManager/conf.d/90-fabric-services-ignore-carrier.conf
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          # Keep only this admitted NIC configured across physical carrier
+          # loss. MAC matching avoids changing unrelated Ethernet devices.
+          [device-fabric-services-ignore-carrier]
+          match-device=mac:@FABRIC_NODE_MAC@
+          ignore-carrier=true
+    - path: /etc/rancher/k3s/config.yaml.d/40-node.yaml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          node-name: fabric-az1-svc2
+          node-ip: 10.66.1.11
+systemd:
+  units:
+    - name: NetworkManager-wait-online.service
+      enabled: true

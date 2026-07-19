@@ -1,0 +1,159 @@
+variant: fcos
+version: 1.5.0
+passwd:
+  users:
+    - name: sam
+      groups:
+        - adm
+        - wheel
+        - sudo
+        - systemd-journal
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+storage:
+  directories:
+    - path: /etc/rancher/k3s/config.yaml.d
+      mode: 448
+    - path: /var/lib/fabric/assets
+      mode: 493
+    - path: /var/lib/rancher/k3s/agent/images
+      mode: 493
+  files:
+    - path: /etc/hosts
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          127.0.0.1 localhost localhost.localdomain
+          ::1 localhost localhost.localdomain
+          10.66.0.10 fabric-az1-cp1.fabric.internal fabric-az1-cp1
+          10.66.0.11 fabric-az1-cp2.fabric.internal fabric-az1-cp2
+          10.66.0.12 fabric-az1-cp3.fabric.internal fabric-az1-cp3
+          10.66.0.254 api.fabric.internal
+          10.66.1.10 fabric-az1-svc1.fabric.internal fabric-az1-svc1
+          10.66.1.11 fabric-az1-svc2.fabric.internal fabric-az1-svc2
+    - path: /etc/rancher/k3s/agent.token
+      overwrite: true
+      mode: 384
+      contents:
+        inline: '@FABRIC_AGENT_TOKEN@'
+    - path: /etc/ssh/sshd_config.d/90-fabric-services.conf
+      overwrite: true
+      mode: 384
+      contents:
+        inline: |
+          AuthenticationMethods publickey
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitEmptyPasswords no
+          PermitRootLogin no
+          AllowUsers sam@10.66.0.2
+          DisableForwarding yes
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          GatewayPorts no
+          PermitTunnel no
+          X11Forwarding no
+          UseDNS no
+    - path: /etc/zincati/config.d/90-disable.toml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          [updates]
+          enabled = false
+    - path: /usr/local/bin/k3s
+      overwrite: true
+      mode: 493
+      contents:
+        source: http://10.66.1.1/static/k3s
+        verification:
+          hash: sha256-65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
+    - path: /usr/local/bin/install-k3s
+      overwrite: true
+      mode: 493
+      contents:
+        source: http://10.66.1.1/static/install-k3s
+        verification:
+          hash: sha256-46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad
+    - path: /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
+      overwrite: true
+      mode: 420
+      contents:
+        source: http://10.66.1.1/static/k3s-selinux-1.6-1.coreos.noarch.rpm
+        verification:
+          hash: sha256-ff171703f71f8c2c987342267d674a9ee3b86bb2e5d4c7cbd4a3a4be3be386d3
+    - path: /var/lib/rancher/k3s/agent/images/k3s-airgap-images-amd64.tar.zst
+      overwrite: true
+      mode: 420
+      contents:
+        source: http://10.66.1.1/static/k3s-airgap-images-amd64.tar.zst
+        verification:
+          hash: sha256-da6a3b2dbd55cc368d930078ae8814ed22eb9c92247f7b9b46bf073445ff55b3
+systemd:
+  units:
+    - name: install-k3s-selinux.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Layer the pinned K3s SELinux policy for a fabric services worker
+        ConditionPathExists=!/usr/share/selinux/packages/k3s.pp
+        RequiresMountsFor=/var/lib/fabric/assets
+        Before=verify-k3s-selinux.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        TimeoutStartSec=0
+        ExecStart=/usr/bin/rpm-ostree install --idempotent --reboot /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: verify-k3s-selinux.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Verify the active K3s SELinux policy for a fabric services worker
+        Requires=install-k3s-selinux.service
+        After=install-k3s-selinux.service
+        Before=install-k3s.service
+        RequiresMountsFor=/var/lib/fabric
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/rm -f /var/lib/fabric/k3s-selinux-ready
+        ExecStart=/usr/bin/test -s /usr/share/selinux/packages/k3s.pp
+        ExecStart=/usr/bin/sh -ceu '/usr/sbin/semodule -l | /usr/bin/grep -Eq "^k3s([[:space:]]|$)"'
+        ExecStart=/usr/sbin/restorecon -F /usr/local/bin/k3s
+        ExecStart=/usr/bin/touch /var/lib/fabric/k3s-selinux-ready
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: install-k3s.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install and start a fabric K3s services agent
+        ConditionPathExists=!/etc/install-k3s.service.stamp
+        ConditionPathExists=/var/lib/fabric/k3s-selinux-ready
+        Wants=network-online.target
+        Requires=verify-k3s-selinux.service
+        After=network-online.target verify-k3s-selinux.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        TimeoutStartSec=0
+        Environment=INSTALL_K3S_SKIP_DOWNLOAD=true
+        Environment=INSTALL_K3S_SKIP_SELINUX_RPM=true
+        Environment=INSTALL_K3S_BIN_DIR=/usr/local/bin
+        Environment=INSTALL_K3S_EXEC=agent
+        Environment=K3S_URL=https://10.66.0.254:6443
+        Environment=K3S_TOKEN_FILE=/etc/rancher/k3s/agent.token
+        ExecStart=/usr/local/bin/install-k3s
+        ExecStart=/usr/bin/touch /etc/install-k3s.service.stamp
+
+        [Install]
+        WantedBy=multi-user.target
