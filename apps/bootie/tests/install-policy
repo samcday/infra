@@ -1,1 +1,2 @@
 test-node /dev/disk/by-id/ata-approved
+fabric-az1-cp3 /dev/disk/by-id/ata-approved

@@ -19,6 +19,38 @@ if [[ ${1:-} == annotate || ${1:-} == patch ]]; then
   exit 0
 fi
 case "$joined" in
+  "get node/fabric-az1-cp3 -o json")
+    jq -n \
+      --arg resource_version "${FAKE_RESOURCE_VERSION:-12345}" \
+      --arg mac "${FAKE_MAC:-00-11-22-33-44-55}" \
+      --arg serial "${FAKE_SERIAL:-}" \
+      --arg discovery "${FAKE_DISCOVERY:-true}" \
+      --arg boot_device "${FAKE_BOOT_DEVICE:-}" \
+      --arg install "${FAKE_INSTALL:-}" \
+      --arg bootstrap_state "${FAKE_BOOTSTRAP_STATE:-discovery}" \
+      --arg ignition_token "${FAKE_IGNITION_TOKEN-}" \
+      --arg ignition_mode "${FAKE_IGNITION_MODE-}" \
+      '{
+        apiVersion: "v1",
+        kind: "Node",
+        metadata: {
+          name: "fabric-az1-cp3",
+          resourceVersion: $resource_version,
+          labels: {
+            "samcday.com/mac": $mac,
+            "samcday.com/serial": $serial,
+            "samcday.com/discovery": $discovery
+          },
+          annotations: {
+            "samcday.com/boot-device": $boot_device,
+            "samcday.com/install": $install,
+            "fabric.samcday.com/bootstrap-state": $bootstrap_state,
+            "samcday.com/ignition-token": $ignition_token,
+            "samcday.com/ignition-mode": $ignition_mode
+          }
+        }
+      }'
+    ;;
   "get node -o name fabric-az1-cp3")
     echo node/fabric-az1-cp3
     ;;
@@ -42,10 +74,10 @@ case "$joined" in
     printf '%s' "${FAKE_BOOTSTRAP_STATE:-discovery}"
     ;;
   *ignition-token*)
-    printf '%s' "${FAKE_IGNITION_TOKEN:-fixed-token}"
+    printf '%s' "${FAKE_IGNITION_TOKEN-fixed-token}"
     ;;
   *ignition-mode*)
-    printf '%s' "${FAKE_IGNITION_MODE:-install}"
+    printf '%s' "${FAKE_IGNITION_MODE-install}"
     ;;
   *samcday\\.com/install*)
     printf '%s' "${FAKE_INSTALL:-}"

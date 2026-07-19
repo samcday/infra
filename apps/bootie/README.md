@@ -2,7 +2,7 @@
 
 bootie is a simple container to facilitate PXE booting k8s nodes with FCOS.
 
-It has three HTTP endpoints:
+It has four HTTP endpoints:
 
  * `/boot.ipxe?mac=&serial=`. iPXE clients chain this URL and receive
    instructions to boot FCOS. If no k8s Node yet exists matching the MAC or
@@ -15,6 +15,9 @@ It has three HTTP endpoints:
    provision the Node. It's assumes that an `/ignition` directory exists
    which contains, at a minimum, a `base.ign` config. Additional profiles
    can be selected by annotating the node with `samcday.com/boot-profiles`.
+ * `/custom-initramfs/<capability>`. A bounded worker-install ceremony uses
+   this instead of `/ignition`: the handler revalidates and streams the exact
+   customized PXE initramfs selected by the one-use boot response.
 
 `BOOTIE_PUBLIC_ORIGIN` is required and supplies the fixed HTTP(S) origin in
 every generated Ignition URL. Bootie never trusts the request's `Host` header
@@ -48,17 +51,48 @@ Bootie treats disk identity and permission to install as separate concerns:
   Node matches `BOOTIE_NODE_NAME`, discovery mode is cleared, and a valid
   one-use install token has already been consumed. Generic profile merging is
   unchanged when this setting is absent.
+* A confirmation-gated installer manufactured into a customized FCOS PXE
+  initramfs uses `BOOTIE_INSTALL_DELIVERY=custom-initramfs`. This mode is
+  accepted only with a fixed Node, disabled Node creation, the exact-device
+  install policy, and the reviewed bootstrap-state gate all enabled. Set
+  `BOOTIE_CUSTOM_INITRAMFS_NAME` to the random 32-to-64-lowercase-hex
+  capability plus `.img` that the station placed under `/pxe`; Bootie emits
+  it only after atomically consuming the install arm and does not create a
+  redundant Ignition token or installer kernel argument. The corresponding
+  `/pxe` file must be a regular, single-link mode-`0644` runtime snapshot; its
+  parent remains a root-controlled tmpfs and the filename is the capability.
+  `BOOTIE_CUSTOM_FCOS_VERSION` must exactly match `FCOS_VERSION`, and
+  `BOOTIE_CUSTOM_INITRAMFS_SHA256` must match the runtime snapshot before the
+  request is inspected. A fixed Node with a stale Ignition token or mode is
+  refused; the arm patch tests the Node `resourceVersion` so a concurrent
+  mutation cannot cross that check.
 
-Every PXE response carries a random `samcday.com/ignition-token` bound to an
-`install` or `live` mode. The Ignition endpoint atomically verifies and
-consumes both before returning any profile. Appending `install=1` to a guessed
-or live-mode URL therefore cannot bypass the install arm, and concurrent
-requests cannot both consume the same authorization. This is a one-use safety
-token, not a replacement for keeping Bootie on an isolated LAN.
+The boot response names `/custom-initramfs/<capability>`, whose FastCGI
+handler reopens, rechecks, and directly streams the same configured file.
+It never validates one path and redirects Nginx to a different `/pxe` inode.
+FastCGI buffering and access logging are disabled for this capability route.
+Nginx separately returns 404 for the exact lowercase 32-to-64-hex `.img`
+capability shape beneath `/static/`, preventing the shared `/pxe` alias from
+becoming an unchecked alternate route while preserving ordinary FCOS assets.
+
+Every ordinary PXE response carries a random `samcday.com/ignition-token`
+bound to an `install` or `live` mode. The Ignition endpoint atomically verifies
+and consumes both before returning any profile. Appending `install=1` to a
+guessed or live-mode URL therefore cannot bypass the install arm, and
+concurrent requests cannot both consume the same authorization. Customized
+initramfs delivery instead consumes the arm before disclosing its random
+static capability name. Only the arm and name disclosure are one-use: the
+static object can be replayed by a party that observes the capability until
+the attended station is torn down. These controls are not replacements for
+keeping Bootie on an isolated, attended LAN.
 
 The container also serves a mounted `/pxe` directory beneath `/static/`. This
-is intended for a pinned kernel, initramfs and rootfs; directory listings are
-disabled. Bootie does not download or verify those artifacts itself.
+is intended for the pinned public kernel, stock initramfs and rootfs; directory
+listings are disabled. Bootie does not download or verify those artifacts
+itself. A custom initramfs contains the destination Ignition and its cluster
+credential: mount it from tmpfs under a fresh random capability name, expose
+it only through `/custom-initramfs/` for the attended one-node ceremony, then
+stop the station and destroy the snapshot.
 
 A declared Node with a boot device but no install arm receives an iPXE `exit`
 and continues to its local boot device. An unknown Node, or a declared Node
