@@ -217,7 +217,7 @@ systemd:
             Type=oneshot
             RemainAfterExit=yes
             TimeoutStartSec=0
-            ExecStart=/usr/bin/rpm-ostree install --idempotent --reboot /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
+            ExecStart=/usr/bin/rpm-ostree install --cache-only --idempotent --reboot /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm
 
             [Install]
             WantedBy=multi-user.target
@@ -273,7 +273,7 @@ sops:
             RW56UGZlelpueUhFZ2VCemh3UGVzMXcKpjjTGYCgH21UHls+jcG3dGIKZjKwdmB+
             NxzfonJeicQUbUoRgiVnkOkVDjvRvrGxhp79u10g9savw0lJkO648Q==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-07-15T04:15:01Z"
-    mac: ENC[AES256_GCM,data:PiM/pFE9aC6jovptjM12kkejLP4n+A7hoPTJTIgUdRFtaLRs5ynb645wTZ9uoNE3COpjZqyanOxJxyjHY61pR4CPiqFkHkVJxYOwJ02MtmyL6AY0lOio7mV+PMQYJZJ12XLBmraBku3mbzZnf8/e9wfMwtVRniOBV+PSDphoHZE=,iv:x4maHvikgTkQ9dEIViFiican22O1BiREl8T6r3QI3s4=,tag:BeukxovNwFJEVhM37XA/lg==,type:str]
+    lastmodified: "2026-07-20T07:32:01Z"
+    mac: ENC[AES256_GCM,data:BatvaveRqNQso4YTSbcgcO5d8oa5hizXeno+W+ZVpY/CXmstVtzzqmmmDxTaqSZic5Tq9kboq8Z1eHfKJsN20QHpBp3Lz7UCUIDVM9bO6UyrVS4xLnT9D+iyd0ueCcp7wOUfFSgGCZpvY5GT1CrHD7QI406Yv7y61y1O7A9H/i0=,iv:AphXzZhypJyqwDbhXrzspnf034VWnYEgPBu1mAaYP+w=,tag:ND+mh1Uswb7/P8wI9w4F6A==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.11.0

@@ -180,6 +180,23 @@ for profile in "${common_profiles[@]}"; do
   butane --strict --files-dir "$workdir" --output "$workdir/$profile.ign" "$workdir/$profile.yaml"
 done
 
+[[ $(yq '[.systemd.units[] | select(.name == "install-k3s-selinux.service")] | length' \
+  "$workdir/base.yaml") == 1 ]] || {
+  echo 'base.yaml must contain exactly one K3s SELinux installer unit' >&2
+  exit 1
+}
+k3s_selinux_install_unit=$(yq -er '
+  .systemd.units[]
+  | select(.name == "install-k3s-selinux.service")
+  | .contents
+' "$workdir/base.yaml")
+grep -Fxq \
+  'ExecStart=/usr/bin/rpm-ostree install --cache-only --idempotent --reboot /var/lib/fabric/assets/k3s-selinux-1.6-1.coreos.noarch.rpm' \
+  <<<"$k3s_selinux_install_unit" || {
+  echo 'K3s SELinux layering is not pinned to the offline RPM cache' >&2
+  exit 1
+}
+
 if ! grep -Fq 'Environment=CLUSTER_STATE=new' "$workdir/etcd.yaml"; then
   echo "etcd.yaml no longer declares the fresh-cluster state; refusing bootstrap" >&2
   exit 1
