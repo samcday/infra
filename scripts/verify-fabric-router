@@ -492,7 +492,23 @@ assert_uci network.loopback.netmask 255.0.0.0
 assert_network_option_keys loopback 'device ipaddr netmask proto'
 assert_uci network.globals globals
 assert_uci network.globals.packet_steering 1
-assert_network_option_keys globals packet_steering
+# OpenWrt 25.12 base-files materializes its special `auto` default as a
+# DUID-UUID after uci-defaults have rebuilt the network package.  It is not an
+# IPv6 enablement knob, but it is expected post-boot state and must be tightly
+# shaped rather than mistaken for preserved configuration drift.
+dhcp_default_duid=$(uci -q get network.globals.dhcp_default_duid) ||
+  fail 'OpenWrt-generated default DHCP DUID is missing'
+case $dhcp_default_duid in
+  0004????????????????????????????????)
+    case $dhcp_default_duid in
+      *[!0-9a-f]*) fail 'OpenWrt-generated default DHCP DUID is malformed' ;;
+    esac
+    ;;
+  *) fail 'OpenWrt-generated default DHCP DUID is not one DUID-UUID' ;;
+esac
+printf 'DHCP_DEFAULT_DUID=duid-uuid\n'
+unset dhcp_default_duid
+assert_network_option_keys globals 'dhcp_default_duid packet_steering'
 
 assert_uci network.lan interface
 assert_uci network.lan.ipaddr '10.66.0.1/24 10.66.1.1/24'
@@ -505,14 +521,18 @@ assert_uci_absent network.lan.gateway
 assert_network_option_keys lan 'device ipaddr proto'
 assert_uci network.wan interface
 assert_uci network.wan.proto dhcp
+assert_uci network.wan.peerdns 0
+assert_uci network.wan.dns '1.1.1.1 1.0.0.1'
 assert_uci_absent network.wan.device
 assert_uci_absent network.wan.disabled
-assert_network_option_keys wan proto
+assert_network_option_keys wan 'dns peerdns proto'
 assert_uci network.wan6 interface
 assert_uci network.wan6.proto dhcpv6
 assert_uci network.wan6.disabled 1
+assert_uci network.wan6.peerdns 0
+assert_uci network.wan6.dns '2606:4700:4700::1111 2606:4700:4700::1001'
 assert_uci_absent network.wan6.device
-assert_network_option_keys wan6 'disabled proto'
+assert_network_option_keys wan6 'disabled dns peerdns proto'
 
 actual_network_interfaces=$(network_sections_of_type interface)
 expected_network_interfaces='loopback

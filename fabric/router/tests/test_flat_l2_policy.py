@@ -17,6 +17,7 @@ FIREWALL_DEFAULT = ROUTER_ROOT / "files/etc/uci-defaults/30-isolation"
 TRANSITION_CONFIG = ROUTER_ROOT / "files/etc/config/fabric"
 SYSCTL_CONFIG = ROUTER_ROOT / "files/etc/sysctl.d/90-fabric-flat-l2.conf"
 STORAGE_DEFAULT = ROUTER_ROOT / "files/etc/uci-defaults/storage"
+COMMON_DNS_DEFAULT = REPO_ROOT / "common/router/files/etc/uci-defaults/dns"
 
 
 def parse_firewall_rules() -> list[tuple[str, dict[str, list[str]]]]:
@@ -186,6 +187,28 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
         self.assertIn("preserved /etc/sysctl.conf overrides", self.system)
         self.assertIn('sysctl -e -p "$flat_l2_sysctl"', self.system)
 
+    def test_combined_overlay_has_exact_static_upstream_dns(self) -> None:
+        common_dns = COMMON_DNS_DEFAULT.read_text(encoding="utf-8")
+        verifier = VERIFIER.read_text(encoding="utf-8")
+        for required in (
+            'set network.wan.peerdns="0"',
+            'add_list network.wan.dns="1.1.1.1"',
+            'add_list network.wan.dns="1.0.0.1"',
+            'set network.wan6.peerdns="0"',
+            'add_list network.wan6.dns="2606:4700:4700::1111"',
+            'add_list network.wan6.dns="2606:4700:4700::1001"',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, common_dns)
+        for required in (
+            "assert_uci network.wan.dns '1.1.1.1 1.0.0.1'",
+            "assert_network_option_keys wan 'dns peerdns proto'",
+            "assert_uci network.wan6.dns '2606:4700:4700::1111 2606:4700:4700::1001'",
+            "assert_network_option_keys wan6 'disabled dns peerdns proto'",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, verifier)
+
     def test_checksum_pinned_assets_are_reachable_on_both_router_addresses(self) -> None:
         self.assertIn("add_list uhttpd.main.listen_http='10.66.0.1:80'", self.system)
         self.assertIn("add_list uhttpd.main.listen_http='10.66.1.1:80'", self.system)
@@ -212,7 +235,8 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "assert_uci fabric.flat_l2.profile unmanaged-switch-flat-l2",
             "expected_network_sections='loopback\nglobals\nlan\nwan\nwan6\nbr_lan'",
             "assert_network_option_keys loopback 'device ipaddr netmask proto'",
-            "assert_network_option_keys globals packet_steering",
+            "assert_network_option_keys globals 'dhcp_default_duid packet_steering'",
+            "DHCP_DEFAULT_DUID=duid-uuid",
             "assert_network_option_keys br_lan 'name ports type'",
             "assert_uci network.lan.ipaddr '10.66.0.1/24 10.66.1.1/24'",
             "expected_lan_addresses='10.66.0.1/24\n10.66.1.1/24'",

@@ -150,6 +150,19 @@ not retain the marker or same-zone rules: move `10.66.1.1/24` to its VLAN
 interface, put services in a distinct firewall zone, and preserve the current
 IP/port policy as inter-zone rules. No node readdressing is required.
 
+OpenWrt 25.12 base-files materializes one `dhcp_default_duid` DUID-UUID in the
+network globals after the image's `uci-defaults` scripts have completed. The
+commissioning verifier admits only that exact post-boot option and validates
+its type and lowercase hexadecimal shape. It does not relax the separate
+absence checks for an IPv6 ULA, IPv6 addresses, routes, delegation, RA, or
+DHCPv6 service.
+
+The inherited common-router DNS default also pins the WAN resolver list to
+Cloudflare rather than accepting the upstream DHCP server's resolver. The
+verifier checks those exact IPv4 and IPv6 list values. The IPv6 entries are
+dormant configuration: `wan6` remains disabled and the IPv6 stack, routes,
+addresses, RA, DHCPv6, and delegation are independently required absent.
+
 ## Initial install and recovery boundary
 
 For normal operation leave the rear boot selector at `NAND`. The preferred
