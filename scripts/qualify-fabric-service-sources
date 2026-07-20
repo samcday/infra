@@ -280,9 +280,10 @@ acquire_network_lock() {
     die 'fabric network lock directory has unsafe ownership or mode'
   [[ ! -L $fabric_network_lock ]] || die 'fabric network lock is a symlink'
   if [[ -e $fabric_network_lock ]]; then
-    metadata=$(stat -Lc '%F:%u:%g:%a:%h' -- "$fabric_network_lock") ||
+    [[ -f $fabric_network_lock ]] || die 'fabric network lock is not a regular file'
+    metadata=$(stat -Lc '%u:%g:%a:%h' -- "$fabric_network_lock") ||
       die 'cannot inspect fabric network lock'
-    [[ $metadata == 'regular file:0:0:600:1' ]] ||
+    [[ $metadata == '0:0:600:1' ]] ||
       die 'fabric network lock has unsafe ownership or mode'
   fi
   exec {network_lock_fd}>>"$fabric_network_lock" || die 'cannot open fabric network lock'
@@ -290,9 +291,10 @@ acquire_network_lock() {
   resolved=$(readlink -e -- "/proc/self/fd/$network_lock_fd") ||
     die 'cannot resolve opened fabric network lock'
   [[ $resolved == "$fabric_network_lock" ]] || die 'opened an unexpected fabric network lock'
-  metadata=$(stat -Lc '%F:%u:%g:%a:%h' -- "/proc/self/fd/$network_lock_fd") ||
+  [[ -f /proc/self/fd/$network_lock_fd ]] || die 'opened fabric network lock is not regular'
+  metadata=$(stat -Lc '%u:%g:%a:%h' -- "/proc/self/fd/$network_lock_fd") ||
     die 'cannot inspect opened fabric network lock'
-  [[ $metadata == 'regular file:0:0:600:1' ]] ||
+  [[ $metadata == '0:0:600:1' ]] ||
     die 'opened fabric network lock has unsafe ownership or mode'
   flock --exclusive --nonblock "$network_lock_fd" ||
     die 'another fabric network operation is active'

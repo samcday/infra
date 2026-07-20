@@ -52,6 +52,15 @@ class ServiceSourceQualificationPolicyTests(unittest.TestCase):
         self.assertNotIn("ip link set dev wlp95s0", self.script)
         self.assertNotIn("ip link set dev eno1", self.script)
 
+    def test_empty_network_lock_uses_file_test_not_stat_description(self) -> None:
+        self.assertIn(
+            "[[ -f $fabric_network_lock ]] || die 'fabric network lock is not a regular file'",
+            self.script,
+        )
+        self.assertIn("stat -Lc '%u:%g:%a:%h'", self.script)
+        self.assertNotIn("stat -Lc '%F:%u:%g:%a:%h'", self.script)
+        self.assertNotIn("regular file:0:0:600:1", self.script)
+
     def test_sources_routes_and_api_identity_are_exact(self) -> None:
         for required in (
             "readonly -a service_addresses=(10.66.1.10 10.66.1.11)",
