@@ -12,7 +12,7 @@ Roll out the committed fabric root network policy to one consensus member.
 
 Usage:
   scripts/rollout-fabric-root-firewall --node <cp1|cp2|cp3> \
-    --confirm ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:<node>:<combined-policy-sha256>
+    --confirm ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:<full-node>:<combined-policy-sha256>
 
   scripts/rollout-fabric-root-firewall --check
 
@@ -154,7 +154,7 @@ git fetch --quiet origin main
 [[ $(git rev-parse HEAD) == "$(git rev-parse origin/main)" ]] ||
   die 'HEAD must exactly match pushed origin/main'
 
-expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:$node:$policy_hash"
+expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:$full_node:$policy_hash"
 [[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
 
 ik=("$repo_root/scripts/ik" --context=fabric)
