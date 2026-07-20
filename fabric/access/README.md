@@ -56,7 +56,9 @@ of usable time. A one-minute `notBefore` backdate makes the encoded validity
 window at most 16 minutes while tolerating small client/root clock skew.
 The CA key stays on the root, and no CSR or RBAC object is created in
 Kubernetes. The mode-0600 key and leaf live only in the caller's protected
-runtime directory and rotate with at least one minute remaining.
+runtime directory and rotate with at least three minutes remaining. This
+leaves one minute of slack above the two-minute minimum required by attended
+fabric qualification helpers.
 
 The kubeconfig exec helper also calls `fabric-kube-tunnel ensure`. That command
 uses a transient user-systemd service to supervise the fixed loopback forward,

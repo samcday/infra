@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).parents[3]
 HELPER = REPO_ROOT / "scripts" / "qualify-fabric-service-sources"
+CREDENTIAL_HELPER = REPO_ROOT / "scripts" / "fabric-credential"
 
 
 class ServiceSourceQualificationPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.script = HELPER.read_text(encoding="utf-8")
+        cls.credential_script = CREDENTIAL_HELPER.read_text(encoding="utf-8")
+
+    def test_operator_credential_rotates_before_qualification_floor(self) -> None:
+        qualification_floor = re.search(r"checkend (\d+)", self.script)
+        rotation_floor = re.search(
+            r"minimum_remaining_seconds=(\d+)", self.credential_script
+        )
+        self.assertIsNotNone(qualification_floor)
+        self.assertIsNotNone(rotation_floor)
+        self.assertGreaterEqual(
+            int(rotation_floor.group(1)), int(qualification_floor.group(1)) + 60
+        )
+        self.assertIn(
+            '-checkend "$minimum_remaining_seconds"', self.credential_script
+        )
 
     def test_probe_identity_and_namespace_are_fixed(self) -> None:
         for required in (
