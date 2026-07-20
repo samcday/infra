@@ -40,8 +40,7 @@ repo_git() {
 validate_worker_rbac() {
   local manifest=$1 expected_node=$2 expected_namespace=$3 expected_name=$4
   local rendered
-  rendered=$(kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
-    --filename="$manifest" --output=json) || return 1
+  rendered=$(yq eval-all --output-format=json '.' "$manifest") || return 1
   jq --slurp --exit-status \
     --arg node "$expected_node" --arg namespace "$expected_namespace" \
     --arg name "$expected_name" '
@@ -107,6 +106,14 @@ if $check_only; then
   bash -n "$script_path"
   [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
     die 'script path does not resolve to the repository root'
+  check_name=fabric-worker-bootie-svc1
+  check_node=fabric-az1-svc1
+  validate_worker_rbac <(
+    sed -e "s/@FABRIC_WORKER_BOOTIE_NAMESPACE@/$check_name/g" \
+      -e "s/@FABRIC_WORKER_BOOTIE_NAME@/$check_name/g" \
+      -e "s/@FABRIC_WORKER_NODE@/$check_node/g" "$rbac_template"
+  ) "$check_node" "$check_name" "$check_name" ||
+    die 'offline worker RBAC render check failed'
   printf 'validated worker Bootie access issuer syntax and RBAC template\n'
   exit 0
 fi
@@ -128,8 +135,8 @@ esac
   exit 2
 }
 
-for command in base64 bash chmod date find git grep id ip jq kubectl mktemp mv \
-  openssl realpath rm rmdir sed sha256sum ssh stat sudo; do
+for command in base64 bash chmod date find git grep id ip jq mktemp mv openssl \
+  realpath rm rmdir sed sha256sum ssh stat sudo yq; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 
@@ -200,8 +207,11 @@ ssh_options=(
   -o "UserKnownHostsFile=$known_hosts" -i "$identity"
 )
 ssh_root() {
+  local remote_command
+  printf -v remote_command '%q ' "$@"
+  remote_command=${remote_command% }
   # shellcheck disable=SC2029
-  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$remote_command"
 }
 root_kubectl() {
   ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
@@ -248,8 +258,7 @@ sed -i \
 validate_worker_rbac "$rbac" "$node" "$bootie_namespace" "$bootie_name" ||
   die 'rendered worker RBAC is not the exact reviewed four-object scope'
 rbac_objects=$work/rbac-objects.json
-kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
-  --filename="$rbac" --output=json |
+yq eval-all --output-format=json '.' "$rbac" |
   jq --slurp '.' > "$rbac_objects"
 chmod 0600 "$rbac_objects"
 

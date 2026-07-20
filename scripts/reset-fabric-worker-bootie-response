@@ -148,8 +148,11 @@ ssh_options=(
   -o "UserKnownHostsFile=$known_hosts" -i "$identity"
 )
 ssh_root() {
+  local remote_command
+  printf -v remote_command '%q ' "$@"
+  remote_command=${remote_command% }
   # shellcheck disable=SC2029
-  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$remote_command"
 }
 root_kubectl() {
   ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
