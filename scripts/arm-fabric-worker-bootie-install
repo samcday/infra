@@ -6,7 +6,7 @@ umask 077
 
 script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
-repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+repo_root=$(realpath -e -- "$script_dir/..")
 # shellcheck disable=SC1091
 source "$repo_root/fabric/workers/lib/admission.sh"
 readonly observer_namespace=fabric-observer
@@ -34,6 +34,10 @@ die() {
   exit 1
 }
 
+repo_git() {
+  git -c "safe.directory=$repo_root" -C "$repo_root" "$@"
+}
+
 check_only=false
 node=
 stage_dir=
@@ -57,6 +61,8 @@ if $check_only; then
   [[ -z $node && -z $stage_dir && -z $access_dir && -z $handoff_dir &&
      -z $confirmation ]] || die '--check cannot be combined with arm arguments'
   bash -n "$script_path"
+  [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
   printf 'validated worker Bootie install armer syntax\n'
   exit 0
 fi
@@ -98,7 +104,7 @@ done
 mac=$(< "$stage_dir/FABRIC_WORKER_MAC")
 version=$(< "$stage_dir/FCOS_VERSION")
 repo_commit=$(< "$stage_dir/REPO_COMMIT")
-[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+[[ $(repo_git rev-parse HEAD) == "$repo_commit" ]] ||
   die 'station checkout does not match the staged repository commit'
 jq -e --arg node "$node" --arg mac "$mac" --arg repo_commit "$repo_commit" '
   .schema == 1 and .node == $node and .mac == $mac and

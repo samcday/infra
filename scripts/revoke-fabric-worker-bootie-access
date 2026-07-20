@@ -6,7 +6,7 @@ umask 077
 
 script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
-repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+repo_root=$(realpath -e -- "$script_dir/..")
 
 usage() {
   cat >&2 <<'EOF'
@@ -34,10 +34,14 @@ die() {
   exit 1
 }
 
+repo_git() {
+  git -c "safe.directory=$repo_root" -C "$repo_root" "$@"
+}
+
 validate_worker_rbac() {
   local manifest=$1 expected_node=$2 expected_namespace=$3 expected_name=$4
   local rendered
-  rendered=$(kubectl create --dry-run=client --validate=false \
+  rendered=$(kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
     --filename="$manifest" --output=json) || return 1
   jq --slurp --exit-status \
     --arg node "$expected_node" --arg namespace "$expected_namespace" \
@@ -95,6 +99,8 @@ if $check_only; then
      -z $access_dir && -z $confirmation ]] ||
     die '--check cannot be combined with revoke arguments'
   bash -n "$script_path"
+  [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
   printf 'validated worker Bootie access revoker syntax\n'
   exit 0
 fi
@@ -208,9 +214,9 @@ work=$(mktemp -d -- /dev/shm/.fabric-worker-bootie-revoke.XXXXXXXX)
 chmod 0700 "$work"
 trap 'find "$work" -mindepth 1 -delete 2>/dev/null || true; rmdir "$work" 2>/dev/null || true' EXIT
 rbac=$work/rbac.yaml
-git -C "$repo_root" cat-file -e "$repo_commit^{commit}" 2>/dev/null ||
+repo_git cat-file -e "$repo_commit^{commit}" 2>/dev/null ||
   die 'issued repository commit is unavailable for trusted RBAC reconstruction'
-git -C "$repo_root" show "$repo_commit:fabric/bootie/worker-rbac.yaml.in" > "$rbac" ||
+repo_git show "$repo_commit:fabric/bootie/worker-rbac.yaml.in" > "$rbac" ||
   die 'issued repository commit lacks the worker RBAC template'
 chmod 0600 "$rbac"
 sed -i \
@@ -221,7 +227,8 @@ sed -i \
 validate_worker_rbac "$rbac" "$node" "$bootie_namespace" "$bootie_name" ||
   die 'trusted worker RBAC reconstruction is not the exact four-object scope'
 rbac_objects=$work/rbac-objects.json
-kubectl create --dry-run=client --validate=false --filename="$rbac" --output=json |
+kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
+  --filename="$rbac" --output=json |
   jq --slurp '.' > "$rbac_objects"
 chmod 0600 "$rbac_objects"
 

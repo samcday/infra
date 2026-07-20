@@ -6,7 +6,7 @@ umask 077
 
 script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
-repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+repo_root=$(realpath -e -- "$script_dir/..")
 # shellcheck disable=SC1091
 source "$repo_root/fabric/workers/lib/admission.sh"
 
@@ -41,6 +41,21 @@ die() {
   exit 1
 }
 
+repo_git() {
+  git -c "safe.directory=$repo_root" -C "$repo_root" "$@"
+}
+
+normalize_image_id() {
+  local image_id=$1
+  if [[ $image_id =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'sha256:%s\n' "$image_id"
+  elif [[ $image_id =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf '%s\n' "$image_id"
+  else
+    return 1
+  fi
+}
+
 check_only=false
 service_mode=false
 node=
@@ -69,6 +84,17 @@ if $check_only; then
      -z $handoff_dir && $service_mode == false ]] ||
     die '--check cannot be combined with station arguments'
   bash -n "$script_path"
+  [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
+  check_image_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  [[ $(normalize_image_id "$check_image_id") == "sha256:$check_image_id" ]]
+  [[ $(normalize_image_id "sha256:$check_image_id") == "sha256:$check_image_id" ]]
+  if normalize_image_id "${check_image_id%a}" >/dev/null; then
+    die 'truncated image digest passed normalization'
+  fi
+  if normalize_image_id "sha512:$check_image_id" >/dev/null; then
+    die 'non-sha256 image digest passed normalization'
+  fi
   printf 'validated worker Bootie station syntax\n'
   exit 0
 fi
@@ -106,6 +132,10 @@ if [[ $service_mode != true ]]; then
     --collect \
     --service-type=exec \
     --working-directory="$PWD" \
+    --setenv=HOME=/root \
+    --setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+    --setenv=KUBECONFIG=/dev/null \
+    --setenv=GIT_CONFIG_GLOBAL=/dev/null \
     --property=KillMode=control-group \
     --property=MemoryMax=3G \
     --property=TasksMax=128 \
@@ -156,11 +186,11 @@ repo_commit=$(< "$stage_dir/REPO_COMMIT")
 [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
 [[ $version =~ ^[0-9][0-9A-Za-z.-]+$ ]] || die 'staged FCOS version is malformed'
 [[ $repo_commit =~ ^[0-9a-f]{40}$ ]] || die 'staged repository commit is malformed'
-[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+[[ $(repo_git rev-parse HEAD) == "$repo_commit" ]] ||
   die 'station checkout does not match the staged repository commit'
-[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+[[ $(repo_git branch --show-current) == main ]] ||
   die 'worker Bootie station may only run from main'
-[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+[[ -z $(repo_git status --porcelain=v1 --untracked-files=all) ]] ||
   die 'worker Bootie station requires a completely clean worktree'
 [[ $(jq -r '.metadata.name' "$stage_dir/node-discovery.json") == "$node" ]] ||
   die 'staged discovery Node name is wrong'
@@ -308,9 +338,10 @@ image_revision=$(podman image inspect \
   die 'could not inspect Bootie image revision label'
 [[ $image_revision == "$repo_commit" ]] ||
   die 'Bootie image lacks the exact staged org.opencontainers.image.revision label'
-image_id=$(podman image inspect --format '{{.Id}}' "$image") ||
+raw_image_id=$(podman image inspect --format '{{.Id}}' "$image") ||
   die 'could not resolve Bootie image ID'
-[[ $image_id == sha256:* ]] || die 'could not resolve an immutable Bootie image ID'
+image_id=$(normalize_image_id "$raw_image_id") ||
+  die 'could not resolve an immutable sha256 Bootie image ID'
 container_rc=0
 podman container exists "$station_name" >/dev/null 2>&1 || container_rc=$?
 case $container_rc in

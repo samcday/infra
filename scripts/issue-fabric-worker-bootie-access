@@ -6,7 +6,7 @@ umask 077
 
 script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
-repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+repo_root=$(realpath -e -- "$script_dir/..")
 
 usage() {
   cat >&2 <<'EOF'
@@ -33,10 +33,14 @@ die() {
   exit 1
 }
 
+repo_git() {
+  git -c "safe.directory=$repo_root" -C "$repo_root" "$@"
+}
+
 validate_worker_rbac() {
   local manifest=$1 expected_node=$2 expected_namespace=$3 expected_name=$4
   local rendered
-  rendered=$(kubectl create --dry-run=client --validate=false \
+  rendered=$(kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
     --filename="$manifest" --output=json) || return 1
   jq --slurp --exit-status \
     --arg node "$expected_node" --arg namespace "$expected_namespace" \
@@ -101,6 +105,8 @@ if $check_only; then
     grep -q "@$placeholder@" "$rbac_template" || die "RBAC template lacks $placeholder"
   done
   bash -n "$script_path"
+  [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
   printf 'validated worker Bootie access issuer syntax and RBAC template\n'
   exit 0
 fi
@@ -122,8 +128,8 @@ esac
   exit 2
 }
 
-for command in base64 bash chmod date find git grep ip jq kubectl mktemp mv \
-  openssl realpath rm rmdir sed sha256sum ssh stat; do
+for command in base64 bash chmod date find git grep id ip jq kubectl mktemp mv \
+  openssl realpath rm rmdir sed sha256sum ssh stat sudo; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 
@@ -143,19 +149,25 @@ mac=$(< "$stage_dir/FABRIC_WORKER_MAC")
 mac_hexhyp=${mac//:/-}
 repo_commit=$(< "$stage_dir/REPO_COMMIT")
 [[ $repo_commit =~ ^[0-9a-f]{40}$ ]] || die 'staged repository commit is malformed'
-[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+[[ $(repo_git rev-parse HEAD) == "$repo_commit" ]] ||
   die 'station checkout does not match the staged repository commit'
-git -C "$repo_root" ls-files --error-unmatch -- \
+repo_git ls-files --error-unmatch -- \
   scripts/issue-fabric-worker-bootie-access \
   fabric/bootie/worker-rbac.yaml.in >/dev/null 2>&1 ||
   die 'worker access issuer and RBAC template must be committed'
-[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+[[ $(repo_git branch --show-current) == main ]] ||
   die 'worker Bootie access may only be issued from main'
-[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+[[ -z $(repo_git status --porcelain=v1 --untracked-files=all) ]] ||
   die 'worker Bootie access requires a completely clean worktree'
-git -C "$repo_root" fetch --quiet origin main ||
+repo_owner_uid=$(stat -Lc '%u' "$repo_root")
+[[ $repo_owner_uid != 0 && ${SUDO_UID:-} == "$repo_owner_uid" &&
+   ${SUDO_USER:-} =~ ^[A-Za-z_][A-Za-z0-9_-]*$ &&
+   $(id -u "$SUDO_USER") == "$repo_owner_uid" ]] ||
+  die 'invoke through sudo as the non-root repository owner'
+sudo --non-interactive --user "$SUDO_USER" --set-home \
+  git -C "$repo_root" fetch --quiet origin main ||
   die 'could not refresh origin/main before issuing worker access'
-[[ $(git -C "$repo_root" rev-parse refs/remotes/origin/main) == "$repo_commit" ]] ||
+[[ $(repo_git rev-parse refs/remotes/origin/main) == "$repo_commit" ]] ||
   die 'staged repository commit is not exactly the fetched origin/main'
 jq -e --arg node "$node" --arg mac "$mac_hexhyp" '
   .apiVersion == "v1" and .kind == "Node" and
@@ -236,7 +248,8 @@ sed -i \
 validate_worker_rbac "$rbac" "$node" "$bootie_namespace" "$bootie_name" ||
   die 'rendered worker RBAC is not the exact reviewed four-object scope'
 rbac_objects=$work/rbac-objects.json
-kubectl create --dry-run=client --validate=false --filename="$rbac" --output=json |
+kubectl --kubeconfig=/dev/null create --dry-run=client --validate=false \
+  --filename="$rbac" --output=json |
   jq --slurp '.' > "$rbac_objects"
 chmod 0600 "$rbac_objects"
 

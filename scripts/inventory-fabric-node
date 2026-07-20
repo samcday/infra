@@ -302,7 +302,7 @@ while read -r disk type; do
     fi
     if have smartctl; then
         root_run smartctl --xall "$disk"
-        root_run smartctl --get=writecache "$disk"
+        root_run smartctl --get=wcache "$disk"
     else
         printf '\n! smartctl unavailable; collect SMART data before approving this disk\n'
     fi
@@ -338,6 +338,7 @@ done
         root_run hdparm -I "$disk"
     fi
     if have blockdev; then
+        root_run blockdev --getsize64 "$disk"
         root_run blockdev --getss "$disk"
         root_run blockdev --getpbsz "$disk"
         root_run blockdev --getra "$disk"
