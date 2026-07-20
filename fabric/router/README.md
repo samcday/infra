@@ -320,6 +320,39 @@ client isolation; otherwise use a separately administered upstream WLAN
 station. Before accepting a WAN denial, prove with a router-side capture or the
 named firewall-counter delta that the probe actually reached `radio0`.
 
+Before arming the first service-node installer, the narrower guarded helper
+`scripts/qualify-fabric-service-sources` can qualify the immediately required
+fabric-source subset without claiming the complete matrix. Its read-only
+`--check` pins the dedicated desktop USB NIC by interface, USB serial, and
+permanent MAC and prints the exact attended confirmation. Its `--run` places
+only that NIC in a trap-restored namespace, exercises both admitted services
+addresses plus one unauthorized services-prefix address, and requires matching
+router and current API-VIP-holder nftables counter deltas. It never starts
+Bootie, issues a credential, arms an installer, or writes a candidate disk.
+This narrow gate leaves the already-isolated operator observer active so it
+can capture authenticated router and root evidence; that does not satisfy the
+full matrix's stricter observer-absence condition.
+The full observer, root, inventory, service, WAN, egress, and reboot matrix
+above remains a separate commissioning obligation.
+
+The dedicated probe NIC must not remain eligible for desktop auto-DHCP. Pin
+the exact reviewed interface/USB-serial/permanent-MAC identity first, then make
+that device persistently unmanaged without deleting its dormant connection
+profile:
+
+```sh
+sudo nmcli device set enp9s0u1u2 managed --permanent no
+```
+
+The helper requires effective `GENERAL.NM-MANAGED=no`, NetworkManager state
+`unmanaged`, and no active connection before and after its trap-restored run.
+Its read-only check does not raise an administratively-down NIC merely to test
+carrier; the confirmed live run raises it only after moving it into the probe
+namespace, then requires physical carrier before assigning a source address.
+The attended rollback, after the probe cable is removed, is
+`sudo nmcli device set enp9s0u1u2 managed --permanent reset`; revalidate the
+desktop default route immediately afterward.
+
 The matrix must own separate ephemeral network namespaces where applicable,
 hold `/run/lock/fabric-network-operation.lock`, and require the official
 observer namespace to be absent. It must never seize the desktop's normal
