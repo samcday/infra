@@ -18,6 +18,13 @@ These are bootstrap workers, not hosted Kubernetes control-plane nodes. They
 join the fabric root K3s cluster as agents and are labeled and tainted
 `fabric.samcday.com/platform=true`. Flux, DNS, metrics-server, and future
 hosted-control-plane Pods must explicitly select and tolerate that class.
+The trusted precreated placeholder owns the `NoSchedule` taint because a
+kubelet that adopts an existing Node UID does not reconcile
+`registerWithTaints`. The agent profile retains the same registration taint as
+a fail-safe fallback, but on the intended exact-UID path K3s agent
+reconciliation contributes only the custom platform label. After the exact
+placeholder UID is Ready, the trusted finalizer assigns the reserved
+`node-role.kubernetes.io/worker=true` label while removing bootstrap metadata.
 
 ## Admission prerequisites and transitional flat L2
 
@@ -44,9 +51,10 @@ gates:
 
 - `10.66.1.1/24` exists on the router and serves the exact pinned public asset
   set at `http://10.66.1.1/static/`;
-- router and root host policies admit only the reviewed K3s API,
-  Flannel/VXLAN, kubelet, DNS/NTP, asset, and operator flows while continuing
-  to deny services addresses access to root etcd;
+- router and root host policies admit only the reviewed K3s API through the
+  VIP and all three supervisor-advertised server addresses, Flannel/VXLAN,
+  kubelet, DNS/NTP, asset, and operator flows while continuing to deny services
+  addresses access to root etcd;
 - the candidate has a final reviewed inventory capture; and
 - its matching file under `inventory/` has been changed from `pending` to
   `admitted` with exact evidence-derived values.

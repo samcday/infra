@@ -167,9 +167,11 @@ jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_label" '
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "false" and
   .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
-  ((.metadata.labels["fabric.samcday.com/platform"] // "") == "") and
-  ((.metadata.labels["node-role.kubernetes.io/worker"] // "") == "") and
-  ((.spec.taints // []) | length == 0) and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]) and
   ((.status.nodeInfo.machineID // "") == "") and
   ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 0) and
   ([.status.addresses[]? | select(.type == "InternalIP")] | length == 0) and
@@ -200,7 +202,12 @@ jq -e --arg uid "$node_uid" '
   .metadata.uid == $uid and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "true" and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
   .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]) and
   ((.status.nodeInfo.machineID // "") == "")
 ' <<< "$node_json" >/dev/null || die 'failed-response placeholder did not return to discovery'
 

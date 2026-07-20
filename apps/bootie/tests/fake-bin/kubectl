@@ -5,6 +5,14 @@ joined=$*
 if [[ -n ${FAKE_KUBECTL_LOG:-} ]]; then
   printf '%s\n' "$joined" >> "$FAKE_KUBECTL_LOG"
 fi
+fake_taints_json='[
+  {"effect":"NoSchedule","key":"fabric.samcday.com/platform","value":"true"},
+  {"effect":"NoSchedule","key":"node.kubernetes.io/not-ready"},
+  {"effect":"NoExecute","key":"node.kubernetes.io/unreachable","timeAdded":"2026-07-20T00:00:00Z"}
+]'
+if [[ -v FAKE_TAINTS_JSON ]]; then
+  fake_taints_json=$FAKE_TAINTS_JSON
+fi
 if [[ ${1:-} == annotate || ${1:-} == patch ]]; then
   case ${2:-} in
     node/test-node | node/fabric-az1-cp3) ;;
@@ -31,6 +39,10 @@ case "$joined" in
       --arg bootstrap_state "${FAKE_BOOTSTRAP_STATE:-discovery}" \
       --arg ignition_token "${FAKE_IGNITION_TOKEN-}" \
       --arg ignition_mode "${FAKE_IGNITION_MODE-}" \
+      --arg bootstrap_placeholder "${FAKE_BOOTSTRAP_PLACEHOLDER:-true}" \
+      --arg platform_label "${FAKE_PLATFORM_LABEL-__absent__}" \
+      --arg worker_role "${FAKE_WORKER_ROLE-__absent__}" \
+      --argjson taints "$fake_taints_json" \
       '{
         apiVersion: "v1",
         kind: "Node",
@@ -41,7 +53,8 @@ case "$joined" in
           labels: {
             "samcday.com/mac": $mac,
             "samcday.com/serial": $serial,
-            "samcday.com/discovery": $discovery
+            "samcday.com/discovery": $discovery,
+            "fabric.samcday.com/bootstrap-placeholder": $bootstrap_placeholder
           },
           annotations: {
             "samcday.com/boot-device": $boot_device,
@@ -50,8 +63,15 @@ case "$joined" in
             "samcday.com/ignition-token": $ignition_token,
             "samcday.com/ignition-mode": $ignition_mode
           }
-        }
-      }'
+        },
+        spec: {taints: $taints}
+      }
+      | if $platform_label == "__absent__" then .
+        else .metadata.labels["fabric.samcday.com/platform"] = $platform_label
+        end
+      | if $worker_role == "__absent__" then .
+        else .metadata.labels["node-role.kubernetes.io/worker"] = $worker_role
+        end'
     ;;
   "get node -o name fabric-az1-cp3")
     echo node/fabric-az1-cp3

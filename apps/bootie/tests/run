@@ -159,6 +159,82 @@ assert_not_contains "$custom_patch" 'ignition-token'
 assert_not_contains "$custom_patch" 'ignition-mode'
 find "$custom_mutation_log" -maxdepth 0 -type f -delete
 
+custom_missing_platform_taint=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
+    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
+    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
+    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
+    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAIL_ON_LIST=true \
+    FAKE_BOOTSTRAP_STATE=install-armed \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    FAKE_TAINTS_JSON='[{"effect":"NoSchedule","key":"node.kubernetes.io/not-ready"}]' \
+    "$boot_request" 2>&1
+)
+assert_contains "$custom_missing_platform_taint" 'Status: 409 Conflict'
+assert_contains "$custom_missing_platform_taint" \
+  'without the exact worker platform taint set'
+
+for present_platform_label in '' true; do
+  custom_present_platform_label=$(
+    BOOT_FORMAT=grub \
+      BOOTIE_ALLOW_NODE_CREATE=false \
+      BOOTIE_NODE_NAME=fabric-az1-cp3 \
+      BOOTIE_INSTALL_DELIVERY=custom-initramfs \
+      BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
+      BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
+      BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
+      BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
+      BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+      BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+      BOOTIE_REQUIRE_INSTALL_POLICY=true \
+      FAIL_ON_LIST=true \
+      FAKE_BOOTSTRAP_STATE=install-armed \
+      FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+      FAKE_DISCOVERY=false \
+      FAKE_INSTALL=true \
+      FAKE_PLATFORM_LABEL="$present_platform_label" \
+      "$boot_request" 2>&1
+  )
+  assert_contains "$custom_present_platform_label" 'Status: 409 Conflict'
+  assert_contains "$custom_present_platform_label" \
+    'with the worker platform label already assigned'
+done
+
+for present_worker_role in '' true; do
+  custom_present_worker_role=$(
+    BOOT_FORMAT=grub \
+      BOOTIE_ALLOW_NODE_CREATE=false \
+      BOOTIE_NODE_NAME=fabric-az1-cp3 \
+      BOOTIE_INSTALL_DELIVERY=custom-initramfs \
+      BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
+      BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
+      BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
+      BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
+      BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+      BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+      BOOTIE_REQUIRE_INSTALL_POLICY=true \
+      FAIL_ON_LIST=true \
+      FAKE_BOOTSTRAP_STATE=install-armed \
+      FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+      FAKE_DISCOVERY=false \
+      FAKE_INSTALL=true \
+      FAKE_WORKER_ROLE="$present_worker_role" \
+      "$boot_request" 2>&1
+  )
+  assert_contains "$custom_present_worker_role" 'Status: 409 Conflict'
+  assert_contains "$custom_present_worker_role" \
+    'with a reserved worker role already assigned'
+done
+
 custom_install_ipxe=$(
   BOOT_FORMAT=ipxe \
     BOOTIE_ALLOW_NODE_CREATE=false \

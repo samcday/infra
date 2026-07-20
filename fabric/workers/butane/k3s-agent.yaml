@@ -7,11 +7,9 @@ storage:
       mode: 420
       contents:
         inline: |
-          prefer-bundled-bin: true
           selinux: true
           node-label:
             - fabric.samcday.com/platform=true
-            - node-role.kubernetes.io/worker=true
           node-taint:
             - fabric.samcday.com/platform=true:NoSchedule
           kubelet-arg:

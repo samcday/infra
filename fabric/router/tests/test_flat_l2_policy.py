@@ -249,6 +249,7 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "Allow-observer-to-services-SSH",
             "Allow-services-to-Bootie-rootfs",
             "Reject-services-to-root-etcd",
+            "api_endpoints='10.66.0.254/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'",
             "assert_uci uhttpd.main.listen_http '10.66.0.1:80 10.66.1.1:80'",
             "http://10.66.1.1/static/SHASUMS.txt",
         ):
@@ -304,11 +305,17 @@ class FlatL2FirewallTests(unittest.TestCase):
 
     def test_only_exact_k3s_cross_prefix_flows_are_accepted(self) -> None:
         for service in ("10.66.1.10", "10.66.1.11"):
-            self.assert_flow(
-                "ACCEPT",
-                "fabric_flat_services_api",
-                **self.routed_flow(service, "10.66.0.254", "tcp", 6443),
-            )
+            for endpoint in (
+                "10.66.0.254",
+                "10.66.0.10",
+                "10.66.0.11",
+                "10.66.0.12",
+            ):
+                self.assert_flow(
+                    "ACCEPT",
+                    "fabric_flat_services_api",
+                    **self.routed_flow(service, endpoint, "tcp", 6443),
+                )
             for root in ("10.66.0.10", "10.66.0.11", "10.66.0.12"):
                 self.assert_flow(
                     "ACCEPT",
@@ -382,11 +389,15 @@ class FlatL2FirewallTests(unittest.TestCase):
         for flow, rule in (
             (self.routed_flow("10.66.1.10", "10.66.0.10", "tcp", 22),
              "fabric_flat_reject_services_roots"),
-            (self.routed_flow("10.66.1.10", "10.66.0.11", "tcp", 6443),
+            (self.routed_flow("10.66.1.10", "10.66.0.11", "tcp", 10257),
              "fabric_flat_reject_services_roots"),
             (self.routed_flow("10.66.0.10", "10.66.1.10", "tcp", 6443),
              "fabric_flat_reject_roots_services"),
             (self.routed_flow("10.66.1.12", "10.66.0.10", "udp", 8472),
+             "fabric_flat_reject_services_roots"),
+            (self.routed_flow("10.66.1.12", "10.66.0.10", "tcp", 6443),
+             "fabric_flat_reject_services_roots"),
+            (self.routed_flow("10.66.1.10", "10.66.0.13", "tcp", 6443),
              "fabric_flat_reject_services_roots"),
         ):
             with self.subTest(flow=flow):

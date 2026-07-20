@@ -182,7 +182,12 @@ jq -e --arg node "$node" --arg mac "$mac_hexhyp" '
   .metadata.labels["samcday.com/mac"] == $mac and
   .metadata.labels["samcday.com/discovery"] == "true" and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
-  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery"
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  .spec.taints == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]
 ' "$stage_dir/node-discovery.json" >/dev/null || die 'staged discovery Node is not fail-closed'
 
 output_dir=$(realpath -m -- "$output_dir")
@@ -236,7 +241,12 @@ if existing_node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null)
     .metadata.labels["samcday.com/mac"] == $mac and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["samcday.com/discovery"] == "true" and
+    (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+    (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
     .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+    ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+      effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+    }]) and
     ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
     ((.metadata.annotations["samcday.com/install"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
@@ -341,7 +351,12 @@ if [[ $existing_node != true ]]; then
       .metadata.labels["samcday.com/mac"] == $mac and
       .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
       .metadata.labels["samcday.com/discovery"] == "true" and
+      (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+      (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
       .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+      ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+        effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+      }]) and
       ((.status.nodeInfo.machineID // "") == "")
     ' <<< "$created_node_json" >/dev/null ||
       die 'API did not create the exact worker placeholder requested'
@@ -471,7 +486,12 @@ jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_hexhyp" '
   .metadata.labels["samcday.com/mac"] == $mac and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "true" and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
   .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]) and
   ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
   ((.metadata.annotations["samcday.com/install"] // "") == "") and
   ((.status.nodeInfo.machineID // "") == "")

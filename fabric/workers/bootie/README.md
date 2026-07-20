@@ -65,7 +65,10 @@ of the following are also true:
 - `BOOTIE_CUSTOM_LIVE_KARGS` is exactly
   `coreos.inst.skip_reboot systemd.show_status=false`; and
 - `BOOTIE_EXPECTED_NODE_UID` matches the placeholder UID recorded alongside
-  the ServiceAccount/RBAC UID receipts at issuance.
+  the ServiceAccount/RBAC UID receipts at issuance; and
+- the placeholder still carries its exact platform `NoSchedule` taint and no
+  `node-role.kubernetes.io/worker` label. The trusted finalizer, not Bootie or
+  the kubelet, assigns that reserved role after the exact UID becomes Ready.
 
 Bootie atomically consumes the install annotation and advances the reviewed
 bootstrap state only after testing both that UID and the current
@@ -191,9 +194,10 @@ from durable storage, or restoring installer USB as the default path.
    capability can now be destroyed; neither is needed for finalization. Boot
    the local disk, wait for the exact UID to become the Ready worker at its
    assigned InternalIP, then run `finalize-fabric-worker-bootstrap`. That
-   command atomically proves the MAC, UID, name, IP, Ready condition, platform
-   labels, and exact taint before removing bootstrap metadata and destroying
-   the revoked tmpfs receipt.
+   command atomically proves the MAC, UID, name, IP, Ready condition, custom
+   platform label, and exact precreated taint before assigning the reserved
+   worker-role label, removing bootstrap metadata, and destroying the revoked
+   tmpfs receipt.
 8. If the response was consumed but physical console observation proves it
    never reached the candidate, ordinary revocation deliberately does not
    guess. After revocation, the separately confirmed

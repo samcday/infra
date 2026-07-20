@@ -17,6 +17,7 @@ readonly -a service_addresses=(10.66.1.10 10.66.1.11)
 readonly unauthorized_address=10.66.1.100
 readonly -a root_nodes=(cp1 cp2 cp3)
 readonly -a root_addresses=(10.66.0.10 10.66.0.11 10.66.0.12)
+readonly -a api_addresses=("$api_address" "${root_addresses[@]}")
 readonly -a etcd_ports=(2379 2380 2381)
 declare -A initial_interface_sysctls=()
 declare -a interface_sysctl_keys=()
@@ -40,9 +41,10 @@ Attended qualification (copy the confirmation printed by --check):
 
 The live run temporarily moves only the identity-pinned Realtek USB NIC into
 the $namespace network namespace. It tests 10.66.1.10 and .11 against the
-CA-pinned Kubernetes API and every root etcd port, then tests unauthorized
-10.66.1.100 against the API. Named router and current VIP-holder nftables
-counter deltas must agree with every result.
+CA-pinned Kubernetes API through the VIP and all three direct K3s server
+addresses, plus every root etcd port, then tests unauthorized 10.66.1.100
+against all four API endpoints. Named router and every root-host nftables
+counter delta must agree with every result.
 
 This is a narrow pre-install gate, not the complete attended source-role
 matrix documented in fabric/router/README.md. It does not start Bootie, issue
@@ -467,7 +469,7 @@ EOF
 }
 
 set_probe_source() {
-  local address=$1 routes
+  local address=$1 endpoint routes
   ip -n "$namespace" -4 address flush dev "$interface"
   ip -n "$namespace" -4 neigh flush dev "$interface" >/dev/null 2>&1 || true
   ip -n "$namespace" -4 address add "$address/24" dev "$interface"
@@ -479,35 +481,37 @@ set_probe_source() {
     die 'probe namespace unexpectedly has an IPv6 default route'
   [[ -z $(ip -n "$namespace" -o -6 address show scope global) ]] ||
     die 'probe namespace unexpectedly has a global IPv6 address'
-  routes=$(ip -n "$namespace" -o -4 route get "$api_address") ||
-    die 'probe namespace has no API route'
-  [[ $routes == *"$api_address via $service_gateway dev $interface src $address"* ]] ||
-    die "API route does not select the reviewed gateway/source for $address"
+  for endpoint in "${api_addresses[@]}"; do
+    routes=$(ip -n "$namespace" -o -4 route get "$endpoint") ||
+      die "probe namespace has no route to API endpoint $endpoint"
+    [[ $routes == *"$endpoint via $service_gateway dev $interface src $address"* ]] ||
+      die "API route to $endpoint does not select the reviewed gateway/source for $address"
+  done
 }
 
 probe_api_success() {
-  local address=$1 output=$2
+  local source_address=$1 endpoint_address=$2 output=$3
   ip netns exec "$namespace" curl --disable \
     --fail --silent --show-error \
     --noproxy '*' --proto '=https' --tlsv1.2 \
     --connect-timeout 4 --max-time 8 --retry 0 \
     --cacert "$server_ca" --cert "$client_cert" --key "$client_key" \
-    --resolve "api.fabric.internal:6443:$api_address" \
+    --resolve "api.fabric.internal:6443:$endpoint_address" \
     'https://api.fabric.internal:6443/readyz?verbose' >"$output"
   [[ $(tail -n 1 "$output") == 'readyz check passed' ]] ||
-    die "authenticated API readiness did not pass from $address"
+    die "authenticated API readiness did not pass from $source_address to $endpoint_address"
 }
 
 probe_api_rejected() {
-  local output=$1
+  local source_address=$1 endpoint_address=$2 output=$3
   if ip netns exec "$namespace" curl --disable \
       --fail --silent --show-error \
       --noproxy '*' --proto '=https' --tlsv1.2 \
       --connect-timeout 3 --max-time 5 --retry 0 \
       --cacert "$server_ca" --cert "$client_cert" --key "$client_key" \
-      --resolve "api.fabric.internal:6443:$api_address" \
+      --resolve "api.fabric.internal:6443:$endpoint_address" \
       'https://api.fabric.internal:6443/readyz?verbose' >"$output" 2>&1; then
-    die "$unauthorized_address unexpectedly reached the fabric API"
+    die "$source_address unexpectedly reached fabric API endpoint $endpoint_address"
   fi
 }
 
@@ -539,21 +543,25 @@ require_counter_packet_delta() {
 }
 
 qualify_service_source() {
-  local address=$1 label holder_before holder_after root_before root_after
-  local router_before router_after
+  local address=$1 endpoint holder_before holder_after label minimum node port root
+  local root_after root_before router_before router_after
   label=${address##*.}
   router_before="$evidence_dir/service-$label-router-before.json"
   router_after="$evidence_dir/service-$label-router-after.json"
-  root_before="$evidence_dir/service-$label-root-before.json"
-  root_after="$evidence_dir/service-$label-root-after.json"
 
   set_probe_source "$address"
   router_snapshot "$router_before"
   holder_before=$(vip_holder)
-  root_snapshot "$holder_before" "$root_before"
   printf '%s\n' "$holder_before" >"$evidence_dir/service-$label-vip-holder.txt"
+  for node in "${root_nodes[@]}"; do
+    root_before="$evidence_dir/service-$label-root-$node-before.json"
+    root_snapshot "$node" "$root_before"
+  done
 
-  probe_api_success "$address" "$evidence_dir/service-$label-readyz.txt"
+  for endpoint in "${api_addresses[@]}"; do
+    probe_api_success "$address" "$endpoint" \
+      "$evidence_dir/service-$label-readyz-${endpoint##*.}.txt"
+  done
   for root in "${root_addresses[@]}"; do
     for port in "${etcd_ports[@]}"; do
       probe_etcd_rejected "$address" "$root" "$port" \
@@ -564,45 +572,57 @@ qualify_service_source() {
   holder_after=$(vip_holder)
   [[ $holder_after == "$holder_before" ]] ||
     die "API VIP moved from $holder_before to $holder_after during $address qualification"
-  root_snapshot "$holder_after" "$root_after"
   router_snapshot "$router_after"
   compare_counters "$router_before" "$router_after" "$router_service_spec" \
     "$evidence_dir/service-$label-router-counter-result.json"
-  compare_counters "$root_before" "$root_after" "$root_increase_spec" \
-    "$evidence_dir/service-$label-root-counter-result.json"
-  require_counter_packet_delta 1 api_allow \
+  require_counter_packet_delta 4 api_allow \
     "$evidence_dir/service-$label-router-counter-result.json"
   require_counter_packet_delta 9 etcd_reject \
     "$evidence_dir/service-$label-router-counter-result.json"
-  require_counter_packet_delta 1 service_api_host_guard \
-    "$evidence_dir/service-$label-root-counter-result.json"
+  for node in "${root_nodes[@]}"; do
+    root_before="$evidence_dir/service-$label-root-$node-before.json"
+    root_after="$evidence_dir/service-$label-root-$node-after.json"
+    root_snapshot "$node" "$root_after"
+    compare_counters "$root_before" "$root_after" "$root_increase_spec" \
+      "$evidence_dir/service-$label-root-$node-counter-result.json"
+    minimum=1
+    [[ $node != "$holder_before" ]] || minimum=2
+    require_counter_packet_delta "$minimum" service_api_host_guard \
+      "$evidence_dir/service-$label-root-$node-counter-result.json"
+  done
   note "SERVICE_SOURCE_PASS address=$address vip_holder=$holder_before"
 }
 
 qualify_unauthorized_source() {
-  local holder_before holder_after
+  local endpoint holder_before holder_after node root_after root_before
   set_probe_source "$unauthorized_address"
   router_snapshot "$evidence_dir/unauthorized-router-before.json"
   holder_before=$(vip_holder)
-  root_snapshot "$holder_before" "$evidence_dir/unauthorized-root-before.json"
-  probe_api_rejected "$evidence_dir/unauthorized-api.txt"
+  for node in "${root_nodes[@]}"; do
+    root_snapshot "$node" "$evidence_dir/unauthorized-root-$node-before.json"
+  done
+  for endpoint in "${api_addresses[@]}"; do
+    probe_api_rejected "$unauthorized_address" "$endpoint" \
+      "$evidence_dir/unauthorized-api-${endpoint##*.}.txt"
+  done
   holder_after=$(vip_holder)
   [[ $holder_after == "$holder_before" ]] ||
     die 'API VIP moved during unauthorized-source qualification'
-  root_snapshot "$holder_after" "$evidence_dir/unauthorized-root-after.json"
   router_snapshot "$evidence_dir/unauthorized-router-after.json"
   compare_counters \
     "$evidence_dir/unauthorized-router-before.json" \
     "$evidence_dir/unauthorized-router-after.json" \
     "$router_unauthorized_spec" \
     "$evidence_dir/unauthorized-router-counter-result.json"
-  compare_counters \
-    "$evidence_dir/unauthorized-root-before.json" \
-    "$evidence_dir/unauthorized-root-after.json" \
-    "$root_unchanged_spec" \
-    "$evidence_dir/unauthorized-root-counter-result.json"
-  require_counter_packet_delta 1 other_service_reject \
+  require_counter_packet_delta 4 other_service_reject \
     "$evidence_dir/unauthorized-router-counter-result.json"
+  for node in "${root_nodes[@]}"; do
+    root_before="$evidence_dir/unauthorized-root-$node-before.json"
+    root_after="$evidence_dir/unauthorized-root-$node-after.json"
+    root_snapshot "$node" "$root_after"
+    compare_counters "$root_before" "$root_after" "$root_unchanged_spec" \
+      "$evidence_dir/unauthorized-root-$node-counter-result.json"
+  done
   note "UNAUTHORIZED_SOURCE_PASS address=$unauthorized_address vip_holder=$holder_before"
 }
 
@@ -787,7 +807,10 @@ cleanup() {
         '{version: 1, result: $result, scope: $scope,
           restoration: "verified",
           interface: $interface, serial: $serial, permanent_mac: $mac,
-          tested_sources: ["10.66.1.10", "10.66.1.11", "10.66.1.100"]}' \
+          tested_sources: ["10.66.1.10", "10.66.1.11", "10.66.1.100"],
+          tested_api_endpoints: [
+            "10.66.0.254", "10.66.0.10", "10.66.0.11", "10.66.0.12"
+          ]}' \
         >"$evidence_dir/result.json"; then
       chmod 0600 -- "$evidence_dir/result.json" || status=1
     else

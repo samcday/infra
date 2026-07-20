@@ -219,13 +219,20 @@ k3s_agent_config=$(yq -er '
 ' "$workdir/k3s-agent.yaml")
 for placement_setting in \
   '  - fabric.samcday.com/platform=true' \
-  '  - node-role.kubernetes.io/worker=true' \
   '  - fabric.samcday.com/platform=true:NoSchedule'; do
   grep -Fxq "$placement_setting" <<<"$k3s_agent_config" || {
     echo "worker K3s profile lacks its trusted-platform placement gate: $placement_setting" >&2
     exit 1
   }
 done
+if grep -Fq 'node-role.kubernetes.io/worker' <<<"$k3s_agent_config"; then
+  echo 'worker K3s profile delegates its reserved role label to the kubelet' >&2
+  exit 1
+fi
+if grep -Fq 'prefer-bundled-bin:' <<<"$k3s_agent_config"; then
+  echo 'worker K3s profile overrides the verified FCOS networking tools' >&2
+  exit 1
+fi
 
 [[ $(yq '[.storage.files[] | select(.path == "/etc/nftables/fabric-services-guard.nft")] | length' \
   "$workdir/firewall.yaml") == 1 ]] || {

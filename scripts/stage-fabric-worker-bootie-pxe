@@ -266,6 +266,13 @@ jq -n --arg node "$node" --arg mac "$mac_hexhyp" '{
       "samcday.com/discovery": "true",
       "samcday.com/mac": $mac
     }
+  },
+  spec: {
+    taints: [{
+      key: "fabric.samcday.com/platform",
+      value: "true",
+      effect: "NoSchedule"
+    }]
   }
 }' > "$staging_dir/node-discovery.json"
 chmod 0644 "$staging_dir/node-discovery.json"

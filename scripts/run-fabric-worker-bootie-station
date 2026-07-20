@@ -311,7 +311,12 @@ jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$expected_node_mac" '
   .metadata.labels["samcday.com/mac"] == $mac and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "true" and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
   .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]) and
   ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
   ((.metadata.annotations["samcday.com/install"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and

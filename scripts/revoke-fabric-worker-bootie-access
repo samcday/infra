@@ -370,7 +370,11 @@ if node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null); then
   jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_label" '
     .metadata.name == $node and .metadata.uid == $uid and
     .metadata.labels["samcday.com/mac"] == $mac and
-    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true"
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+    ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+      effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+    }])
   ' <<< "$node_json" >/dev/null ||
     die 'worker Node identity changed; refusing bootstrap metadata mutation'
   placeholder=$(jq -r '.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // ""' <<< "$node_json")
@@ -378,17 +382,24 @@ if node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null); then
   revoked_state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
     <<< "$node_json")
   discovery=$(jq -r '.metadata.labels["samcday.com/discovery"] // ""' <<< "$node_json")
+  platform_label_present=$(jq -r \
+    '.metadata.labels | has("fabric.samcday.com/platform")' <<< "$node_json")
+  platform_label=$(jq -r '.metadata.labels["fabric.samcday.com/platform"] // ""' \
+    <<< "$node_json")
   case $revoked_state in
     discovery)
-      [[ $placeholder == true && $discovery == true && -z $machine_id ]] ||
+      [[ $placeholder == true && $discovery == true && $platform_label_present == false &&
+         -z $machine_id ]] ||
         die 'discovery placeholder is not the exact unjoined safe state'
       ;;
     install-armed)
-      [[ $placeholder == true && $discovery == false && -z $machine_id ]] ||
+      [[ $placeholder == true && $discovery == false && $platform_label_present == false &&
+         -z $machine_id ]] ||
         die 'armed placeholder changed before attended rollback'
       ;;
     install-response-issued)
-      [[ $placeholder == true && $discovery == false ]] ||
+      [[ $placeholder == true && $discovery == false &&
+         ($platform_label_present == false || $platform_label == true) ]] ||
         die 'install-response worker lost its bootstrap identity'
       finalize_required=true
       ;;
@@ -421,6 +432,10 @@ if node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null); then
     die 'atomic worker credential cleanup was rejected or raced'
   node_json=$(root_kubectl get node "$node" --output=json)
   jq -e '
+    (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+    ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+      effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+    }]) and
     ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
@@ -430,12 +445,15 @@ if node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null); then
     jq -e '
       .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
       .metadata.labels["samcday.com/discovery"] == "true" and
+      (.metadata.labels | has("fabric.samcday.com/platform") | not) and
       .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery"
     ' <<< "$node_json" >/dev/null || die 'unjoined worker did not return to discovery'
   else
     jq -e '
       .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
       .metadata.labels["samcday.com/discovery"] == "false" and
+      ((.metadata.labels | has("fabric.samcday.com/platform") | not) or
+        .metadata.labels["fabric.samcday.com/platform"] == "true") and
       .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued"
     ' <<< "$node_json" >/dev/null || die 'worker lost its post-response finalization receipt'
   fi

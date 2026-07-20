@@ -316,6 +316,50 @@ if [[ "${install:-}" == "true" ]]; then
     booterr "installation is armed for $node without the reviewed bootstrap state"
   fi
 
+  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
+    jq -e '
+      .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true"
+    ' <<<"$node_snapshot" >/dev/null ||
+      booterr "installation is armed for $node without the worker bootstrap placeholder"
+    jq -e '
+      .metadata.labels | has("fabric.samcday.com/platform") | not
+    ' <<<"$node_snapshot" >/dev/null ||
+      booterr "installation is armed for $node with the worker platform label already assigned"
+    jq -e '
+      .metadata.labels | has("node-role.kubernetes.io/worker") | not
+    ' <<<"$node_snapshot" >/dev/null ||
+      booterr "installation is armed for $node with a reserved worker role already assigned"
+    jq -e '
+      (.spec.taints // null) as $taints |
+      ($taints | type) == "array" and
+      ([
+        $taints[] |
+        select(. == {
+          effect: "NoSchedule",
+          key: "fabric.samcday.com/platform",
+          value: "true"
+        })
+      ] | length) == 1 and
+      all($taints[];
+        . == {
+          effect: "NoSchedule",
+          key: "fabric.samcday.com/platform",
+          value: "true"
+        } or
+        (
+          (.key == "node.kubernetes.io/not-ready" or
+           .key == "node.kubernetes.io/unreachable") and
+          ((.value // "") == "") and
+          (.effect == "NoSchedule" or .effect == "NoExecute") and
+          ((keys - ["effect", "key", "timeAdded", "value"]) | length == 0) and
+          ((has("timeAdded") | not) or
+           (.timeAdded | type == "string" and length > 0))
+        )
+      )
+    ' <<<"$node_snapshot" >/dev/null ||
+      booterr "installation is armed for $node without the exact worker platform taint set"
+  fi
+
   if [[ -n "${BOOTIE_INSTALL_POLICY_FILE:-}" ]]; then
     policy_node=${node#node/}
     policy_device=

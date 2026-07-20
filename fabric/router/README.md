@@ -128,16 +128,20 @@ rejects mirror the zone defaults so WAN input, fabric-to-WAN, WAN-to-fabric,
 and fabric router-input denials have named fw4 counters. IPv6 is disabled by
 network configuration and sysctl and remains denied by the zone defaults as
 defense in depth. The two IPv4 prefixes route through the same LAN zone; exact
-address-pinned rules permit only API TCP/6443, bidirectional Flannel UDP/8472,
-bidirectional kubelet TCP/10250, and attended observer `10.66.0.2` SSH to the
-two exact service addresses. During one attended install, those two service
-addresses may also fetch the live rootfs from Bootie at exactly
-`10.66.0.2:80`. An explicit earlier rule rejects service access to root
-TCP/2379, TCP/2380, and TCP/2381, followed by per-direction cross-prefix
-catch-all rejects. IPv4 ICMP redirects are disabled so ordinary hosts retain
-the router path. Same-subnet traffic still bypasses the router and is
-constrained separately by the FCOS root and services host tables. These
-rules admit or reject new routed flows: fw4's global established/related path
+address-pinned rules permit API TCP/6443 from the two service nodes only to the
+VIP `10.66.0.254` and the three K3s server addresses `10.66.0.10-.12`, plus
+bidirectional Flannel UDP/8472, bidirectional kubelet TCP/10250, and attended
+observer `10.66.0.2` SSH to the two exact service addresses. The direct API
+destinations are required because the K3s supervisor advertises its individual
+server endpoints after an agent initially joins through the VIP. During one
+attended install, those two service addresses may also fetch the live rootfs
+from Bootie at exactly `10.66.0.2:80`. An explicit earlier rule rejects
+service access to root TCP/2379, TCP/2380, and TCP/2381, followed by
+per-direction cross-prefix catch-all rejects. IPv4 ICMP redirects are disabled
+so ordinary hosts retain the router path. Same-subnet traffic still bypasses
+the router and is constrained separately by the FCOS root and services host
+tables. These rules admit or reject new routed flows: fw4's global
+established/related path
 runs before `forward_lan`, and a reload does not retroactively evict conntrack.
 The root `fabric_guard` host policy is the enforcement layer that kills stale
 etcd flows; bring-up and incident gates must not treat the router's explicit
@@ -326,9 +330,11 @@ fabric-source subset without claiming the complete matrix. Its read-only
 `--check` pins the dedicated desktop USB NIC by interface, USB serial, and
 permanent MAC and prints the exact attended confirmation. Its `--run` places
 only that NIC in a trap-restored namespace, exercises both admitted services
-addresses plus one unauthorized services-prefix address, and requires matching
-router and current API-VIP-holder nftables counter deltas. It never starts
-Bootie, issues a credential, arms an installer, or writes a candidate disk.
+addresses against the VIP and every direct K3s server API, then exercises the
+same four destinations from one unauthorized services-prefix address. It
+requires matching router and per-root host nftables counter deltas. It never
+starts Bootie, issues a credential, arms an installer, or writes a candidate
+disk.
 This narrow gate leaves the already-isolated operator observer active so it
 can capture authenticated router and root evidence; that does not satisfy the
 full matrix's stricter observer-absence condition.

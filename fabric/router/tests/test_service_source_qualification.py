@@ -65,11 +65,14 @@ class ServiceSourceQualificationPolicyTests(unittest.TestCase):
         for required in (
             "readonly -a service_addresses=(10.66.1.10 10.66.1.11)",
             "readonly unauthorized_address=10.66.1.100",
+            'readonly -a api_addresses=("$api_address" "${root_addresses[@]}")',
             'ip -n "$namespace" -4 route replace "$root_subnet" via "$service_gateway"',
+            'for endpoint in "${api_addresses[@]}"; do',
+            'tested_api_endpoints: [',
             "curl --disable",
             "--noproxy '*' --proto '=https' --tlsv1.2",
             '--cacert "$server_ca" --cert "$client_cert" --key "$client_key"',
-            '--resolve "api.fabric.internal:6443:$api_address"',
+            '--resolve "api.fabric.internal:6443:$endpoint_address"',
             "'https://api.fabric.internal:6443/readyz?verbose'",
             "[[ $(tail -n 1 \"$output\") == 'readyz check passed' ]]",
         ):
@@ -77,7 +80,7 @@ class ServiceSourceQualificationPolicyTests(unittest.TestCase):
                 self.assertIn(required, self.script)
 
         self.assertIn("probe_api_rejected", self.script)
-        self.assertIn("unexpectedly reached the fabric API", self.script)
+        self.assertIn("unexpectedly reached fabric API endpoint", self.script)
 
     def test_etcd_denial_is_one_syn_per_member_and_port(self) -> None:
         for required in (
@@ -98,7 +101,11 @@ class ServiceSourceQualificationPolicyTests(unittest.TestCase):
             "service agents to API and root kubelets",
             '[[ $holder_after == "$holder_before" ]]',
             '"$repo_root/scripts/compare-fabric-nft-counters"',
+            "require_counter_packet_delta 4 api_allow",
             "require_counter_packet_delta 9 etcd_reject",
+            "require_counter_packet_delta 4 other_service_reject",
+            'for node in "${root_nodes[@]}"; do',
+            '[[ $node != "$holder_before" ]] || minimum=2',
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)

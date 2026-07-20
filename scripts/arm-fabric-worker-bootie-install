@@ -251,7 +251,12 @@ jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
   .metadata.uid == $uid and .metadata.labels["samcday.com/mac"] == $mac and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "true" and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
   .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }]) and
   ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
   ((.metadata.annotations["samcday.com/install"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
@@ -280,6 +285,15 @@ ip netns exec "$observer_namespace" kubectl --kubeconfig "$access_dir/kubeconfig
 node_json=$(ip netns exec "$observer_namespace" kubectl \
   --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
   get node "$node" --output=json)
+jq -e '
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "false" and
+  (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+  (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+  ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
+    effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+  }])
+' <<< "$node_json" >/dev/null || die 'worker placement contract changed during install arm'
 final_state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' <<< "$node_json")
 final_install=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' <<< "$node_json")
 final_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' <<< "$node_json")

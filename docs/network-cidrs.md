@@ -120,7 +120,7 @@ advertisement or cross-cluster transport.
 | Router and offline asset server | `10.66.0.1` | Live router address. |
 | Operations laptop and temporary soak observer | `10.66.0.2` | Live attended observer attachment, without forwarding. |
 | Low-address holdback | `10.66.0.3-10.66.0.9` | Unallocated; LAN DHCP is disabled. |
-| Consensus nodes | `10.66.0.10-10.66.0.12` | Live, statically assigned cp1-cp3 roots. |
+| Consensus nodes | `10.66.0.10-10.66.0.12` | Live, statically assigned cp1-cp3 roots; also direct K3s supervisor/API endpoints for the two admitted service nodes. |
 | Post-consensus holdback | `10.66.0.13-10.66.0.19` | Unallocated; not a worker pool. |
 | Consensus-segment holdback | `10.66.0.20-10.66.0.99` | Reserved; not a worker pool. |
 | Ephemeral live inventory | `10.66.0.100` | One non-installing candidate at a time; no gateway or DNS. |

@@ -179,6 +179,9 @@ for node in fabric-az1-svc1 fabric-az1-svc2; do
     .metadata.deletionTimestamp == null and
     .metadata.labels["fabric.samcday.com/platform"] == "true" and
     .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+    (.metadata.labels | has("fabric.samcday.com/bootstrap-placeholder") | not) and
+    (.metadata.labels | has("samcday.com/discovery") | not) and
+    ((.metadata.annotations // {}) | has("fabric.samcday.com/bootstrap-state") | not) and
     (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
     (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
     (.metadata.labels | has("node-role.kubernetes.io/master") | not) and

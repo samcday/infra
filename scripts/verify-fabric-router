@@ -924,11 +924,12 @@ assert_flat_rule() {
 
 root_nodes='10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 service_nodes='10.66.1.10/32 10.66.1.11/32'
+api_endpoints='10.66.0.254/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 assert_flat_rule fabric_flat_reject_services_etcd \
   Reject-services-to-root-etcd "$service_nodes" "$root_nodes" tcp \
   '2379 2380 2381' REJECT
 assert_flat_rule fabric_flat_services_api \
-  Allow-services-to-fabric-API "$service_nodes" 10.66.0.254/32 tcp 6443 ACCEPT
+  Allow-services-to-fabric-API "$service_nodes" "$api_endpoints" tcp 6443 ACCEPT
 assert_flat_rule fabric_flat_services_vxlan \
   Allow-services-to-root-VXLAN "$service_nodes" "$root_nodes" udp 8472 ACCEPT
 assert_flat_rule fabric_flat_roots_vxlan \

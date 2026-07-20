@@ -21,8 +21,9 @@ Usage:
 
 After the installed worker has joined, prove the issued placeholder UID became
 the exact Ready platform worker at its assigned InternalIP.  Then atomically
-remove only the bootstrap/discovery receipt and destroy the already-revoked
-tmpfs access directory.  No Bootie token or PXE capability is required.
+assign its reserved worker-role label, remove only the bootstrap/discovery
+receipt, and destroy the already-revoked tmpfs access directory.  No Bootie
+token or PXE capability is required.
 EOF
 }
 
@@ -157,13 +158,20 @@ root_kubectl() {
 
 node_json=$(root_kubectl get node "$node" --output=json) || die 'joined worker Node is absent'
 qualify_node() {
+  local node_json=$1
+  local worker_role_state=$2
   jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
-    --arg mac "$mac_label" '
+    --arg mac "$mac_label" --arg worker_role_state "$worker_role_state" '
       .metadata.name == $node and .metadata.uid == $uid and
       .metadata.deletionTimestamp == null and
       .metadata.labels["samcday.com/mac"] == $mac and
       .metadata.labels["fabric.samcday.com/platform"] == "true" and
-      .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      (
+        ($worker_role_state == "absent" and
+          (.metadata.labels | has("node-role.kubernetes.io/worker") | not)) or
+        ($worker_role_state == "true" and
+          .metadata.labels["node-role.kubernetes.io/worker"] == "true")
+      ) and
       (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
       (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
       (.metadata.labels | has("node-role.kubernetes.io/master") | not) and
@@ -173,10 +181,10 @@ qualify_node() {
       ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1) and
       (.status.nodeInfo.machineID | type == "string" and length > 0) and
       (.spec.taints == [{effect:"NoSchedule", key:"fabric.samcday.com/platform", value:"true"}])
-    ' <<< "$1"
+    ' <<< "$node_json"
 }
-qualify_node "$node_json" >/dev/null ||
-  die 'worker has not qualified its exact UID, InternalIP, Ready state, labels, and taint'
+qualify_node "$node_json" absent >/dev/null ||
+  die 'worker has not qualified its exact UID, InternalIP, Ready state, kubelet label, and taint before role assignment'
 jq -e '
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "false" and
@@ -189,6 +197,14 @@ jq -e '
 
 resource_version=$(jq -r '.metadata.resourceVersion' <<< "$node_json")
 qualified_labels=$(jq -c '.metadata.labels' <<< "$node_json")
+final_labels=$(jq -cn --argjson labels "$qualified_labels" '
+  $labels
+  | .["node-role.kubernetes.io/worker"] = "true"
+  | del(
+      .["fabric.samcday.com/bootstrap-placeholder"],
+      .["samcday.com/discovery"]
+    )
+')
 patch=$(jq -cn --arg node "$node" --arg uid "$node_uid" --arg rv "$resource_version" \
   --arg mac "$mac_label" --argjson labels "$qualified_labels" '[
     {"op":"test","path":"/metadata/resourceVersion","value":$rv},
@@ -197,10 +213,10 @@ patch=$(jq -cn --arg node "$node" --arg uid "$node_uid" --arg rv "$resource_vers
     {"op":"test","path":"/metadata/labels","value":$labels},
     {"op":"test","path":"/metadata/labels/samcday.com~1mac","value":$mac},
     {"op":"test","path":"/metadata/labels/fabric.samcday.com~1platform","value":"true"},
-    {"op":"test","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"},
     {"op":"test","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder","value":"true"},
     {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
     {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+    {"op":"add","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"},
     {"op":"remove","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder"},
     {"op":"remove","path":"/metadata/labels/samcday.com~1discovery"},
     {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state"}
@@ -209,7 +225,9 @@ root_kubectl patch node "$node" --type=json --patch "$patch" >/dev/null ||
   die 'atomic worker bootstrap finalization was rejected or raced'
 
 node_json=$(root_kubectl get node "$node" --output=json)
-qualify_node "$node_json" >/dev/null || die 'worker qualification changed during finalization'
+qualify_node "$node_json" 'true' >/dev/null || die 'worker qualification changed during finalization'
+jq -e --argjson labels "$final_labels" '.metadata.labels == $labels' <<< "$node_json" >/dev/null ||
+  die 'worker labels differ from the exact atomic finalization result'
 jq -e '
   ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
   ((.metadata.labels["samcday.com/discovery"] // "") == "") and

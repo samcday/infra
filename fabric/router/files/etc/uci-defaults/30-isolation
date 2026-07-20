@@ -182,7 +182,13 @@ set firewall.fabric_flat_services_api.dest='lan'
 set firewall.fabric_flat_services_api.family='ipv4'
 add_list firewall.fabric_flat_services_api.src_ip='10.66.1.10/32'
 add_list firewall.fabric_flat_services_api.src_ip='10.66.1.11/32'
-set firewall.fabric_flat_services_api.dest_ip='10.66.0.254/32'
+# K3s agents initially join through the kube-vip address, then the supervisor
+# advertises every server address for remotedialer reconnects. Keep all four
+# API destinations exact; this does not broaden the earlier etcd-port reject.
+add_list firewall.fabric_flat_services_api.dest_ip='10.66.0.254/32'
+add_list firewall.fabric_flat_services_api.dest_ip='10.66.0.10/32'
+add_list firewall.fabric_flat_services_api.dest_ip='10.66.0.11/32'
+add_list firewall.fabric_flat_services_api.dest_ip='10.66.0.12/32'
 set firewall.fabric_flat_services_api.proto='tcp'
 set firewall.fabric_flat_services_api.dest_port='6443'
 set firewall.fabric_flat_services_api.target='ACCEPT'
