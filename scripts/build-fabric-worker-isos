@@ -262,6 +262,7 @@ cleanup() {
   [[ -z $current_published_output ]] ||
     find "$current_published_output" -maxdepth 0 -type f -delete 2>/dev/null || true
   find "$workdir" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$workdir" 2>/dev/null || true
 }
 trap cleanup EXIT
 mkdir -m 0700 -- "$workdir/gnupg"

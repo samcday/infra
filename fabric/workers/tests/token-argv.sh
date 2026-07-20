@@ -18,7 +18,11 @@ for command in grep strace; do
 done
 
 workdir=$(fabric_secure_tmpdir fabric-worker-token-argv 1048576)
-trap 'find "$workdir" -mindepth 1 -delete 2>/dev/null || true' EXIT
+cleanup() {
+  find "$workdir" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$workdir" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 # bootstrap.sh --check deliberately uses this structurally valid fake token.
 # Keep the pattern in a file so the regression itself does not put it in the

@@ -160,11 +160,15 @@ qualify_node() {
   jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
     --arg mac "$mac_label" '
       .metadata.name == $node and .metadata.uid == $uid and
+      .metadata.deletionTimestamp == null and
       .metadata.labels["samcday.com/mac"] == $mac and
       .metadata.labels["fabric.samcday.com/platform"] == "true" and
       .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
       (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+      (.metadata.labels | has("node-role.kubernetes.io/master") | not) and
       (.metadata.labels | has("node-role.kubernetes.io/etcd") | not) and
+      (.spec.unschedulable // false) == false and
       ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
       ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1) and
       (.status.nodeInfo.machineID | type == "string" and length > 0) and

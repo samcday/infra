@@ -117,8 +117,8 @@ post-decision boot artifact has been delivered and the attended live system
 has entered its pre-install gate.
 
 This chooses attachment, not trust. The shared wire cannot enforce the final
-services/consensus boundary, and both admission records are still
-intentionally `pending`. Before arming a worker, `10.66.1.1/24` and its pinned
+services/consensus boundary, and each candidate's admission record remains an
+independent hard gate. Before arming a worker, `10.66.1.1/24` and its pinned
 assets must be live, same-interface router and root-host rules must pass their
 positive K3s and negative etcd probes, the station runner must be reviewed,
 and that candidate's final inventory values must be admitted. Until a managed

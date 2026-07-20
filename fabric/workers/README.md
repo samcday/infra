@@ -172,7 +172,7 @@ it as a command-line argument:
 ```sh
 source scripts/lib/fabric-secure-tempdir.sh
 token_dir=$(fabric_secure_tmpdir fabric-worker-token 4096)
-trap 'find "$token_dir" -mindepth 1 -delete 2>/dev/null || true' EXIT
+trap 'find "$token_dir" -mindepth 1 -delete 2>/dev/null || true; rmdir "$token_dir" 2>/dev/null || true' EXIT
 scripts/fabric-ssh cp1 \
   sudo --non-interactive /usr/bin/cat \
     /var/lib/rancher/k3s/server/agent-token \

@@ -61,7 +61,11 @@ for command in awk bash butane cp find git grep install jq mkdir realpath sed sh
 done
 
 workdir=$(fabric_secure_tmpdir fabric-worker-butane 16777216)
-trap 'find "$workdir" -mindepth 1 -delete 2>/dev/null || true' EXIT
+cleanup() {
+  find "$workdir" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$workdir" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 agent_token=
 if $check_only; then
