@@ -12,6 +12,12 @@ included in the current hub Flux fan-out, and nothing merges the current
 - `network.yaml` keeps each dedicated static root link configured across
   physical carrier loss. This prevents kube-vip address updates from replacing
   `fabric-static` with a transient, externally assumed NetworkManager profile.
+  It also pins K3s-required IPv4 forwarding while rejecting IPv4 redirects,
+  redirect transmission, and source routes on every present and future
+  interface (and rejects the corresponding IPv6 inputs). With current IPv4
+  forwarding, `all.accept_redirects=0` already suppresses receipt, but it does
+  not suppress redirect transmission; leaving the default and interface
+  values enabled would also reactivate receipt after a host-mode transition.
 - `etcd.yaml` runs one physical etcd member per machine. The service has
   `RequiresMountsFor=/var/lib/etcd`, uses a 2 GiB backend quota, and every
   fresh member explicitly starts with `initial-cluster-state=new`.
@@ -31,8 +37,15 @@ included in the current hub Flux fan-out, and nothing merges the current
   and stages only API, kubelet, and Flannel access for the two declared
   service-node addresses. It fixes kube-proxy to iptables, keeps new root
   forwarding denied, and makes NodePorts unreachable on roots. The staged
-  service rules are inert until the separate routed boundary exists and has
-  passed its negative etcd-access tests.
+  service rules remain inactive until the router's exact-source policy exists
+  and has passed negative etcd-access tests. During the temporary flat-L2
+  exception those IP rules constrain trusted nodes but are not anti-spoofing
+  isolation; the managed-switch VLAN remains mandatory for broader workloads.
+  `scripts/rollout-fabric-root-firewall` treats this guard and the routed-host
+  sysctl payload as one combined, hash-confirmed root network policy. It rolls
+  one member at a time with a cluster lock, exact route and interface checks,
+  a five-minute local rollback, and API/etcd/heartbeat acceptance checks; the
+  old firewall-only confirmation is intentionally no longer valid.
 - `time.yaml` makes the dedicated router the sole configured chrony source.
   The roots retain their own RTC and persisted drift when the router or WAN is
   unavailable after initial synchronization.
@@ -222,8 +235,10 @@ Inventory, SMART health, and a synchronous-write test remain hard gates before
 authorizing a destructive installation.
 
 The root host guard is part of every rendered root Ignition. After quorum,
-etcd auth/RBAC, negative host-policy tests, and the separate worker/inter-VLAN
-consensus boundary are hard gates before adding any worker or child prefix.
+etcd auth/RBAC and negative host-policy tests are hard gates before the two
+named service agents use the bounded flat-L2 exception. The worker/inter-VLAN
+consensus boundary remains a hard gate before any other worker, child etcd
+identity, or tenant workload.
 The K3s client is limited to `/fabric-root/` and its required `/bootstrap/`
 prefix; TCP/2380 is peer-only.
 A controlled K3s restart, server rejoin, and token-rotation test must pass after

@@ -63,7 +63,14 @@ Bootie treats disk identity and permission to install as separate concerns:
   parent remains a root-controlled tmpfs and the filename is the capability.
   `BOOTIE_CUSTOM_FCOS_VERSION` must exactly match `FCOS_VERSION`, and
   `BOOTIE_CUSTOM_INITRAMFS_SHA256` must match the runtime snapshot before the
-  request is inspected. A fixed Node with a stale Ignition token or mode is
+  request is inspected. `BOOTIE_CUSTOM_LIVE_KARGS` must be exactly
+  `coreos.inst.skip_reboot systemd.show_status=false`; Bootie appends those
+  reviewed ISO lifecycle controls to both GRUB and iPXE custom-initramfs
+  responses. `BOOTIE_EXPECTED_NODE_UID` must be the exact UUID captured when
+  the placeholder and scoped identity were issued. Bootie compares it with
+  the fixed Node snapshot and includes it in the atomic install-consumption
+  patch, so a same-name replacement cannot inherit the custom initramfs. A
+  fixed Node with a stale Ignition token or mode is
   refused; the arm patch tests the Node `resourceVersion` so a concurrent
   mutation cannot cross that check.
 

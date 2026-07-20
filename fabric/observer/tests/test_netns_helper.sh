@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Grep probes below intentionally match literal remote-variable text.
+# shellcheck disable=SC2016
 set -euo pipefail
 
 cd -- "$(dirname -- "$0")/.."
@@ -60,6 +62,31 @@ grep -Fq 'verify_active isolation' "$helper"
 grep -Fq 'validate_runtime_root_boundary "$state_uplink"' "$helper"
 # shellcheck disable=SC2016
 grep -Fq 'root namespace has a route for $observer_subnet' "$helper"
+
+# The bounded services route is the sole non-connected IPv4 route admitted in
+# the observer namespace. It preserves source .0.2 for worker SSH and still
+# leaves public destinations unreachable.
+grep -Fq 'readonly services_subnet=10.66.1.0/24' "$helper"
+grep -Fq 'readonly services_gateway=10.66.0.1' "$helper"
+# shellcheck disable=SC2016
+grep -Fq 'ip netns exec "$namespace" ip -4 route add "$services_subnet"' "$helper"
+# shellcheck disable=SC2016
+grep -Fq 'ip netns exec "$namespace" ip -4 route get 10.66.1.10' "$helper"
+
+# The router intentionally hairpins the services prefix on the transitional
+# shared L2. Do not let an ICMP redirect from any same-wire peer install a
+# dynamic exception to that bounded route.
+for key in \
+  net.ipv4.conf.all.accept_redirects \
+  net.ipv4.conf.default.accept_redirects \
+  net.ipv4.conf.all.secure_redirects \
+  net.ipv4.conf.default.secure_redirects; do
+  grep -Fq "sysctl -qw $key=0" "$helper"
+done
+grep -Fq 'sysctl -qw "net.ipv4.conf.$wifi.accept_redirects=0"' "$helper"
+grep -Fq 'sysctl -qw "net.ipv4.conf.$wifi.secure_redirects=0"' "$helper"
+grep -Fq '"net.ipv4.conf.$state_wifi.accept_redirects"' "$helper"
+grep -Fq '"net.ipv4.conf.$state_wifi.secure_redirects"' "$helper"
 
 # A single `ip route` output line can still be ECMP and name more than one
 # device. Admission must reject that shape rather than trusting the first dev.

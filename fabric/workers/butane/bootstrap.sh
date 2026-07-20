@@ -53,7 +53,7 @@ case $# in
     ;;
 esac
 
-for command in awk butane cp find git grep install jq mkdir realpath sed sha256sum stat tail wc yq; do
+for command in awk bash butane cp find git grep install jq mkdir realpath sed sha256sum stat tail wc yq; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 1
@@ -123,6 +123,110 @@ for profile in "${common_profiles[@]}"; do
     --output "$workdir/$profile.ign" "$workdir/$profile.yaml"
 done
 
+# Keep the temporary flat-L2 transport honest: services use their final
+# prefix and still reach every root address through 10.66.1.1.  Disabling
+# redirects prevents the router from teaching a same-wire shortcut which
+# would make the later VLAN cutover behave differently from bootstrap.
+[[ $(yq '[.storage.files[] | select(.path == "/etc/sysctl.d/90-fabric-services-routing.conf")] | length' \
+  "$workdir/base.yaml") == 1 ]] || {
+  echo 'worker base must contain exactly one routed-prefix sysctl file' >&2
+  exit 1
+}
+routing_sysctl=$(yq -er '
+  .storage.files[]
+  | select(.path == "/etc/sysctl.d/90-fabric-services-routing.conf")
+  | .contents.inline
+' "$workdir/base.yaml")
+for setting in \
+  'net.ipv4.conf.*.accept_redirects = 0' \
+  'net.ipv4.conf.*.secure_redirects = 0'; do
+  grep -Fxq "$setting" <<<"$routing_sysctl" || {
+    echo "worker base lacks required routed-prefix sysctl: $setting" >&2
+    exit 1
+  }
+done
+
+[[ $(yq '[.storage.files[] | select(.path == "/usr/local/sbin/verify-fabric-services-route")] | length' \
+  "$workdir/base.yaml") == 1 ]] || {
+  echo 'worker base must contain exactly one route verifier' >&2
+  exit 1
+}
+routing_verifier=$(yq -er '
+  .storage.files[]
+  | select(.path == "/usr/local/sbin/verify-fabric-services-route")
+  | .contents.inline
+' "$workdir/base.yaml")
+printf '%s' "$routing_verifier" >"$workdir/verify-fabric-services-route"
+bash -n "$workdir/verify-fabric-services-route"
+
+[[ $(yq '[.systemd.units[] | select(.name == "install-k3s.service")] | length' \
+  "$workdir/base.yaml") == 1 ]] || {
+  echo 'worker base must contain exactly one K3s installer unit' >&2
+  exit 1
+}
+k3s_install_unit=$(yq -er '
+  .systemd.units[]
+  | select(.name == "install-k3s.service")
+  | .contents
+' "$workdir/base.yaml")
+grep -Fxq 'Environment=K3S_URL=https://10.66.0.254:6443' <<<"$k3s_install_unit" || {
+  echo 'worker K3s agent does not target the routed root API VIP' >&2
+  exit 1
+}
+
+[[ $(yq '[.systemd.units[] | select(.name == "fabric-services-route.service")] | length' \
+  "$workdir/base.yaml") == 1 ]] || {
+  echo 'worker base must contain exactly one routed-prefix verifier unit' >&2
+  exit 1
+}
+for guarded_unit in install-k3s.service k3s-agent.service; do
+  [[ $(FABRIC_GUARDED_UNIT=$guarded_unit yq '
+    [.systemd.units[]
+     | select(.name == strenv(FABRIC_GUARDED_UNIT))
+     | .dropins[]
+     | select(.name == "05-fabric-services-route.conf")] | length
+  ' "$workdir/base.yaml") == 1 ]] || {
+    echo "$guarded_unit lacks its routed-prefix verifier dependency" >&2
+    exit 1
+  }
+done
+
+k3s_agent_config=$(yq -er '
+  .storage.files[]
+  | select(.path == "/etc/rancher/k3s/config.yaml.d/10-agent.yaml")
+  | .contents.inline
+' "$workdir/k3s-agent.yaml")
+for placement_setting in \
+  '  - fabric.samcday.com/platform=true' \
+  '  - node-role.kubernetes.io/worker=true' \
+  '  - fabric.samcday.com/platform=true:NoSchedule'; do
+  grep -Fxq "$placement_setting" <<<"$k3s_agent_config" || {
+    echo "worker K3s profile lacks its trusted-platform placement gate: $placement_setting" >&2
+    exit 1
+  }
+done
+
+[[ $(yq '[.storage.files[] | select(.path == "/etc/nftables/fabric-services-guard.nft")] | length' \
+  "$workdir/firewall.yaml") == 1 ]] || {
+  echo 'worker firewall must contain exactly one host guard' >&2
+  exit 1
+}
+worker_guard=$(yq -er '
+  .storage.files[]
+  | select(.path == "/etc/nftables/fabric-services-guard.nft")
+  | .contents.inline
+' "$workdir/firewall.yaml")
+for admission in \
+  'ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"' \
+  'ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "services Flannel VXLAN"' \
+  'ip saddr @root_nodes_v4 tcp dport 10250 counter accept comment "root control plane to kubelet"' \
+  'ip saddr @service_nodes_v4 tcp dport 10250 counter accept comment "services metrics to kubelet"'; do
+  grep -Fq "$admission" <<<"$worker_guard" || {
+    echo "worker host firewall lacks required K3s path: $admission" >&2
+    exit 1
+  }
+done
+
 render_nodes=("${nodes[@]}")
 if [[ -n $selected_node ]]; then
   render_nodes=("$selected_node")
@@ -131,6 +235,17 @@ fi
 for node in "${render_nodes[@]}"; do
   admission=$repo_root/fabric/workers/inventory/$node.yaml
   cp -- "$script_dir/$node.yaml" "$workdir/$node.yaml"
+
+  case $node in
+    fabric-az1-svc1)
+      expected_ip=10.66.1.10
+      expected_connection_uuid=b8ee0dd1-ff31-4bd6-8901-660000000110
+      ;;
+    fabric-az1-svc2)
+      expected_ip=10.66.1.11
+      expected_connection_uuid=b8ee0dd1-ff31-4bd6-8901-660000000111
+      ;;
+  esac
 
   if $check_only; then
     admission_state=$(yq -r '.state' "$admission")
@@ -157,6 +272,60 @@ for node in "${render_nodes[@]}"; do
     exit 1
   }
   sed -i "s/@FABRIC_NODE_MAC@/$node_mac/" "$workdir/$node.yaml"
+  [[ $(yq '[.storage.files[] | select(.path == "/etc/NetworkManager/system-connections/fabric-services.nmconnection")] | length' \
+    "$workdir/$node.yaml") == 1 ]] || {
+    echo "$node must contain exactly one NetworkManager profile" >&2
+    exit 1
+  }
+  network_profile=$(yq -er '
+    .storage.files[]
+    | select(.path == "/etc/NetworkManager/system-connections/fabric-services.nmconnection")
+    | .contents.inline
+  ' "$workdir/$node.yaml")
+  for network_setting in \
+    'method=manual' \
+    "uuid=$expected_connection_uuid" \
+    "address1=$expected_ip/24,10.66.1.1" \
+    'route1=10.66.0.0/24,10.66.1.1,10' \
+    'dns=10.66.1.1;' \
+    'may-fail=false'; do
+    grep -Fxq "$network_setting" <<<"$network_profile" || {
+      echo "$node network profile lacks required routed-prefix setting: $network_setting" >&2
+      exit 1
+    }
+  done
+  [[ $(grep -Ec '^route[0-9]+=' <<<"$network_profile") == 1 ]] || {
+    echo "$node network profile must contain exactly one explicit route" >&2
+    exit 1
+  }
+  [[ $(yq '[.storage.files[] | select(.path == "/etc/fabric/services-network.env")] | length' \
+    "$workdir/$node.yaml") == 1 ]] || {
+    echo "$node must contain exactly one route-verifier environment" >&2
+    exit 1
+  }
+  network_environment=$(yq -er '
+    .storage.files[]
+    | select(.path == "/etc/fabric/services-network.env")
+    | .contents.inline
+  ' "$workdir/$node.yaml")
+  [[ $network_environment == "FABRIC_NODE_IP=$expected_ip"$'\n'"FABRIC_CONNECTION_UUID=$expected_connection_uuid" ]] || {
+    echo "$node route-verifier environment differs from its admitted network profile" >&2
+    exit 1
+  }
+  [[ $(yq '[.storage.files[] | select(.path == "/etc/rancher/k3s/config.yaml.d/40-node.yaml")] | length' \
+    "$workdir/$node.yaml") == 1 ]] || {
+    echo "$node must contain exactly one node-specific K3s config" >&2
+    exit 1
+  }
+  node_k3s_config=$(yq -er '
+    .storage.files[]
+    | select(.path == "/etc/rancher/k3s/config.yaml.d/40-node.yaml")
+    | .contents.inline
+  ' "$workdir/$node.yaml")
+  grep -Fxq "node-ip: $expected_ip" <<<"$node_k3s_config" || {
+    echo "$node K3s node IP differs from its final services address" >&2
+    exit 1
+  }
   ignore_carrier=$(yq -er '
     .storage.files[]
     | select(.path == "/etc/NetworkManager/conf.d/90-fabric-services-ignore-carrier.conf")
@@ -199,7 +368,7 @@ EOF
   fi
 
   if $check_only; then
-    echo "validated $admission_state admission and $node worker profile" >&2
+    echo "validated $admission_state admission and $node routed worker profile" >&2
   fi
 done
 

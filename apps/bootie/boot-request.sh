@@ -115,6 +115,14 @@ if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
         "$BOOTIE_CUSTOM_FCOS_VERSION" != "$FCOS_VERSION" ]]; then
     booterr 'BOOTIE_CUSTOM_FCOS_VERSION must exactly match FCOS_VERSION'
   fi
+  if [[ "${BOOTIE_CUSTOM_LIVE_KARGS:-}" != \
+        'coreos.inst.skip_reboot systemd.show_status=false' ]]; then
+    booterr 'BOOTIE_CUSTOM_LIVE_KARGS must preserve the exact reviewed installer lifecycle arguments'
+  fi
+  if [[ -z "${BOOTIE_EXPECTED_NODE_UID:-}" ||
+        ! "$BOOTIE_EXPECTED_NODE_UID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    booterr 'BOOTIE_EXPECTED_NODE_UID must be one exact Kubernetes UUID'
+  fi
   if [[ -z "${BOOTIE_CUSTOM_INITRAMFS_SHA256:-}" ||
         ! "$BOOTIE_CUSTOM_INITRAMFS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     booterr 'BOOTIE_CUSTOM_INITRAMFS_SHA256 must be one lowercase SHA-256'
@@ -190,6 +198,10 @@ if [[ -n "${BOOTIE_NODE_NAME:-}" ]]; then
       .apiVersion == "v1" and .kind == "Node" and .metadata.name == $name
     ' <<<"$node_snapshot" >/dev/null ||
       booterr "the fixed Bootie Node snapshot is malformed: $node"
+    custom_node_uid=$(jq -r '.metadata.uid // ""' <<<"$node_snapshot")
+    if [[ $custom_node_uid != "$BOOTIE_EXPECTED_NODE_UID" ]]; then
+      booterr "the fixed Bootie Node UID does not match the issued identity: $node"
+    fi
     declared_mac=$(jq -r '.metadata.labels["samcday.com/mac"] // ""' <<<"$node_snapshot")
     declared_serial=$(jq -r '.metadata.labels["samcday.com/serial"] // ""' <<<"$node_snapshot")
   else
@@ -335,8 +347,10 @@ if [[ "${install:-}" == "true" ]]; then
   # initramfs already carries the live and destination Ignitions, so it must
   # not leave a second, independently usable Ignition token behind.
   if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
-    patch=$(jq -cn --arg resource_version "$custom_node_resource_version" '[
+    patch=$(jq -cn --arg resource_version "$custom_node_resource_version" \
+      --arg uid "$custom_node_uid" '[
       {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
+      {"op":"test","path":"/metadata/uid","value":$uid},
       {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
       {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
       {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
@@ -369,7 +383,7 @@ if [[ "${install:-}" == "true" ]]; then
         booterr 'custom-initramfs GRUB delivery requires FCOS_GRUB_BASE ending in /static'
       grub_initramfs_url="${FCOS_GRUB_BASE%/static}/custom-initramfs/$BOOTIE_CUSTOM_INITRAMFS_NAME"
     fi
-    kernel_args+="ignition.firstboot ignition.platform.id=metal "
+    kernel_args+="ignition.firstboot ignition.platform.id=metal $BOOTIE_CUSTOM_LIVE_KARGS "
   else
     ignition_url+="&install=1"
     kernel_args+="coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=$ignition_url "

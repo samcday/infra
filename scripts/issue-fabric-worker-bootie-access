@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  issue-fabric-worker-bootie-access --check
+
+  sudo issue-fabric-worker-bootie-access \
+    --node fabric-az1-svc1 \
+    --root-address 10.66.0.10 \
+    --known-hosts /trusted/fabric-root-known-hosts \
+    --identity /trusted/id_ed25519 \
+    --stage-dir /trusted/fabric-az1-svc1-pxe \
+    --output-dir /dev/shm/fabric-az1-svc1-bootie-access \
+    --confirm ISSUE:fabric-az1-svc1-bootie:4h
+
+Create or exactly reuse one unjoined worker placeholder, install a temporary
+resourceName-scoped ServiceAccount/RBAC identity, and write its four-hour token
+to a new root-owned tmpfs directory. This is an attended Kubernetes mutation.
+EOF
+}
+
+die() {
+  printf 'issue-fabric-worker-bootie-access: %s\n' "$*" >&2
+  exit 1
+}
+
+validate_worker_rbac() {
+  local manifest=$1 expected_node=$2 expected_namespace=$3 expected_name=$4
+  local rendered
+  rendered=$(kubectl create --dry-run=client --validate=false \
+    --filename="$manifest" --output=json) || return 1
+  jq --slurp --exit-status \
+    --arg node "$expected_node" --arg namespace "$expected_namespace" \
+    --arg name "$expected_name" '
+      length == 4 and
+      ([.[].kind] | sort) ==
+        ["ClusterRole", "ClusterRoleBinding", "Namespace", "ServiceAccount"] and
+      ([.[] | select(.kind == "Namespace")] | length) == 1 and
+      ([.[] | select(.kind == "ServiceAccount")] | length) == 1 and
+      ([.[] | select(.kind == "ClusterRole")] | length) == 1 and
+      ([.[] | select(.kind == "ClusterRoleBinding")] | length) == 1 and
+      ([.[] | select(.kind == "Namespace")][0] |
+        .apiVersion == "v1" and .metadata.name == $namespace) and
+      ([.[] | select(.kind == "ServiceAccount")][0] |
+        .apiVersion == "v1" and .metadata.name == $name and
+        .metadata.namespace == $namespace and .automountServiceAccountToken == false) and
+      ([.[] | select(.kind == "ClusterRole")][0] |
+        .apiVersion == "rbac.authorization.k8s.io/v1" and
+        .metadata.name == $name and (.rules | length) == 1 and
+        (.rules[0].apiGroups == [""]) and
+        (.rules[0].resources == ["nodes"]) and
+        (.rules[0].resourceNames == [$node]) and
+        ((.rules[0].verbs | sort) == ["get", "patch"])) and
+      ([.[] | select(.kind == "ClusterRoleBinding")][0] |
+        .apiVersion == "rbac.authorization.k8s.io/v1" and
+        .metadata.name == $name and
+        .roleRef == {apiGroup:"rbac.authorization.k8s.io", kind:"ClusterRole", name:$name} and
+        .subjects == [{kind:"ServiceAccount", name:$name, namespace:$namespace}])
+    ' <<< "$rendered" >/dev/null
+}
+
+check_only=false
+node=
+root_address=
+known_hosts=
+identity=
+stage_dir=
+output_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --root-address) (($# >= 2)) || die '--root-address requires a value'; root_address=$2; shift 2 ;;
+    --known-hosts) (($# >= 2)) || die '--known-hosts requires a value'; known_hosts=$2; shift 2 ;;
+    --identity) (($# >= 2)) || die '--identity requires a value'; identity=$2; shift 2 ;;
+    --stage-dir) (($# >= 2)) || die '--stage-dir requires a value'; stage_dir=$2; shift 2 ;;
+    --output-dir) (($# >= 2)) || die '--output-dir requires a value'; output_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+rbac_template=$repo_root/fabric/bootie/worker-rbac.yaml.in
+if $check_only; then
+  [[ $# -eq 0 && -z $node && -z $root_address && -z $known_hosts && -z $identity &&
+     -z $stage_dir && -z $output_dir && -z $confirmation ]] ||
+    die '--check cannot be combined with issue arguments'
+  [[ -f $rbac_template && ! -L $rbac_template ]] || die 'worker RBAC template is missing'
+  for placeholder in FABRIC_WORKER_BOOTIE_NAMESPACE FABRIC_WORKER_BOOTIE_NAME FABRIC_WORKER_NODE; do
+    grep -q "@$placeholder@" "$rbac_template" || die "RBAC template lacks $placeholder"
+  done
+  bash -n "$script_path"
+  printf 'validated worker Bootie access issuer syntax and RBAC template\n'
+  exit 0
+fi
+
+((EUID == 0)) || die 'run this credential-issuing mutation as root'
+case $node in
+  fabric-az1-svc1) short_node=svc1; other_node=fabric-az1-svc2 ;;
+  fabric-az1-svc2) short_node=svc2; other_node=fabric-az1-svc1 ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+case $root_address in
+  10.66.0.10 | 10.66.0.11 | 10.66.0.12) ;;
+  *) die '--root-address must be a live commissioned root' ;;
+esac
+[[ $confirmation == "ISSUE:$node-bootie:4h" ]] ||
+  die "exact --confirm ISSUE:$node-bootie:4h is required"
+[[ -n $known_hosts && -n $identity && -n $stage_dir && -n $output_dir ]] || {
+  usage
+  exit 2
+}
+
+for command in base64 bash chmod date find git grep ip jq kubectl mktemp mv \
+  openssl realpath rm rmdir sed sha256sum ssh stat; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+known_hosts=$(realpath -e -- "$known_hosts")
+identity=$(realpath -e -- "$identity")
+stage_dir=$(realpath -e -- "$stage_dir")
+[[ -f $known_hosts && ! -L $known_hosts && $(stat -Lc '%a' "$known_hosts") == 600 ]] ||
+  die 'known_hosts must be a non-symlink mode-0600 regular file'
+[[ -f $identity && ! -L $identity && $(stat -Lc '%a' "$identity") == 600 ]] ||
+  die 'SSH identity must be a non-symlink mode-0600 regular file'
+[[ -d $stage_dir && ! -L $stage_dir ]] || die 'stage directory is invalid'
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+[[ $(< "$stage_dir/FABRIC_WORKER_NODE") == "$node" ]] || die 'staged worker name is wrong'
+mac=$(< "$stage_dir/FABRIC_WORKER_MAC")
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
+mac_hexhyp=${mac//:/-}
+repo_commit=$(< "$stage_dir/REPO_COMMIT")
+[[ $repo_commit =~ ^[0-9a-f]{40}$ ]] || die 'staged repository commit is malformed'
+[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+  die 'station checkout does not match the staged repository commit'
+git -C "$repo_root" ls-files --error-unmatch -- \
+  scripts/issue-fabric-worker-bootie-access \
+  fabric/bootie/worker-rbac.yaml.in >/dev/null 2>&1 ||
+  die 'worker access issuer and RBAC template must be committed'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+  die 'worker Bootie access may only be issued from main'
+[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'worker Bootie access requires a completely clean worktree'
+git -C "$repo_root" fetch --quiet origin main ||
+  die 'could not refresh origin/main before issuing worker access'
+[[ $(git -C "$repo_root" rev-parse refs/remotes/origin/main) == "$repo_commit" ]] ||
+  die 'staged repository commit is not exactly the fetched origin/main'
+jq -e --arg node "$node" --arg mac "$mac_hexhyp" '
+  .apiVersion == "v1" and .kind == "Node" and
+  .metadata.name == $node and
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["samcday.com/discovery"] == "true" and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery"
+' "$stage_dir/node-discovery.json" >/dev/null || die 'staged discovery Node is not fail-closed'
+
+output_dir=$(realpath -m -- "$output_dir")
+case $output_dir in
+  "$repo_root" | "$repo_root"/*) die 'access output must remain outside Git' ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || die 'access output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'access output parent must be an existing non-symlink directory'
+[[ $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'access output must be created on tmpfs'
+
+bootie_name=fabric-worker-bootie-$short_node
+bootie_namespace=$bootie_name
+ssh_options=(
+  -F /dev/null -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=5
+  -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no
+  -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+  -o PermitLocalCommand=no -o ProxyCommand=none -o ProxyJump=none
+  -o RequestTTY=no -o StrictHostKeyChecking=yes -o UpdateHostKeys=no
+  -o "UserKnownHostsFile=$known_hosts" -i "$identity"
+)
+ssh_root() {
+  # shellcheck disable=SC2029
+  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+}
+root_kubectl() {
+  ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=10s "$@"
+}
+
+[[ $(root_kubectl get --raw=/readyz) == ok ]] || die 'selected root API is not ready'
+"$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+if root_kubectl get namespace "$bootie_namespace" >/dev/null 2>&1; then
+  die "$bootie_namespace already exists; refusing to adopt it"
+fi
+for cluster_resource in clusterrole clusterrolebinding; do
+  if root_kubectl get "$cluster_resource" "$bootie_name" >/dev/null 2>&1; then
+    die "$cluster_resource $bootie_name already exists; refusing to adopt it"
+  fi
+done
+
+existing_node=false
+if existing_node_json=$(root_kubectl get node "$node" --output=json 2>/dev/null); then
+  existing_node=true
+  jq -e --arg mac "$mac_hexhyp" '
+    .metadata.labels["samcday.com/mac"] == $mac and
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    .metadata.labels["samcday.com/discovery"] == "true" and
+    .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    ((.status.nodeInfo.machineID // "") == "")
+  ' <<< "$existing_node_json" >/dev/null ||
+    die 'existing worker Node is not the same unjoined exact-MAC placeholder'
+fi
+
+work=$(mktemp -d -- "$output_parent/.fabric-worker-bootie-access.XXXXXXXX")
+chmod 0700 "$work"
+rbac=$work/rbac.yaml
+install -m 0600 "$rbac_template" "$rbac"
+sed -i \
+  -e "s/@FABRIC_WORKER_BOOTIE_NAMESPACE@/$bootie_namespace/g" \
+  -e "s/@FABRIC_WORKER_BOOTIE_NAME@/$bootie_name/g" \
+  -e "s/@FABRIC_WORKER_NODE@/$node/g" "$rbac"
+! grep -q '@FABRIC_' "$rbac" || die 'rendered worker RBAC retains a placeholder'
+validate_worker_rbac "$rbac" "$node" "$bootie_namespace" "$bootie_name" ||
+  die 'rendered worker RBAC is not the exact reviewed four-object scope'
+rbac_objects=$work/rbac-objects.json
+kubectl create --dry-run=client --validate=false --filename="$rbac" --output=json |
+  jq --slurp '.' > "$rbac_objects"
+chmod 0600 "$rbac_objects"
+
+cluster_mutated=false
+node_created=false
+node_uid=
+created_rbac='[]'
+succeeded=false
+cleanup() {
+  if [[ $succeeded != true ]]; then
+    if [[ $cluster_mutated == true ]]; then
+      # kubectl delete is name-only and has no UID/resourceVersion precondition.
+      # Never let a failure path race-delete a same-name replacement.  Retain
+      # the harmless, non-automounting RBAC/placeholder plus an exact tmpfs UID
+      # receipt for attended recovery; zero any TokenRequest material first.
+      if [[ -f $work/token && ! -L $work/token ]]; then
+        install -m 0600 /dev/null "$work/token" || true
+      fi
+      jq -n --arg node "$node" --arg node_uid "$node_uid" \
+        --argjson node_created "$node_created" --argjson rbac "$created_rbac" '{
+          schema: 1, failedIssue: true, node: $node, nodeUid: $node_uid,
+          nodeCreated: $node_created, rbacObjects: $rbac
+        }' > "$work/failed-cluster-receipt.json" 2>/dev/null || true
+      chmod 0600 "$work/failed-cluster-receipt.json" 2>/dev/null || true
+      printf 'worker access issuer: cluster state may exist; refusing name-only rollback\n' >&2
+      printf 'worker access issuer: zeroed-token recovery evidence retained at %s\n' \
+        "$work" >&2
+    else
+      find "$work" -mindepth 1 -delete 2>/dev/null || true
+      rmdir "$work" 2>/dev/null || true
+    fi
+  fi
+}
+trap cleanup EXIT
+
+cluster_mutated=true
+create_rbac_object() {
+  local expected_kind=$1 object created uid object_name object_namespace
+  object=$(jq -c --arg kind "$expected_kind" \
+    '[.[] | select(.kind == $kind)] | if length == 1 then .[0] else error("kind count") end' \
+    "$rbac_objects") || die "reviewed RBAC lacks exactly one $expected_kind"
+  if created=$(root_kubectl create --filename=- --output=json <<< "$object"); then
+    uid=$(jq -r '.metadata.uid // ""' <<< "$created")
+    object_name=$(jq -r '.metadata.name // ""' <<< "$object")
+    object_namespace=$(jq -r '.metadata.namespace // ""' <<< "$object")
+    jq -e --arg kind "$expected_kind" --arg name "$object_name" \
+      --arg namespace "$object_namespace" --arg node "$node" '
+        .kind == $kind and .metadata.name == $name and
+        ((.metadata.namespace // "") == $namespace) and
+        (.metadata.uid | type == "string" and
+          test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+        .metadata.labels["fabric.samcday.com/bootstrap-node"] == $node and
+        .metadata.labels["fabric.samcday.com/purpose"] == "worker-bootstrap"
+      ' <<< "$created" >/dev/null ||
+      die "API did not create the exact reviewed $expected_kind"
+    created_rbac=$(jq -c --arg kind "$expected_kind" --arg name "$object_name" \
+      --arg namespace "$object_namespace" --arg uid "$uid" \
+      '. + [{kind:$kind, name:$name, namespace:$namespace, uid:$uid}]' \
+      <<< "$created_rbac")
+  else
+    die "$expected_kind create failed; refusing to adopt a raced object"
+  fi
+}
+create_rbac_object Namespace
+create_rbac_object ServiceAccount
+create_rbac_object ClusterRole
+create_rbac_object ClusterRoleBinding
+serviceaccount_uid=$(jq -r \
+  '.[] | select(.kind == "ServiceAccount") | .uid' <<< "$created_rbac")
+[[ $serviceaccount_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+  die 'created ServiceAccount UID receipt is invalid'
+if [[ $existing_node != true ]]; then
+  if created_node_json=$(root_kubectl create --filename=- --output=json \
+    < "$stage_dir/node-discovery.json"); then
+    node_uid=$(jq -r '.metadata.uid // ""' <<< "$created_node_json")
+    [[ $node_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+      die 'created worker placeholder did not return a valid UID'
+    jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_hexhyp" '
+      .metadata.name == $node and .metadata.uid == $uid and
+      .metadata.labels["samcday.com/mac"] == $mac and
+      .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+      .metadata.labels["samcday.com/discovery"] == "true" and
+      .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+      ((.status.nodeInfo.machineID // "") == "")
+    ' <<< "$created_node_json" >/dev/null ||
+      die 'API did not create the exact worker placeholder requested'
+    node_created=true
+  else
+    die 'worker placeholder create failed; refusing to adopt a raced Node'
+  fi
+else
+  node_uid=$(jq -r '.metadata.uid // ""' <<< "$existing_node_json")
+  [[ $node_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die 'existing exact worker placeholder lacks a valid UID'
+fi
+
+root_kubectl --namespace "$bootie_namespace" create token "$bootie_name" \
+  --duration=4h > "$work/token"
+[[ -s $work/token && $(stat -Lc '%a' "$work/token") == 600 ]] ||
+  die 'projected ServiceAccount token was not written safely'
+token=$(< "$work/token")
+IFS=. read -r jwt_header jwt_payload jwt_signature extra <<< "$token"
+[[ -n $jwt_header && -n $jwt_payload && -n $jwt_signature && -z ${extra:-} ]] ||
+  die 'TokenRequest response is not a three-segment JWT'
+jwt_payload=${jwt_payload//-/+}
+jwt_payload=${jwt_payload//_/\/}
+case $((${#jwt_payload} % 4)) in
+  0) ;;
+  2) jwt_payload+='==' ;;
+  3) jwt_payload+='=' ;;
+  *) die 'TokenRequest JWT payload has invalid base64url length' ;;
+esac
+claims=$(printf '%s' "$jwt_payload" | base64 --decode) ||
+  die 'TokenRequest JWT payload could not be decoded'
+now=$(date --utc +%s)
+jq -e --arg sub "system:serviceaccount:$bootie_namespace:$bootie_name" \
+  --arg namespace "$bootie_namespace" --arg serviceaccount "$bootie_name" \
+  --arg serviceaccount_uid "$serviceaccount_uid" \
+  --argjson now "$now" '
+    .sub == $sub and
+    (.aud | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
+    (.iat | type == "number" and . <= $now + 60 and . >= $now - 60) and
+    (.exp | type == "number" and . > $now) and
+    ((.exp - .iat) >= 13800 and (.exp - .iat) <= 15000) and
+    (."kubernetes.io".namespace == $namespace) and
+    (."kubernetes.io".serviceaccount.name == $serviceaccount) and
+    ."kubernetes.io".serviceaccount.uid == $serviceaccount_uid
+  ' <<< "$claims" >/dev/null || die 'projected token claims are not the requested scoped identity'
+unset claims jwt_header jwt_payload jwt_signature token
+
+ssh_root sudo --non-interactive /usr/bin/base64 --wrap=0 -- \
+  /var/lib/rancher/k3s/server/tls/server-ca.crt |
+  base64 --decode > "$work/ca.crt"
+openssl x509 -in "$work/ca.crt" -noout -subject >/dev/null ||
+  die 'retrieved Kubernetes serving CA is invalid'
+ca_data=$(base64 --wrap=0 < "$work/ca.crt")
+jq -n --arg ca "$ca_data" --arg user "$bootie_name" '{
+  apiVersion: "v1", kind: "Config",
+  clusters: [{name: "fabric", cluster: {
+    server: "https://10.66.0.254:6443", "certificate-authority-data": $ca
+  }}],
+  users: [{name: $user, user: {tokenFile: "token"}}],
+  contexts: [{name: ($user + "@fabric"), context: {cluster: "fabric", user: $user}}],
+  "current-context": ($user + "@fabric")
+}' > "$work/kubeconfig"
+chmod 0600 "$work/ca.crt" "$work/kubeconfig" "$work/token"
+
+ip netns exec fabric-observer kubectl --kubeconfig "$work/kubeconfig" \
+  --request-timeout=10s get node "$node" --output=name >/dev/null ||
+  die 'scoped token cannot read the selected worker placeholder'
+for forbidden_node in "$other_node" fabric-az1-cp1; do
+  if ip netns exec fabric-observer kubectl --kubeconfig "$work/kubeconfig" \
+    --request-timeout=10s get node "$forbidden_node" --output=name >/dev/null 2>&1; then
+    die "scoped token can unexpectedly read $forbidden_node"
+  fi
+done
+if ip netns exec fabric-observer kubectl --kubeconfig "$work/kubeconfig" \
+  --request-timeout=10s get nodes --output=name >/dev/null 2>&1; then
+  die 'scoped token can unexpectedly list Nodes'
+fi
+
+# Re-read every issued object immediately before publishing the credential.
+# Same-name replacement cannot inherit either the TokenRequest's bound SA UID
+# or the UID receipts used by revocation.
+for rbac_index in {0..3}; do
+  recorded_kind=$(jq -r ".[$rbac_index].kind" <<< "$created_rbac")
+  recorded_name=$(jq -r ".[$rbac_index].name" <<< "$created_rbac")
+  recorded_namespace=$(jq -r ".[$rbac_index].namespace" <<< "$created_rbac")
+  recorded_uid=$(jq -r ".[$rbac_index].uid" <<< "$created_rbac")
+  case $recorded_kind in
+    Namespace) recorded_ref=namespace/$recorded_name; recorded_ns_args=() ;;
+    ServiceAccount)
+      recorded_ref=serviceaccount/$recorded_name
+      recorded_ns_args=(--namespace "$recorded_namespace")
+      ;;
+    ClusterRole) recorded_ref=clusterrole/$recorded_name; recorded_ns_args=() ;;
+    ClusterRoleBinding)
+      recorded_ref=clusterrolebinding/$recorded_name
+      recorded_ns_args=()
+      ;;
+    *) die "unexpected issued RBAC kind in receipt: $recorded_kind" ;;
+  esac
+  live_rbac=$(root_kubectl "${recorded_ns_args[@]}" get "$recorded_ref" --output=json) ||
+    die "issued $recorded_ref disappeared before credential publication"
+  jq -e --arg kind "$recorded_kind" --arg name "$recorded_name" \
+    --arg namespace "$recorded_namespace" --arg uid "$recorded_uid" \
+    --arg node "$node" --arg bootie_name "$bootie_name" \
+    --arg bootie_namespace "$bootie_namespace" '
+      .kind == $kind and .metadata.name == $name and .metadata.uid == $uid and
+      ((.metadata.namespace // "") == $namespace) and
+      .metadata.labels["fabric.samcday.com/bootstrap-node"] == $node and
+      .metadata.labels["fabric.samcday.com/purpose"] == "worker-bootstrap" and
+      (if $kind == "ServiceAccount" then
+         .automountServiceAccountToken == false
+       elif $kind == "ClusterRole" then
+         (.rules | length) == 1 and .rules[0].apiGroups == [""] and
+         .rules[0].resources == ["nodes"] and .rules[0].resourceNames == [$node] and
+         ((.rules[0].verbs | sort) == ["get", "patch"])
+       elif $kind == "ClusterRoleBinding" then
+         .roleRef == {apiGroup:"rbac.authorization.k8s.io", kind:"ClusterRole", name:$bootie_name} and
+         .subjects == [{kind:"ServiceAccount", name:$bootie_name, namespace:$bootie_namespace}]
+       else true end)
+    ' <<< "$live_rbac" >/dev/null ||
+    die "issued $recorded_ref UID or exact scope changed before credential publication"
+done
+live_node=$(root_kubectl get node "$node" --output=json) ||
+  die 'worker placeholder disappeared before credential publication'
+jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_hexhyp" '
+  .metadata.name == $node and .metadata.uid == $uid and
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "true" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "") and
+  ((.status.nodeInfo.machineID // "") == "")
+' <<< "$live_node" >/dev/null ||
+  die 'worker placeholder UID or safe state changed before credential publication'
+
+jq -n --arg node "$node" --arg mac "$mac" --arg root "$root_address" \
+  --arg namespace "$bootie_namespace" --arg serviceaccount "$bootie_name" \
+  --arg node_uid "$node_uid" --arg repo_commit "$repo_commit" \
+  --arg issued "$(date --utc --iso-8601=seconds)" \
+  --argjson rbac_objects "$created_rbac" '{
+    schema: 1, node: $node, mac: $mac, rootAddress: $root,
+    nodeUid: $node_uid,
+    namespace: $namespace, serviceAccount: $serviceaccount,
+    rbacObjects: $rbac_objects,
+    repoCommit: $repo_commit, issuedAt: $issued, requestedLifetime: "4h"
+  }' > "$work/identity.json"
+chmod 0600 "$work/identity.json"
+find "$rbac" "$rbac_objects" -maxdepth 0 -type f -delete
+
+mv -T -- "$work" "$output_dir"
+work=$output_dir
+succeeded=true
+printf 'issued scoped four-hour worker Bootie access for %s at %s\n' "$node" "$output_dir"
+if [[ $node_created == true ]]; then
+  printf 'predeclared %s in discovery mode for MAC %s\n' "$node" "$mac"
+else
+  printf 'reused the exact unjoined %s placeholder for MAC %s\n' "$node" "$mac"
+fi

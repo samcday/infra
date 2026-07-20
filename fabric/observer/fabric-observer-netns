@@ -7,6 +7,8 @@ readonly namespace=fabric-observer
 readonly expected_wifi_mac=d8:80:83:81:cb:f7
 readonly observer_address=10.66.0.2/24
 readonly observer_subnet=10.66.0.0/24
+readonly services_subnet=10.66.1.0/24
+readonly services_gateway=10.66.0.1
 readonly observer_ssid=fabric-observer
 readonly psk_input_dir=/run/fabric-observer-input
 readonly required_psk_file=$psk_input_dir/sae-password
@@ -54,9 +56,11 @@ The passphrase is never accepted as an argument or environment variable.
 Setup is refused unless the named non-Wi-Fi uplink has carrier and owns the
 sole IPv4 default route across the root namespace's routing tables. Any ordinary IPv6
 default must use that same uplink. The complete Wi-Fi PHY is moved into the
-namespace; no veth, bridge, DHCP, gateway, configured IP DNS, IPv6, default
-route, NAT, or Tailscale device is created. This trusted-operator boundary is
-not a process sandbox: pathname AF_UNIX and system D-Bus remain shared.
+namespace. It receives one explicit route to the fabric services prefix
+through the fabric router, but no veth, bridge, DHCP, configured IP DNS, IPv6,
+default route, NAT, or Tailscale device is created. This trusted-operator
+boundary is not a process sandbox: pathname AF_UNIX and system D-Bus remain
+shared.
 EOF
 }
 
@@ -889,6 +893,7 @@ verify_active() {
     sed 's/[[:space:]]*$//')
   expected_routes=$(printf '%s\n' \
     "$observer_subnet dev $state_wifi proto kernel scope link src 10.66.0.2" \
+    "$services_subnet via $services_gateway dev $state_wifi proto static src 10.66.0.2" \
     "local 10.66.0.2 dev $state_wifi table local proto kernel scope host src 10.66.0.2" \
     "broadcast 10.66.0.255 dev $state_wifi table local proto kernel scope link src 10.66.0.2" \
     'local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1' \
@@ -907,6 +912,9 @@ verify_active() {
     die 'observer namespace has unexpected IPv6 policy-routing rules'
   ip netns exec "$namespace" ip -4 route get 10.66.0.1 | grep -q \
     "dev $state_wifi .*src 10.66.0.2" || die 'fabric router route does not select the observer Wi-Fi and address'
+  ip netns exec "$namespace" ip -4 route get 10.66.1.10 | grep -q \
+    "via $services_gateway dev $state_wifi .*src 10.66.0.2" ||
+    die 'services route does not use the fabric router and observer address'
   if ip netns exec "$namespace" ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
     die 'observer namespace unexpectedly has a route to the public Internet'
   fi
@@ -919,6 +927,12 @@ verify_active() {
     net.ipv4.conf.all.forwarding \
     net.ipv4.conf.default.forwarding \
     "net.ipv4.conf.$state_wifi.forwarding" \
+    net.ipv4.conf.all.accept_redirects \
+    net.ipv4.conf.default.accept_redirects \
+    "net.ipv4.conf.$state_wifi.accept_redirects" \
+    net.ipv4.conf.all.secure_redirects \
+    net.ipv4.conf.default.secure_redirects \
+    "net.ipv4.conf.$state_wifi.secure_redirects" \
     net.ipv4.conf.all.proxy_arp \
     net.ipv4.conf.default.proxy_arp \
     "net.ipv4.conf.$state_wifi.proxy_arp" \
@@ -1020,6 +1034,12 @@ do_setup() {
   ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.forwarding=0
   ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.forwarding=0
   ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.forwarding=0"
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.accept_redirects=0
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.accept_redirects=0
+  ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.accept_redirects=0"
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.secure_redirects=0
+  ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.secure_redirects=0
+  ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.secure_redirects=0"
   ip netns exec "$namespace" sysctl -qw net.ipv4.conf.all.proxy_arp=0
   ip netns exec "$namespace" sysctl -qw net.ipv4.conf.default.proxy_arp=0
   ip netns exec "$namespace" sysctl -qw "net.ipv4.conf.$wifi.proxy_arp=0"
@@ -1045,6 +1065,8 @@ do_setup() {
   )
   wait_for_association "$wifi"
   ip netns exec "$namespace" ip -4 address add "$observer_address" dev "$wifi"
+  ip netns exec "$namespace" ip -4 route add "$services_subnet" \
+    via "$services_gateway" dev "$wifi" src 10.66.0.2 proto static
 
   write_state active "$uplink" "$wifi" "$phy"
   verify_active strict

@@ -4,6 +4,7 @@ set -euo pipefail
 umask 077
 
 readonly router_address=10.66.0.1
+readonly service_router_address=10.66.1.1
 readonly observer_address=10.66.0.2
 readonly observer_subnet=10.66.0.0/24
 readonly observer_namespace=fabric-observer
@@ -11,12 +12,16 @@ readonly -a expected_dns_names=(
   fabric-az1-cp1.fabric.internal
   fabric-az1-cp2.fabric.internal
   fabric-az1-cp3.fabric.internal
+  fabric-az1-svc1.fabric.internal
+  fabric-az1-svc2.fabric.internal
   api.fabric.internal
 )
 readonly -a expected_dns_answers=(
   10.66.0.10
   10.66.0.11
   10.66.0.12
+  10.66.1.10
+  10.66.1.11
   10.66.0.254
 )
 
@@ -380,6 +385,37 @@ network_sections_of_type() {
     sed -n "s/^network\.\([^.=]*\)=$1$/\1/p"
 }
 
+network_sections() {
+  uci -q show network |
+    sed -n 's/^network\.\([^.=]*\)=[^=]*$/\1/p'
+}
+
+network_option_keys() {
+  section=$1
+  prefix="network.$section."
+  uci -q show "network.$section" |
+    while IFS= read -r line; do
+      case $line in
+        "$prefix"*=*)
+          option=${line#"$prefix"}
+          printf '%s\n' "${option%%=*}"
+          ;;
+      esac
+    done |
+    sort
+}
+
+assert_network_option_keys() {
+  section=$1
+  allowed=$2
+  actual=$(network_option_keys "$section")
+  wanted=$(printf '%s\n' "$allowed" | tr ' ' '\n' | sort)
+  [ "$actual" = "$wanted" ] ||
+    fail "unexpected option set in network section $section"
+  printf 'NETWORK_OPTION_KEYS %s=%s\n' "$section" \
+    "$(printf '%s' "$actual" | tr '\n' ',')"
+}
+
 network_device_by_name() {
   uci -q show network |
     sed -n "s/^network\.\([^.=]*\)\.name='$1'$/\1/p"
@@ -428,18 +464,55 @@ esac
 unset root_password_field
 printf 'ROOT_PASSWORD=nonempty-sha512-crypt\n'
 
-assert_uci network.lan.ipaddr 10.66.0.1
-assert_uci network.lan.netmask 255.255.255.0
+assert_uci fabric.flat_l2 migration
+assert_uci fabric.flat_l2.enabled 1
+assert_uci fabric.flat_l2.profile unmanaged-switch-flat-l2
+assert_uci fabric.flat_l2.physical_device eth1
+assert_uci fabric.flat_l2.root_cidr 10.66.0.0/24
+assert_uci fabric.flat_l2.service_cidr 10.66.1.0/24
+assert_uci fabric.flat_l2.removal_gate managed-vlan-trunk-ready
+
+actual_network_sections=$(network_sections)
+expected_network_sections='loopback
+globals
+lan
+wan
+wan6
+br_lan'
+[ "$actual_network_sections" = "$expected_network_sections" ] ||
+  fail 'network section set or ordering differs from the reviewed topology'
+printf 'NETWORK_SECTION_ORDER=%s\n' \
+  "$(printf '%s' "$actual_network_sections" | tr '\n' ',')"
+
+assert_uci network.loopback interface
+assert_uci network.loopback.device lo
+assert_uci network.loopback.proto static
+assert_uci network.loopback.ipaddr 127.0.0.1
+assert_uci network.loopback.netmask 255.0.0.0
+assert_network_option_keys loopback 'device ipaddr netmask proto'
+assert_uci network.globals globals
+assert_uci network.globals.packet_steering 1
+assert_network_option_keys globals packet_steering
+
+assert_uci network.lan interface
+assert_uci network.lan.ipaddr '10.66.0.1/24 10.66.1.1/24'
+assert_uci_absent network.lan.netmask
 assert_uci network.lan.device br-lan
 assert_uci network.lan.proto static
 assert_uci_absent network.lan.ip6assign
 assert_uci_absent network.lan.disabled
 assert_uci_absent network.lan.gateway
+assert_network_option_keys lan 'device ipaddr proto'
+assert_uci network.wan interface
 assert_uci network.wan.proto dhcp
 assert_uci_absent network.wan.device
 assert_uci_absent network.wan.disabled
+assert_network_option_keys wan proto
+assert_uci network.wan6 interface
+assert_uci network.wan6.proto dhcpv6
 assert_uci network.wan6.disabled 1
 assert_uci_absent network.wan6.device
+assert_network_option_keys wan6 'disabled proto'
 
 actual_network_interfaces=$(network_sections_of_type interface)
 expected_network_interfaces='loopback
@@ -449,10 +522,12 @@ wan6'
 [ "$actual_network_interfaces" = "$expected_network_interfaces" ] ||
   fail 'network interface set or ordering differs from the reviewed policy'
 bridge_device=$(network_device_by_name br-lan)
-[ "$(printf '%s\n' "$bridge_device" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
-  fail 'expected exactly one br-lan device section'
+[ "$bridge_device" = br_lan ] || fail 'expected exact named br-lan device section'
+assert_uci network.br_lan device
+assert_uci network.br_lan.name br-lan
 assert_uci "network.$bridge_device.type" bridge
 assert_uci "network.$bridge_device.ports" eth1
+assert_network_option_keys br_lan 'name ports type'
 [ "$(network_sections_of_type device)" = "$bridge_device" ] ||
   fail 'unexpected additional network device section'
 for unexpected_network_type in bridge-vlan rule route route6 switch switch_vlan; do
@@ -475,15 +550,66 @@ for bridge_port_path in /sys/class/net/br-lan/brif/*; do
 done
 [ "$wireless_bridge_ports" -eq 1 ] ||
   fail 'expected exactly one live fabric observer AP in br-lan'
-live_lan_address=$(ip -o -4 address show dev br-lan scope global)
-[ "$(printf '%s\n' "$live_lan_address" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
-  fail 'live br-lan has an unexpected number of global IPv4 addresses'
-case $live_lan_address in
-  *" inet 10.66.0.1/24 "*) ;;
-  *) fail 'live br-lan lacks the exact fabric router address' ;;
-esac
-[ -z "$(ip -o -6 address show dev br-lan scope global)" ] ||
-  fail 'live br-lan unexpectedly has a global IPv6 address'
+live_lan_addresses=$(ip -o -4 address show dev br-lan scope global |
+  awk '{ print $4 }' | LC_ALL=C sort)
+expected_lan_addresses='10.66.0.1/24
+10.66.1.1/24'
+[ "$live_lan_addresses" = "$expected_lan_addresses" ] ||
+  fail 'live br-lan lacks the exact root and services router addresses'
+[ -z "$(ip -o -6 address show dev br-lan)" ] ||
+  fail 'live br-lan unexpectedly has an IPv6 address'
+
+flat_l2_sysctl=/etc/sysctl.d/90-fabric-flat-l2.conf
+[ -f "$flat_l2_sysctl" ] && [ ! -L "$flat_l2_sysctl" ] ||
+  fail 'persistent flat-L2 sysctl policy is missing or unsafe'
+[ "$(stat -c '%u:%a:%h:%F' "$flat_l2_sysctl")" = '0:644:1:regular file' ] ||
+  fail 'persistent flat-L2 sysctl policy metadata is unexpected'
+active_flat_l2_sysctls=$(sed \
+  -e '/^[[:space:]]*#/d' \
+  -e '/^[[:space:]]*$/d' \
+  "$flat_l2_sysctl")
+expected_flat_l2_sysctls='net.ipv4.ip_forward=1
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+net.ipv4.conf.br-lan.send_redirects=0
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.br-lan.accept_redirects=0
+net.ipv4.conf.all.secure_redirects=0
+net.ipv4.conf.default.secure_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.default.accept_redirects=0
+net.ipv6.conf.all.accept_source_route=-1
+net.ipv6.conf.default.accept_source_route=-1
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+net.ipv6.conf.br-lan.disable_ipv6=1'
+[ "$active_flat_l2_sysctls" = "$expected_flat_l2_sysctls" ] ||
+  fail 'persistent flat-L2 sysctl policy differs from the reviewed policy'
+[ -f /etc/sysctl.conf ] && [ ! -L /etc/sysctl.conf ] ||
+  fail 'preserved sysctl conffile is missing or unsafe'
+while IFS='=' read -r protected_sysctl wanted_sysctl; do
+  if awk -F= -v wanted="$protected_sysctl" '
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+      {
+          key = $1
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+          if (key == wanted) found = 1
+      }
+      END { exit !found }
+  ' /etc/sysctl.conf; then
+    fail "preserved /etc/sysctl.conf overrides $protected_sysctl"
+  fi
+  live_sysctl=$(sysctl -n "$protected_sysctl") ||
+    fail "could not read live sysctl $protected_sysctl"
+  [ "$live_sysctl" = "$wanted_sysctl" ] ||
+    fail "live sysctl differs from persistent policy: $protected_sysctl"
+done <<EOF
+$expected_flat_l2_sysctls
+EOF
+printf 'SYSCTL_POLICY=image-owned-no-preserved-overrides-live-exact\n'
 
 # The dead physical WAN port is deliberately outside every logical network.
 # Prove that the sole WAN protocol instance is live on a wireless netifd
@@ -509,8 +635,8 @@ wan_default_count=$(ip -o -4 route show default dev "$wan_l3_device" |
   awk 'NF { count++ } END { print count + 0 }')
 [ "$wan_default_count" -eq 1 ] ||
   fail 'live wireless WAN does not own exactly one IPv4 default route'
-[ -z "$(ip -o -6 address show dev "$wan_l3_device" scope global)" ] ||
-  fail 'live wireless WAN unexpectedly has a global IPv6 address'
+[ -z "$(ip -o -6 address show dev "$wan_l3_device")" ] ||
+  fail 'live wireless WAN unexpectedly has an IPv6 address'
 [ ! -e /sys/class/net/eth0/master ] ||
   fail 'dead physical WAN port is unexpectedly enslaved to another device'
 [ -r /sys/class/net/eth0/carrier ] ||
@@ -547,8 +673,8 @@ assert_uci dhcp.@dnsmasq[0].local /fabric.internal/
 assert_uci dhcp.@dnsmasq[0].domain fabric.internal
 assert_uci dhcp.@dnsmasq[0].localservice 1
 assert_uci dhcp.@dnsmasq[0].address \
-  '/fabric-az1-cp1.fabric.internal/10.66.0.10 /fabric-az1-cp2.fabric.internal/10.66.0.11 /fabric-az1-cp3.fabric.internal/10.66.0.12 /api.fabric.internal/10.66.0.254'
-assert_uci uhttpd.main.listen_http 10.66.0.1:80
+  '/fabric-az1-cp1.fabric.internal/10.66.0.10 /fabric-az1-cp2.fabric.internal/10.66.0.11 /fabric-az1-cp3.fabric.internal/10.66.0.12 /fabric-az1-svc1.fabric.internal/10.66.1.10 /fabric-az1-svc2.fabric.internal/10.66.1.11 /api.fabric.internal/10.66.0.254'
+assert_uci uhttpd.main.listen_http '10.66.0.1:80 10.66.1.1:80'
 assert_uci_absent uhttpd.main.listen_https
 assert_uci_absent uhttpd.main.lua_prefix
 assert_uci uhttpd.main.no_dirlists 1
@@ -580,14 +706,14 @@ printf 'DATA_MOUNT source=%s type=%s options=%s\n' \
 
 assert_section_count defaults 1
 assert_section_count zone 2
-assert_section_count rule 11
+assert_section_count rule 25
 assert_section_count forwarding 0
 assert_section_count redirect 0
 assert_section_count nat 0
 assert_section_count include 0
 firewall_section_count=$(uci -q show firewall |
   awk -F= '$1 ~ /^firewall\.[^.]+$/ { count++ } END { print count + 0 }')
-[ "$firewall_section_count" -eq 14 ] ||
+[ "$firewall_section_count" -eq 28 ] ||
   fail 'firewall contains an unexpected section type'
 
 defaults_section=$(sections_of_type defaults)
@@ -621,17 +747,31 @@ assert_uci "firewall.$wan_zone.network" 'wan wan6'
 assert_uci "firewall.$wan_zone.masq" 1
 assert_uci "firewall.$wan_zone.mtu_fix" 1
 assert_uci "firewall.$wan_zone.masq_src" \
-  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32 10.66.1.10/32 10.66.1.11/32'
 
 expected_rules='fabric_wan_dhcp_reply
 fabric_reject_other_wan_input
 fabric_block_private
 fabric_root_egress
+fabric_services_egress
 fabric_reject_other_fabric_to_wan
 fabric_reject_wan_to_fabric
+fabric_flat_reject_services_etcd
+fabric_flat_services_api
+fabric_flat_services_vxlan
+fabric_flat_roots_vxlan
+fabric_flat_services_kubelet
+fabric_flat_roots_kubelet
+fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_reject_services_roots
+fabric_flat_reject_roots_services
 fabric_router_dns
 fabric_router_ntp
 fabric_router_http
+fabric_router_services_dns
+fabric_router_services_ntp
+fabric_router_services_http
 fabric_router_ssh
 fabric_reject_other_fabric_router_input'
 actual_rules=$(sections_of_type rule)
@@ -642,12 +782,36 @@ printf 'FIREWALL_RULE_ORDER=%s\n' "$(printf '%s' "$actual_rules" | tr '\n' ',')"
 assert_firewall_option_keys fabric_wan_dhcp_reply \
   'dest_port family name proto src src_port target'
 assert_firewall_option_keys fabric_block_private \
-  'dest dest_ip name proto src target'
+  'dest dest_ip family name proto src target'
 assert_firewall_option_keys fabric_root_egress \
-  'dest name proto src src_ip target'
+  'dest family name proto src src_ip target'
+assert_firewall_option_keys fabric_services_egress \
+  'dest dest_port family name proto src src_ip target'
+for exact_flat_forward in \
+  fabric_flat_reject_services_etcd \
+  fabric_flat_services_api \
+  fabric_flat_services_vxlan \
+  fabric_flat_roots_vxlan \
+  fabric_flat_services_kubelet \
+  fabric_flat_roots_kubelet \
+  fabric_flat_observer_services_ssh \
+  fabric_flat_services_bootie_rootfs; do
+  assert_firewall_option_keys "$exact_flat_forward" \
+    'dest dest_ip dest_port family name proto src src_ip target'
+done
+for flat_reject in \
+  fabric_flat_reject_services_roots \
+  fabric_flat_reject_roots_services; do
+  assert_firewall_option_keys "$flat_reject" \
+    'dest dest_ip family name proto src src_ip target'
+done
 for service_rule in dns ntp http ssh; do
   assert_firewall_option_keys "fabric_router_$service_rule" \
-    'dest_port name proto src src_ip target'
+    'dest_ip dest_port family name proto src src_ip target'
+done
+for service_rule in dns ntp http; do
+  assert_firewall_option_keys "fabric_router_services_$service_rule" \
+    'dest_ip dest_port family name proto src src_ip target'
 done
 for input_reject_rule in \
   fabric_reject_other_wan_input \
@@ -679,6 +843,7 @@ assert_uci firewall.fabric_reject_other_wan_input.target REJECT
 assert_uci firewall.fabric_block_private.name Block-fabric-to-private-WAN
 assert_uci firewall.fabric_block_private.src lan
 assert_uci firewall.fabric_block_private.dest wan
+assert_uci firewall.fabric_block_private.family ipv4
 assert_uci firewall.fabric_block_private.proto all
 assert_uci firewall.fabric_block_private.dest_ip \
   '10.0.0.0/8 100.64.0.0/10 172.16.0.0/12 192.168.0.0/16'
@@ -687,10 +852,21 @@ assert_uci firewall.fabric_block_private.target REJECT
 assert_uci firewall.fabric_root_egress.name Allow-roots-to-public-WAN
 assert_uci firewall.fabric_root_egress.src lan
 assert_uci firewall.fabric_root_egress.dest wan
+assert_uci firewall.fabric_root_egress.family ipv4
 assert_uci firewall.fabric_root_egress.src_ip \
   '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
 assert_uci firewall.fabric_root_egress.proto all
 assert_uci firewall.fabric_root_egress.target ACCEPT
+
+assert_uci firewall.fabric_services_egress.name Allow-services-to-public-Web
+assert_uci firewall.fabric_services_egress.src lan
+assert_uci firewall.fabric_services_egress.dest wan
+assert_uci firewall.fabric_services_egress.family ipv4
+assert_uci firewall.fabric_services_egress.src_ip \
+  '10.66.1.10/32 10.66.1.11/32'
+assert_uci firewall.fabric_services_egress.proto tcp
+assert_uci firewall.fabric_services_egress.dest_port '80 443'
+assert_uci firewall.fabric_services_egress.target ACCEPT
 
 assert_uci firewall.fabric_reject_other_fabric_to_wan.name \
   Reject-other-fabric-to-WAN
@@ -707,10 +883,70 @@ assert_uci firewall.fabric_reject_wan_to_fabric.family ipv4
 assert_uci firewall.fabric_reject_wan_to_fabric.proto all
 assert_uci firewall.fabric_reject_wan_to_fabric.target REJECT
 
-service_sources='10.66.0.2/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
-for service_rule in dns ntp http; do
+assert_flat_rule() {
+  section=$1
+  rule_name=$2
+  source_addresses=$3
+  destination_addresses=$4
+  protocol=$5
+  destination_ports=$6
+  verdict=$7
+  assert_uci "firewall.$section.name" "$rule_name"
+  assert_uci "firewall.$section.src" lan
+  assert_uci "firewall.$section.dest" lan
+  assert_uci "firewall.$section.family" ipv4
+  assert_uci "firewall.$section.src_ip" "$source_addresses"
+  assert_uci "firewall.$section.dest_ip" "$destination_addresses"
+  assert_uci "firewall.$section.proto" "$protocol"
+  assert_uci "firewall.$section.dest_port" "$destination_ports"
+  assert_uci "firewall.$section.target" "$verdict"
+}
+
+root_nodes='10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+service_nodes='10.66.1.10/32 10.66.1.11/32'
+assert_flat_rule fabric_flat_reject_services_etcd \
+  Reject-services-to-root-etcd "$service_nodes" "$root_nodes" tcp \
+  '2379 2380 2381' REJECT
+assert_flat_rule fabric_flat_services_api \
+  Allow-services-to-fabric-API "$service_nodes" 10.66.0.254/32 tcp 6443 ACCEPT
+assert_flat_rule fabric_flat_services_vxlan \
+  Allow-services-to-root-VXLAN "$service_nodes" "$root_nodes" udp 8472 ACCEPT
+assert_flat_rule fabric_flat_roots_vxlan \
+  Allow-roots-to-services-VXLAN "$root_nodes" "$service_nodes" udp 8472 ACCEPT
+assert_flat_rule fabric_flat_services_kubelet \
+  Allow-services-to-root-kubelets "$service_nodes" "$root_nodes" tcp 10250 ACCEPT
+assert_flat_rule fabric_flat_roots_kubelet \
+  Allow-roots-to-service-kubelets "$root_nodes" "$service_nodes" tcp 10250 ACCEPT
+assert_flat_rule fabric_flat_observer_services_ssh \
+  Allow-observer-to-services-SSH 10.66.0.2/32 "$service_nodes" tcp 22 ACCEPT
+assert_flat_rule fabric_flat_services_bootie_rootfs \
+  Allow-services-to-Bootie-rootfs "$service_nodes" 10.66.0.2/32 tcp 80 ACCEPT
+
+assert_uci firewall.fabric_flat_reject_services_roots.name \
+  Reject-other-services-to-roots
+assert_uci firewall.fabric_flat_reject_services_roots.src lan
+assert_uci firewall.fabric_flat_reject_services_roots.dest lan
+assert_uci firewall.fabric_flat_reject_services_roots.family ipv4
+assert_uci firewall.fabric_flat_reject_services_roots.src_ip 10.66.1.0/24
+assert_uci firewall.fabric_flat_reject_services_roots.dest_ip 10.66.0.0/24
+assert_uci firewall.fabric_flat_reject_services_roots.proto all
+assert_uci firewall.fabric_flat_reject_services_roots.target REJECT
+assert_uci firewall.fabric_flat_reject_roots_services.name \
+  Reject-other-roots-to-services
+assert_uci firewall.fabric_flat_reject_roots_services.src lan
+assert_uci firewall.fabric_flat_reject_roots_services.dest lan
+assert_uci firewall.fabric_flat_reject_roots_services.family ipv4
+assert_uci firewall.fabric_flat_reject_roots_services.src_ip 10.66.0.0/24
+assert_uci firewall.fabric_flat_reject_roots_services.dest_ip 10.66.1.0/24
+assert_uci firewall.fabric_flat_reject_roots_services.proto all
+assert_uci firewall.fabric_flat_reject_roots_services.target REJECT
+
+root_service_sources='10.66.0.2/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+for service_rule in dns ntp; do
   assert_uci "firewall.fabric_router_$service_rule.src" lan
-  assert_uci "firewall.fabric_router_$service_rule.src_ip" "$service_sources"
+  assert_uci "firewall.fabric_router_$service_rule.family" ipv4
+  assert_uci "firewall.fabric_router_$service_rule.src_ip" "$root_service_sources"
+  assert_uci "firewall.fabric_router_$service_rule.dest_ip" 10.66.0.1/32
   assert_uci "firewall.fabric_router_$service_rule.target" ACCEPT
 done
 assert_uci firewall.fabric_router_dns.name Allow-fabric-router-DNS
@@ -720,11 +956,42 @@ assert_uci firewall.fabric_router_ntp.name Allow-fabric-router-NTP
 assert_uci firewall.fabric_router_ntp.proto udp
 assert_uci firewall.fabric_router_ntp.dest_port 123
 assert_uci firewall.fabric_router_http.name Allow-fabric-router-HTTP
+assert_uci firewall.fabric_router_http.src lan
+assert_uci firewall.fabric_router_http.family ipv4
+assert_uci firewall.fabric_router_http.src_ip \
+  "$root_service_sources 10.66.0.100/32"
+assert_uci firewall.fabric_router_http.dest_ip 10.66.0.1/32
 assert_uci firewall.fabric_router_http.proto tcp
 assert_uci firewall.fabric_router_http.dest_port 80
+assert_uci firewall.fabric_router_http.target ACCEPT
+
+for service_rule in dns ntp; do
+  assert_uci "firewall.fabric_router_services_$service_rule.src" lan
+  assert_uci "firewall.fabric_router_services_$service_rule.family" ipv4
+  assert_uci "firewall.fabric_router_services_$service_rule.src_ip" "$service_nodes"
+  assert_uci "firewall.fabric_router_services_$service_rule.dest_ip" 10.66.1.1/32
+  assert_uci "firewall.fabric_router_services_$service_rule.target" ACCEPT
+done
+assert_uci firewall.fabric_router_services_dns.name Allow-services-router-DNS
+assert_uci firewall.fabric_router_services_dns.proto 'tcp udp'
+assert_uci firewall.fabric_router_services_dns.dest_port 53
+assert_uci firewall.fabric_router_services_ntp.name Allow-services-router-NTP
+assert_uci firewall.fabric_router_services_ntp.proto udp
+assert_uci firewall.fabric_router_services_ntp.dest_port 123
+assert_uci firewall.fabric_router_services_http.name Allow-services-router-HTTP
+assert_uci firewall.fabric_router_services_http.src lan
+assert_uci firewall.fabric_router_services_http.family ipv4
+assert_uci firewall.fabric_router_services_http.src_ip "$service_nodes"
+assert_uci firewall.fabric_router_services_http.dest_ip 10.66.1.1/32
+assert_uci firewall.fabric_router_services_http.proto tcp
+assert_uci firewall.fabric_router_services_http.dest_port 80
+assert_uci firewall.fabric_router_services_http.target ACCEPT
+
 assert_uci firewall.fabric_router_ssh.name Allow-observer-to-fabric-router-SSH
 assert_uci firewall.fabric_router_ssh.src lan
+assert_uci firewall.fabric_router_ssh.family ipv4
 assert_uci firewall.fabric_router_ssh.src_ip 10.66.0.2/32
+assert_uci firewall.fabric_router_ssh.dest_ip 10.66.0.1/32
 assert_uci firewall.fabric_router_ssh.proto tcp
 assert_uci firewall.fabric_router_ssh.dest_port 22
 assert_uci firewall.fabric_router_ssh.target ACCEPT
@@ -883,15 +1150,43 @@ assert_live_fw4_rule forward_lan Block-fabric-to-private-WAN 1 \
   'ip daddr' 'jump reject_to_wan'
 assert_live_fw4_rule forward_lan Allow-roots-to-public-WAN 1 \
   'ip saddr' 'jump accept_to_wan'
+assert_live_fw4_rule forward_lan Allow-services-to-public-Web 1 \
+  'ip saddr' 'jump accept_to_wan'
 assert_live_fw4_rule forward_lan Reject-other-fabric-to-WAN 1 \
   'meta nfproto ipv4' 'jump reject_to_wan'
 assert_live_fw4_rule forward_wan Reject-WAN-to-fabric 1 \
   'meta nfproto ipv4' 'jump reject_to_lan'
+assert_live_fw4_rule forward_lan Reject-services-to-root-etcd 1 \
+  'ip saddr' 'jump reject_to_lan'
+assert_live_fw4_rule forward_lan Allow-services-to-fabric-API 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-services-to-root-VXLAN 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-roots-to-services-VXLAN 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-services-to-root-kubelets 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-roots-to-service-kubelets 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-observer-to-services-SSH 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-services-to-Bootie-rootfs 1 \
+  'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Reject-other-services-to-roots 1 \
+  'ip saddr' 'jump reject_to_lan'
+assert_live_fw4_rule forward_lan Reject-other-roots-to-services 1 \
+  'ip saddr' 'jump reject_to_lan'
 assert_live_fw4_rule input_lan Allow-fabric-router-DNS 2 \
   'ip saddr' accept
 assert_live_fw4_rule input_lan Allow-fabric-router-NTP 1 \
   'ip saddr' accept
 assert_live_fw4_rule input_lan Allow-fabric-router-HTTP 1 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-services-router-DNS 2 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-services-router-NTP 1 \
+  'ip saddr' accept
+assert_live_fw4_rule input_lan Allow-services-router-HTTP 1 \
   'ip saddr' accept
 assert_live_fw4_rule input_lan Allow-observer-to-fabric-router-SSH 1 \
   'ip saddr' accept
@@ -901,17 +1196,32 @@ assert_live_fw4_rule input_lan Reject-other-fabric-router-input 1 \
 assert_live_fw4_chain input_wan 3 'jump reject_from_wan' \
   'Allow-WAN-DHCPv4-replies
 Reject-other-WAN-input'
-assert_live_fw4_chain forward_lan 4 'jump reject_to_lan' \
+assert_live_fw4_chain forward_lan 15 'jump reject_to_lan' \
   'Block-fabric-to-private-WAN
 Allow-roots-to-public-WAN
-Reject-other-fabric-to-WAN'
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Reject-services-to-root-etcd
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
 assert_live_fw4_chain forward_wan 2 'jump reject_to_wan' \
   'Reject-WAN-to-fabric'
-assert_live_fw4_chain input_lan 7 'jump reject_from_lan' \
+assert_live_fw4_chain input_lan 11 'jump reject_from_lan' \
   'Allow-fabric-router-DNS
 Allow-fabric-router-DNS
 Allow-fabric-router-NTP
 Allow-fabric-router-HTTP
+Allow-services-router-DNS
+Allow-services-router-DNS
+Allow-services-router-NTP
+Allow-services-router-HTTP
 Allow-observer-to-fabric-router-SSH
 Reject-other-fabric-router-input'
 printf 'FIREWALL_RUNTIME=fw4-state-includes-empty-live-tables-chains-order-ipv4-verdicts-and-counters-pass\n'
@@ -960,6 +1270,18 @@ listeners=$(netstat -lntup) || fail 'could not enumerate listening sockets'
 if printf '%s\n' "$listeners" | grep -Eqi 'dropbear|odhcpd'; then
   fail 'dropbear or odhcpd owns a listening socket'
 fi
+uhttpd_listener_addresses=$(printf '%s\n' "$listeners" | awk '
+  $1 == "tcp" && $6 == "LISTEN" && $7 ~ /\/uhttpd$/ { print $4 }
+' | LC_ALL=C sort)
+expected_uhttpd_listener_addresses='10.66.0.1:80
+10.66.1.1:80'
+[ "$uhttpd_listener_addresses" = "$expected_uhttpd_listener_addresses" ] ||
+  fail 'uhttpd is not listening only on the two reviewed router addresses'
+curl --disable --fail --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 10 --output /dev/null \
+  http://10.66.1.1/static/SHASUMS.txt ||
+  fail 'service-plane pinned-asset listener is not reachable locally'
+printf 'LISTENER_HTTP=10.66.0.1:80,10.66.1.1:80\n'
 printf 'PACKAGES_BEGIN\n%s\nPACKAGES_END\n' "$installed_packages"
 printf 'REMOVED_PACKAGES=absent\n'
 printf 'LISTENER_POLICY=forbidden-service-owners-absent\n'
@@ -1065,7 +1387,7 @@ REMOTE_SNAPSHOT
 chmod 0600 -- "$snapshot"
 
 awk '
-  /^(BOARD_NAME|OPENWRT_RELEASE|FIRSTBOOT_DEFAULTS|NETWORK_TOPOLOGY|UCI |UCI_ABSENT |DATA_MOUNT |FIREWALL_|LISTENER_POLICY|REMOVED_PACKAGES|SSHD_POLICY|SNAPSHOT_ASSERTIONS|WIRELESS_OPERATOR_SSID)/ {
+  /^(BOARD_NAME|OPENWRT_RELEASE|FIRSTBOOT_DEFAULTS|NETWORK_|UCI |UCI_ABSENT |DATA_MOUNT |FIREWALL_|LISTENER_HTTP|LISTENER_POLICY|REMOVED_PACKAGES|SSHD_POLICY|SYSCTL_POLICY|SNAPSHOT_ASSERTIONS|WIRELESS_OPERATOR_SSID)/ {
     print
     next
   }
@@ -1196,6 +1518,7 @@ chmod 0600 -- "$evidence_dir/public-probe.stderr"
 printf '%s\n' \
   'result=pass' \
   "router=$router_address" \
+  "service_router=$service_router_address" \
   "observer=$observer_address" \
   "serial_ed25519_fingerprint=$serial_fingerprint" \
   "boot_id=$router_boot_id" \
@@ -1210,5 +1533,5 @@ complete=true
 printf '\nFabric router read-only commissioning snapshot: PASS\n'
 printf 'Protected evidence: %s\n' "$evidence_dir"
 printf 'Separate attended gates still required:\n'
-printf '  - source-role traffic matrix (.2, .10-.12, .20, and WAN)\n'
+printf '  - source-role matrix (observer/Bootie, roots, services, inventory, rejects, WAN)\n'
 printf '  - reboot persistence and stable-invariant/host-key comparison\n'

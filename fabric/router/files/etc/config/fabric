@@ -1,0 +1,7 @@
+config migration 'flat_l2'
+	option enabled '1'
+	option profile 'unmanaged-switch-flat-l2'
+	option physical_device 'eth1'
+	option root_cidr '10.66.0.0/24'
+	option service_cidr '10.66.1.0/24'
+	option removal_gate 'managed-vlan-trunk-ready'

@@ -4,20 +4,24 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 node=
 confirmation=
+check_only=false
 
 usage() {
   cat >&2 <<'EOF'
-Roll out the committed fabric root nftables policy to one consensus member.
+Roll out the committed fabric root network policy to one consensus member.
 
 Usage:
   scripts/rollout-fabric-root-firewall --node <cp1|cp2|cp3> \
-    --confirm ROLLOUT-FABRIC-ROOT-FIREWALL:<node>:<policy-sha256>
+    --confirm ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:<node>:<combined-policy-sha256>
 
-Run one member at a time and prove target-local plus cluster-wide API/etcd
-health before proceeding to the next. The helper acquires a cluster-wide lock,
-requires a clean pushed main branch, and arms a target-local five-minute
-rollback timer before replacing the policy. A failed run deliberately leaves
-the cluster lock for attended inspection.
+  scripts/rollout-fabric-root-firewall --check
+
+The network policy is the exact root nftables guard plus the exact routed-host
+sysctl payload. Run one member at a time and prove target-local plus
+cluster-wide API/etcd health before proceeding to the next. The helper
+acquires a cluster-wide lock, requires a clean pushed main branch, and arms a
+target-local five-minute rollback timer before replacing either policy. A
+failed run deliberately leaves the cluster lock for attended inspection.
 EOF
 }
 
@@ -38,6 +42,10 @@ while (($#)); do
       confirmation=$2
       shift 2
       ;;
+    --check)
+      check_only=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -48,38 +56,134 @@ while (($#)); do
   esac
 done
 
-case $node in
-  cp1) full_node=fabric-az1-cp1 ;;
-  cp2) full_node=fabric-az1-cp2 ;;
-  cp3) full_node=fabric-az1-cp3 ;;
-  *) die '--node must be cp1, cp2, or cp3' ;;
-esac
+if $check_only; then
+  [[ -z $node && -z $confirmation ]] || die '--check does not accept --node or --confirm'
+else
+  case $node in
+    cp1)
+      full_node=fabric-az1-cp1
+      root_ip=10.66.0.10
+      ;;
+    cp2)
+      full_node=fabric-az1-cp2
+      root_ip=10.66.0.11
+      ;;
+    cp3)
+      full_node=fabric-az1-cp3
+      root_ip=10.66.0.12
+      ;;
+    *) die '--node must be cp1, cp2, or cp3' ;;
+  esac
+fi
 
-for command in git jq kubectl sha256sum yq; do
+commands=(awk sha256sum yq)
+if ! $check_only; then
+  commands+=(git jq kubectl)
+fi
+for command in "${commands[@]}"; do
   command -v "$command" >/dev/null || die "required command is unavailable: $command"
 done
 
 cd "$repo_root"
+
+firewall_path=/etc/nftables/fabric-guard.nft
+routing_path=/etc/sysctl.d/90-fabric-root-routing.conf
+# shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
+firewall_policy=$(TARGET_PATH="$firewall_path" yq -er \
+  '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
+  fabric/butane/firewall.yaml)
+[[ $firewall_policy == *'10.66.1.10, 10.66.1.11'* ]] ||
+  die 'committed firewall policy does not contain the exact two service-node addresses'
+# shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
+routing_policy=$(TARGET_PATH="$routing_path" yq -er \
+  '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
+  fabric/butane/network.yaml)
+normalized_routing_policy=$(awk -F '#' '
+  {
+    line = $1
+    gsub(/[[:space:]]/, "", line)
+    if (line != "") print line
+  }
+' <<<"$routing_policy")
+expected_routing_policy='net.ipv4.ip_forward=1
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.*.accept_redirects=0
+net.ipv4.conf.all.secure_redirects=0
+net.ipv4.conf.default.secure_redirects=0
+net.ipv4.conf.*.secure_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+net.ipv4.conf.*.send_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+net.ipv4.conf.*.accept_source_route=0
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.default.accept_redirects=0
+net.ipv6.conf.*.accept_redirects=0
+net.ipv6.conf.all.accept_source_route=-1
+net.ipv6.conf.default.accept_source_route=-1
+net.ipv6.conf.*.accept_source_route=-1'
+[[ $normalized_routing_policy == "$expected_routing_policy" ]] ||
+  die 'committed routed-host sysctl payload differs from the reviewed exact policy'
+# shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
+routing_metadata=$(TARGET_PATH="$routing_path" yq -er '
+  .storage.files[]
+  | select(.path == strenv(TARGET_PATH))
+  | [.overwrite, .mode]
+  | @tsv
+' fabric/butane/network.yaml)
+[[ $routing_metadata == $'true\t420' ]] ||
+  die 'committed routed-host sysctl payload must overwrite a mode-0644 file'
+
+policy_hash=$(
+  {
+    printf '%s\0%s\0' "$firewall_path" "$firewall_policy"
+    printf '%s\0%s\0' "$routing_path" "$routing_policy"
+  } | sha256sum | awk '{print $1}'
+)
+
+if $check_only; then
+  echo "validated combined fabric root network policy $policy_hash"
+  exit 0
+fi
+
 [[ $(git branch --show-current) == main ]] || die 'run only from main'
 [[ -z $(git status --porcelain) ]] || die 'worktree must be clean'
 git fetch --quiet origin main
 [[ $(git rev-parse HEAD) == "$(git rev-parse origin/main)" ]] ||
   die 'HEAD must exactly match pushed origin/main'
 
-policy=$(yq -er \
-  '.storage.files[] | select(.path == "/etc/nftables/fabric-guard.nft") | .contents.inline' \
-  fabric/butane/firewall.yaml)
-[[ $policy == *'10.66.1.10, 10.66.1.11'* ]] ||
-  die 'committed policy does not contain the exact two service-node addresses'
-policy_hash=$(printf '%s' "$policy" | sha256sum | awk '{print $1}')
-expected="ROLLOUT-FABRIC-ROOT-FIREWALL:$node:$policy_hash"
+expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:$node:$policy_hash"
 [[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
 
 ik=("$repo_root/scripts/ik" --context=fabric)
 ssh=("$repo_root/scripts/fabric-ssh" "$node")
-lock_name=fabric-root-firewall-rollout-lock
+lock_name=fabric-root-network-policy-rollout-lock
 lock_holder="$(hostname):$$:$node:$policy_hash"
 success=false
+service_probe=10.66.1.10
+
+route_interface=
+validate_service_route() {
+  local evidence destination gateway interface source address_evidence
+
+  evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o route get "$service_probe") ||
+    die "$full_node cannot resolve the service-plane route"
+  [[ $evidence != *$'\n'* ]] || die "$full_node returned an ambiguous service-plane route"
+  destination=${evidence%% *}
+  gateway=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "via") print $(i + 1) }' <<<"$evidence")
+  interface=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1) }' <<<"$evidence")
+  source=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }' <<<"$evidence")
+  [[ $destination == "$service_probe" && $gateway == 10.66.0.1 && -n $interface &&
+      $interface != lo && $interface != flannel.1 && $source == "$root_ip" ]] ||
+    die "$full_node service-plane route is not $root_ip -> 10.66.0.1 on a physical NIC: $evidence"
+  address_evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o address show dev "$interface" scope global) ||
+    die "cannot inspect $full_node routed interface $interface"
+  grep -Eq "(^|[[:space:]])inet ${root_ip//./\\.}/24([[:space:]]|$)" <<<"$address_evidence" ||
+    die "$full_node routed interface $interface does not carry $root_ip/24"
+  route_interface=$interface
+}
 
 "${ik[@]}" get --raw=/readyz >/dev/null || die 'fabric API is not ready before rollout'
 "${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
@@ -87,12 +191,16 @@ success=false
 lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
   -o jsonpath='{.spec.renewTime}')
 [[ -n $lease_before ]] || die "cannot read $full_node heartbeat Lease"
+validate_service_route
+route_interface_before=$route_interface
+[[ $("${ssh[@]}" /usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]] ||
+  die "$full_node does not have the K3s-required IPv4 forwarding state before rollout"
 
 if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
   --from-literal="holder=$lock_holder" >/dev/null; then
   current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
     -o jsonpath='{.data.holder}' 2>/dev/null || true)
-  die "another or stale root-firewall rollout lock exists: ${current_holder:-unknown}"
+  die "another or stale root-network-policy rollout lock exists: ${current_holder:-unknown}"
 fi
 
 cleanup() {
@@ -107,51 +215,205 @@ cleanup() {
 }
 trap cleanup EXIT
 
+firewall_next=/run/fabric-guard.nft.next
+firewall_previous=/run/fabric-guard.nft.previous
+routing_next=/run/fabric-root-routing.conf.next
+routing_previous=/run/fabric-root-routing.conf.previous
+routing_previous_absent=/run/fabric-root-routing.conf.previous-absent
+routing_live_previous=/run/fabric-root-routing.live.previous
+rollback_program_path=/run/fabric-root-network-policy-rollback
+rollback_unit=fabric-root-network-policy-rollback
+
 for remote_path in \
-  /run/fabric-guard.nft.next \
-  /run/fabric-guard.nft.previous \
-  /run/fabric-guard-rollback; do
+  "$firewall_next" \
+  "$firewall_previous" \
+  "$routing_next" \
+  "$routing_previous" \
+  "$routing_previous_absent" \
+  "$routing_live_previous" \
+  "$rollback_program_path"; do
   "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$remote_path" ||
     die "stale remote rollout artifact requires inspection: $remote_path"
 done
 if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  "$rollback_unit.timer" "$rollback_unit.service" \
   fabric-guard-rollback.timer fabric-guard-rollback.service; then
-  die 'a target-local firewall rollback is already active'
+  die 'a target-local root network-policy rollback is already active'
+fi
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -d /etc/sysctl.d
+"${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L /etc/sysctl.d
+sysctl_dir_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%F' /etc/sysctl.d)
+[[ $sysctl_dir_metadata == 0:0:755:directory ]] ||
+  die "unsafe routed-host sysctl directory on $full_node: $sysctl_dir_metadata"
+
+printf '%s' "$firewall_policy" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$firewall_next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$firewall_next"
+remote_firewall_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$firewall_next" | awk '{print $1}')
+local_firewall_hash=$(printf '%s' "$firewall_policy" | sha256sum | awk '{print $1}')
+[[ $remote_firewall_hash == "$local_firewall_hash" ]] || die 'firewall candidate changed in transport'
+"${ssh[@]}" sudo --non-interactive /usr/sbin/nft --check --file "$firewall_next"
+"${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
+  "$firewall_path" "$firewall_previous"
+
+printf '%s' "$routing_policy" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$routing_next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$routing_next"
+remote_routing_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$routing_next" | awk '{print $1}')
+local_routing_hash=$(printf '%s' "$routing_policy" | sha256sum | awk '{print $1}')
+[[ $remote_routing_hash == "$local_routing_hash" ]] || die 'routed-host sysctl candidate changed in transport'
+
+if "${ssh[@]}" sudo --non-interactive /usr/bin/test -e "$routing_path"; then
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$routing_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test -f "$routing_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
+    "$routing_path" "$routing_previous"
+else
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$routing_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$routing_previous_absent"
 fi
 
-printf '%s' "$policy" |
-  "${ssh[@]}" sudo --non-interactive /usr/bin/tee /run/fabric-guard.nft.next >/dev/null
-"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 /run/fabric-guard.nft.next
-remote_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum /run/fabric-guard.nft.next | awk '{print $1}')
-[[ $remote_hash == "$policy_hash" ]] || die 'candidate changed in transport'
-"${ssh[@]}" sudo --non-interactive /usr/sbin/nft --check --file /run/fabric-guard.nft.next
-"${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
-  /etc/nftables/fabric-guard.nft /run/fabric-guard.nft.previous
+# shellcheck disable=SC2016 # This is a literal remote program.
+capture_live_program='#!/usr/bin/env bash
+set -euo pipefail
+output=$1
+: >"$output"
+chmod 0600 "$output"
+capture() {
+  local path=$1 key
+  key=${path#/proc/sys/}
+  printf "%s = %s\n" "$key" "$(<"$path")" >>"$output"
+}
+capture /proc/sys/net/ipv4/ip_forward
+for directory in /proc/sys/net/ipv4/conf/*; do
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    capture "$directory/$knob"
+  done
+done
+for directory in /proc/sys/net/ipv6/conf/*; do
+  for knob in accept_redirects accept_source_route; do
+    capture "$directory/$knob"
+  done
+done
+'
+printf '%s' "$capture_live_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- "$routing_live_previous"
 
+# shellcheck disable=SC2016 # This is a literal remote program.
 rollback_program='#!/usr/bin/env bash
 set -euo pipefail
-/usr/bin/install --mode=0644 /run/fabric-guard.nft.previous /etc/nftables/fabric-guard.nft
-/usr/bin/systemctl reload fabric-guard.service
+firewall_path=$1
+firewall_previous=$2
+routing_path=$3
+routing_previous=$4
+routing_previous_absent=$5
+routing_live_previous=$6
+if [[ -e $routing_previous_absent ]]; then
+  rm --force "$routing_path"
+else
+  cp --preserve=mode,ownership,timestamps "$routing_previous" "$routing_path"
+fi
+/usr/sbin/sysctl -e --load "$routing_live_previous" >/dev/null
+while IFS=" =" read -r key expected; do
+  [[ -n $key && -n $expected ]] || continue
+  current=$(/usr/sbin/sysctl -n "$key" 2>/dev/null) || continue
+  [[ $current == "$expected" ]]
+done <"$routing_live_previous"
+install --mode=0644 "$firewall_previous" "$firewall_path"
+systemctl reload fabric-guard.service
 '
 printf '%s' "$rollback_program" |
-  "${ssh[@]}" sudo --non-interactive /usr/bin/tee /run/fabric-guard-rollback >/dev/null
-"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0700 /run/fabric-guard-rollback
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_program_path" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0700 "$rollback_program_path"
 "${ssh[@]}" sudo --non-interactive /usr/bin/systemd-run \
   --quiet \
   --collect \
-  --unit=fabric-guard-rollback \
+  --unit="$rollback_unit" \
   --on-active=5m \
   --timer-property=AccuracySec=1s \
-  /run/fabric-guard-rollback
+  "$rollback_program_path" \
+  "$firewall_path" \
+  "$firewall_previous" \
+  "$routing_path" \
+  "$routing_previous" \
+  "$routing_previous_absent" \
+  "$routing_live_previous"
 "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
-  fabric-guard-rollback.timer
+  "$rollback_unit.timer"
 
 "${ssh[@]}" sudo --non-interactive /usr/bin/install --mode=0644 \
-  /run/fabric-guard.nft.next /etc/nftables/fabric-guard.nft
+  "$routing_next" "$routing_path"
+# shellcheck disable=SC2016 # This is a literal remote program.
+apply_live_program='#!/usr/bin/env bash
+set -euo pipefail
+[[ $(/usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]]
+for directory in /proc/sys/net/ipv4/conf/*; do
+  scope=${directory##*/}
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    /usr/sbin/sysctl -q -w "net/ipv4/conf/$scope/$knob=0"
+  done
+done
+for directory in /proc/sys/net/ipv6/conf/*; do
+  scope=${directory##*/}
+  /usr/sbin/sysctl -q -w "net/ipv6/conf/$scope/accept_redirects=0"
+  /usr/sbin/sysctl -q -w "net/ipv6/conf/$scope/accept_source_route=-1"
+done
+'
+printf '%s' "$apply_live_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/install --mode=0644 \
+  "$firewall_next" "$firewall_path"
 "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl reload fabric-guard.service
 "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet fabric-guard.service
 "${ssh[@]}" sudo --non-interactive /usr/sbin/nft list set inet fabric_guard service_nodes_v4 |
   grep -Fq '10.66.1.10, 10.66.1.11'
+
+installed_routing_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$routing_path" | awk '{print $1}')
+[[ $installed_routing_hash == "$local_routing_hash" ]] ||
+  die 'installed routed-host sysctl payload changed before verification'
+routing_file_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%h:%F' "$routing_path")
+[[ $routing_file_metadata == '0:0:644:1:regular file' ]] ||
+  die "installed routed-host sysctl metadata is unsafe: $routing_file_metadata"
+# shellcheck disable=SC2016 # This is a literal remote program.
+verify_live_program='#!/usr/bin/env bash
+set -euo pipefail
+[[ $(/usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]]
+for directory in /proc/sys/net/ipv4/conf/*; do
+  scope=${directory##*/}
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    [[ $(/usr/sbin/sysctl -n "net/ipv4/conf/$scope/$knob") == 0 ]]
+  done
+done
+for directory in /proc/sys/net/ipv6/conf/*; do
+  scope=${directory##*/}
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_redirects") == 0 ]]
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_source_route") == -1 ]]
+done
+'
+printf '%s' "$verify_live_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s
+for scope in all default "$route_interface_before"; do
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    [[ $("${ssh[@]}" /usr/sbin/sysctl -n "net/ipv4/conf/$scope/$knob") == 0 ]] ||
+      die "$full_node live IPv4 $scope.$knob is not zero"
+  done
+done
+for scope in all default "$route_interface_before"; do
+  [[ $("${ssh[@]}" /usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_redirects") == 0 ]] ||
+    die "$full_node live IPv6 $scope.accept_redirects is not zero"
+  [[ $("${ssh[@]}" /usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_source_route") == -1 ]] ||
+    die "$full_node live IPv6 $scope.accept_source_route is not minus one"
+done
+validate_service_route
+[[ $route_interface == "$route_interface_before" ]] ||
+  die "$full_node service-plane route moved interfaces during rollout"
+
 "${ssh[@]}" sudo --non-interactive /usr/local/bin/k3s kubectl get \
   --raw='/readyz?verbose' | grep -Fq 'readyz check passed'
 "${ssh[@]}" sudo --non-interactive /usr/local/bin/etcdctl \
@@ -179,18 +441,27 @@ for _attempt in {1..30}; do
 done
 $heartbeat_advanced || die "$full_node did not publish a fresh Ready heartbeat after reload"
 
-"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl stop fabric-guard-rollback.timer
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl stop "$rollback_unit.timer"
 if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
-  fabric-guard-rollback.timer fabric-guard-rollback.service; then
-  die 'target-local rollback could not be disarmed'
+  "$rollback_unit.timer" "$rollback_unit.service"; then
+  die 'target-local root network-policy rollback could not be disarmed'
 fi
-installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
-  /etc/nftables/fabric-guard.nft | awk '{print $1}')
-[[ $installed_hash == "$policy_hash" ]] || die 'installed policy changed or rolled back before acceptance'
+installed_firewall_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$firewall_path" | awk '{print $1}')
+[[ $installed_firewall_hash == "$local_firewall_hash" ]] ||
+  die 'installed firewall policy changed or rolled back before acceptance'
+installed_routing_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$routing_path" | awk '{print $1}')
+[[ $installed_routing_hash == "$local_routing_hash" ]] ||
+  die 'installed routed-host sysctl policy changed or rolled back before acceptance'
 
 "${ssh[@]}" sudo --non-interactive /usr/bin/rm --force \
-  /run/fabric-guard.nft.next \
-  /run/fabric-guard.nft.previous \
-  /run/fabric-guard-rollback
+  "$firewall_next" \
+  "$firewall_previous" \
+  "$routing_next" \
+  "$routing_previous" \
+  "$routing_previous_absent" \
+  "$routing_live_previous" \
+  "$rollback_program_path"
 success=true
-echo "$node now runs service-plane firewall policy $policy_hash"
+echo "$node now runs combined root network policy $policy_hash on $route_interface"

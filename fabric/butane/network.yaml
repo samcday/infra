@@ -2,6 +2,36 @@ variant: fcos
 version: 1.5.0
 storage:
     files:
+        - path: /etc/sysctl.d/90-fabric-root-routing.conf
+          overwrite: true
+          mode: 420
+          contents:
+            inline: |
+                # K3s/Flannel require IPv4 forwarding. Linux router mode needs
+                # both all and per-interface accept_redirects, while host mode
+                # needs either; send_redirects also needs only either value.
+                # Pin every existing and future scope so a mode transition
+                # cannot enable receipt or emission: service-plane traffic must
+                # keep using the reviewed 10.66.0.1 router path.
+                net.ipv4.ip_forward = 1
+                net.ipv4.conf.all.accept_redirects = 0
+                net.ipv4.conf.default.accept_redirects = 0
+                net.ipv4.conf.*.accept_redirects = 0
+                net.ipv4.conf.all.secure_redirects = 0
+                net.ipv4.conf.default.secure_redirects = 0
+                net.ipv4.conf.*.secure_redirects = 0
+                net.ipv4.conf.all.send_redirects = 0
+                net.ipv4.conf.default.send_redirects = 0
+                net.ipv4.conf.*.send_redirects = 0
+                net.ipv4.conf.all.accept_source_route = 0
+                net.ipv4.conf.default.accept_source_route = 0
+                net.ipv4.conf.*.accept_source_route = 0
+                net.ipv6.conf.all.accept_redirects = 0
+                net.ipv6.conf.default.accept_redirects = 0
+                net.ipv6.conf.*.accept_redirects = 0
+                net.ipv6.conf.all.accept_source_route = -1
+                net.ipv6.conf.default.accept_source_route = -1
+                net.ipv6.conf.*.accept_source_route = -1
         - path: /etc/NetworkManager/conf.d/90-fabric-ignore-carrier.conf
           overwrite: true
           mode: 420

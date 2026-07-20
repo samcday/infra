@@ -31,8 +31,10 @@ associate it only with the router's low-power WPA3-SAE `fabric-observer` SSID,
 and assign `10.66.0.2/24` there.
 
 The observer namespace has only loopback and that Wi-Fi interface. It receives
-no veth, macvlan, bridge, gateway, DHCP, configured IP DNS, IPv6, default
-route, Tailscale device, connection sharing, NAT, or proxy ARP. Its per-netns
+one explicit `10.66.1.0/24 via 10.66.0.1` route so the trusted operator can
+reach the two service nodes with source `10.66.0.2`; it receives no veth,
+macvlan, bridge, DHCP, configured IP DNS, IPv6, default route, Tailscale
+device, connection sharing, NAT, or proxy ARP. Its per-netns
 `nsswitch.conf` permits only local files for conventional libc hostname
 resolution, and verification proves a public name does not resolve through
 `getent`. This structural network boundary remains closed even when unrelated
@@ -104,7 +106,8 @@ The PHY name in that example is illustrative; copy the exact value printed by
 again, fixes the admitted MAC, and moves the complete PHY into the namespace.
 It uses a root-only wpa_supplicant configuration on `/run`, associates with
 WPA3-SAE and mandatory management-frame protection, assigns only
-`10.66.0.2/24`, installs an empty per-namespace resolver plus a files-only NSS
+`10.66.0.2/24`, installs only the bounded service-prefix route through the
+fabric router, installs an empty per-namespace resolver plus a files-only NSS
 policy, and then runs a full verification. A failed partial setup runs the same
 resumable restoration machine as teardown. It persists
 `restoring-phy`, `phy-in-root`, or `cleanup` before each irreversible boundary
@@ -158,14 +161,16 @@ ip link show
 sudo ip netns exec fabric-observer ip -brief link
 sudo ip netns exec fabric-observer ip -4 address show
 sudo ip netns exec fabric-observer ip -4 route get 10.66.0.10
+sudo ip netns exec fabric-observer ip -4 route get 10.66.1.10
 ! sudo ip netns exec fabric-observer ip -4 route get 1.1.1.1
 sudo ip netns exec fabric-observer sysctl net.ipv4.ip_forward
 sudo ip netns exec fabric-observer sysctl net.ipv6.conf.all.forwarding
 ```
 
 The root namespace must not contain the Wi-Fi PHY or a route to `10.66.0.0/24`.
-The observer namespace must select Wi-Fi with source `10.66.0.2` for fabric,
-have no default route, and report both namespace forwarding values as `0`.
+The observer namespace must select Wi-Fi with source `10.66.0.2` directly for
+the root prefix and through `10.66.0.1` for the service prefix, have no default
+route, and report both namespace forwarding values as `0`.
 Inspect its complete link and route tables and reject any extra interface.
 
 The metrics listeners are intentionally plaintext on this isolated L2. Do not

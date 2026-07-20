@@ -5,7 +5,11 @@ temporary degraded-hardware profile uses `radio0` as a 2.4 GHz upstream
 station and logical WAN, `radio1` as the 5 GHz operator AP, and `eth1` as the
 only fabric Ethernet link. The failed 2.5G `eth0` port remains physically
 disconnected and unassigned. The LAN is the non-advertised `10.66.0.0/24`
-fabric provisioning and management network.
+root network plus the allocated `10.66.1.0/24` services network. During the
+explicit `unmanaged-switch-flat-l2` migration profile, both prefixes live on
+the same `br-lan`/`eth1` physical L2. This preserves the final service-node
+addresses without pretending that unmanaged switches provide a security
+boundary.
 
 Build from the repository root:
 
@@ -39,15 +43,16 @@ deployment. Those belong to the documented NAND/NOR recovery paths.
 
 For an attended upgrade of an already commissioned fabric image, preserve the
 existing SSH host identity and operator attachment with ordinary `sysupgrade`
-(without `-n`). The old wired-WAN profile persists `eth0` in its saved network
-configuration, so first stage the new image and require `sysupgrade -T` to
-accept it. With the damaged jack physically empty and observer access proven,
-delete both `network.wan.device` and `network.wan6.device`, commit only the
-`network` package, and confirm both options are absent before starting the
-upgrade. Do not reload the live network between that preparatory commit and
-`sysupgrade`. Keep USB-C serial attached throughout the attended transition;
-the new first-boot default refuses to create the radio WAN if either stale
-Ethernet binding survives.
+(without `-n`) and require `sysupgrade -T` to accept the staged image. OpenWrt
+preserves `/etc/config/network`, so the new first-boot default deletes every
+saved network section and reconstructs only the reviewed loopback, globals,
+LAN, WAN, disabled WAN6, and `br-lan`/`eth1` device sections. It asserts every
+section, option, and value before configuring DHCP, HTTP, firewall, or Wi-Fi;
+stale aliases, routes, policy rules, VLANs, and physical-device bindings cannot
+survive. The globals section retains packet steering but deliberately has no
+ULA prefix because the fabric router disables IPv6. Keep USB-C serial attached
+throughout this attended transition and do not rely on the pre-upgrade network
+path returning until first boot completes.
 
 The image deliberately:
 
@@ -63,18 +68,25 @@ The image deliberately:
 - gives both LAN and WAN reject-by-default input/forward policies, with named
   IPv4 catch-all rejects for deterministic fw4 counters, no WAN-to-LAN
   forwarding, and no inherited stock WAN exceptions;
-- blocks the three roots from reaching RFC1918 or Tailscale/CGNAT
+- blocks the roots and services from reaching RFC1918 or Tailscale/CGNAT
   `100.64.0.0/10` destinations through the WAN, while granting public egress
-  only to their three static addresses;
+  to the three root addresses and TCP/80+443 public egress to only
+  `10.66.1.10-10.66.1.11`;
 - permits key-only OpenSSH from observer `10.66.0.2` and no other LAN source;
   password authentication and every SSH forwarding mode are disabled, and
   Dropbear is absent;
-- permits router DNS, NTP, and pinned-asset HTTP only from the observer and
-  three roots;
+- permits router DNS, NTP, and pinned-asset HTTP on `10.66.0.1` only from the
+  observer and three roots, and on `10.66.1.1` only from the two service nodes;
 - disables LAN DHCPv4, DHCPv6, router advertisements, and NDP proxying; the
-  `odhcpd` server is absent, and the router, observer, and consensus nodes use
-  reviewed static addresses while worker addressing waits for a separate
-  VLAN/subnet;
+  `odhcpd` server is absent, and the router, observer, consensus, and service
+  nodes use reviewed static addresses;
+- pins IPv4 forwarding on while disabling IPv4/IPv6 redirect acceptance, IPv4
+  redirect generation, source routes, and the IPv6 stack itself through the
+  uniquely named image-owned `/etc/sysctl.d/90-fabric-flat-l2.conf`; IPv6
+  `accept_source_route=-1` rejects Routing Header type 2, which kernel value
+  `0` would still accept. An old preserved
+  `/etc/sysctl.conf` cannot erase the policy during ordinary sysupgrade and
+  same-interface routing cannot teach a node a route around fw4;
 - leaves DHCP/TFTP PXE disabled until a worker-only, authenticated provisioner
   exists; the unused iPXE binaries are absent and the initial consensus
   Ignitions are carried offline.
@@ -85,40 +97,66 @@ CDC USB-network drivers at image-build time. Those packages and escape-path
 hooks are absent, not merely inactive; USB storage remains for the pinned asset
 device.
 LuCI and the unused router Prometheus exporter are force-removed; bare `uhttpd`
-binds only `10.66.0.1:80` and serves the pinned public files beneath `/static/`
-with directory listings disabled and no web administration surface.
+binds only `10.66.0.1:80` and `10.66.1.1:80` and serves the pinned public files
+beneath `/static/` with directory listings disabled and no web administration
+surface.
 
 This chassis has prior lightning damage and its labelled 2.5G `eth0` port is
 treated as failed. Leave that jack empty and leave `eth0` outside every UCI
 network, bridge, and firewall zone. The temporary uplink is the `radio0`
 2.4 GHz station, which obtains the logical WAN address from the existing
 upstream WLAN. Connect the labelled 1G `eth1` LAN port to the measured
-five-port fabric switch, then connect only the three initial consensus nodes
-to that switch. `radio1` remains the observer AP and must never join the WAN.
+five-port root switch. A second unmanaged five-port switch may be daisy-chained
+from it for exactly `fabric-az1-svc1` and `fabric-az1-svc2`; both switches are
+one broadcast domain. `radio1` remains the observer AP and must never join the
+WAN.
 
 Power the OpenWrt One through its USB-C power input from the measured extension
-board. Do not use PoE on the damaged jack, connect a fabric switch port directly
-to the existing hub/home LAN, or add workers until the documented
-VLAN/firewall gate passes. This radio-WAN layout is a temporary hardware
-exception, not the permanent root-router design. Replace the lightning-damaged
-unit with known-good wired hardware before fabric becomes authoritative;
-OpenWrt Two is a candidate only after it is available, supported, and passes
-the same commissioning and failure gates.
+board. Do not use PoE on the damaged jack or connect a fabric switch port
+directly to the existing hub/home LAN. Only the two reconstructible, trusted
+platform agents are admitted during this flat-L2 exception; tenant, lab,
+KubeVirt, and other untrusted nodes still wait for the managed-switch boundary.
+This radio-WAN and flat-L2 layout is a temporary hardware exception, not the
+permanent root-router design. Replace the lightning-damaged unit with
+known-good wired hardware before fabric becomes authoritative; OpenWrt Two is
+a candidate only after it is available, supported, and passes the same
+commissioning and failure gates.
 
 The firewall overlay deletes every inherited rule, forwarding, redirect, NAT,
 and include before constructing this policy. Four explicit IPv4 catch-all
 rejects mirror the zone defaults so WAN input, fabric-to-WAN, WAN-to-fabric,
-and fabric router-input denials have named fw4 counters. IPv6 remains denied by
-the zone defaults and is checked separately by wired packet capture. Same-L2
-root traffic bypasses the router and is constrained separately by the FCOS
-`fabric_guard` host table.
+and fabric router-input denials have named fw4 counters. IPv6 is disabled by
+network configuration and sysctl and remains denied by the zone defaults as
+defense in depth. The two IPv4 prefixes route through the same LAN zone; exact
+address-pinned rules permit only API TCP/6443, bidirectional Flannel UDP/8472,
+bidirectional kubelet TCP/10250, and attended observer `10.66.0.2` SSH to the
+two exact service addresses. During one attended install, those two service
+addresses may also fetch the live rootfs from Bootie at exactly
+`10.66.0.2:80`. An explicit earlier rule rejects service access to root
+TCP/2379, TCP/2380, and TCP/2381, followed by per-direction cross-prefix
+catch-all rejects. IPv4 ICMP redirects are disabled so ordinary hosts retain
+the router path. Same-subnet traffic still bypasses the router and is
+constrained separately by the FCOS root and services host tables. These
+rules admit or reject new routed flows: fw4's global established/related path
+runs before `forward_lan`, and a reload does not retroactively evict conntrack.
+The root `fabric_guard` host policy is the enforcement layer that kills stale
+etcd flows; bring-up and incident gates must not treat the router's explicit
+etcd reject as session teardown.
+
+The marker in `/etc/config/fabric` names this
+`unmanaged-switch-flat-l2` profile and its
+`managed-vlan-trunk-ready` removal gate. When the managed switch arrives, do
+not retain the marker or same-zone rules: move `10.66.1.1/24` to its VLAN
+interface, put services in a distinct firewall zone, and preserve the current
+IP/port policy as inter-zone rules. No node readdressing is required.
 
 ## Initial install and recovery boundary
 
 For normal operation leave the rear boot selector at `NAND`. The preferred
 first deployment is a wired staging connection or USB-C serial console at
 115200 8N1, followed by `sysupgrade -n` of the generated sysupgrade image.
-Verify the artifact SHA-256, key-only SSH, LAN address `10.66.0.1`, exact
+Verify the artifact SHA-256, key-only SSH, LAN addresses `10.66.0.1` and
+`10.66.1.1`, exact
 degraded role mapping (`radio0` WAN station, `radio1` observer AP, `eth1`
 fabric LAN, and unassigned `eth0`), and isolation rules before moving the three
 nodes behind it.
@@ -225,10 +263,13 @@ automatic includes, and runtime fw4 UBus/include inputs; it also proves the
 reviewed IPv4 rules' exact chain, order, terminal accept/reject jump, and
 anonymous counter. The topology gate must also prove that `eth0` is unassigned,
 `eth1` is the sole wired LAN bridge member, `radio0` is the sole logical-WAN
-station, and `radio1` is the sole observer AP. It derives the seven-file asset
+station, and `radio1` is the sole observer AP. It must also prove the exact two
+LAN prefixes, migration marker, redirect sysctls, same-zone service/root rule
+order, service WAN restriction, and absence of broad forwardings or redirects.
+It derives the seven-file asset
 manifest locally, checks exact remote membership and bytes, streams and hashes
 every HTTP response,
-requires exact answers for all four fabric DNS records over UDP and TCP, and
+requires exact answers for all six fabric DNS records over UDP and TCP, and
 obtains an NTP sample. It does not trust the router data stick's own
 `SHASUMS.txt` in isolation.
 
@@ -240,13 +281,18 @@ and chrony drift state and does not enter the etcd peer reconnect path.
 The source-role matrix remains a separate attended gate. Do not repurpose the
 fixed observer helper or add ad-hoc routes to its namespace. With no real root
 attached, a guarded, trap-restored procedure must exercise observer `.2`, each
-admitted root address `.10` through `.12`, an unauthorized `.20`, and a
-controlled WAN-side client. It must prove router-service source restrictions,
-observer and unauthorized forwarding denial, root public egress, private and
-CGNAT denial, WAN-input denial, and WAN-to-fabric denial using known-live
+admitted root address `.10` through `.12`, service addresses `10.66.1.10-.11`,
+the active inventory address `10.66.0.100`, another unauthorized address in
+each prefix, and a controlled WAN-side client. It must prove router-service
+source restrictions, observer and unauthorized forwarding denial, exact
+API/VXLAN/kubelet plus observer-to-service SSH same-interface forwarding, and
+service-node TCP/80 to the exact Bootie observer address while adjacent ports,
+hosts, and unauthorized sources fail. It must also prove explicit etcd denial,
+root public egress, service-only public TCP/80+443 egress, private and CGNAT
+denial, WAN-input denial, and WAN-to-fabric denial using known-live
 destinations plus deltas on the corresponding named fw4 counters. Do not claim
-a separate masquerade counter: a successful active public probe together with
-an increased `Allow-roots-to-public-WAN` counter proves the permitted NAT path.
+a separate masquerade counter: successful active public probes together with
+increased source allow counters prove the permitted NAT paths.
 After restoration, rerun both the namespace verifier and the read-only
 snapshot. Also record that the upstream/home network has no route to
 `10.66.0.0/24` and no Tailscale subnet route advertises it. This gate remains
@@ -274,9 +320,12 @@ WAN path.
 
 This matrix validates the router's behavior for packets carrying those source
 addresses. It does not authenticate a source on the shared LAN: a hostile peer
-could spoof an admitted address or poison ARP, and same-L2 peer traffic bypasses
-the router. Keep the pre-worker LAN physically trusted. Untrusted nodes still
-require the planned VLAN, switch, and host-firewall admission boundary.
+could spoof an admitted address, add an on-link route, or poison ARP, and
+same-subnet peer traffic bypasses the router. Keep both unmanaged switches and
+the two service nodes physically trusted. This profile is suitable only for
+the reconstructible platform agents while their root and service host
+firewalls remain active. Untrusted nodes still require the planned managed
+VLAN switch and inter-zone admission boundary.
 
 Perform one attended reboot from the serial console and rerun the same snapshot
 with the same serial-pinned host-key fingerprint. Require a changed `BOOT_ID`
@@ -340,18 +389,28 @@ another process and performs a final mount/holder check before reporting
 success.
 
 After inserting it into the router, verify over the isolated fabric LAN that
-the mount and one pinned payload are available before installing the consensus
-nodes:
+the mount and one pinned payload are available through both prefixes before
+installing or rebuilding nodes:
 
 ```sh
 ssh root@10.66.0.1 'mount | grep "on /mnt/data " && (cd /mnt/data/www && sha256sum -c SHASUMS.txt)'
 curl --fail --head http://10.66.0.1/static/k3s
+curl --fail --head http://10.66.1.1/static/k3s
 ```
 
-PXE is a later, worker-only facility. Do not enable it until etcd RBAC and the
-consensus VLAN/host-firewall gates pass, and a separately authenticated worker
-profile service has been reviewed. The future provisioner must live off the
-consensus nodes and must never receive their rendered Ignitions.
+The router itself keeps DHCP/TFTP PXE disabled. The separately authenticated,
+attended Bootie worker station may temporarily serve one MAC-pinned service
+candidate on this trusted L2; it must live off the consensus nodes, possess no
+root Ignition, and tear down after each one-use install. Broadcast DHCP on this
+flat domain is an attended migration exception, not a permanent router role.
+GRUB, the kernel, and the capability-named custom initramfs are fetched while
+the candidate still owns `10.66.0.100`. The embedded network profile then
+adopts `10.66.1.10` or `.11`; the only remaining station request is dracut's
+`coreos.live.rootfs_url` fetch from `10.66.0.2:80`. Install Ignition is embedded
+in that custom initramfs, and later pinned assets come from `10.66.1.1:80`, so
+no other post-profile Bootie allowance is required. The router rule is an
+exact L3/L4 source, destination, protocol, and port admission; Bootie's
+one-use lifecycle and HTTP configuration remain responsible for URL paths.
 
 The image is not ready to flash merely because it builds: first verify the
 router hardware revision and SHA256 of the selected artifact, then follow a

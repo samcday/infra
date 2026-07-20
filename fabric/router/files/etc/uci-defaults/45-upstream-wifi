@@ -45,8 +45,10 @@ psk=$(cat "$psk_file")
 
 # A missing or malformed upstream credential must leave the spare radio down
 # without weakening the independently configured operator AP or firewall.
-[ "$(uci -q get network.lan.ipaddr)" = '10.66.0.1' ] ||
-    die 'unexpected fabric LAN address'
+[ "$(uci -q get fabric.flat_l2.enabled)" = '1' ] ||
+    die 'flat-L2 migration marker is not enabled'
+[ "$(uci -q get network.lan.ipaddr)" = '10.66.0.1/24 10.66.1.1/24' ] ||
+    die 'unexpected flat-L2 fabric LAN addresses'
 [ "$(uci -q get network.wan.proto)" = dhcp ] ||
     die 'WAN is not an IPv4 DHCP client'
 if uci -q get network.wan.device >/dev/null 2>&1; then
@@ -64,6 +66,11 @@ fi
 [ "$(uci -q get firewall.fabric_root_egress.src_ip)" = \
     '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32' ] ||
     die 'root-only WAN source allow-list is unexpected'
+[ "$(uci -q get firewall.fabric_services_egress.src_ip)" = \
+    '10.66.1.10/32 10.66.1.11/32' ] ||
+    die 'service-only WAN source allow-list is unexpected'
+[ "$(uci -q get firewall.fabric_services_egress.dest_port)" = '80 443' ] ||
+    die 'service WAN port allow-list is unexpected'
 
 wan_zone=$(zone_by_name wan)
 [ "$(printf '%s\n' "$wan_zone" | sed '/^$/d' | wc -l)" -eq 1 ] ||

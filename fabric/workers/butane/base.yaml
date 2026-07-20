@@ -12,6 +12,8 @@ passwd:
         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
 storage:
   directories:
+    - path: /etc/fabric
+      mode: 493
     - path: /etc/rancher/k3s/config.yaml.d
       mode: 448
     - path: /var/lib/fabric/assets
@@ -56,6 +58,17 @@ storage:
           PermitTunnel no
           X11Forwarding no
           UseDNS no
+    - path: /etc/sysctl.d/90-fabric-services-routing.conf
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          # The services and root prefixes temporarily share one Ethernet
+          # broadcast domain but remain routed prefixes. Never accept an ICMP
+          # redirect that turns a root destination into a direct same-wire
+          # route and silently bypasses the intended OpenWrt hairpin path.
+          net.ipv4.conf.*.accept_redirects = 0
+          net.ipv4.conf.*.secure_redirects = 0
     - path: /etc/zincati/config.d/90-disable.toml
       overwrite: true
       mode: 420
@@ -63,6 +76,49 @@ storage:
         inline: |
           [updates]
           enabled = false
+    - path: /usr/local/sbin/verify-fabric-services-route
+      overwrite: true
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          : "${FABRIC_NODE_IP:?missing FABRIC_NODE_IP}"
+          : "${FABRIC_CONNECTION_UUID:?missing FABRIC_CONNECTION_UUID}"
+          [[ $FABRIC_NODE_IP =~ ^10\.66\.1\.(10|11)$ ]] || {
+            echo "unexpected services IP: $FABRIC_NODE_IP" >&2
+            exit 1
+          }
+          [[ $FABRIC_CONNECTION_UUID =~ ^b8ee0dd1-ff31-4bd6-8901-66000000011[01]$ ]] || {
+            echo "unexpected services connection UUID: $FABRIC_CONNECTION_UUID" >&2
+            exit 1
+          }
+
+          root_route=$(/usr/sbin/ip -4 route get 10.66.0.254)
+          [[ $root_route =~ ^10\.66\.0\.254[[:space:]]via[[:space:]]10\.66\.1\.1[[:space:]]dev[[:space:]]([^[:space:]]+)[[:space:]]src[[:space:]]$FABRIC_NODE_IP([[:space:]]|$) ]] || {
+            echo "root API route does not use the services router: $root_route" >&2
+            exit 1
+          }
+          interface=${BASH_REMATCH[1]}
+          router_route=$(/usr/sbin/ip -4 route get 10.66.1.1)
+          [[ $router_route =~ ^10\.66\.1\.1[[:space:]]dev[[:space:]]$interface[[:space:]]src[[:space:]]$FABRIC_NODE_IP([[:space:]]|$) ]] || {
+            echo "services-router route is not directly connected: $router_route" >&2
+            exit 1
+          }
+          [[ $(/usr/bin/nmcli --get-values GENERAL.CON-UUID device show "$interface") == "$FABRIC_CONNECTION_UUID" ]] || {
+            echo "$interface is not using the admitted NetworkManager profile" >&2
+            exit 1
+          }
+          for scope in all default "$interface"; do
+            [[ $(/usr/sbin/sysctl --values "net.ipv4.conf.$scope.accept_redirects") == 0 ]] || {
+              echo "IPv4 redirects remain enabled for $scope" >&2
+              exit 1
+            }
+          done
+
+          # Do not require the API to be live here. K3s has its own retry loop,
+          # so a root-first or service-first power-up must remain recoverable.
     - path: /usr/local/bin/k3s
       overwrite: true
       mode: 493
@@ -110,6 +166,30 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
+    - name: fabric-services-route.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Verify the routed fabric services-prefix path
+        Wants=network-online.target
+        After=network-online.target NetworkManager-wait-online.service
+        Before=install-k3s.service k3s-agent.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        EnvironmentFile=/etc/fabric/services-network.env
+        ExecStart=/usr/local/sbin/verify-fabric-services-route
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: k3s-agent.service
+      dropins:
+        - name: 05-fabric-services-route.conf
+          contents: |
+            [Unit]
+            Requires=fabric-services-route.service
+            After=fabric-services-route.service
     - name: verify-k3s-selinux.service
       enabled: true
       contents: |
@@ -157,3 +237,9 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
+      dropins:
+        - name: 05-fabric-services-route.conf
+          contents: |
+            [Unit]
+            Requires=fabric-services-route.service
+            After=fabric-services-route.service

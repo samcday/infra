@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: @FABRIC_WORKER_BOOTIE_NAMESPACE@
+  labels:
+    fabric.samcday.com/purpose: worker-bootstrap
+    fabric.samcday.com/bootstrap-node: @FABRIC_WORKER_NODE@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: @FABRIC_WORKER_BOOTIE_NAME@
+  namespace: @FABRIC_WORKER_BOOTIE_NAMESPACE@
+  labels:
+    fabric.samcday.com/purpose: worker-bootstrap
+    fabric.samcday.com/bootstrap-node: @FABRIC_WORKER_NODE@
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: @FABRIC_WORKER_BOOTIE_NAME@
+  labels:
+    fabric.samcday.com/purpose: worker-bootstrap
+    fabric.samcday.com/bootstrap-node: @FABRIC_WORKER_NODE@
+rules:
+  - apiGroups:
+      - ""
+    resourceNames:
+      - @FABRIC_WORKER_NODE@
+    resources:
+      - nodes
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: @FABRIC_WORKER_BOOTIE_NAME@
+  labels:
+    fabric.samcday.com/purpose: worker-bootstrap
+    fabric.samcday.com/bootstrap-node: @FABRIC_WORKER_NODE@
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: @FABRIC_WORKER_BOOTIE_NAME@
+subjects:
+  - kind: ServiceAccount
+    name: @FABRIC_WORKER_BOOTIE_NAME@
+    namespace: @FABRIC_WORKER_BOOTIE_NAMESPACE@

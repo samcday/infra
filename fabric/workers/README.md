@@ -19,24 +19,72 @@ join the fabric root K3s cluster as agents and are labeled and tainted
 `fabric.samcday.com/platform=true`. Flux, DNS, metrics-server, and future
 hosted-control-plane Pods must explicitly select and tolerate that class.
 
-## Hard prerequisites
+## Admission prerequisites and transitional flat L2
 
-Do not attach either installed node until all of the following are true:
+The addresses above are final even though the first physical attachment is
+temporary. During induction, the root and services prefixes may share one
+trusted Ethernet broadcast domain through daisy-chained unmanaged switches:
 
-- an enforceable services/consensus L2 boundary exists: either an 802.1Q
-  switch with access ports plus a router trunk, or a dedicated router USB NIC
-  and separate services switch;
+```text
+OpenWrt eth1/br-lan (.0.1 and .1.1)
+  -> unmanaged root switch (.0.0/24 roots)
+       -> unmanaged services switch (.1.0/24 svc1/svc2)
+```
+
+This is still a routed two-prefix design. OpenWrt must own both
+`10.66.0.1/24` and `10.66.1.1/24` on that LAN and permit the reviewed
+same-interface hairpin flows. Each worker has an explicit
+`10.66.0.0/24 via 10.66.1.1` route, uses `10.66.1.1` as its default gateway,
+and rejects ICMP redirects so the shared wire cannot silently turn the root
+prefix into an accidental direct route. The router must not emit redirects,
+and the roots must likewise retain their routed path to `10.66.1.0/24`.
+
+Before attaching either installed node, all of the following remain hard
+gates:
+
 - `10.66.1.1/24` exists on the router and serves the exact pinned public asset
   set at `http://10.66.1.1/static/`;
-- the inter-VLAN and root host policies admit only the reviewed K3s
-  API/VXLAN/kubelet flows and continue to deny worker access to etcd;
+- router and root host policies admit only the reviewed K3s API,
+  Flannel/VXLAN, kubelet, DNS/NTP, asset, and operator flows while continuing
+  to deny services addresses access to root etcd;
 - the candidate has a final reviewed inventory capture; and
 - its matching file under `inventory/` has been changed from `pending` to
   `admitted` with exact evidence-derived values.
 
-The current unmanaged five-port switch and flat `10.66.0.0/24` network do not
-satisfy this boundary. The installer deliberately fails if the future services
-router address and pinned asset manifest are unavailable.
+The flat L2 is transport, not a security boundary: a hostile peer can spoof an
+admitted source, poison ARP, or communicate on the wire without traversing the
+router. Until the managed switch enforces separate root and services VLANs,
+svc1 and svc2 are limited to reviewed fabric plumbing such as Flux, CoreDNS,
+and metrics-server. Do not place tenant/untrusted workloads, hosted child
+etcd, child-cluster credentials, VMs, or LLM sandboxes on them during this
+phase. The existing platform taint keeps ordinary workloads off; reconciliation
+must not add the explicit placement/toleration needed by those deferred
+workloads.
+
+When the managed switch arrives, make the OpenWrt port a trunk and the two
+switch uplinks access ports for their respective VLANs. The worker profiles,
+node IPs, K3s identities, and explicit routed root-prefix path stay unchanged;
+no node readdress or K3s re-registration is required.
+
+The installed `fabric-services-route.service` verifies on every boot that the
+final NetworkManager profile is active, `10.66.0.254` resolves through
+`10.66.1.1`, the router remains directly connected, and IPv4 redirects are
+disabled. K3s depends on that static path check, but the check deliberately
+does not require the API to be up: the agent's normal retry loop must survive
+service-first power restoration. During attended qualification, require the
+equivalent live route to read:
+
+```text
+10.66.0.254 via 10.66.1.1 dev <admitted-nic> src 10.66.1.10  # svc1
+10.66.0.254 via 10.66.1.1 dev <admitted-nic> src 10.66.1.11  # svc2
+```
+
+Then prove each joined Node has its exact `InternalIP`, a Pod on svc1 can reach
+a Pod on svc2 over Flannel VXLAN, and metrics-server can scrape kubelet
+`10250` on all five Nodes. Do not schedule a test Pod onto a sacred root just
+to exercise VXLAN. Node readiness qualifies the API path; the service-to-
+service Pod probe and metrics results qualify the active UDP `8472` and
+kubelet paths which a static Ignition render cannot prove.
 
 ## Inventory admission
 
@@ -111,7 +159,7 @@ reviewed basename extension before it will accept the new
 `fabric-az1-svc*-installer.iso` outputs.
 
 The PXE manufacturing adapter, one-use Bootie delivery contract, remaining
-physical blocker, and resumable ceremony are documented in
+attended-station gates, and resumable ceremony are documented in
 [`bootie/README.md`](bootie/README.md).
 
 ## Capture the current CA-pinned agent token without durable plaintext

@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$repo_root/fabric/workers/lib/admission.sh"
+readonly observer_namespace=fabric-observer
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  arm-fabric-worker-bootie-install --check
+
+  sudo arm-fabric-worker-bootie-install \
+    --node fabric-az1-svc1 \
+    --stage-dir /trusted/fabric-az1-svc1-pxe \
+    --access-dir /dev/shm/fabric-az1-svc1-bootie-access-install \
+    --handoff-dir /dev/shm/fabric-az1-svc1-pxe-handoff \
+    --confirm ARM:fabric-az1-svc1:/dev/disk/by-id/EXACT_ADMITTED_WHOLE_DISK
+
+This is the destructive authorization boundary. It atomically arms exactly
+one response for one predeclared unjoined worker and its admitted whole disk.
+Bootie consumes the arm before revealing the custom-initramfs capability.
+EOF
+}
+
+die() {
+  printf 'arm-fabric-worker-bootie-install: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+node=
+stage_dir=
+access_dir=
+handoff_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --stage-dir) (($# >= 2)) || die '--stage-dir requires a value'; stage_dir=$2; shift 2 ;;
+    --access-dir) (($# >= 2)) || die '--access-dir requires a value'; access_dir=$2; shift 2 ;;
+    --handoff-dir) (($# >= 2)) || die '--handoff-dir requires a value'; handoff_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+if $check_only; then
+  [[ -z $node && -z $stage_dir && -z $access_dir && -z $handoff_dir &&
+     -z $confirmation ]] || die '--check cannot be combined with arm arguments'
+  bash -n "$script_path"
+  printf 'validated worker Bootie install armer syntax\n'
+  exit 0
+fi
+
+((EUID == 0)) || die 'run this destructive arming mutation as root'
+case $node in
+  fabric-az1-svc1) short_node=svc1; expected_address=10.66.1.10 ;;
+  fabric-az1-svc2) short_node=svc2; expected_address=10.66.1.11 ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+[[ -n $stage_dir && -n $access_dir && -n $handoff_dir ]] || { usage; exit 2; }
+for command in awk bash chmod coreos-installer curl find git grep ip jq kubectl mktemp \
+  podman realpath rmdir sed sha256sum ss stat systemctl; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+stage_dir=$(realpath -e -- "$stage_dir")
+access_dir=$(realpath -e -- "$access_dir")
+handoff_dir=$(realpath -e -- "$handoff_dir")
+for directory in "$stage_dir" "$access_dir" "$handoff_dir"; do
+  [[ -d $directory && ! -L $directory ]] || die "invalid directory: $directory"
+done
+[[ $(stat --file-system --format=%T -- "$access_dir") == tmpfs &&
+   $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs ]] ||
+  die 'access and install handoff directories must remain on tmpfs'
+[[ $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'scoped access directory must be root-owned mode 0700'
+[[ $(stat -Lc '%a' "$handoff_dir") == 700 ]] ||
+  die 'install handoff directory must be mode 0700'
+for access_file in kubeconfig token identity.json; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "scoped access file is unsafe: $access_file"
+done
+[[ -s $access_dir/token ]] || die 'scoped access token is empty or revoked'
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+[[ $(< "$stage_dir/FABRIC_WORKER_NODE") == "$node" ]] || die 'staged worker name is wrong'
+mac=$(< "$stage_dir/FABRIC_WORKER_MAC")
+version=$(< "$stage_dir/FCOS_VERSION")
+repo_commit=$(< "$stage_dir/REPO_COMMIT")
+[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+  die 'station checkout does not match the staged repository commit'
+jq -e --arg node "$node" --arg mac "$mac" --arg repo_commit "$repo_commit" '
+  .schema == 1 and .node == $node and .mac == $mac and
+  (.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+  .repoCommit == $repo_commit and (.revokedAt // "") == ""
+' "$access_dir/identity.json" >/dev/null || die 'scoped access identity does not match stage'
+node_uid=$(jq -r '.nodeUid' "$access_dir/identity.json")
+
+handoff_manifest=$handoff_dir/handoff.json
+install_policy=$handoff_dir/install-policy
+handoff_owner=$(stat -Lc '%u:%g' "$handoff_dir")
+for protected_file in "$handoff_manifest" "$install_policy"; do
+  [[ -f $protected_file && ! -L $protected_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$protected_file") == "$handoff_owner:600:1" ]] ||
+    die "handoff file is unsafe: $protected_file"
+done
+initramfs_file=$(jq -r '.initramfs.file // ""' "$handoff_manifest")
+[[ $initramfs_file == "$node-live-initramfs.x86_64.img" ]] ||
+  die 'handoff custom initramfs filename is wrong'
+custom_initramfs=$handoff_dir/$initramfs_file
+[[ -f $custom_initramfs && ! -L $custom_initramfs &&
+   $(stat -Lc '%u:%g:%a:%h' "$custom_initramfs") == "$handoff_owner:600:1" ]] ||
+  die 'custom initramfs is unsafe'
+read -r policy_node policy_device extra < "$install_policy"
+[[ $policy_node == "$node" && -n $policy_device && -z ${extra:-} ]] ||
+  die 'install policy is not one exact selected-worker record'
+fabric_worker_load_admission "$node" "$repo_root/fabric/workers/inventory/$node.yaml"
+[[ $policy_device == "$FABRIC_WORKER_DISK" ]] || die 'policy disk is not the admitted worker disk'
+[[ $confirmation == "ARM:$node:$policy_device" ]] ||
+  die "exact --confirm ARM:$node:$policy_device is required"
+initramfs_sha=$(sha256sum "$custom_initramfs" | awk '{print $1}')
+policy_sha=$(sha256sum "$install_policy" | awk '{print $1}')
+admission_sha=$(sha256sum "$repo_root/fabric/workers/inventory/$node.yaml" | awk '{print $1}')
+kernel_sha=$(sha256sum "$stage_dir/static/fedora-coreos-$version-live-kernel.x86_64" | awk '{print $1}')
+rootfs_sha=$(sha256sum "$stage_dir/static/fedora-coreos-$version-live-rootfs.x86_64.img" | awk '{print $1}')
+network_sha=$(jq -r '.liveNetworkKeyfile.sha256 // ""' "$handoff_manifest")
+[[ $network_sha =~ ^[0-9a-f]{64}$ ]] ||
+  die 'handoff manifest lacks a valid embedded network-keyfile hash'
+jq -e --arg node "$node" --arg mac "$mac" --arg address "$expected_address" \
+  --arg disk "$policy_device" --arg inventory_sha "$FABRIC_WORKER_INVENTORY_SHA256" \
+  --arg admission_sha "$admission_sha" --arg initramfs_file "$initramfs_file" \
+  --arg initramfs_sha "$initramfs_sha" --arg policy_sha "$policy_sha" \
+  --arg version "$version" --arg kernel_sha "$kernel_sha" --arg rootfs_sha "$rootfs_sha" \
+  --arg network_sha "$network_sha" \
+  --arg repo_commit "$repo_commit" '
+    .schema == 1 and .delivery == "bootie-custom-pxe-initramfs" and
+    .node == $node and .permanentMac == $mac and .servicesAddress == $address and
+    .bootDevice == $disk and .inventorySha256 == $inventory_sha and
+    .admissionSha256 == $admission_sha and
+    .initramfs.file == $initramfs_file and .initramfs.sha256 == $initramfs_sha and
+    .installPolicy.file == "install-policy" and .installPolicy.sha256 == $policy_sha and
+    .publicFcos.version == $version and .publicFcos.kernelSha256 == $kernel_sha and
+    .publicFcos.rootfsSha256 == $rootfs_sha and
+    .liveNetworkKeyfile.file == "fabric-services.nmconnection" and
+    .liveNetworkKeyfile.sha256 == $network_sha and
+    .liveKernelArguments == ["coreos.inst.skip_reboot", "systemd.show_status=false"] and
+    .repoCommit == $repo_commit
+' "$handoff_manifest" >/dev/null || die 'handoff manifest identity check failed'
+
+network_verify_dir=$(mktemp -d -- /dev/shm/.fabric-worker-arm-network.XXXXXXXX)
+chmod 0700 "$network_verify_dir"
+cleanup_network_verify() {
+  if [[ -n ${network_verify_dir:-} && -d $network_verify_dir && ! -L $network_verify_dir ]]; then
+    find "$network_verify_dir" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$network_verify_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup_network_verify EXIT
+coreos-installer pxe network unwrap --directory "$network_verify_dir" \
+  "$custom_initramfs" >/dev/null
+mapfile -d '' network_entries < <(
+  find "$network_verify_dir" -mindepth 1 -maxdepth 1 -print0
+)
+[[ ${#network_entries[@]} -eq 1 && -f ${network_entries[0]} &&
+   ! -L ${network_entries[0]} &&
+   ${network_entries[0]##*/} == fabric-services.nmconnection ]] ||
+  die 'custom initramfs does not contain one expected regular network keyfile'
+network_keyfile=${network_entries[0]}
+[[ $(sha256sum "$network_keyfile" | awk '{print $1}') == "$network_sha" ]] ||
+  die 'custom initramfs network keyfile differs from its handoff manifest'
+mapfile -t network_macs < <(awk -F= '$1 == "mac-address" {print tolower($2)}' "$network_keyfile")
+mapfile -t network_addresses < <(awk -F= '$1 == "address1" {print $2}' "$network_keyfile")
+mapfile -t network_uuids < <(awk -F= '$1 == "uuid" {print tolower($2)}' "$network_keyfile")
+[[ ${#network_macs[@]} -eq 1 && ${network_macs[0]} == "$mac" ]] ||
+  die 'custom initramfs network keyfile is not bound to the staged MAC'
+[[ ${#network_addresses[@]} -eq 1 &&
+   ${network_addresses[0]} == "$expected_address/24,10.66.1.1" ]] ||
+  die 'custom initramfs network keyfile has the wrong services address or gateway'
+[[ ${#network_uuids[@]} -eq 1 &&
+   ${network_uuids[0]} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+  die 'custom initramfs network keyfile lacks one valid UUID'
+cleanup_network_verify
+network_verify_dir=
+
+station_name=fabric-worker-bootie-$short_node
+unit_name=$station_name-station.service
+systemctl is-active --quiet "$unit_name" || die "$unit_name is not active"
+podman container exists "$station_name" || die 'worker Bootie container is absent'
+[[ $(podman inspect --format '{{.State.Running}}' "$station_name") == true ]] ||
+  die 'worker Bootie container is not running'
+container_env=$(podman inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$station_name")
+grep -Fxq 'BOOTIE_CEREMONY_MODE=install' <<< "$container_env" ||
+  die 'running worker station is not in install mode'
+grep -Fxq 'BOOTIE_INSTALL_DELIVERY=custom-initramfs' <<< "$container_env" ||
+  die 'running worker station lacks custom-initramfs delivery'
+grep -Fxq "BOOTIE_NODE_NAME=$node" <<< "$container_env" ||
+  die 'running worker station is bound to another Node'
+grep -Fxq "BOOTIE_EXPECTED_NODE_UID=$node_uid" <<< "$container_env" ||
+  die 'running worker station is bound to another Node UID'
+grep -Fxq "BOOTIE_CUSTOM_INITRAMFS_SHA256=$initramfs_sha" <<< "$container_env" ||
+  die 'running worker station has a different custom initramfs hash'
+grep -Fxq "BOOTIE_CUSTOM_FCOS_VERSION=$version" <<< "$container_env" ||
+  die 'running worker station has a different FCOS version'
+grep -Fxq 'BOOTIE_CUSTOM_LIVE_KARGS=coreos.inst.skip_reboot systemd.show_status=false' \
+  <<< "$container_env" || die 'running worker station dropped the reviewed live kernel arguments'
+capability_name=$(sed -n 's/^BOOTIE_CUSTOM_INITRAMFS_NAME=//p' <<< "$container_env")
+[[ $capability_name =~ ^[0-9a-f]{48}\.img$ ]] ||
+  die 'running worker station has no valid initramfs capability'
+container_initramfs_sha=$(podman exec "$station_name" \
+  sha256sum "/pxe/$capability_name" | awk '{print $1}')
+[[ $container_initramfs_sha == "$initramfs_sha" ]] ||
+  die 'running worker station mounted a different initramfs'
+[[ $(podman exec "$station_name" cat /policy/install-policy) == "$node $policy_device" ]] ||
+  die 'running worker station mounted a different install policy'
+
+kernel_path=static/fedora-coreos-$version-live-kernel.x86_64
+ip netns exec "$observer_namespace" curl --fail --silent --show-error \
+  --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null ||
+  die 'running Bootie public kernel endpoint is not ready'
+tcp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnt \
+  '( sport = :80 or sport = :9000 )')
+udp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnu \
+  '( sport = :67 or sport = :69 )')
+grep -q ':80' <<< "$tcp_listeners" || die 'Bootie HTTP listener is absent'
+grep -q '127.0.0.1:9000' <<< "$tcp_listeners" || die 'loopback FastCGI listener is absent'
+grep -q ':67' <<< "$udp_listeners" || die 'exact-MAC DHCP listener is absent'
+grep -q ':69' <<< "$udp_listeners" || die 'TFTP listener is absent'
+
+node_json=$(ip netns exec "$observer_namespace" kubectl \
+  --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node "$node" --output=json) || die 'scoped token cannot read selected worker'
+mac_label=${mac//:/-}
+jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
+  .metadata.uid == $uid and .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "true" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  ((.status.nodeInfo.machineID // "") == "")
+' <<< "$node_json" >/dev/null || die 'selected worker is not at the exact safe arming baseline'
+resource_version=$(jq -r '.metadata.resourceVersion' <<< "$node_json")
+patch=$(jq -cn --arg resource_version "$resource_version" --arg uid "$node_uid" \
+  --arg mac "$mac_label" \
+  --arg disk "$policy_device" '[
+    {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
+    {"op":"test","path":"/metadata/uid","value":$uid},
+    {"op":"test","path":"/metadata/labels/samcday.com~1mac","value":$mac},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder","value":"true"},
+    {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"true"},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"discovery"},
+    {"op":"replace","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
+    {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
+    {"op":"add","path":"/metadata/annotations/samcday.com~1boot-device","value":$disk},
+    {"op":"add","path":"/metadata/annotations/samcday.com~1install","value":"true"}
+  ]')
+ip netns exec "$observer_namespace" kubectl --kubeconfig "$access_dir/kubeconfig" \
+  --request-timeout=10s patch node "$node" --type=json --patch "$patch" >/dev/null ||
+  die 'atomic worker install arm was rejected or raced'
+
+node_json=$(ip netns exec "$observer_namespace" kubectl \
+  --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node "$node" --output=json)
+final_state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' <<< "$node_json")
+final_install=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' <<< "$node_json")
+final_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' <<< "$node_json")
+final_discovery=$(jq -r '.metadata.labels["samcday.com/discovery"] // ""' <<< "$node_json")
+[[ $final_device == "$policy_device" && $final_discovery == false ]] ||
+  die 'worker arm did not retain exact device and cleared discovery state'
+case "$final_state:$final_install" in
+  install-armed:true)
+    printf 'ARMED one %s Bootie install for %s\n' "$node" "$policy_device"
+    printf 'Boot the attended worker UEFI network entry once now.\n'
+    ;;
+  install-response-issued:)
+    printf 'ARMED and already consumed one %s response for %s\n' "$node" "$policy_device"
+    printf 'Do not re-arm; follow the attended installer console.\n'
+    ;;
+  *) die 'worker install state changed unexpectedly after atomic arm' ;;
+esac
+printf 'Any refusal or lost response requires stop, revoke, review, and a new exact arm.\n'

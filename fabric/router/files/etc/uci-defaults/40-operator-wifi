@@ -27,8 +27,10 @@ esac
 
 # The radio stays disabled unless the already-applied network and firewall
 # policy still has the exact observer-only shape reviewed with this image.
-[ "$(uci -q get network.lan.ipaddr)" = '10.66.0.1' ] ||
-    die 'unexpected fabric LAN address'
+[ "$(uci -q get fabric.flat_l2.enabled)" = '1' ] ||
+    die 'flat-L2 migration marker is not enabled'
+[ "$(uci -q get network.lan.ipaddr)" = '10.66.0.1/24 10.66.1.1/24' ] ||
+    die 'unexpected flat-L2 fabric LAN addresses'
 [ "$(uci -q get dhcp.lan.ignore)" = '1' ] ||
     die 'LAN DHCP is not disabled'
 [ "$(uci -q get firewall.@defaults[0].forward)" = 'REJECT' ] ||
@@ -37,6 +39,8 @@ esac
     die 'router SSH rule is not LAN-scoped'
 [ "$(uci -q get firewall.fabric_router_ssh.src_ip)" = '10.66.0.2/32' ] ||
     die 'router SSH rule is not observer-scoped'
+[ "$(uci -q get firewall.fabric_router_ssh.dest_ip)" = '10.66.0.1/32' ] ||
+    die 'router SSH rule is not root-router-address scoped'
 [ "$(uci -q get firewall.fabric_router_ssh.dest_port)" = '22' ] ||
     die 'router SSH rule has an unexpected destination port'
 

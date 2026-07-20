@@ -236,6 +236,59 @@ yq -r '
   exit 1
 }
 
+root_routing_sysctl_path=/etc/sysctl.d/90-fabric-root-routing.conf
+root_routing_sysctl_records=$(TARGET_PATH="$root_routing_sysctl_path" yq -r '
+  [.storage.files[] | select(.path == strenv(TARGET_PATH))] | length
+' "$workdir/network.yaml")
+[[ $root_routing_sysctl_records == 1 ]] || {
+  echo 'network.yaml must carry exactly one root routing sysctl policy' >&2
+  exit 1
+}
+root_routing_sysctl_metadata=$(TARGET_PATH="$root_routing_sysctl_path" yq -r '
+  .storage.files[]
+  | select(.path == strenv(TARGET_PATH))
+  | [.overwrite, .mode]
+  | @tsv
+' "$workdir/network.yaml")
+[[ $root_routing_sysctl_metadata == $'true\t420' ]] || {
+  echo 'root routing sysctl policy must overwrite a mode-0644 file' >&2
+  exit 1
+}
+root_routing_sysctls=$(TARGET_PATH="$root_routing_sysctl_path" yq -r '
+  .storage.files[]
+  | select(.path == strenv(TARGET_PATH))
+  | .contents.inline
+' "$workdir/network.yaml" | awk -F '#' '
+  {
+    line = $1
+    gsub(/[[:space:]]/, "", line)
+    if (line != "") print line
+  }
+')
+expected_root_routing_sysctls='net.ipv4.ip_forward=1
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.*.accept_redirects=0
+net.ipv4.conf.all.secure_redirects=0
+net.ipv4.conf.default.secure_redirects=0
+net.ipv4.conf.*.secure_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+net.ipv4.conf.*.send_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+net.ipv4.conf.*.accept_source_route=0
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.default.accept_redirects=0
+net.ipv6.conf.*.accept_redirects=0
+net.ipv6.conf.all.accept_source_route=-1
+net.ipv6.conf.default.accept_source_route=-1
+net.ipv6.conf.*.accept_source_route=-1'
+[[ $root_routing_sysctls == "$expected_root_routing_sysctls" ]] || {
+  echo 'root routing sysctl policy differs from the reviewed exact policy' >&2
+  exit 1
+}
+
 recovery_key_hashes=$workdir/recovery-key-hashes
 : > "$recovery_key_hashes"
 

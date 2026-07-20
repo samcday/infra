@@ -5,12 +5,17 @@
 > admission record; “before first installation” gates below describe the
 > completed ceremony, while worker/hosted-cluster gates remain prospective.
 
-> **Services staging (2026-07-19):** Git now declares two persistent K3s
+> **Services transition (2026-07-20):** Git declares two persistent K3s
 > agents, `fabric-az1-svc1`/`svc2`, on allocated service subnet
 > `10.66.1.0/24`, plus worker-only CoreDNS, Flux, and metrics-server. Both
 > hardware admission records remain fail-closed `pending`; no service node or
-> reconciliation workload has been attached live. A managed VLAN trunk or a
-> dedicated router NIC plus second switch must realize the boundary first.
+> reconciliation workload has been attached live. For initial induction the
+> final root and service prefixes will share daisy-chained unmanaged switches,
+> with `10.66.0.1` and `10.66.1.1` on the router's one working fabric port.
+> This is an explicitly temporary operational exception, not isolation. Only
+> the two trusted service nodes and reviewed foundation workloads are allowed;
+> a managed-switch VLAN remains mandatory before child etcd credentials,
+> tenant workloads, KubeVirt, or LLM jobs.
 
 This is the additive replacement foundation for the current physical `hub`.
 The existing hub remains authoritative until a separately bootstrapped fabric
@@ -63,11 +68,12 @@ platform or application workload, deliberately deploy CoreDNS onto workers
 with explicit worker placement and any required worker-taint tolerations, then
 prove service and pod resolution and prove that no DNS Pod runs on a root.
 
-Workers are phase two. Do not attach or join even the first worker until etcd
-RBAC and the consensus VLAN/firewall gates have both passed. Grow to three
-physical workers before trusting a managed hub. Workers eventually host Flux
-platform controllers, monitoring, hosted control planes, KubeVirt/CDI, and
-child worker VMs.
+Workers are phase two. The two named, physically trusted service agents may
+join under the temporary flat-L2 exception only after etcd RBAC, root-host
+policy, router policy, and negative etcd-access tests pass. No general worker,
+child etcd credential, tenant workload, KubeVirt/CDI, or LLM job may use that
+exception. The managed-switch VLAN gate must pass before those roles arrive.
+Grow to three physically isolated workers before trusting a managed hub.
 
 Three members tolerate one member failure. They do not tolerate loss of the
 shared five-port switch, extension board, smart-plug relay, room, or upstream
@@ -186,6 +192,14 @@ only wired fabric link. Connect `eth1` to the fabric switch and power the router
 through USB-C so it remains inside the measured root power domain. Do not use
 PoE on the damaged jack.
 
+For the temporary service-node phase, connect a second unmanaged five-port
+switch downstream of the root switch and attach only `svc1` and `svc2` to it.
+Both switches are one L2: their physical position neither filters traffic nor
+prevents a service node from claiming a root address. The router carries both
+`10.66.0.1/24` and `10.66.1.1/24` on `eth1`, and routes the limited approved
+flows back out that same link. Keeping final service addresses now makes the
+managed-switch migration a port/VLAN change instead of a node readdress.
+
 This exception does not change the permanent design preference for a known-good
 wired router. Replace the damaged unit before fabric becomes authoritative.
 OpenWrt Two may replace it later only after it is available, supported, and
@@ -241,11 +255,21 @@ RTCs and persisted chrony drift; etcd peer reconnect remains direct L2 and does
 not wait for the router. Fit and verify the router's CR1220 RTC battery before
 the whole-domain power-loss gate.
 
-### Consensus isolation gate
+### Transitional service exception and consensus isolation gate
 
-The bootstrap LAN is not permission to leave workers and consensus on one
-flat network. Before adding a worker, commit and test a VLAN or equivalent
-physical segmentation design in which:
+The bootstrap LAN is not a permanent worker network. One bounded exception
+allows only `fabric-az1-svc1` and `fabric-az1-svc2` onto the shared physical L2
+while the managed switch is unavailable. Before either joins, commit and test
+the router's same-interface service policy, prove the root host guards contain
+only their exact API/kubelet/VXLAN allowances, prove TCP/2379 and TCP/2380 are
+denied from each service address, and prove loss of the router leaves the three
+root peers in consensus. These tests constrain trusted machines and catch
+configuration mistakes; they cannot make source addresses authentic on an
+unmanaged switch.
+
+Before adding any general worker, child etcd identity, tenant workload,
+KubeVirt VM, or LLM job, commit and test a managed VLAN or equivalent physical
+segmentation design in which:
 
 - the three root nodes remain together on the consensus segment;
 - workers and future provisioning services use a different VLAN and subnet;
@@ -256,12 +280,12 @@ physical segmentation design in which:
 - WAN, home/hub, general worker, pod, and tenant sources are denied direct
   etcd access.
 
-Enforce this at the inter-VLAN firewall and on each consensus host. If the
-current switch cannot provide the required access-port/VLAN boundary, replace
-it or use physical segmentation before worker induction. Prove from the future
-worker segment that 2380 is unreachable and 2379 is denied without an explicit
-rule, then power off the router and prove the three peers retain L2 consensus.
-No child etcd prefix may be created before this gate passes.
+Enforce this at the inter-VLAN firewall and on each consensus host. Replace the
+temporary unmanaged topology or use physical segmentation before expanding
+beyond the two trusted service nodes. Prove from the future worker segment
+that 2380 is unreachable and 2379 is denied without an explicit rule, then
+power off the router and prove the three peers retain L2 consensus. No child
+etcd identity or tenant workload may be created before this gate passes.
 
 The offline root profile supplies the host half of this gate: a separate
 late-priority `inet fabric_guard` table defaults input and forwarding to drop,
@@ -272,12 +296,14 @@ and new forwarding through a root remains denied. Kube-proxy is fixed to the
 bundled iptables implementation and NodePorts are unreachable on roots. The
 current OpenWrt policy still defaults LAN/WAN input and forwarding to reject,
 admits public WAN egress only from `.10-.12`, and admits router SSH only from
-`.2`; it must gain the reviewed service interface/VLAN and inter-zone rules
-before either staged host allowance is usable. The steady-state rules deny
+`.2`; the transitional image adds `.1` addressing and exact service-source
+rules on the shared interface before either staged host allowance is usable.
+The steady-state rules deny
 observer access to TCP/2379; an explicit per-member helper can insert only `.2`
 into an in-memory, 15-minute maintenance set for authorization or recovery
-operations. Address allow-lists are sound only behind the physically enforced
-consensus/service boundary and do not make a flat switch safe against source
+operations. Address allow-lists reduce mistakes during the bounded transition
+but are sound security controls only behind the physically enforced
+consensus/service boundary; they do not make a flat switch safe against source
 spoofing.
 
 ## Measured root power domain
@@ -679,12 +705,10 @@ Zincati remains disabled until this cadence and rollback evidence exist.
    tests plus negative out-of-prefix tests. Perform a controlled K3s restart,
    then validate server rejoin and token rotation before declaring the role
    complete.
-8. Implement the worker/consensus VLAN and inter-VLAN policy, extend the
-   installed host guard only for the declared worker API/VXLAN flows, and
-   retain the etcd/SSH/metrics denials. Record denied worker/WAN tests and
-   successful peer consensus with the router off. Use an unjoined test host on
-   the future worker segment for the denial evidence; joining the first worker
-   remains forbidden until the soak and recovery gates pass.
+8. For the bounded service transition, configure the router's second prefix on
+   the shared fabric link, apply the already-declared exact service-node host
+   allowances, and record denied etcd plus successful API/kubelet/VXLAN tests.
+   Retain the explicit managed-VLAN gate for every role beyond `svc1`/`svc2`.
 9. Attach the non-routing temporary operations-laptop observer and soak for at
    least 48 hours while observing WAL fsync, backend commit,
    proposals, slow applies, elections, database size, disk latency, and I/O
@@ -698,10 +722,11 @@ Zincati remains disabled until this cadence and rollback evidence exist.
     relay. Verify all machines power on, quorum recovers, and no alarms remain.
     Then perform one attended upstream-mains interruption and repeat those
     checks; a relay cut does not exercise loss of power to the meter itself.
-12. Only after steps 7-11 pass, add a separately segmented worker. Deliberately
-    deploy CoreDNS on workers, prove its worker placement and DNS resolution,
-    and only then install Flux or other workloads. Flux remains on workers,
-    never on the root trio; then grow to three workers.
+12. Only after steps 7-11 pass, add the two bounded-transition service agents.
+    Deliberately deploy CoreDNS on them, prove its placement and DNS resolution,
+    and only then install Flux or other reviewed foundation workloads. Flux
+    remains off the root trio. Install the managed-switch VLAN and qualify its
+    anti-spoofing boundary before growing to general workers.
 13. Design the authenticated worker-only Bootie path if desired. Install
     KubeVirt/CDI and hosted workloads only on workers, prove a disposable child
     cluster with its own etcd identity/prefix, and migrate hub in a later phase.

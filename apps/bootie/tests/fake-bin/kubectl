@@ -22,6 +22,7 @@ case "$joined" in
   "get node/fabric-az1-cp3 -o json")
     jq -n \
       --arg resource_version "${FAKE_RESOURCE_VERSION:-12345}" \
+      --arg uid "${FAKE_NODE_UID:-01234567-89ab-cdef-0123-456789abcdef}" \
       --arg mac "${FAKE_MAC:-00-11-22-33-44-55}" \
       --arg serial "${FAKE_SERIAL:-}" \
       --arg discovery "${FAKE_DISCOVERY:-true}" \
@@ -35,6 +36,7 @@ case "$joined" in
         kind: "Node",
         metadata: {
           name: "fabric-az1-cp3",
+          uid: $uid,
           resourceVersion: $resource_version,
           labels: {
             "samcday.com/mac": $mac,

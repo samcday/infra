@@ -96,8 +96,12 @@ if $check_only; then
   [[ -z $node && -z $ignition_dir && -z $output_dir && -z $cache_dir && -z $disk ]] ||
     die '--check cannot be combined with handoff arguments'
   "$script_dir/build-fabric-worker-isos" --check
+  coreos-installer pxe customize --help | grep -Fq -- '--network-keyfile' ||
+    die 'coreos-installer pxe customize lacks network-keyfile support'
+  coreos-installer pxe network unwrap --help | grep -Fq -- '--directory' ||
+    die 'coreos-installer pxe network unwrap lacks directory extraction support'
   bash -n "$0"
-  echo 'validated worker PXE handoff prerequisites and canonical installer inputs'
+  echo 'validated worker PXE handoff prerequisites, network wrapping, and canonical installer inputs'
   exit 0
 fi
 
@@ -170,7 +174,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -m 0700 "$work/media" "$work/base-pxe"
+mkdir -m 0700 "$work/media" "$work/base-pxe" \
+  "$work/custom-iso-network" "$work/custom-pxe-network"
 builder=(
   "$script_dir/build-fabric-worker-isos"
   --node "$node"
@@ -183,6 +188,47 @@ builder=(
 
 custom_iso=$work/media/$node-installer.iso
 [[ -f $custom_iso && ! -L $custom_iso ]] || die 'canonical builder produced no installer ISO'
+
+# The canonical ISO's two appended live arguments are lifecycle controls, not
+# part of either embedded Ignition or the NetworkManager initramfs payload.
+# Bind the exact reviewed delta so the PXE response cannot silently drop the
+# no-reboot safety gate while adapting the ISO into kernel/initramfs/rootfs.
+default_live_kargs=$(coreos-installer iso kargs show --default "$custom_iso")
+actual_live_kargs=$(coreos-installer iso kargs show "$custom_iso")
+expected_live_karg_delta='coreos.inst.skip_reboot systemd.show_status=false'
+[[ $actual_live_kargs == "$default_live_kargs $expected_live_karg_delta" ]] ||
+  die 'canonical installer ISO has an unexpected live kernel-argument delta'
+
+# ISO network settings are an initramfs payload, not part of `iso ignition
+# show`.  Recover the same keyfile that the canonical builder already checked
+# and carry it explicitly into the PXE initramfs.  Omitting this step leaves
+# the attended pre-install gate unable to activate the admitted services UUID.
+coreos-installer iso network extract --directory "$work/custom-iso-network" \
+  "$custom_iso" >/dev/null
+mapfile -d '' iso_network_entries < <(
+  find "$work/custom-iso-network" -mindepth 1 -maxdepth 1 -print0
+)
+[[ ${#iso_network_entries[@]} -eq 1 && -f ${iso_network_entries[0]} &&
+   ! -L ${iso_network_entries[0]} ]] ||
+  die 'canonical installer ISO does not contain exactly one regular network keyfile'
+network_keyfile=${iso_network_entries[0]}
+[[ ${network_keyfile##*/} == fabric-services.nmconnection ]] ||
+  die 'canonical installer ISO contains an unexpected network-keyfile name'
+case $node in
+  fabric-az1-svc1) expected_address=10.66.1.10 ;;
+  fabric-az1-svc2) expected_address=10.66.1.11 ;;
+esac
+mapfile -t network_macs < <(awk -F= '$1 == "mac-address" {print tolower($2)}' "$network_keyfile")
+mapfile -t network_addresses < <(awk -F= '$1 == "address1" {print $2}' "$network_keyfile")
+mapfile -t network_uuids < <(awk -F= '$1 == "uuid" {print tolower($2)}' "$network_keyfile")
+[[ ${#network_macs[@]} -eq 1 && ${network_macs[0]} == "$FABRIC_WORKER_MAC" ]] ||
+  die 'canonical ISO network keyfile is not bound to the admitted permanent MAC'
+[[ ${#network_addresses[@]} -eq 1 &&
+   ${network_addresses[0]} == "$expected_address/24,10.66.1.1" ]] ||
+  die 'canonical ISO network keyfile has an unexpected services address or gateway'
+[[ ${#network_uuids[@]} -eq 1 &&
+   ${network_uuids[0]} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+  die 'canonical ISO network keyfile lacks one valid connection UUID'
 
 pin=$repo_root/fabric/installer/fcos-live-iso.txt
 mapfile -t fcos_pin <"$pin"
@@ -216,6 +262,7 @@ jq -e '
 custom_initramfs=$work/custom-initramfs.img
 coreos-installer pxe customize \
   --live-ignition "$work/canonical-live.ign" \
+  --network-keyfile "$network_keyfile" \
   --output "$custom_initramfs" \
   "${base_initramfs[0]}"
 ! cmp --silent "$custom_initramfs" "${base_initramfs[0]}" ||
@@ -263,6 +310,19 @@ jq -e --slurpfile expected "$work/canonical-live.ign" \
   '. == $expected[0]' "$work/wrapped-canonical-live.ign" >/dev/null ||
   die 'PXE initramfs does not embed the canonical installer live Ignition'
 
+coreos-installer pxe network unwrap --directory "$work/custom-pxe-network" \
+  "$custom_initramfs" >/dev/null
+mapfile -d '' pxe_network_entries < <(
+  find "$work/custom-pxe-network" -mindepth 1 -maxdepth 1 -print0
+)
+[[ ${#pxe_network_entries[@]} -eq 1 && -f ${pxe_network_entries[0]} &&
+   ! -L ${pxe_network_entries[0]} ]] ||
+  die 'custom PXE initramfs does not contain exactly one regular network keyfile'
+[[ ${pxe_network_entries[0]##*/} == fabric-services.nmconnection ]] ||
+  die 'custom PXE initramfs contains an unexpected network-keyfile name'
+cmp --silent "$network_keyfile" "${pxe_network_entries[0]}" ||
+  die 'custom PXE initramfs does not preserve the canonical ISO network keyfile'
+
 initramfs_name=$node-live-initramfs.x86_64.img
 install -m 0600 "$custom_initramfs" "$staging/$initramfs_name"
 printf '%s %s\n' "$node" "$disk" >"$staging/install-policy"
@@ -273,6 +333,7 @@ policy_sha256=$(sha256sum "$staging/install-policy" | awk '{print $1}')
 admission_sha256=$(sha256sum "$admission" | awk '{print $1}')
 kernel_sha256=$(sha256sum "${base_kernels[0]}" | awk '{print $1}')
 rootfs_sha256=$(sha256sum "${base_rootfs[0]}" | awk '{print $1}')
+network_keyfile_sha256=$(sha256sum "$network_keyfile" | awk '{print $1}')
 version=${iso_name#fedora-coreos-}
 version=${version%-live-iso.x86_64.iso}
 
@@ -290,6 +351,7 @@ jq -n \
   --arg fcos_iso_sha256 "$iso_sha256" \
   --arg kernel_sha256 "$kernel_sha256" \
   --arg rootfs_sha256 "$rootfs_sha256" \
+  --arg network_keyfile_sha256 "$network_keyfile_sha256" \
   --arg repo_commit "$head_commit" \
   --arg created_at "$(date --utc --iso-8601=seconds)" \
   '{
@@ -309,6 +371,11 @@ jq -n \
       kernelSha256: $kernel_sha256,
       rootfsSha256: $rootfs_sha256
     },
+    liveNetworkKeyfile: {
+      file: "fabric-services.nmconnection",
+      sha256: $network_keyfile_sha256
+    },
+    liveKernelArguments: ["coreos.inst.skip_reboot", "systemd.show_status=false"],
     repoCommit: $repo_commit,
     createdAt: $created_at
   }' >"$staging/handoff.json"

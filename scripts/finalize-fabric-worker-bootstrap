@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  finalize-fabric-worker-bootstrap --check
+
+  sudo finalize-fabric-worker-bootstrap \
+    --node fabric-az1-svc1 \
+    --root-address 10.66.0.10 \
+    --known-hosts /trusted/fabric-root-known-hosts \
+    --identity /trusted/id_ed25519 \
+    --access-dir /dev/shm/fabric-az1-svc1-bootie-access \
+    --confirm FINALIZE:fabric-az1-svc1:10.66.1.10
+
+After the installed worker has joined, prove the issued placeholder UID became
+the exact Ready platform worker at its assigned InternalIP.  Then atomically
+remove only the bootstrap/discovery receipt and destroy the already-revoked
+tmpfs access directory.  No Bootie token or PXE capability is required.
+EOF
+}
+
+die() {
+  printf 'finalize-fabric-worker-bootstrap: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+node=
+root_address=
+known_hosts=
+identity=
+access_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --root-address) (($# >= 2)) || die '--root-address requires a value'; root_address=$2; shift 2 ;;
+    --known-hosts) (($# >= 2)) || die '--known-hosts requires a value'; known_hosts=$2; shift 2 ;;
+    --identity) (($# >= 2)) || die '--identity requires a value'; identity=$2; shift 2 ;;
+    --access-dir) (($# >= 2)) || die '--access-dir requires a value'; access_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+if $check_only; then
+  [[ -z $node && -z $root_address && -z $known_hosts && -z $identity &&
+     -z $access_dir && -z $confirmation ]] ||
+    die '--check cannot be combined with finalize arguments'
+  bash -n "$script_path"
+  printf 'validated worker bootstrap finalizer syntax\n'
+  exit 0
+fi
+
+((EUID == 0)) || die 'run this finalization mutation as root'
+case $node in
+  fabric-az1-svc1) short_node=svc1; expected_address=10.66.1.10 ;;
+  fabric-az1-svc2) short_node=svc2; expected_address=10.66.1.11 ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+case $root_address in
+  10.66.0.10 | 10.66.0.11 | 10.66.0.12) ;;
+  *) die '--root-address must be a live commissioned root' ;;
+esac
+[[ $confirmation == "FINALIZE:$node:$expected_address" ]] ||
+  die "exact --confirm FINALIZE:$node:$expected_address is required"
+[[ -n $known_hosts && -n $identity && -n $access_dir ]] || { usage; exit 2; }
+
+for command in bash find grep ip jq podman realpath rmdir ssh ss stat systemctl wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+known_hosts=$(realpath -e -- "$known_hosts")
+identity=$(realpath -e -- "$identity")
+access_dir=$(realpath -e -- "$access_dir")
+[[ -f $known_hosts && ! -L $known_hosts && $(stat -Lc '%a' "$known_hosts") == 600 ]] ||
+  die 'known_hosts must be a non-symlink mode-0600 file'
+[[ -f $identity && ! -L $identity && $(stat -Lc '%a' "$identity") == 600 ]] ||
+  die 'SSH identity must be a non-symlink mode-0600 file'
+[[ -d $access_dir && ! -L $access_dir &&
+   $(stat --file-system --format=%T -- "$access_dir") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'access receipt must be a root-owned mode-0700 tmpfs directory'
+for access_file in ca.crt identity.json kubeconfig token; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "access receipt file is unsafe: $access_file"
+done
+[[ ! -s $access_dir/token ]] || die 'Bootie token was not zeroed before finalization'
+[[ $(find "$access_dir" -mindepth 1 -maxdepth 1 -type f | wc -l) == 4 &&
+   $(find "$access_dir" -mindepth 1 -maxdepth 1 | wc -l) == 4 ]] ||
+  die 'access receipt contains an unexpected entry'
+
+bootie_name=fabric-worker-bootie-$short_node
+unit_name=$bootie_name-station.service
+systemctl is-active --quiet "$unit_name" && die "$unit_name is still active"
+container_rc=0
+podman container exists "$bootie_name" >/dev/null 2>&1 || container_rc=$?
+case $container_rc in
+  0) die "$bootie_name container still exists" ;;
+  1) ;;
+  *) die "could not prove $bootie_name container absence" ;;
+esac
+tcp_listeners=$(ip netns exec fabric-observer ss -H -lnt \
+  '( sport = :80 or sport = :9000 )') ||
+  die 'could not inspect Bootie or FastCGI listeners in fabric-observer'
+if grep -q . <<< "$tcp_listeners"; then
+  die 'Bootie or FastCGI listener remains in fabric-observer'
+fi
+udp_listeners=$(ip netns exec fabric-observer ss -H -lnu \
+  '( sport = :67 or sport = :69 )') ||
+  die 'could not inspect DHCP or TFTP listeners in fabric-observer'
+if grep -q . <<< "$udp_listeners"; then
+  die 'DHCP or TFTP listener remains in fabric-observer'
+fi
+
+receipt=$access_dir/identity.json
+jq -e --arg node "$node" --arg root "$root_address" '
+  .schema == 1 and .node == $node and .rootAddress == $root and
+  (.nodeUid | type == "string" and length > 0) and
+  (.mac | test("^([0-9a-f]{2}:){5}[0-9a-f]{2}$")) and
+  (.revokedAt | type == "string" and length > 0) and
+  .stateAtRevocation == "install-response-issued" and .finalizeRequired == true
+' "$receipt" >/dev/null || die 'access receipt does not authorize post-install finalization'
+node_uid=$(jq -r '.nodeUid' "$receipt")
+mac=$(jq -r '.mac' "$receipt")
+mac_label=${mac//:/-}
+
+ssh_options=(
+  -F /dev/null -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=5
+  -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no
+  -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+  -o PermitLocalCommand=no -o ProxyCommand=none -o ProxyJump=none
+  -o RequestTTY=no -o StrictHostKeyChecking=yes -o UpdateHostKeys=no
+  -o "UserKnownHostsFile=$known_hosts" -i "$identity"
+)
+ssh_root() {
+  # shellcheck disable=SC2029
+  ip netns exec fabric-observer ssh "${ssh_options[@]}" "sam@$root_address" "$@"
+}
+root_kubectl() {
+  ssh_root sudo --non-interactive /usr/local/bin/k3s kubectl \
+    --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=10s "$@"
+}
+[[ $(root_kubectl get --raw=/readyz) == ok ]] || die 'selected root API is not ready'
+
+node_json=$(root_kubectl get node "$node" --output=json) || die 'joined worker Node is absent'
+qualify_node() {
+  jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
+    --arg mac "$mac_label" '
+      .metadata.name == $node and .metadata.uid == $uid and
+      .metadata.labels["samcday.com/mac"] == $mac and
+      .metadata.labels["fabric.samcday.com/platform"] == "true" and
+      .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+      (.metadata.labels | has("node-role.kubernetes.io/etcd") | not) and
+      ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1) and
+      (.status.nodeInfo.machineID | type == "string" and length > 0) and
+      (.spec.taints == [{effect:"NoSchedule", key:"fabric.samcday.com/platform", value:"true"}])
+    ' <<< "$1"
+}
+qualify_node "$node_json" >/dev/null ||
+  die 'worker has not qualified its exact UID, InternalIP, Ready state, labels, and taint'
+jq -e '
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "false" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "")
+' <<< "$node_json" >/dev/null || die 'worker lacks the exact post-response bootstrap receipt'
+
+resource_version=$(jq -r '.metadata.resourceVersion' <<< "$node_json")
+qualified_labels=$(jq -c '.metadata.labels' <<< "$node_json")
+patch=$(jq -cn --arg node "$node" --arg uid "$node_uid" --arg rv "$resource_version" \
+  --arg mac "$mac_label" --argjson labels "$qualified_labels" '[
+    {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+    {"op":"test","path":"/metadata/name","value":$node},
+    {"op":"test","path":"/metadata/uid","value":$uid},
+    {"op":"test","path":"/metadata/labels","value":$labels},
+    {"op":"test","path":"/metadata/labels/samcday.com~1mac","value":$mac},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1platform","value":"true"},
+    {"op":"test","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder","value":"true"},
+    {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+    {"op":"remove","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder"},
+    {"op":"remove","path":"/metadata/labels/samcday.com~1discovery"},
+    {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state"}
+  ]')
+root_kubectl patch node "$node" --type=json --patch "$patch" >/dev/null ||
+  die 'atomic worker bootstrap finalization was rejected or raced'
+
+node_json=$(root_kubectl get node "$node" --output=json)
+qualify_node "$node_json" >/dev/null || die 'worker qualification changed during finalization'
+jq -e '
+  ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
+  ((.metadata.labels["samcday.com/discovery"] // "") == "") and
+  ((.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "") == "")
+' <<< "$node_json" >/dev/null || die 'worker retains bootstrap-only metadata after finalization'
+
+find "$access_dir" -xdev -mindepth 1 -delete
+rmdir "$access_dir"
+printf 'finalized %s (%s, UID %s) and destroyed its revoked tmpfs access receipt\n' \
+  "$node" "$expected_address" "$node_uid"

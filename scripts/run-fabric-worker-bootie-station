@@ -1,0 +1,691 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$repo_root/fabric/workers/lib/admission.sh"
+
+readonly observer_namespace=fabric-observer
+readonly operation_lock=/run/lock/fabric-network-operation.lock
+original_args=("$@")
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  run-fabric-worker-bootie-station --check
+
+  sudo run-fabric-worker-bootie-station \
+    --node fabric-az1-svc1 \
+    --mode discovery|install \
+    --stage-dir /trusted/fabric-az1-svc1-pxe \
+    --access-dir /dev/shm/fabric-az1-svc1-bootie-access \
+    --image localhost/fabric-bootie:GIT_COMMIT \
+    [--handoff-dir /dev/shm/fabric-az1-svc1-pxe-handoff]
+
+The direct command starts the exact node-specific transient systemd service
+required by the arm helper and then returns; follow it with journalctl. Run one
+exact-MAC DHCP/TFTP/HTTP station inside fabric-observer. Discovery
+serves only the public inventory profile. Install mode snapshots one verified
+custom-initramfs handoff into root-controlled tmpfs under a fresh capability
+name, but does not arm the Node or write its disk.
+EOF
+}
+
+die() {
+  printf 'run-fabric-worker-bootie-station: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+service_mode=false
+node=
+mode=
+stage_dir=
+access_dir=
+image=
+handoff_dir=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --service-mode) service_mode=true; shift ;;
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --mode) (($# >= 2)) || die '--mode requires a value'; mode=$2; shift 2 ;;
+    --stage-dir) (($# >= 2)) || die '--stage-dir requires a value'; stage_dir=$2; shift 2 ;;
+    --access-dir) (($# >= 2)) || die '--access-dir requires a value'; access_dir=$2; shift 2 ;;
+    --image) (($# >= 2)) || die '--image requires a value'; image=$2; shift 2 ;;
+    --handoff-dir) (($# >= 2)) || die '--handoff-dir requires a value'; handoff_dir=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+if $check_only; then
+  [[ -z $node && -z $mode && -z $stage_dir && -z $access_dir && -z $image &&
+     -z $handoff_dir && $service_mode == false ]] ||
+    die '--check cannot be combined with station arguments'
+  bash -n "$script_path"
+  printf 'validated worker Bootie station syntax\n'
+  exit 0
+fi
+
+((EUID == 0)) || die 'run the station as a long-lived root service'
+case $node in
+  fabric-az1-svc1) short_node=svc1; expected_address=10.66.1.10 ;;
+  fabric-az1-svc2) short_node=svc2; expected_address=10.66.1.11 ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+[[ $mode == discovery || $mode == install ]] || die '--mode must be discovery or install'
+[[ -n $stage_dir && -n $access_dir && -n $image ]] || { usage; exit 2; }
+if [[ $mode == discovery ]]; then
+  [[ -z $handoff_dir ]] || die '--handoff-dir is forbidden in discovery mode'
+else
+  [[ -n $handoff_dir ]] || die '--handoff-dir is required in install mode'
+fi
+
+station_name=fabric-worker-bootie-$short_node
+runtime_dir=/run/$station_name
+unit_name=$station_name-station.service
+if [[ $service_mode != true ]]; then
+  [[ -z ${INVOCATION_ID:-} ]] ||
+    die 'invoke the worker station directly; it owns creation of its transient unit'
+  command -v systemd-run >/dev/null || die 'missing required command: systemd-run'
+  command -v systemctl >/dev/null || die 'missing required command: systemctl'
+  if systemctl is-active --quiet "$unit_name"; then
+    die "$unit_name is already active"
+  fi
+  # Cleanup grants Podman ten seconds for an orderly stop, then uses a
+  # force-remove fallback and proves every listener is gone before removing
+  # the tmpfs snapshot.  Leave systemd enough margin to finish that proof.
+  systemd-run \
+    --unit="${unit_name%.service}" \
+    --collect \
+    --service-type=exec \
+    --working-directory="$PWD" \
+    --property=KillMode=control-group \
+    --property=MemoryMax=3G \
+    --property=TasksMax=128 \
+    --property=Restart=no \
+    --property=TimeoutStopSec=45s \
+    "$script_path" --service-mode "${original_args[@]}"
+  printf 'Started %s; follow readiness with: journalctl -fu %s\n' \
+    "$unit_name" "$unit_name"
+  exit 0
+fi
+[[ -n ${INVOCATION_ID:-} ]] || die '--service-mode is valid only inside systemd'
+[[ $(systemctl show --property=MainPID --value "$unit_name") == "$$" ]] ||
+  die "current process is not the MainPID of $unit_name"
+systemctl is-active --quiet "$unit_name" || die "$unit_name is not active"
+
+for command in awk bash chmod coreos-installer curl date dnsmasq find flock git grep \
+  install ip jq kubectl mv openssl podman readlink realpath rmdir sha256sum sleep ss \
+  stat systemctl sed; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+stage_dir=$(realpath -e -- "$stage_dir")
+access_dir=$(realpath -e -- "$access_dir")
+[[ -d $stage_dir && ! -L $stage_dir ]] || die 'stage directory is invalid'
+[[ -d $access_dir && ! -L $access_dir ]] || die 'access directory is invalid'
+[[ $(stat -Lc '%u:%g:%a' "$access_dir") == 0:0:700 ]] ||
+  die 'access directory must be root-owned mode 0700'
+[[ $(stat --file-system --format=%T -- "$access_dir") == tmpfs ]] ||
+  die 'scoped Bootie access must remain on tmpfs'
+for access_file in kubeconfig token identity.json; do
+  [[ -f $access_dir/$access_file && ! -L $access_dir/$access_file &&
+     $(stat -Lc '%u:%g:%a:%h' "$access_dir/$access_file") == 0:0:600:1 ]] ||
+    die "scoped Bootie access file is unsafe: $access_file"
+done
+[[ -s $access_dir/token ]] || die 'scoped Bootie token is empty or revoked'
+
+[[ -f $stage_dir/SHA256SUMS && ! -L $stage_dir/SHA256SUMS ]] ||
+  die 'stage checksum manifest is unavailable'
+stage_manifest_sha256=$(sha256sum "$stage_dir/SHA256SUMS" | awk '{print $1}')
+(cd "$stage_dir" && sha256sum --check --strict SHA256SUMS >/dev/null) ||
+  die 'stage checksum verification failed'
+[[ $(sha256sum "$stage_dir/SHA256SUMS" | awk '{print $1}') == "$stage_manifest_sha256" ]] ||
+  die 'stage manifest changed during verification'
+[[ $(< "$stage_dir/FABRIC_WORKER_NODE") == "$node" ]] || die 'staged worker name is wrong'
+mac=$(< "$stage_dir/FABRIC_WORKER_MAC")
+version=$(< "$stage_dir/FCOS_VERSION")
+repo_commit=$(< "$stage_dir/REPO_COMMIT")
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'staged MAC is malformed'
+[[ $version =~ ^[0-9][0-9A-Za-z.-]+$ ]] || die 'staged FCOS version is malformed'
+[[ $repo_commit =~ ^[0-9a-f]{40}$ ]] || die 'staged repository commit is malformed'
+[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" ]] ||
+  die 'station checkout does not match the staged repository commit'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+  die 'worker Bootie station may only run from main'
+[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'worker Bootie station requires a completely clean worktree'
+[[ $(jq -r '.metadata.name' "$stage_dir/node-discovery.json") == "$node" ]] ||
+  die 'staged discovery Node name is wrong'
+
+identity_json=$access_dir/identity.json
+jq -e --arg node "$node" --arg mac "$mac" --arg repo_commit "$repo_commit" '
+  .schema == 1 and .node == $node and .mac == $mac and
+  (.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+  .repoCommit == $repo_commit and (.revokedAt // "") == ""
+' "$identity_json" >/dev/null || die 'scoped access identity does not match this stage'
+node_uid=$(jq -r '.nodeUid' "$identity_json")
+
+static_files=(
+  "fedora-coreos-$version-live-initramfs.x86_64.img"
+  "fedora-coreos-$version-live-kernel.x86_64"
+  "fedora-coreos-$version-live-rootfs.x86_64.img"
+)
+for static_file in "${static_files[@]}"; do
+  [[ -f $stage_dir/static/$static_file && ! -L $stage_dir/static/$static_file ]] ||
+    die "staged public FCOS artifact is unavailable: $static_file"
+done
+
+policy_device=
+custom_initramfs_source=
+custom_initramfs_sha256=
+capability_name=
+handoff_manifest=
+if [[ $mode == discovery ]]; then
+  [[ -f $stage_dir/install-policy && ! -L $stage_dir/install-policy &&
+     ! -s $stage_dir/install-policy ]] || die 'discovery install policy must be empty'
+else
+  handoff_dir=$(realpath -e -- "$handoff_dir")
+  [[ -d $handoff_dir && ! -L $handoff_dir ]] || die 'install handoff directory is invalid'
+  [[ $(stat -Lc '%a' "$handoff_dir") == 700 ]] || die 'install handoff must be mode 0700'
+  [[ $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs ]] ||
+    die 'install handoff must remain on tmpfs'
+  handoff_owner=$(stat -Lc '%u:%g' "$handoff_dir")
+  handoff_manifest=$handoff_dir/handoff.json
+  install_policy=$handoff_dir/install-policy
+  for protected_file in "$handoff_manifest" "$install_policy"; do
+    [[ -f $protected_file && ! -L $protected_file &&
+       $(stat -Lc '%u:%g:%a:%h' "$protected_file") == "$handoff_owner:600:1" ]] ||
+      die "install handoff file is unsafe: $protected_file"
+  done
+  initramfs_file=$(jq -r '.initramfs.file // ""' "$handoff_manifest")
+  [[ $initramfs_file == "$node-live-initramfs.x86_64.img" ]] ||
+    die 'handoff custom initramfs filename is wrong'
+  custom_initramfs_source=$handoff_dir/$initramfs_file
+  [[ -f $custom_initramfs_source && ! -L $custom_initramfs_source &&
+     $(stat -Lc '%u:%g:%a:%h' "$custom_initramfs_source") == "$handoff_owner:600:1" ]] ||
+    die 'custom initramfs handoff file is unsafe'
+  read -r policy_node policy_device extra < "$install_policy"
+  [[ $policy_node == "$node" && -n $policy_device && -z ${extra:-} ]] ||
+    die 'install policy is not one exact selected-worker record'
+  fabric_worker_load_admission "$node" "$repo_root/fabric/workers/inventory/$node.yaml"
+  [[ $policy_device == "$FABRIC_WORKER_DISK" ]] ||
+    die 'install policy does not match admitted worker disk'
+  policy_sha256=$(sha256sum "$install_policy" | awk '{print $1}')
+  custom_initramfs_sha256=$(sha256sum "$custom_initramfs_source" | awk '{print $1}')
+  network_keyfile_sha256=$(jq -r '.liveNetworkKeyfile.sha256 // ""' "$handoff_manifest")
+  [[ $network_keyfile_sha256 =~ ^[0-9a-f]{64}$ ]] ||
+    die 'handoff manifest lacks a valid embedded network-keyfile hash'
+  admission_sha256=$(sha256sum "$repo_root/fabric/workers/inventory/$node.yaml" | awk '{print $1}')
+  kernel_sha256=$(sha256sum "$stage_dir/static/fedora-coreos-$version-live-kernel.x86_64" | awk '{print $1}')
+  rootfs_sha256=$(sha256sum "$stage_dir/static/fedora-coreos-$version-live-rootfs.x86_64.img" | awk '{print $1}')
+  jq -e \
+    --arg node "$node" --arg mac "$mac" --arg address "$expected_address" \
+    --arg disk "$policy_device" --arg inventory_sha "$FABRIC_WORKER_INVENTORY_SHA256" \
+    --arg admission_sha "$admission_sha256" --arg initramfs_file "$initramfs_file" \
+    --arg initramfs_sha "$custom_initramfs_sha256" --arg policy_sha "$policy_sha256" \
+    --arg version "$version" --arg kernel_sha "$kernel_sha256" \
+    --arg rootfs_sha "$rootfs_sha256" --arg network_sha "$network_keyfile_sha256" \
+    --arg repo_commit "$repo_commit" '
+      .schema == 1 and .delivery == "bootie-custom-pxe-initramfs" and
+      .node == $node and .permanentMac == $mac and .servicesAddress == $address and
+      .bootDevice == $disk and .inventorySha256 == $inventory_sha and
+      .admissionSha256 == $admission_sha and
+      .initramfs.file == $initramfs_file and .initramfs.sha256 == $initramfs_sha and
+      .installPolicy.file == "install-policy" and .installPolicy.sha256 == $policy_sha and
+      .publicFcos.version == $version and .publicFcos.kernelSha256 == $kernel_sha and
+      .publicFcos.rootfsSha256 == $rootfs_sha and
+      .liveNetworkKeyfile.file == "fabric-services.nmconnection" and
+      .liveNetworkKeyfile.sha256 == $network_sha and
+      .liveKernelArguments == ["coreos.inst.skip_reboot", "systemd.show_status=false"] and
+      .repoCommit == $repo_commit
+    ' "$handoff_manifest" >/dev/null ||
+    die 'install handoff does not bind the exact stage, admission, disk, and initramfs'
+  capability_name=$(openssl rand -hex 24).img
+  [[ $capability_name =~ ^[0-9a-f]{48}\.img$ ]] || die 'could not generate initramfs capability'
+fi
+
+[[ $(stat -Lc '%F:%u:%g:%a' /run/lock) == 'directory:0:0:755' ]] ||
+  die 'fabric network lock directory must be root-owned mode 0755'
+[[ ! -L $operation_lock ]] || die 'fabric network operation lock must not be a symlink'
+if [[ -e $operation_lock ]]; then
+  [[ -f $operation_lock && $(stat -Lc '%u:%g:%a:%h' "$operation_lock") == 0:0:600:1 ]] ||
+    die 'fabric network operation lock is unsafe'
+fi
+exec {lock_fd}>>"$operation_lock"
+chmod 0600 "/proc/self/fd/$lock_fd"
+[[ $(readlink -e "/proc/self/fd/$lock_fd") == "$operation_lock" ]] ||
+  die 'opened the wrong fabric network lock'
+flock --exclusive --nonblock "$lock_fd" || die 'another fabric network operation is active'
+
+"$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+ip netns exec "$observer_namespace" ip -4 route get 10.66.0.2 |
+  grep -Fq 'local 10.66.0.2' || die 'observer address 10.66.0.2 is unavailable'
+if ip netns exec "$observer_namespace" ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+  die 'observer namespace unexpectedly has a route off the fabric L2'
+fi
+
+node_json=$(ip netns exec "$observer_namespace" kubectl \
+  --kubeconfig "$access_dir/kubeconfig" --request-timeout=10s \
+  get node "$node" --output=json) || die 'scoped token cannot read selected worker Node'
+expected_node_mac=${mac//:/-}
+jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$expected_node_mac" '
+  .metadata.name == $node and .metadata.uid == $uid and
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "true" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  ((.status.nodeInfo.machineID // "") == "")
+' <<< "$node_json" >/dev/null || die 'selected worker is not at the exact safe station baseline'
+
+preflight_tcp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnt \
+  '( sport = :80 or sport = :9000 )') ||
+  die 'could not inspect preflight Bootie or FastCGI listeners'
+if grep -q . <<< "$preflight_tcp_listeners"; then
+  die 'Bootie or FastCGI ports are already in use inside fabric-observer'
+fi
+preflight_udp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnu \
+  '( sport = :67 or sport = :69 )') ||
+  die 'could not inspect preflight DHCP or TFTP listeners'
+if grep -q . <<< "$preflight_udp_listeners"; then
+  die 'DHCP or TFTP ports are already in use inside fabric-observer'
+fi
+
+podman image exists "$image" || die "root Podman image is unavailable: $image"
+image_revision=$(podman image inspect \
+  --format '{{index .Labels "org.opencontainers.image.revision"}}' "$image") ||
+  die 'could not inspect Bootie image revision label'
+[[ $image_revision == "$repo_commit" ]] ||
+  die 'Bootie image lacks the exact staged org.opencontainers.image.revision label'
+image_id=$(podman image inspect --format '{{.Id}}' "$image") ||
+  die 'could not resolve Bootie image ID'
+[[ $image_id == sha256:* ]] || die 'could not resolve an immutable Bootie image ID'
+container_rc=0
+podman container exists "$station_name" >/dev/null 2>&1 || container_rc=$?
+case $container_rc in
+  0) die "stale Bootie container exists: $station_name" ;;
+  1) ;;
+  *) die "could not prove absence of stale Bootie container: $station_name" ;;
+esac
+[[ ! -e $runtime_dir && ! -L $runtime_dir ]] || die "runtime path already exists: $runtime_dir"
+[[ $(stat --file-system --format=%T -- /run) == tmpfs ]] || die '/run must be tmpfs'
+
+bootie_pid=
+dnsmasq_pid=
+cleaned=false
+# Invoked through the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup() {
+  local exit_status=$?
+  local container_rc=0 tcp_listeners='' udp_listeners=''
+  local teardown_failed=false
+  if [[ $cleaned == true ]]; then return; fi
+  cleaned=true
+
+  # Do not let systemd's initial TERM (or a second operator signal) interrupt
+  # the bounded teardown.  TimeoutStopSec still provides the outer 45-second
+  # ceiling for a genuinely wedged service.
+  trap - EXIT
+  trap '' INT HUP TERM
+  if [[ -n ${dnsmasq_pid:-} ]]; then
+    kill "$dnsmasq_pid" >/dev/null 2>&1 || true
+    for _attempt in {1..20}; do
+      kill -0 "$dnsmasq_pid" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    if kill -0 "$dnsmasq_pid" >/dev/null 2>&1; then
+      printf 'worker Bootie cleanup: dnsmasq ignored TERM; sending SIGKILL\n' >&2
+      kill -KILL "$dnsmasq_pid" >/dev/null 2>&1 || true
+    fi
+    wait "$dnsmasq_pid" 2>/dev/null || true
+  fi
+
+  podman container exists "$station_name" >/dev/null 2>&1 || container_rc=$?
+  case $container_rc in
+    0)
+      if ! podman stop --time 10 "$station_name" >/dev/null 2>&1; then
+        printf 'worker Bootie cleanup: orderly container stop failed; forcing removal\n' >&2
+      fi
+      ;;
+    1) ;;
+    *)
+      printf 'worker Bootie cleanup: could not determine initial container state\n' >&2
+      teardown_failed=true
+      ;;
+  esac
+
+  container_rc=0
+  podman container exists "$station_name" >/dev/null 2>&1 || container_rc=$?
+  if ((container_rc == 0)); then
+    printf 'worker Bootie cleanup: applying force-remove fallback to %s\n' \
+      "$station_name" >&2
+    podman rm --force "$station_name" >/dev/null 2>&1 || true
+  elif ((container_rc != 1)); then
+    teardown_failed=true
+  fi
+  if [[ -n ${bootie_pid:-} ]]; then wait "$bootie_pid" 2>/dev/null || true; fi
+
+  # A failed Podman operation is not evidence that the process disappeared.
+  # Prove both the exact container and every station listener are absent while
+  # the bind-mounted runtime remains intact.  On uncertainty, retain it for
+  # inspection/recovery instead of unlinking a live credential-bearing inode.
+  container_rc=0
+  podman container exists "$station_name" >/dev/null 2>&1 || container_rc=$?
+  case $container_rc in
+    0)
+      printf 'worker Bootie cleanup: exact container still exists after force removal\n' >&2
+      teardown_failed=true
+      ;;
+    1) ;;
+    *)
+      printf 'worker Bootie cleanup: exact container absence could not be proved\n' >&2
+      teardown_failed=true
+      ;;
+  esac
+  if ! tcp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnt \
+    '( sport = :80 or sport = :9000 )'); then
+    printf 'worker Bootie cleanup: HTTP/FastCGI listener absence could not be proved\n' >&2
+    teardown_failed=true
+  elif grep -q . <<< "$tcp_listeners"; then
+    printf 'worker Bootie cleanup: HTTP/FastCGI listener remains:\n%s\n' \
+      "$tcp_listeners" >&2
+    teardown_failed=true
+  fi
+  if ! udp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnu \
+    '( sport = :67 or sport = :69 )'); then
+    printf 'worker Bootie cleanup: DHCP/TFTP listener absence could not be proved\n' >&2
+    teardown_failed=true
+  elif grep -q . <<< "$udp_listeners"; then
+    printf 'worker Bootie cleanup: DHCP/TFTP listener remains:\n%s\n' \
+      "$udp_listeners" >&2
+    teardown_failed=true
+  fi
+
+  if [[ $teardown_failed == true ]]; then
+    printf 'worker Bootie cleanup: REFUSING runtime deletion; evidence retained at %s\n' \
+      "$runtime_dir" >&2
+    exit 1
+  fi
+  if [[ -d $runtime_dir && ! -L $runtime_dir ]]; then
+    find "$runtime_dir" -xdev -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$runtime_dir" 2>/dev/null || true
+  fi
+  if [[ -e $runtime_dir || -L $runtime_dir ]]; then
+    printf 'worker Bootie cleanup: runtime deletion was incomplete: %s\n' \
+      "$runtime_dir" >&2
+    exit 1
+  fi
+  exit "$exit_status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+install -d -o root -g nginx -m 0750 "$runtime_dir"
+install -d -o nginx -g nginx -m 0700 "$runtime_dir/dnsmasq"
+install -d -o root -g root -m 0700 "$runtime_dir/evidence"
+install -d -o root -g root -m 0700 "$runtime_dir/http-log"
+install -d -o root -g root -m 0755 "$runtime_dir/tftp/EFI/BOOT" \
+  "$runtime_dir/pxe" "$runtime_dir/ignition/common"
+nginx_http_source=$repo_root/apps/bootie/nginx-http.conf
+[[ -f $nginx_http_source && ! -L $nginx_http_source ]] ||
+  die 'reviewed Bootie HTTP configuration is unavailable'
+[[ $(grep -Fxc '    listen 80;' "$nginx_http_source") == 1 ]] ||
+  die 'Bootie HTTP configuration no longer has one expected generic listener'
+{
+  printf '%s\n' \
+    "log_format fabric_bootie '\$remote_addr|\$request_method|\$uri|\$status|\$body_bytes_sent';" \
+    'access_log /evidence/http-access.log fabric_bootie;'
+  sed 's/^    listen 80;$/    listen 10.66.0.2:80;/' "$nginx_http_source"
+} > "$runtime_dir/nginx-http.conf"
+chmod 0644 "$runtime_dir/nginx-http.conf"
+[[ $(grep -Fxc '    listen 10.66.0.2:80;' "$runtime_dir/nginx-http.conf") == 1 &&
+   $(grep -Ec '^[[:space:]]*listen[[:space:]]' "$runtime_dir/nginx-http.conf") == 1 &&
+   $(grep -Fxc 'access_log /evidence/http-access.log fabric_bootie;' \
+     "$runtime_dir/nginx-http.conf") == 1 ]] ||
+  die 'station HTTP configuration is not bound only to 10.66.0.2:80'
+install -o root -g root -m 0600 "$stage_dir/SHA256SUMS" "$runtime_dir/SHA256SUMS"
+[[ $(sha256sum "$runtime_dir/SHA256SUMS" | awk '{print $1}') == "$stage_manifest_sha256" ]] ||
+  die 'stage manifest changed before runtime snapshot'
+
+snapshot_stage_file() {
+  local relative_path=$1 destination=$2 mode_bits=$3
+  local source=$stage_dir/$relative_path expected_sha actual_sha
+  [[ -f $source && ! -L $source ]] || die "staged file is unavailable: $relative_path"
+  expected_sha=$(awk -v path="$relative_path" '$2 == path {print $1}' "$runtime_dir/SHA256SUMS")
+  [[ $expected_sha =~ ^[0-9a-f]{64}$ ]] ||
+    die "stage manifest lacks one valid checksum for $relative_path"
+  install -o root -g root -m "$mode_bits" "$source" "$destination"
+  actual_sha=$(sha256sum "$destination" | awk '{print $1}')
+  [[ $actual_sha == "$expected_sha" ]] || die "runtime snapshot changed: $relative_path"
+}
+
+for metadata_file in FABRIC_WORKER_MAC FABRIC_WORKER_NODE FCOS_VERSION REPO_COMMIT; do
+  snapshot_stage_file "$metadata_file" "$runtime_dir/$metadata_file" 0644
+done
+snapshot_stage_file dnsmasq.conf "$runtime_dir/dnsmasq/dnsmasq.conf" 0644
+snapshot_stage_file ignition/common/discovery.ign \
+  "$runtime_dir/ignition/common/discovery.ign" 0644
+for static_file in "${static_files[@]}"; do
+  snapshot_stage_file "static/$static_file" "$runtime_dir/pxe/$static_file" 0644
+done
+for efi_file in BOOTX64.EFI grub.cfg grubx64.efi mmx64.efi; do
+  snapshot_stage_file "tftp/EFI/BOOT/$efi_file" "$runtime_dir/tftp/EFI/BOOT/$efi_file" 0644
+done
+for efi_peer in grub.cfg grubx64.efi mmx64.efi; do
+  snapshot_stage_file "tftp/$efi_peer" "$runtime_dir/tftp/$efi_peer" 0644
+done
+
+if [[ $mode == discovery ]]; then
+  snapshot_stage_file install-policy "$runtime_dir/install-policy" 0600
+else
+  install -d -o root -g root -m 0700 "$runtime_dir/network-verify"
+  coreos-installer pxe network unwrap --directory "$runtime_dir/network-verify" \
+    "$custom_initramfs_source" >/dev/null
+  mapfile -d '' runtime_network_entries < <(
+    find "$runtime_dir/network-verify" -mindepth 1 -maxdepth 1 -print0
+  )
+  [[ ${#runtime_network_entries[@]} -eq 1 && -f ${runtime_network_entries[0]} &&
+     ! -L ${runtime_network_entries[0]} &&
+     ${runtime_network_entries[0]##*/} == fabric-services.nmconnection ]] ||
+    die 'custom initramfs does not contain one expected regular network keyfile'
+  runtime_network_keyfile=${runtime_network_entries[0]}
+  runtime_network_sha=$(sha256sum "$runtime_network_keyfile" | awk '{print $1}')
+  [[ $runtime_network_sha == "$network_keyfile_sha256" ]] ||
+    die 'custom initramfs network keyfile differs from its handoff manifest'
+  mapfile -t runtime_network_macs < <(
+    awk -F= '$1 == "mac-address" {print tolower($2)}' "$runtime_network_keyfile"
+  )
+  mapfile -t runtime_network_addresses < <(
+    awk -F= '$1 == "address1" {print $2}' "$runtime_network_keyfile"
+  )
+  mapfile -t runtime_network_uuids < <(
+    awk -F= '$1 == "uuid" {print tolower($2)}' "$runtime_network_keyfile"
+  )
+  [[ ${#runtime_network_macs[@]} -eq 1 && ${runtime_network_macs[0]} == "$mac" ]] ||
+    die 'custom initramfs network keyfile is not bound to the staged MAC'
+  [[ ${#runtime_network_addresses[@]} -eq 1 &&
+     ${runtime_network_addresses[0]} == "$expected_address/24,10.66.1.1" ]] ||
+    die 'custom initramfs network keyfile has the wrong services address or gateway'
+  [[ ${#runtime_network_uuids[@]} -eq 1 &&
+     ${runtime_network_uuids[0]} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die 'custom initramfs network keyfile lacks one valid UUID'
+  find "$runtime_dir/network-verify" -mindepth 1 -delete
+  rmdir "$runtime_dir/network-verify"
+  install -o root -g root -m 0600 "$handoff_manifest" "$runtime_dir/handoff.json"
+  install -o root -g root -m 0600 "$handoff_dir/install-policy" "$runtime_dir/install-policy"
+  install -o root -g root -m 0644 "$custom_initramfs_source" \
+    "$runtime_dir/pxe/$capability_name"
+  [[ $(stat -Lc '%a:%h' "$runtime_dir/pxe/$capability_name") == 644:1 ]] ||
+    die 'runtime custom initramfs is not a single-link mode-0644 file'
+  runtime_custom_sha=$(sha256sum "$runtime_dir/pxe/$capability_name" | awk '{print $1}')
+  [[ $runtime_custom_sha == "$custom_initramfs_sha256" ]] ||
+    die 'runtime custom initramfs snapshot changed'
+  # The capability protects a credential-bearing initramfs.  Keep its value
+  # out of the externally visible podman argv; podman receives only this
+  # root-owned tmpfs pathname and imports the values into the container.
+  printf '%s\n' \
+    'BOOTIE_INSTALL_DELIVERY=custom-initramfs' \
+    "BOOTIE_CUSTOM_INITRAMFS_NAME=$capability_name" \
+    "BOOTIE_CUSTOM_INITRAMFS_SHA256=$custom_initramfs_sha256" \
+    "BOOTIE_CUSTOM_FCOS_VERSION=$version" \
+    'BOOTIE_CUSTOM_LIVE_KARGS=coreos.inst.skip_reboot systemd.show_status=false' \
+    > "$runtime_dir/bootie-custom.env"
+  chmod 0600 "$runtime_dir/bootie-custom.env"
+fi
+
+podman_args=(
+  run --rm --name "$station_name" --network "ns:/run/netns/$observer_namespace"
+  --pull never --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE
+  --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID
+  --memory 256m --pids-limit 64 --security-opt label=disable
+  --security-opt no-new-privileges
+  --tmpfs '/run/nginx:rw,nosuid,nodev,noexec,size=1m'
+  --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=8m'
+  --tmpfs '/var/lib/nginx:rw,nosuid,nodev,noexec,size=16m'
+  --tmpfs '/var/log/nginx:rw,nosuid,nodev,noexec,size=4m'
+  --env BOOTIE_ALLOW_NODE_CREATE=false --env "BOOTIE_CEREMONY_MODE=$mode"
+  --env "BOOTIE_EXPECTED_NODE_UID=$node_uid"
+  --env BOOTIE_INSTALL_POLICY_FILE=/policy/install-policy --env "BOOTIE_NODE_NAME=$node"
+  --env BOOTIE_PUBLIC_ORIGIN=http://10.66.0.2
+  --env BOOTIE_REQUIRE_BOOTSTRAP_STATE=true --env BOOTIE_REQUIRE_INSTALL_POLICY=true
+  --env FCOS_BASE=http://10.66.0.2/static
+  --env 'FCOS_GRUB_BASE=(http,10.66.0.2)/static'
+  --env "FCOS_VERSION=$version" --env HOME=/tmp --env KUBECONFIG=/secrets/kubeconfig
+  --volume "$access_dir:/secrets:ro"
+  --volume "$runtime_dir/install-policy:/policy/install-policy:ro"
+  --volume "$runtime_dir/http-log:/evidence:rw"
+  --volume "$runtime_dir/nginx-http.conf:/etc/nginx/http.d/default.conf:ro"
+  --volume "$runtime_dir/pxe:/pxe:ro"
+)
+if [[ $mode == discovery ]]; then
+  podman_args+=(--volume "$runtime_dir/ignition:/ignition:ro")
+else
+  podman_args+=(--env-file "$runtime_dir/bootie-custom.env")
+fi
+
+rootfs_file=fedora-coreos-$version-live-rootfs.x86_64.img
+rootfs_uri=/static/$rootfs_file
+rootfs_size=$(stat -Lc '%s' "$runtime_dir/pxe/$rootfs_file")
+[[ $rootfs_size =~ ^[1-9][0-9]+$ ]] || die 'runtime rootfs has an invalid byte size'
+if [[ $mode == install ]]; then
+  rootfs_source=$expected_address
+else
+  rootfs_source=10.66.0.100
+fi
+
+podman "${podman_args[@]}" "$image_id" &
+bootie_pid=$!
+kernel_path=static/fedora-coreos-$version-live-kernel.x86_64
+for _attempt in {1..50}; do
+  if ip netns exec "$observer_namespace" curl --fail --silent --show-error \
+    --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null; then
+    break
+  fi
+  kill -0 "$bootie_pid" 2>/dev/null || die 'Bootie exited during startup'
+  sleep 0.2
+done
+ip netns exec "$observer_namespace" curl --fail --silent --show-error \
+  --range 0-1023 "http://10.66.0.2/$kernel_path" --output /dev/null ||
+  die 'Bootie did not become ready'
+http_listeners=$(ip netns exec "$observer_namespace" ss -H -lnt 'sport = :80') ||
+  die 'could not inspect the station HTTP listener'
+[[ $(grep -c '10.66.0.2:80' <<< "$http_listeners") == 1 &&
+   $(grep -c ':80' <<< "$http_listeners") == 1 ]] ||
+  die 'HTTP must have exactly one listener bound to 10.66.0.2:80'
+http_access_log=$runtime_dir/http-log/http-access.log
+[[ -f $http_access_log && ! -L $http_access_log &&
+   $(stat -Lc '%h' "$http_access_log") == 1 ]] ||
+  die 'rootfs completion evidence log was not opened safely'
+fastcgi_listeners=$(ip netns exec "$observer_namespace" ss -H -lnt 'sport = :9000') ||
+  die 'could not inspect the station FastCGI listener'
+[[ $(grep -c '127.0.0.1:9000' <<< "$fastcgi_listeners") == 1 &&
+   $(grep -c ':9000' <<< "$fastcgi_listeners") == 1 ]] ||
+  die 'FastCGI must have exactly one loopback-only listener'
+backend_status=$(ip netns exec "$observer_namespace" curl --silent --show-error \
+  --output /dev/null --write-out '%{http_code}' http://10.66.0.2/boot.grub) ||
+  die 'Bootie refusal probe failed'
+[[ $backend_status == 409 ]] || die "Bootie refusal probe returned HTTP $backend_status"
+
+ip netns exec "$observer_namespace" dnsmasq --keep-in-foreground \
+  --conf-file="$runtime_dir/dnsmasq/dnsmasq.conf" &
+dnsmasq_pid=$!
+for _attempt in {1..25}; do
+  udp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnu \
+    '( sport = :67 or sport = :69 )') ||
+    die 'could not inspect station DHCP/TFTP listeners during startup'
+  if grep -q ':67' <<< "$udp_listeners" && grep -q ':69' <<< "$udp_listeners"; then break; fi
+  kill -0 "$dnsmasq_pid" 2>/dev/null || die 'dnsmasq exited during startup'
+  sleep 0.2
+done
+udp_listeners=$(ip netns exec "$observer_namespace" ss -H -lnu \
+  '( sport = :67 or sport = :69 )') ||
+  die 'could not inspect final station DHCP/TFTP listeners'
+grep -q ':67' <<< "$udp_listeners" || die 'exact-MAC DHCP listener did not become ready'
+grep -q ':69' <<< "$udp_listeners" || die 'TFTP listener did not become ready'
+
+printf '%s ready for %s (%s) at 10.66.0.2\n' "$unit_name" "$node" "$mac"
+if [[ $mode == discovery ]]; then
+  printf 'Public inventory boot is active at 10.66.0.100; no installation is armed.\n'
+else
+  printf 'Sensitive handoff for %s is loaded but unarmed.\n' "$policy_device"
+  printf 'Run arm-fabric-worker-bootie-install only after reviewing this readiness message.\n'
+fi
+printf 'Keep this unit active through the full rootfs transfer and live-system pivot.\n'
+
+rootfs_observed=false
+rootfs_receipt=$runtime_dir/evidence/rootfs-delivery-complete.json
+while :; do
+  kill -0 "$bootie_pid" 2>/dev/null || {
+    wait "$bootie_pid" 2>/dev/null || true
+    die 'Bootie exited unexpectedly before station teardown'
+  }
+  kill -0 "$dnsmasq_pid" 2>/dev/null || {
+    wait "$dnsmasq_pid" 2>/dev/null || true
+    die 'dnsmasq exited unexpectedly before station teardown'
+  }
+  if [[ $rootfs_observed == false && -f $http_access_log && ! -L $http_access_log &&
+        $(stat -Lc '%h' "$http_access_log") == 1 ]]; then
+    completed_record=$(awk -F'|' -v source="$rootfs_source" -v uri="$rootfs_uri" \
+      -v bytes="$rootfs_size" '
+        $1 == source && $2 == "GET" && $3 == uri && $4 == "200" && $5 == bytes {
+          record = $0
+        }
+        END { print record }
+      ' "$http_access_log")
+    if [[ -n $completed_record ]]; then
+      receipt_tmp=$runtime_dir/evidence/.rootfs-delivery-complete.json.new
+      jq -n --arg node "$node" --arg node_uid "$node_uid" \
+        --arg source "$rootfs_source" --arg uri "$rootfs_uri" \
+        --argjson bytes "$rootfs_size" --arg record "$completed_record" \
+        --arg completed_at "$(date --utc --iso-8601=seconds)" '{
+          schema: 1, node: $node, nodeUid: $node_uid,
+          sourceAddress: $source, requestUri: $uri,
+          status: 200, bodyBytesSent: $bytes, accessRecord: $record,
+          completedAt: $completed_at
+        }' > "$receipt_tmp"
+      chmod 0600 "$receipt_tmp"
+      mv -T -- "$receipt_tmp" "$rootfs_receipt"
+      [[ -f $rootfs_receipt && ! -L $rootfs_receipt &&
+         $(stat -Lc '%u:%g:%a:%h' "$rootfs_receipt") == 0:0:600:1 ]] ||
+        die 'rootfs completion receipt was not published safely'
+      rootfs_observed=true
+      printf 'ROOTFS-DELIVERY-COMPLETE:%s:%s:%s-bytes\n' \
+        "$node" "$rootfs_source" "$rootfs_size"
+      printf 'Keep the station active until the attended console shows the live pre-install gate.\n'
+      printf 'Only after BOTH proofs may systemctl stop %s.\n' "$unit_name"
+    fi
+  fi
+  sleep 0.25
+done

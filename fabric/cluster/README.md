@@ -6,11 +6,20 @@ consensus Ignitions remain offline-rendered from `fabric/butane` and are not
 copied into Kubernetes Secrets.
 
 Phase two adds exactly two persistent K3s agents, `fabric-az1-svc1` and
-`fabric-az1-svc2`, on the separately routed `10.66.1.0/24` service plane. They
+`fabric-az1-svc2`, on the routed `10.66.1.0/24` service plane. They
 carry `fabric.samcday.com/platform=true` as both a label and a NoSchedule
 taint. CoreDNS, Flux controllers, metrics-server, and later hosted control
 planes select and tolerate that boundary explicitly. The service nodes are
 not etcd members and do not carry Kubernetes control-plane roles.
+
+The first two agents are an explicit transitional exception: the root and
+service prefixes retain separate addressing and router policy but temporarily
+share one physical L2 across daisy-chained unmanaged switches. IP allow-lists
+cannot stop source spoofing on that wire. Until a managed switch enforces the
+declared VLANs, admit only these physically trusted machines and the Flux,
+CoreDNS, metrics-server, and hosted-control-plane foundation needed to finish
+the platform. Do not place child etcd credentials, KubeVirt, tenant VMs, LLM
+jobs, or other untrusted workloads there.
 
 K3s keeps only Flannel and kube-proxy from its normal base. Its packaged
 CoreDNS and metrics-server Addons remain disabled: this tree owns pinned,
@@ -23,9 +32,10 @@ External etcd has a 2 GiB backend quota. Mutual TLS is enabled at bootstrap;
 the guarded offline-root procedure then enables RBAC and confines K3s to
 `/fabric-root/` plus K3s' required `/bootstrap/` prefix. Successful negative
 authorization tests, a controlled K3s restart/rejoin and token-rotation test,
-negative tests of the installed host guard, and a consensus/service boundary
-test are hard gates before the first service node joins or a child prefix is
-created.
+negative tests of the installed host guard, and a routed service-policy test
+are hard gates before the first service node joins. Physical VLAN isolation
+and its anti-spoofing tests remain hard gates before a child etcd identity or
+tenant workload is created.
 
 The three root nodes remain consensus-only after workers arrive. Ceph,
 KubeVirt/CDI, hosted control planes, monitoring storage, and applications are

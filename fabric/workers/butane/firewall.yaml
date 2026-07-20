@@ -10,7 +10,9 @@ storage:
       mode: 420
       contents:
         inline: |
-          # This table owns host input only. K3s/Flannel/kube-proxy retain the
+          # This table owns host input only. The root and services prefixes
+          # are routed through OpenWrt even while they temporarily share one
+          # Ethernet broadcast domain. K3s/Flannel/kube-proxy retain the
           # forwarding plane required by Pods; do not add a late-priority
           # default-drop forward hook here.
           destroy table inet fabric_services_guard

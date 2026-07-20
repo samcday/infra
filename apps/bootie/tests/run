@@ -8,6 +8,8 @@ export FCOS_VERSION=44.test
 export FCOS_BASE=http://10.66.0.2/static
 export FCOS_GRUB_BASE='(http,10.66.0.2)/static'
 export BOOTIE_PUBLIC_ORIGIN=http://10.66.0.2
+export BOOTIE_CUSTOM_LIVE_KARGS='coreos.inst.skip_reboot systemd.show_status=false'
+export BOOTIE_EXPECTED_NODE_UID=01234567-89ab-cdef-0123-456789abcdef
 export QUERY_STRING=mac=00-11-22-33-44-55
 
 fail() {
@@ -135,14 +137,20 @@ custom_install_grub=$(
 )
 assert_contains "$custom_install_grub" \
   "initrd (http,10.66.0.2)/custom-initramfs/$custom_initramfs_name"
+assert_contains "$custom_install_grub" \
+  'coreos.live.rootfs_url=http://10.66.0.2/static/fedora-coreos-44.test-live-rootfs.x86_64.img'
 assert_not_contains "$custom_install_grub" "/static/$custom_initramfs_name"
 assert_contains "$custom_install_grub" 'ignition.firstboot ignition.platform.id=metal'
+assert_contains "$custom_install_grub" \
+  'coreos.inst.skip_reboot systemd.show_status=false'
 assert_not_contains "$custom_install_grub" 'coreos.inst.install_dev='
 assert_not_contains "$custom_install_grub" '/ignition/fabric-az1-cp3'
 custom_patch=$(grep '^patch node/fabric-az1-cp3 --type=json --patch' \
   "$custom_mutation_log")
 assert_contains "$custom_patch" \
   '"op":"test","path":"/metadata/resourceVersion","value":"12345"'
+assert_contains "$custom_patch" \
+  '"op":"test","path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"'
 assert_contains "$custom_patch" \
   '"op":"remove","path":"/metadata/annotations/samcday.com~1install"'
 assert_contains "$custom_patch" \
@@ -172,8 +180,54 @@ custom_install_ipxe=$(
 )
 assert_contains "$custom_install_ipxe" \
   "initrd --name main http://10.66.0.2/custom-initramfs/$custom_initramfs_name"
+assert_contains "$custom_install_ipxe" \
+  'coreos.live.rootfs_url=http://10.66.0.2/static/fedora-coreos-44.test-live-rootfs.x86_64.img'
 assert_not_contains "$custom_install_ipxe" "/static/$custom_initramfs_name"
 assert_not_contains "$custom_install_ipxe" 'coreos.inst.install_dev='
+assert_contains "$custom_install_ipxe" \
+  'coreos.inst.skip_reboot systemd.show_status=false'
+
+wrong_custom_live_kargs=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
+    BOOTIE_CUSTOM_LIVE_KARGS=systemd.show_status=false \
+    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
+    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
+    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
+    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$wrong_custom_live_kargs" 'Status: 409 Conflict'
+assert_contains "$wrong_custom_live_kargs" \
+  'BOOTIE_CUSTOM_LIVE_KARGS must preserve the exact reviewed installer lifecycle arguments'
+
+wrong_custom_node_uid=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
+    BOOTIE_EXPECTED_NODE_UID=ffffffff-ffff-ffff-ffff-ffffffffffff \
+    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
+    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
+    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
+    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOTSTRAP_STATE=install-armed \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$wrong_custom_node_uid" 'Status: 409 Conflict'
+assert_contains "$wrong_custom_node_uid" \
+  'the fixed Bootie Node UID does not match the issued identity'
 
 custom_initramfs_response=$(
   BOOTIE_INSTALL_DELIVERY=custom-initramfs \
@@ -200,7 +254,7 @@ wrong_custom_initramfs_capability=$(
 assert_contains "$wrong_custom_initramfs_capability" 'Status: 404 Not Found'
 assert_not_contains "$wrong_custom_initramfs_capability" \
   'bootie custom-initramfs test fixture'
-grep -Fqx '    location ~ ^/static/[0-9a-f]{32,64}\.img$ {' \
+grep -Fqx '    location ~ "^/static/[0-9a-f]{32,64}\.img$" {' \
   "$script_dir/../nginx-http.conf" ||
   fail 'Nginx no longer denies capability-shaped files through /static'
 

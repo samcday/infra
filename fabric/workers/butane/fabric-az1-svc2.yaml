@@ -10,6 +10,13 @@ storage:
       mode: 420
       contents:
         inline: fabric-az1-svc2
+    - path: /etc/fabric/services-network.env
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          FABRIC_NODE_IP=10.66.1.11
+          FABRIC_CONNECTION_UUID=b8ee0dd1-ff31-4bd6-8901-660000000111
     - path: /etc/NetworkManager/system-connections/fabric-services.nmconnection
       overwrite: true
       mode: 384
@@ -34,6 +41,10 @@ storage:
           dns-search=fabric.internal;
           may-fail=false
           route-metric=10
+          # Keep the root prefix routed through OpenWrt even during the
+          # temporary shared-Ethernet phase. This same route survives the
+          # later managed-VLAN cutover without changing the node address.
+          route1=10.66.0.0/24,10.66.1.1,10
 
           [ipv6]
           method=disabled

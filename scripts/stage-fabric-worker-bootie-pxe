@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-secure-tempdir.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  stage-fabric-worker-bootie-pxe --check
+
+  stage-fabric-worker-bootie-pxe \
+    --node fabric-az1-svc1 \
+    --iso /trusted/fedora-coreos-VERSION-live-iso.x86_64.iso \
+    --mac 00:11:22:33:44:55 \
+    --output-dir /trusted/fabric-az1-svc1-pxe
+
+Stage one exact-MAC, Secure-Boot-preserving worker PXE tree. The tree contains
+only public FCOS artifacts and the non-installing inventory profile. It never
+contains a K3s credential, destination Ignition, or armed install policy.
+EOF
+}
+
+die() {
+  printf 'stage-fabric-worker-bootie-pxe: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+node=
+iso=
+mac=
+output_dir=
+while (($#)); do
+  case $1 in
+    --check)
+      $check_only && die '--check may only be specified once'
+      check_only=true
+      shift
+      ;;
+    --node)
+      (($# >= 2)) || die '--node requires a value'
+      [[ -z $node ]] || die '--node may only be specified once'
+      node=$2
+      shift 2
+      ;;
+    --iso)
+      (($# >= 2)) || die '--iso requires a value'
+      [[ -z $iso ]] || die '--iso may only be specified once'
+      iso=$2
+      shift 2
+      ;;
+    --mac)
+      (($# >= 2)) || die '--mac requires a value'
+      [[ -z $mac ]] || die '--mac may only be specified once'
+      mac=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      [[ -z $output_dir ]] || die '--output-dir may only be specified once'
+      output_dir=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in awk bash bsdtar butane chmod coreos-installer cp find git grep \
+  install jq ln mcopy mktemp mv realpath rmdir sbverify sed sha256sum stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+dnsmasq_template=$repo_root/fabric/bootie/worker-dnsmasq.conf.in
+grub_template=$repo_root/fabric/bootie/worker-grub.cfg.in
+rbac_template=$repo_root/fabric/bootie/worker-rbac.yaml.in
+for template in "$dnsmasq_template" "$grub_template" "$rbac_template"; do
+  [[ -f $template && ! -L $template ]] || die "worker template is missing: $template"
+done
+
+if $check_only; then
+  [[ -z $node && -z $iso && -z $mac && -z $output_dir ]] ||
+    die '--check cannot be combined with staging arguments'
+  work=$(fabric_secure_tmpdir fabric-worker-pxe-check 16777216)
+  trap 'find "$work" -mindepth 1 -delete 2>/dev/null || true; rmdir "$work" 2>/dev/null || true' EXIT
+  cp -- "$dnsmasq_template" "$work/dnsmasq.conf"
+  sed -i \
+    -e 's|@FABRIC_WORKER_RUNTIME_DIR@|/run/fabric-worker-bootie-svc1|g' \
+    -e 's|@FABRIC_WORKER_MAC@|00:00:5e:00:53:71|g' \
+    "$work/dnsmasq.conf"
+  ! grep -q '@FABRIC_' "$work/dnsmasq.conf" || die 'dnsmasq template retains a placeholder'
+  if command -v dnsmasq >/dev/null; then
+    dnsmasq --test --conf-file="$work/dnsmasq.conf" >/dev/null
+  fi
+  butane --strict --files-dir "$repo_root" \
+    --output "$work/discovery.ign" "$repo_root/fabric/installer/inventory-live.bu"
+  jq -e '.ignition.version | startswith("3.")' "$work/discovery.ign" >/dev/null
+  [[ $(grep -o '@FABRIC_WORKER_MAC_HEXHYP@' "$grub_template" | wc -l) == 1 ]] ||
+    die 'worker GRUB template must contain one MAC placeholder'
+  for placeholder in FABRIC_WORKER_BOOTIE_NAMESPACE FABRIC_WORKER_BOOTIE_NAME FABRIC_WORKER_NODE; do
+    grep -q "@$placeholder@" "$rbac_template" || die "RBAC template lacks $placeholder"
+  done
+  bash -n "$script_path"
+  printf 'validated worker PXE templates and non-installing inventory profile\n'
+  exit 0
+fi
+
+case $node in
+  fabric-az1-svc1) short_node=svc1 ;;
+  fabric-az1-svc2) short_node=svc2 ;;
+  *) usage; die '--node must be fabric-az1-svc1 or fabric-az1-svc2' ;;
+esac
+[[ -n $iso && -n $mac && -n $output_dir ]] || { usage; exit 2; }
+
+git -C "$repo_root" ls-files --error-unmatch -- \
+  scripts/stage-fabric-worker-bootie-pxe \
+  scripts/lib/fabric-secure-tempdir.sh \
+  fabric/bootie/worker-dnsmasq.conf.in \
+  fabric/bootie/worker-grub.cfg.in \
+  fabric/bootie/worker-rbac.yaml.in \
+  fabric/installer/fcos-live-iso.txt \
+  fabric/installer/inventory-live.bu >/dev/null 2>&1 ||
+  die 'worker PXE staging inputs must be committed'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+  die 'worker PXE staging may only run from main'
+[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'worker PXE staging requires a completely clean worktree'
+git -C "$repo_root" fetch --quiet origin main ||
+  die 'could not refresh origin/main before staging'
+repo_commit=$(git -C "$repo_root" rev-parse HEAD)
+[[ $repo_commit == "$(git -C "$repo_root" rev-parse refs/remotes/origin/main)" ]] ||
+  die 'local main is not exactly the fetched origin/main'
+
+iso=$(realpath -e -- "$iso")
+[[ -f $iso && ! -L $iso ]] || die 'the ISO must be a non-symlink regular file'
+final_output_dir=$(realpath -m -- "$output_dir")
+case $final_output_dir in
+  "$repo_root" | "$repo_root"/*) die 'output must remain outside the Git worktree' ;;
+esac
+[[ ! -e $final_output_dir && ! -L $final_output_dir ]] || die 'output already exists'
+output_parent=$(dirname -- "$final_output_dir")
+[[ -d $output_parent && ! -L $output_parent ]] ||
+  die 'output parent must be an existing non-symlink directory'
+
+mac=${mac,,}
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'invalid MAC address'
+first_octet=${mac%%:*}
+(( (16#$first_octet & 1) == 0 )) || die 'multicast MAC addresses are forbidden'
+(( (16#$first_octet & 2) == 0 )) || die 'locally administered MAC addresses are forbidden'
+[[ $mac != 00:00:00:00:00:00 ]] || die 'the all-zero MAC is forbidden'
+mac_hexhyp=${mac//:/-}
+
+pin_file=$repo_root/fabric/installer/fcos-live-iso.txt
+mapfile -t fcos_pin < "$pin_file"
+((${#fcos_pin[@]} == 4)) || die 'the FCOS ISO pin must contain exactly four lines'
+expected_name=${fcos_pin[0]}
+expected_url=${fcos_pin[1]}
+expected_sha256=${fcos_pin[2]}
+[[ $(basename -- "$iso") == "$expected_name" ]] || die 'ISO basename does not match the pin'
+[[ $(basename -- "$expected_url") == "$expected_name" ]] || die 'pinned URL basename is inconsistent'
+[[ $expected_sha256 =~ ^[0-9a-f]{64}$ ]] || die 'pinned ISO SHA-256 is malformed'
+actual_sha256=$(sha256sum "$iso" | awk '{print $1}')
+[[ $actual_sha256 == "$expected_sha256" ]] || die 'ISO SHA-256 does not match the pin'
+version=${expected_name#fedora-coreos-}
+version=${version%-live-iso.x86_64.iso}
+[[ -n $version && $version != "$expected_name" ]] || die 'could not derive FCOS version'
+
+work=$(fabric_secure_tmpdir fabric-worker-bootie-stage 33554432)
+staging_dir=$(mktemp -d -- "$output_parent/.fabric-worker-bootie.XXXXXXXX")
+chmod 0755 "$staging_dir"
+cleanup() {
+  find "$work" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$work" 2>/dev/null || true
+  if [[ -n ${staging_dir:-} ]]; then
+    find "$staging_dir" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$staging_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+install -d -m 0755 \
+  "$staging_dir/ignition/common" \
+  "$staging_dir/static" \
+  "$staging_dir/tftp/EFI/BOOT"
+
+coreos-installer iso extract pxe --output-dir "$staging_dir/static" "$iso"
+kernel_source=$staging_dir/static/fedora-coreos-$version-live-iso.x86_64-vmlinuz
+initrd_source=$staging_dir/static/fedora-coreos-$version-live-iso.x86_64-initrd.img
+rootfs_source=$staging_dir/static/fedora-coreos-$version-live-iso.x86_64-rootfs.img
+for artifact in "$kernel_source" "$initrd_source" "$rootfs_source"; do
+  [[ -f $artifact && ! -L $artifact ]] || die "missing extracted PXE artifact: $artifact"
+  chmod 0644 "$artifact"
+done
+ln "$kernel_source" "$staging_dir/static/fedora-coreos-$version-live-kernel.x86_64"
+ln "$initrd_source" "$staging_dir/static/fedora-coreos-$version-live-initramfs.x86_64.img"
+ln "$rootfs_source" "$staging_dir/static/fedora-coreos-$version-live-rootfs.x86_64.img"
+
+bsdtar -xf "$iso" -C "$work" images/efiboot.img
+efi_image=$work/images/efiboot.img
+[[ -f $efi_image ]] || die 'the verified ISO has no EFI boot image'
+mcopy -i "$efi_image" ::/EFI/BOOT/BOOTX64.EFI "$staging_dir/tftp/EFI/BOOT/BOOTX64.EFI"
+mcopy -i "$efi_image" ::/EFI/BOOT/GRUBX64.EFI "$staging_dir/tftp/EFI/BOOT/grubx64.efi"
+mcopy -i "$efi_image" ::/EFI/BOOT/MMX64.EFI "$staging_dir/tftp/EFI/BOOT/mmx64.efi"
+chmod 0644 "$staging_dir"/tftp/EFI/BOOT/*
+install -m 0644 "$staging_dir/tftp/EFI/BOOT/grubx64.efi" "$staging_dir/tftp/grubx64.efi"
+install -m 0644 "$staging_dir/tftp/EFI/BOOT/mmx64.efi" "$staging_dir/tftp/mmx64.efi"
+
+shim_signatures=$(sbverify --list "$staging_dir/tftp/EFI/BOOT/BOOTX64.EFI" 2>&1)
+grub_signatures=$(sbverify --list "$staging_dir/tftp/EFI/BOOT/grubx64.efi" 2>&1)
+kernel_signatures=$(sbverify --list "$kernel_source" 2>&1)
+grep -Fq 'Microsoft Corporation UEFI CA 2011' <<< "$shim_signatures" ||
+  die 'the ISO shim lacks the expected Microsoft UEFI signature chain'
+grep -Fq 'Fedora Secure Boot CA' <<< "$grub_signatures" ||
+  die 'the ISO GRUB lacks the expected Fedora signature chain'
+grep -Fq 'Fedora Secure Boot CA' <<< "$kernel_signatures" ||
+  die 'the FCOS kernel lacks the expected Fedora signature chain'
+
+install -m 0644 "$grub_template" "$staging_dir/tftp/EFI/BOOT/grub.cfg"
+sed -i "s/@FABRIC_WORKER_MAC_HEXHYP@/$mac_hexhyp/g" \
+  "$staging_dir/tftp/EFI/BOOT/grub.cfg"
+grep -Fq "mac=$mac_hexhyp" "$staging_dir/tftp/EFI/BOOT/grub.cfg" ||
+  die 'the GRUB request was not bound to the selected MAC'
+install -m 0644 "$staging_dir/tftp/EFI/BOOT/grub.cfg" "$staging_dir/tftp/grub.cfg"
+
+runtime_dir=/run/fabric-worker-bootie-$short_node
+install -m 0644 "$dnsmasq_template" "$staging_dir/dnsmasq.conf"
+sed -i \
+  -e "s|@FABRIC_WORKER_RUNTIME_DIR@|$runtime_dir|g" \
+  -e "s|@FABRIC_WORKER_MAC@|$mac|g" \
+  "$staging_dir/dnsmasq.conf"
+grep -Fq "dhcp-host=$mac,set:worker,10.66.0.100,infinite" \
+  "$staging_dir/dnsmasq.conf" || die 'DHCP configuration is not exact-MAC bound'
+grep -Fxq "tftp-root=$runtime_dir/tftp" "$staging_dir/dnsmasq.conf" ||
+  die 'TFTP root is not the selected worker runtime snapshot'
+
+butane --strict --files-dir "$repo_root" \
+  --output "$staging_dir/ignition/common/discovery.ign" \
+  "$repo_root/fabric/installer/inventory-live.bu"
+chmod 0644 "$staging_dir/ignition/common/discovery.ign"
+install -m 0644 /dev/null "$staging_dir/install-policy"
+printf '%s\n' "$version" > "$staging_dir/FCOS_VERSION"
+printf '%s\n' "$node" > "$staging_dir/FABRIC_WORKER_NODE"
+printf '%s\n' "$mac" > "$staging_dir/FABRIC_WORKER_MAC"
+printf '%s\n' "$repo_commit" > "$staging_dir/REPO_COMMIT"
+chmod 0644 "$staging_dir/FCOS_VERSION" "$staging_dir/FABRIC_WORKER_NODE" \
+  "$staging_dir/FABRIC_WORKER_MAC" "$staging_dir/REPO_COMMIT"
+
+jq -n --arg node "$node" --arg mac "$mac_hexhyp" '{
+  apiVersion: "v1",
+  kind: "Node",
+  metadata: {
+    name: $node,
+    annotations: {"fabric.samcday.com/bootstrap-state": "discovery"},
+    labels: {
+      "fabric.samcday.com/bootstrap-placeholder": "true",
+      "samcday.com/discovery": "true",
+      "samcday.com/mac": $mac
+    }
+  }
+}' > "$staging_dir/node-discovery.json"
+chmod 0644 "$staging_dir/node-discovery.json"
+
+if command -v dnsmasq >/dev/null; then
+  dnsmasq --test --conf-file="$staging_dir/dnsmasq.conf" >/dev/null
+fi
+(cd "$staging_dir" && sha256sum \
+  dnsmasq.conf FABRIC_WORKER_MAC FABRIC_WORKER_NODE FCOS_VERSION REPO_COMMIT \
+  ignition/common/discovery.ign install-policy node-discovery.json \
+  static/* tftp/grub.cfg tftp/grubx64.efi tftp/mmx64.efi tftp/EFI/BOOT/*) \
+  > "$staging_dir/SHA256SUMS"
+chmod 0644 "$staging_dir/SHA256SUMS"
+
+mv -T -- "$staging_dir" "$final_output_dir"
+staging_dir=
+printf 'staged FCOS %s worker PXE for %s (%s) at %s\n' \
+  "$version" "$node" "$mac" "$final_output_dir"
+printf 'source ISO SHA-256: %s\n' "$actual_sha256"
+printf 'repository commit: %s\n' "$repo_commit"
+printf 'No credential, destination, installation arm, DHCP, TFTP, or HTTP service was created.\n'
