@@ -1,13 +1,13 @@
 node: fabric-az1-svc2
-state: admitted
+state: pending
 evidence:
-  inventory_sha256: 4a9d7b9a82bce5566801cc4d9dd96cd0d3c92cf64ebaa2afadfc002e53e596be
+  inventory_sha256: FABRIC_REPLACE_FROM_REVIEWED_FINAL_CAPTURE
 identity:
-  chassis_serial: S4HA0373
-  product_uuid: 4f0de180-b2b3-11e8-85cd-3af0a6b72d00
-  permanent_mac: 6c:4b:90:6e:ab:ee
-  tpm2_usable: true
+  chassis_serial: FABRIC_REPLACE_FROM_INVENTORY
+  product_uuid: FABRIC_REPLACE_FROM_INVENTORY
+  permanent_mac: FABRIC_REPLACE_FROM_INVENTORY
+  tpm2_usable: false
 root_disk:
-  by_id: /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182995802922
-  serial: "182995802922"
-  size_bytes: 128035676160
+  by_id: FABRIC_REPLACE_FROM_INVENTORY
+  serial: FABRIC_REPLACE_FROM_INVENTORY
+  size_bytes: 0
