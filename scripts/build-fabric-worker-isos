@@ -496,6 +496,16 @@ printf 'Evidence:    %s\n\n' "\$expected_inventory_sha256"
 systemd-analyze has-tpm2 | grep -qx yes || fail 'systemd cannot use this TPM2 stack'
 systemd-cryptenroll --tpm2-device=list | grep -Fq /dev/tpmrm0 ||
   fail 'systemd-cryptenroll cannot enumerate /dev/tpmrm0'
+command -v clevis >/dev/null || fail 'Clevis is unavailable for a TPM2 functional probe'
+tpm2_probe_plaintext=fabric-worker-tpm2-functional-probe
+tpm2_probe_ciphertext=\$(printf '%s' "\$tpm2_probe_plaintext" |
+  clevis encrypt tpm2 '{}') || fail 'Clevis could not seal data with TPM2'
+[[ -n \$tpm2_probe_ciphertext ]] || fail 'Clevis TPM2 probe returned empty ciphertext'
+tpm2_probe_result=\$(printf '%s' "\$tpm2_probe_ciphertext" |
+  clevis decrypt) || fail 'Clevis could not unseal its TPM2 probe'
+[[ \$tpm2_probe_result == "\$tpm2_probe_plaintext" ]] ||
+  fail 'Clevis TPM2 functional round-trip differed'
+unset tpm2_probe_plaintext tpm2_probe_ciphertext tpm2_probe_result
 
 actual_chassis_serial=\$(tr -d '\000\r\n' </sys/class/dmi/id/chassis_serial)
 [[ \$actual_chassis_serial == "\$expected_chassis_serial" ]] ||
@@ -615,7 +625,9 @@ cat >"$post_install" <<EOF
 set -euo pipefail
 exec </dev/console >/dev/console 2>&1
 printf '\nINSTALL SUCCEEDED: %s is installed on %s.\n' '$node' '$disk'
-printf 'Powering off. Remove the armed installer before booting the local disk.\n'
+printf 'Powering off. Stop and revoke the one-use installer.\n'
+printf 'Before the first local-disk boot, remove this node from AC power for at least 30 seconds.\n'
+printf 'Restore AC power afterward; do not use Alt-P for this transition.\n'
 sync
 systemctl --no-block poweroff
 while :; do sleep 60; done

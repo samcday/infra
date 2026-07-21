@@ -191,20 +191,36 @@ from durable storage, or restoring installer USB as the default path.
 7. Run `revoke-fabric-worker-bootie-access` immediately. It deletes only the
    issued RBAC UIDs, zeroes the token, and preserves a non-secret Node-UID
    receipt when the response was issued. The source PXE handoff and runtime
-   capability can now be destroyed; neither is needed for finalization. Boot
-   the local disk, wait for the exact UID to become the Ready worker at its
-   assigned InternalIP, then run `finalize-fabric-worker-bootstrap`. That
-   command atomically proves the MAC, UID, name, IP, Ready condition, custom
-   platform label, and exact precreated taint before assigning the reserved
-   worker-role label, removing bootstrap metadata, and destroying the revoked
-   tmpfs receipt.
-8. If the response was consumed but physical console observation proves it
-   never reached the candidate, ordinary revocation deliberately does not
-   guess. After revocation, the separately confirmed
-   `reset-fabric-worker-bootie-response` requires the exact UID to have no
-   machine ID, InternalIP, or Ready condition before returning it to discovery;
-   a completely fresh issue/arm ceremony is then required. Repeat independently
-   for svc2.
+   capability can now be destroyed; neither is needed for finalization. After
+   the installer powers off, remove AC power from only that node for at least
+   30 seconds. Restore power and boot the local disk without using Alt-P for
+   this transition. Wait for the exact UID to become the Ready worker at its
+   assigned InternalIP, then run
+   `finalize-fabric-worker-bootstrap`. That command atomically proves the MAC,
+   UID, name, IP, Ready condition, custom platform label, and exact precreated
+   taint before assigning the reserved worker-role label, removing bootstrap
+   metadata, and destroying the revoked tmpfs receipt.
+8. Ordinary revocation deliberately does not guess after a consumed response.
+   If physical console observation proves the response never reached the
+   candidate, use the exact reset attestation
+   `RESET:<node>:RESPONSE-LOST-NO-DISK-BOOT` with `--failure response-lost`. If
+   the installed disk instead reached first-boot Ignition but failed before
+   creating a bootable persistent root, preserve the console evidence and
+   fully power the candidate off. Then use `--failure installed-firstboot`,
+   the exact admitted `--disk`, and the distinct attestation
+   `RESET:<node>:INSTALLED-FIRSTBOOT-FAILED:POWERED-OFF:<exact-admitted-disk>`.
+   The latter
+   applies, for example, when TPM self-test failure prevents Clevis binding and
+   leaves no LUKS token or retained key; do not claim the response was lost. In
+   either case `reset-fabric-worker-bootie-response` requires the exact UID to
+   have no machine ID, InternalIP, kubelet-posted status, Node Lease, or K3s
+   node-password Secret before returning it to discovery. Only absent status
+   or the control plane's synthetic `NodeStatusNeverUpdated` conditions are
+   accepted. It does not re-arm:
+   a completely fresh issue/arm/install ceremony is required. For TPM `0x101`,
+   fully remove AC power before both the retry PXE boot and its first local-disk
+   boot; do not clear the TPM. If `0x101` repeats after that true cold retry,
+   stop and update firmware or replace the unit. Repeat independently for svc2.
 
 An uncatchable SIGKILL can interrupt the service before its EXIT cleanup. On
 the next attempt the runner refuses a stale transient unit, exact Podman

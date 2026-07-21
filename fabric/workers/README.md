@@ -150,7 +150,10 @@ Ignition, compares the explicit disk to the committed admission, and embeds an
 attended pre-install gate. The live gate revalidates DMI identity, TPM2, MAC,
 disk identity/serial/size, static services address, and the router asset
 manifest before displaying its exact destructive confirmation. A successful
-install powers off.
+install powers off. Before the first local-disk boot, remove AC power from only
+that node for at least 30 seconds, then restore it; do not use Alt-P for this
+transition. This gives the TPM a real platform reset before Ignition binds the
+root volume.
 
 Each ISO contains the K3s agent token and remains secret media. It installs an
 encrypted FCOS root bound to the local TPM2. There is deliberately no recovery

@@ -5,6 +5,10 @@ export LC_ALL=C
 umask 077
 
 script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$repo_root/fabric/workers/lib/admission.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -17,14 +21,24 @@ Usage:
     --known-hosts /trusted/fabric-root-known-hosts \
     --identity /trusted/id_ed25519 \
     --access-dir /dev/shm/fabric-az1-svc1-bootie-access \
+    --failure response-lost \
     --confirm RESET:fabric-az1-svc1:RESPONSE-LOST-NO-DISK-BOOT
 
+For an installed disk whose first Ignition boot demonstrably failed before a
+bootable persistent root existed, use this distinct physical-failure attestation:
+
+    --failure installed-firstboot \
+    --disk /dev/disk/by-id/EXACT_ADMITTED_WHOLE_DISK \
+    --confirm RESET:fabric-az1-svc1:INSTALLED-FIRSTBOOT-FAILED:POWERED-OFF:/dev/disk/by-id/EXACT_ADMITTED_WHOLE_DISK
+
 Exceptional recovery after Bootie consumed an install arm but the attended
-candidate did not receive it or boot the installed disk.  Run only after
-physical console observation confirms that failure.  The command additionally
-requires the exact issued Node UID to have no machineID and no Ready condition,
-then atomically returns that placeholder to discovery and destroys its revoked
-tmpfs receipt.  It never re-arms an install.
+candidate either did not receive it or failed its first local-disk boot before
+creating a persistent root.  Run only after physical console observation
+confirms the selected failure.  The command additionally requires the exact
+issued Node UID to have no machineID, InternalIP, or kubelet-posted status;
+only absent status or the control plane's synthetic `NodeStatusNeverUpdated`
+conditions are accepted.  It then atomically returns that placeholder to
+discovery and destroys its revoked tmpfs receipt.  It never re-arms an install.
 EOF
 }
 
@@ -33,12 +47,18 @@ die() {
   exit 1
 }
 
+repo_git() {
+  git -c "safe.directory=$repo_root" -C "$repo_root" "$@"
+}
+
 check_only=false
 node=
 root_address=
 known_hosts=
 identity=
 access_dir=
+failure=
+disk=
 confirmation=
 while (($#)); do
   case $1 in
@@ -48,6 +68,8 @@ while (($#)); do
     --known-hosts) (($# >= 2)) || die '--known-hosts requires a value'; known_hosts=$2; shift 2 ;;
     --identity) (($# >= 2)) || die '--identity requires a value'; identity=$2; shift 2 ;;
     --access-dir) (($# >= 2)) || die '--access-dir requires a value'; access_dir=$2; shift 2 ;;
+    --failure) (($# >= 2)) || die '--failure requires a value'; failure=$2; shift 2 ;;
+    --disk) (($# >= 2)) || die '--disk requires a value'; disk=$2; shift 2 ;;
     --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -56,9 +78,11 @@ done
 
 if $check_only; then
   [[ -z $node && -z $root_address && -z $known_hosts && -z $identity &&
-     -z $access_dir && -z $confirmation ]] ||
+     -z $access_dir && -z $failure && -z $disk && -z $confirmation ]] ||
     die '--check cannot be combined with reset arguments'
   bash -n "$script_path"
+  [[ $(repo_git rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
   printf 'validated worker Bootie response reset syntax\n'
   exit 0
 fi
@@ -72,13 +96,48 @@ case $root_address in
   10.66.0.10 | 10.66.0.11 | 10.66.0.12) ;;
   *) die '--root-address must be a live commissioned root' ;;
 esac
-[[ $confirmation == "RESET:$node:RESPONSE-LOST-NO-DISK-BOOT" ]] ||
-  die "exact physical-failure attestation --confirm RESET:$node:RESPONSE-LOST-NO-DISK-BOOT is required"
-[[ -n $known_hosts && -n $identity && -n $access_dir ]] || { usage; exit 2; }
-
-for command in bash find grep ip jq podman realpath rmdir ssh ss stat systemctl wc; do
+for command in bash find git grep id ip jq podman realpath rmdir ssh ss stat sudo systemctl wc yq; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
+fabric_worker_load_admission "$node" "$repo_root/fabric/workers/inventory/$node.yaml" ||
+  die 'committed worker admission is invalid'
+case $failure in
+  response-lost)
+    [[ -z $disk ]] || die '--disk is forbidden for response-lost recovery'
+    expected_confirmation="RESET:$node:RESPONSE-LOST-NO-DISK-BOOT"
+    ;;
+  installed-firstboot)
+    [[ -n $disk ]] || die '--disk is required for installed-firstboot recovery'
+    [[ $disk == "$FABRIC_WORKER_DISK" ]] ||
+      die '--disk does not exactly match the committed admitted whole disk'
+    expected_confirmation="RESET:$node:INSTALLED-FIRSTBOOT-FAILED:POWERED-OFF:$disk"
+    ;;
+  *)
+    die '--failure must be response-lost or installed-firstboot'
+    ;;
+esac
+[[ $confirmation == "$expected_confirmation" ]] ||
+  die "exact physical-failure attestation --confirm $expected_confirmation is required"
+[[ -n $known_hosts && -n $identity && -n $access_dir ]] || { usage; exit 2; }
+if ! repo_git diff --quiet --ignore-submodules -- ||
+    ! repo_git diff --cached --quiet --ignore-submodules --; then
+  die 'reset helper requires a clean tracked worktree and index'
+fi
+repo_git ls-files --error-unmatch -- \
+  scripts/reset-fabric-worker-bootie-response \
+  "fabric/workers/inventory/$node.yaml" >/dev/null ||
+  die 'reset helper and worker admission must be tracked'
+repo_owner_uid=$(stat -Lc '%u' "$repo_root")
+[[ $repo_owner_uid != 0 && ${SUDO_UID:-} == "$repo_owner_uid" &&
+   ${SUDO_USER:-} =~ ^[A-Za-z_][A-Za-z0-9_-]*$ &&
+   $(id -u "$SUDO_USER") == "$repo_owner_uid" ]] ||
+  die 'invoke through sudo as the non-root repository owner'
+sudo --non-interactive --user "$SUDO_USER" --set-home \
+  git -C "$repo_root" fetch --quiet origin main ||
+  die 'could not refresh origin/main before exceptional reset'
+[[ $(repo_git symbolic-ref --quiet --short HEAD) == main &&
+   $(repo_git rev-parse HEAD) == "$(repo_git rev-parse refs/remotes/origin/main)" ]] ||
+  die 'reset helper requires local main at the freshly fetched origin/main commit'
 known_hosts=$(realpath -e -- "$known_hosts")
 identity=$(realpath -e -- "$identity")
 access_dir=$(realpath -e -- "$access_dir")
@@ -137,6 +196,8 @@ jq -e --arg node "$node" --arg root "$root_address" '
 ' "$receipt" >/dev/null || die 'access receipt is not a revoked response-issued ceremony'
 node_uid=$(jq -r '.nodeUid' "$receipt")
 mac=$(jq -r '.mac' "$receipt")
+[[ $mac == "$FABRIC_WORKER_MAC" ]] ||
+  die 'revoked receipt MAC differs from the committed admission'
 mac_label=${mac//:/-}
 
 ssh_options=(
@@ -159,6 +220,12 @@ root_kubectl() {
     --kubeconfig /etc/rancher/k3s/k3s.yaml --request-timeout=10s "$@"
 }
 [[ $(root_kubectl get --raw=/readyz) == ok ]] || die 'selected root API is not ready'
+[[ -z $(root_kubectl --namespace kube-system get secret \
+  "$node.node-password.k3s" --ignore-not-found --output=name) ]] ||
+  die 'a K3s node-password Secret proves this worker joined previously'
+[[ -z $(root_kubectl --namespace kube-node-lease get lease "$node" \
+  --ignore-not-found --output=name) ]] ||
+  die 'a Node Lease proves this worker kubelet reached the API'
 
 node_json=$(root_kubectl get node "$node" --output=json) || die 'response-issued placeholder is absent'
 jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_label" '
@@ -173,14 +240,16 @@ jq -e --arg node "$node" --arg uid "$node_uid" --arg mac "$mac_label" '
     effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
   }]) and
   ((.status.nodeInfo.machineID // "") == "") and
-  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 0) and
+  ([.status.conditions[]?
+    | select(.status != "Unknown" or .reason != "NodeStatusNeverUpdated")]
+    | length == 0) and
   ([.status.addresses[]? | select(.type == "InternalIP")] | length == 0) and
   ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
   ((.metadata.annotations["samcday.com/install"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "")
 ' <<< "$node_json" >/dev/null ||
-  die 'UID has machine/Ready/IP evidence or is not the exact failed-response placeholder'
+  die 'UID has machine/kubelet/IP evidence or is not the exact failed-response placeholder'
 
 resource_version=$(jq -r '.metadata.resourceVersion' <<< "$node_json")
 patch=$(jq -cn --arg node "$node" --arg uid "$node_uid" --arg rv "$resource_version" \
@@ -208,9 +277,14 @@ jq -e --arg uid "$node_uid" '
   ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] == [{
     effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
   }]) and
-  ((.status.nodeInfo.machineID // "") == "")
+  ((.status.nodeInfo.machineID // "") == "") and
+  ([.status.conditions[]?
+    | select(.status != "Unknown" or .reason != "NodeStatusNeverUpdated")]
+    | length == 0) and
+  ([.status.addresses[]? | select(.type == "InternalIP")] | length == 0)
 ' <<< "$node_json" >/dev/null || die 'failed-response placeholder did not return to discovery'
 
 find "$access_dir" -xdev -mindepth 1 -delete
 rmdir "$access_dir"
-printf 'reset failed %s response to discovery; a fresh issue/arm ceremony is now required\n' "$node"
+printf 'reset %s (%s) to discovery; a fresh issue/arm ceremony is now required\n' \
+  "$node" "$failure"
