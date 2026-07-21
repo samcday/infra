@@ -23,10 +23,14 @@ flux install --version=v2.9.2 \
 ```
 
 The adjacent Kustomization preserves those release tags but binds all four
-controller images to reviewed registry digests. After a deliberate Flux
-upgrade, resolve each official tag with `skopeo inspect`, update the digest
-overrides, and verify the rendered images remain `tag@sha256`; do not deploy a
-tag-only controller image.
+controller images to reviewed registry digests. It also uses guarded JSON
+patches to replace the export's default `cluster.local` controller addresses
+with fabric's `cluster.fabric.internal` domain while preserving this canonical
+file and checksum. After a deliberate Flux upgrade, resolve each official tag
+with `skopeo inspect`, update the digest overrides, and verify the rendered
+images remain `tag@sha256`; do not deploy a tag-only controller image. A failed
+domain-patch `test` means the new export's arguments must be reviewed rather
+than patched by position blindly.
 
 The repository is public, so the `infra` source deliberately uses HTTPS and no
 long-lived GitHub credential. Runtime SOPS material is decrypted with the

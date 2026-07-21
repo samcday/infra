@@ -63,7 +63,11 @@ render_flux_controller_images() {
         "name": .metadata.name,
         "containers": (
           .spec.template.spec.containers |
-          map({"name": .name, "image": .image})
+          map({
+            "name": .name,
+            "image": .image,
+            "args": (.args // [])
+          })
         ),
         "initContainers": (
           (.spec.template.spec.initContainers // []) |
@@ -86,11 +90,24 @@ render_flux_controller_images() {
         (.initContainers | length) == 0
       ) | not) then
         error("a rendered Flux controller is not a single digest-pinned manager container")
+      elif ([
+        .[] | .containers[].args[] |
+        select(contains(".svc."))
+      ] | sort) != ([
+        "--events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./",
+        "--events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./",
+        "--events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./",
+        "--storage-adv-addr=source-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal."
+      ] | sort) then
+        error("rendered Flux controller service addresses do not exactly use the fabric cluster domain")
       else
         map({
           key: .name,
           value: {
-            containers: .containers,
+            containers: (
+              .containers |
+              map({"name": .name, "image": .image})
+            ),
             initContainers: .initContainers
           }
         }) | from_entries
@@ -301,6 +318,9 @@ wait_for_git_revision() {
       .status.observedGeneration == $generation and
       .status.lastHandledReconcileAt == $head and
       .status.artifact.revision == $revision and
+      (.status.artifact.url | startswith(
+        "http://source-controller.flux-system.svc.cluster.fabric.internal./gitrepository/flux-system/infra/"
+      )) and
       any(.status.conditions[]?;
         .type == "Ready" and
         .status == "True" and

@@ -16,6 +16,55 @@ images:
     newTag: v1.9.2
     digest: sha256:9ce503e7bcb8493fafe2aaef0c2ac4396df4f6890256acf9cd444a2dcd2a69ed
 patches:
+  # The upstream export is deliberately kept byte-for-byte canonical. Pin its
+  # generated service addresses to fabric's non-default K3s cluster domain in
+  # this overlay; the test operations make a future Flux regeneration fail
+  # closed if the controller argument layout changes.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: source-controller
+      namespace: flux-system
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.local./
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./
+      - op: test
+        path: /spec/template/spec/containers/0/args/6
+        value: --storage-adv-addr=source-controller.$(RUNTIME_NAMESPACE).svc.cluster.local.
+      - op: replace
+        path: /spec/template/spec/containers/0/args/6
+        value: --storage-adv-addr=source-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: kustomize-controller
+      namespace: flux-system
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.local./
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: helm-controller
+      namespace: flux-system
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.local./
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: --events-addr=http://notification-controller.$(RUNTIME_NAMESPACE).svc.cluster.fabric.internal./
   - target:
       group: apps
       version: v1
