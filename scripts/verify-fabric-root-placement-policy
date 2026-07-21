@@ -659,19 +659,19 @@ printf '%s\n' "$root" |
     exit 1
   }
 
+# Generic CREATE handling clears system-managed ObjectMeta fields, including
+# metadata.uid, before admission on the deprecated top-level /bindings path.
+# Keep that path fail-closed even for an otherwise exact-looking scheduler
+# request. The Pod binding subresource below explicitly preserves UID and is
+# the path used by the real default scheduler.
 set +e
-positive_output=$(legacy_binding_request "$kube_vip_name" "$kube_vip_uid" v1 2>&1)
-positive_status=$?
+negative_output=$(legacy_binding_request "$kube_vip_name" "$kube_vip_uid" v1 2>&1)
+negative_status=$?
 set -e
-if grep -Fq 'fabric-root-consensus-binding' <<<"$positive_output"; then
-  printf '%s\n' "$positive_output" >&2
-  echo 'root Binding policy rejected the scheduler kube-vip Binding identity' >&2
-  exit 1
-fi
-if ((positive_status != 0)) &&
-   ! grep -Eqi 'already (assigned|bound)|binding.*exists' <<<"$positive_output"; then
-  printf '%s\n' "$positive_output" >&2
-  echo 'approved kube-vip Binding failed somewhere other than existing assignment' >&2
+if ((negative_status == 0)) ||
+   ! grep -Fq 'fabric-root-consensus-binding' <<<"$negative_output"; then
+  printf '%s\n' "$negative_output" >&2
+  echo 'root Binding policy accepted an exact-looking legacy scheduler Binding' >&2
   exit 1
 fi
 
@@ -691,4 +691,4 @@ if ((positive_status != 0)) &&
   exit 1
 fi
 
-echo 'root placement policy admits only the pinned kube-vip Pod and both scheduler Binding paths'
+echo 'root placement policy admits only the pinned kube-vip Pod and real scheduler Pod-binding path'

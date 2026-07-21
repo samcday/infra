@@ -229,6 +229,8 @@ spec:
         ['fabric-az1-cp1', 'fabric-az1-cp2', 'fabric-az1-cp3']
     - name: approvedKubeVipBinding
       expression: >-
+        request.resource.resource == 'pods' &&
+        request.subResource == 'binding' &&
         request.userInfo.username == 'system:kube-scheduler' &&
         request.namespace == 'kube-system' &&
         has(object.metadata.name) &&
