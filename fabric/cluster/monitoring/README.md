@@ -11,9 +11,10 @@ The stock `KubeClientCertificateExpiration` rule is disabled because every
 operator request made through `scripts/ik` deliberately presents a bounded
 15-minute client certificate. The API server's aggregate histogram cannot
 identify which client certificate it observed, so its stock 24-hour critical
-threshold would continuously page on healthy operator access. Certificate
-health with a durable identity is covered by Fabric's identity-specific
-observer and etcd certificate metrics instead.
+threshold would continuously page on healthy operator access. Fabric's local
+rules retain the identity-specific etcd alarm-observer certificate check; the
+remaining K3s PKI needs fixed-identity file or collector metrics rather than
+this unlabelled API-server histogram.
 
 Prometheus and node-exporter stay on the Pod network. Fabric's separately
 qualified Flannel egress path SNATs routed root scrapes to the hosting service
