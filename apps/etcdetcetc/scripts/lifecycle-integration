@@ -30,6 +30,7 @@ kind_cluster=
 kind_created=false
 controller_pid=
 standby_controller_pid=
+standby_controller_stopped=false
 etcd_pid=
 signer_pid=
 cleanup_status=0
@@ -151,6 +152,10 @@ cleanup() {
     wait "$controller_pid" 2>/dev/null || true
   fi
   if [[ -n $standby_controller_pid ]] && kill -0 "$standby_controller_pid" 2>/dev/null; then
+    if $standby_controller_stopped; then
+      kill -CONT "$standby_controller_pid" 2>/dev/null || true
+      standby_controller_stopped=false
+    fi
     kill "$standby_controller_pid" 2>/dev/null || true
     wait "$standby_controller_pid" 2>/dev/null || true
   fi
@@ -676,6 +681,22 @@ renewed_active_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' \
 [[ $renewed_active_rv != "$dual_active_rv" ]] ||
   die 'healthy original holder did not advance the Lease resourceVersion'
 
+note 'suspending the standby before creating a fresh takeover fence record'
+standby_controller_stopped=true
+if ! kill -STOP "$standby_controller_pid"; then
+  standby_controller_stopped=false
+  die 'cannot suspend the standby controller for the takeover timing proof'
+fi
+standby_stop_deadline=$((SECONDS + 5))
+until [[ $(awk '/^State:/ { print $2 }' "/proc/$standby_controller_pid/status" \
+    2>/dev/null || true) == T ]]; do
+  kill -0 "$standby_controller_pid" 2>/dev/null ||
+    die 'standby controller exited while entering the stopped state'
+  ((SECONDS < standby_stop_deadline)) ||
+    die 'standby controller did not enter the stopped state within five seconds'
+  sleep 0.05
+done
+
 note 'terminating the original leader and requiring standby takeover'
 kill "$controller_pid"
 wait "$controller_pid" 2>/dev/null || true
@@ -688,44 +709,130 @@ abandoned_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$aban
 [[ $abandoned_holder == "$initial_holder" &&
    $abandoned_transitions == "$initial_transitions" ]] ||
   die 'standby acquired the Lease before the original process fully exited'
-http_status_is 503 "$standby_health_endpoint/leaderz" ||
-  die 'standby reported leadership before the post-exit fencing observation'
+[[ $(awk '/^State:/ { print $2 }' "/proc/$standby_controller_pid/status" \
+    2>/dev/null || true) == T ]] ||
+  die 'standby left the stopped state before the post-exit fencing observation'
 
-# A successful metadata patch gives the foreign Lease a new resourceVersion
-# after the original process is gone. The follower must observe that exact new
-# record and keep it stable for the Lease duration before a guarded takeover.
-# Measure from before the acknowledged patch with a monotonic clock: this is a
-# conservative lower bound that does not depend on either process's wall clock.
-takeover_reset_started_ms=$(monotonic_millis)
-kube annotate lease etcdetcetc-leader -n "$system_namespace" \
+# The standby is stopped while this acknowledged metadata patch creates a
+# resourceVersion it cannot already have observed. Resume anchors taken after
+# the acknowledgement therefore precede the candidate's first possible local
+# observation of this exact foreign record.
+fenced_lease=$(kube annotate lease etcdetcetc-leader -n "$system_namespace" \
   integration.etcdetcetc.samcday.com/takeover-fence-reset=observed \
-  --overwrite >/dev/null
-fenced_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+  --overwrite -o json)
 fenced_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$fenced_lease")
 fenced_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$fenced_lease")
 fenced_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$fenced_lease")
-[[ $fenced_holder == "$initial_holder" &&
+fenced_uid=$(jq -er '.metadata.uid | select(length > 0)' <<<"$fenced_lease")
+fenced_acquire_time=$(jq -er '.spec.acquireTime | select(length > 0)' <<<"$fenced_lease")
+fenced_renew_time=$(jq -er '.spec.renewTime | select(length > 0)' <<<"$fenced_lease")
+fenced_duration=$(jq -er '.spec.leaseDurationSeconds | numbers | select(. > 0)' \
+  <<<"$fenced_lease")
+[[ $fenced_uid == "$dual_active_uid" &&
+   $fenced_holder == "$initial_holder" &&
    $fenced_transitions == "$initial_transitions" &&
+   $fenced_acquire_time == "$dual_active_acquire_time" &&
+   $fenced_duration == "$lease_duration_seconds" &&
    $fenced_rv != "$abandoned_rv" ]] ||
   die 'post-exit Lease fencing reset did not preserve holder state on a new resourceVersion'
+read -r takeover_resume_wall takeover_resume_ms < <(python3 - <<'PY'
+from datetime import datetime, timezone
+import time
 
-wait_for 'standby leadership after the original process exited' \
-  http_status_is 200 "$standby_health_endpoint/leaderz"
+print(datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+      time.monotonic_ns() // 1_000_000)
+PY
+)
+kill -CONT "$standby_controller_pid" ||
+  die 'cannot resume the standby controller for the takeover timing proof'
+standby_controller_stopped=false
+
+takeover_deadline=$((SECONDS + timeout_seconds))
+while :; do
+  processes_healthy || die 'a required process exited during the standby takeover proof'
+  replacement_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json) ||
+    die 'cannot read leader-election Lease during the standby takeover proof'
+  replacement_uid=$(jq -er '.metadata.uid | select(length > 0)' <<<"$replacement_lease")
+  replacement_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' \
+    <<<"$replacement_lease")
+  replacement_transitions=$(jq -er '.spec.leaseTransitions | numbers' \
+    <<<"$replacement_lease")
+  replacement_duration=$(jq -er '.spec.leaseDurationSeconds | numbers | select(. > 0)' \
+    <<<"$replacement_lease")
+  [[ $replacement_uid == "$fenced_uid" &&
+     $replacement_duration == "$lease_duration_seconds" ]] ||
+    die 'leader-election Lease identity or duration changed during standby takeover'
+  if [[ $replacement_holder != "$initial_holder" ]]; then
+    break
+  fi
+  replacement_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' \
+    <<<"$replacement_lease")
+  replacement_acquire_time=$(jq -er '.spec.acquireTime | select(length > 0)' \
+    <<<"$replacement_lease")
+  replacement_renew_time=$(jq -er '.spec.renewTime | select(length > 0)' \
+    <<<"$replacement_lease")
+  [[ $replacement_rv == "$fenced_rv" &&
+     $replacement_transitions == "$initial_transitions" &&
+     $replacement_acquire_time == "$fenced_acquire_time" &&
+     $replacement_renew_time == "$fenced_renew_time" ]] ||
+    die 'foreign Lease record changed before standby acquisition'
+  if ! http_status_is 503 "$standby_health_endpoint/leaderz"; then
+    http_status_is 200 "$standby_health_endpoint/leaderz" ||
+      die 'standby leader endpoint became unavailable during takeover'
+    # The Lease GET can complete immediately before the successful replace,
+    # while leaderz is queried immediately after it. Resolve that legitimate
+    # edge by requiring a second strongly consistent GET to expose the new
+    # holder; a 200 response with the old holder still current is a failure.
+    raced_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json) ||
+      die 'cannot resolve a leader-endpoint/Lease observation race'
+    raced_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$raced_lease")
+    [[ $raced_holder != "$initial_holder" ]] ||
+      die 'standby reported leadership while the Lease retained the original holder'
+    replacement_lease=$raced_lease
+    continue
+  fi
+  ((SECONDS < takeover_deadline)) || die 'timed out waiting for standby Lease acquisition'
+  sleep 0.2
+done
 takeover_observed_ms=$(monotonic_millis)
-takeover_elapsed_ms=$((takeover_observed_ms - takeover_reset_started_ms))
+takeover_elapsed_ms=$((takeover_observed_ms - takeover_resume_ms))
 minimum_takeover_ms=$((lease_duration_seconds * 1000))
 ((takeover_elapsed_ms >= minimum_takeover_ms)) ||
   die "standby acquired after ${takeover_elapsed_ms}ms, before the ${minimum_takeover_ms}ms stable-Lease interval"
-note "observed standby takeover after ${takeover_elapsed_ms}ms against a ${minimum_takeover_ms}ms stable-Lease minimum"
-replacement_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
-replacement_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$replacement_lease")
-replacement_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$replacement_lease")
 [[ $replacement_holder != "$initial_holder" ]] ||
   die 'standby takeover retained the original leader identity'
 [[ $replacement_holder == lifecycle-controller-standby-uid_* ]] ||
   die 'replacement Lease holder does not identify the standby controller process'
 ((replacement_transitions == initial_transitions + 1)) ||
   die 'standby takeover did not advance the Lease transition counter exactly once'
+replacement_acquire_time=$(jq -er '.spec.acquireTime | select(length > 0)' \
+  <<<"$replacement_lease")
+replacement_renew_time=$(jq -er '.spec.renewTime | select(length > 0)' \
+  <<<"$replacement_lease")
+[[ $replacement_acquire_time != "$fenced_acquire_time" ]] ||
+  die 'standby takeover retained the original acquisition timestamp'
+rfc3339_is_after "$replacement_renew_time" "$fenced_renew_time" ||
+  die 'standby takeover did not strictly advance the Lease renewTime'
+takeover_wall_elapsed=$(python3 - "$takeover_resume_wall" \
+  "$replacement_acquire_time" <<'PY'
+from datetime import datetime
+import sys
+
+def parse(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+print((parse(sys.argv[2]) - parse(sys.argv[1])).total_seconds())
+PY
+)
+python3 - "$takeover_wall_elapsed" "$lease_duration_seconds" <<'PY' ||
+import sys
+
+raise SystemExit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)
+PY
+  die "standby acquisition timestamp followed resume by only ${takeover_wall_elapsed}s"
+wait_for 'standby leadership after the full stable-record interval' \
+  http_status_is 200 "$standby_health_endpoint/leaderz"
+note "observed standby takeover ${takeover_wall_elapsed}s after resume (${takeover_elapsed_ms}ms monotonic observation) against a ${lease_duration_seconds}s stable-Lease minimum"
 
 controller_pid=$standby_controller_pid
 standby_controller_pid=

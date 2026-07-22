@@ -917,6 +917,85 @@ class AdminHelperTests(unittest.TestCase):
             source.index('user add "$admin_user" --no-password'),
         )
 
+    def test_admin_lock_release_is_exact_object_preconditioned_and_bounded(self) -> None:
+        source = ADMIN.read_text()
+        mutation = source[source.index(
+            "work=$(fabric_secure_tmpdir fabric-etcdetcetc-admin 16777216)"
+        ):]
+        required = (
+            'ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)',
+            '--from-literal="holder=$lock_holder" --output=json',
+            "lock_uid=$(jq -er '.metadata.uid'",
+            "lock_resource_version=$(jq -er '.metadata.resourceVersion'",
+            '.metadata.uid == $uid',
+            '.metadata.resourceVersion == $resource_version',
+            'preconditions: {uid: $uid, resourceVersion: $resource_version}',
+            '"${ik[@]}" proxy --unix-socket="$proxy_socket"',
+            '--accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\\$"',
+            "--reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$'",
+            '--unix-socket "$proxy_socket" --request DELETE',
+            '--data-binary "$delete_options"',
+            '--max-time 10',
+            'kill -KILL "$lock_proxy_pid"',
+            '--ignore-not-found --output=name',
+            "a global Fabric maintenance lock exists after delegated-admin "
+            "conditional release",
+        )
+        for contract in required:
+            with self.subTest(contract=contract):
+                self.assertIn(contract, mutation)
+        self.assertNotIn('delete configmap "$lock_name"', mutation)
+        self.assertNotIn('delete --raw', mutation)
+        self.assertLess(
+            mutation.index("lock_uid=$(jq -er '.metadata.uid'"),
+            mutation.index('user add "$admin_user" --no-password'),
+        )
+        release = mutation[mutation.index("current_lock=") :]
+        self.assertLess(
+            release.index('.metadata.resourceVersion == $resource_version'),
+            release.index("delete_lock_preconditioned ||"),
+        )
+
+    def test_admin_lock_accepts_an_opaque_resource_version(self) -> None:
+        source = ADMIN.read_text()
+        match = re.search(
+            r"jq -e --arg holder \"\$lock_holder\" '(?P<filter>.*?)'"
+            r" <<<\"\$lock_object\"",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        lock = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "fabric-maintenance-lock",
+                "namespace": "kube-system",
+                "uid": "217c60e5-e4b3-4a8b-a453-7a0b4db60cb3",
+                "resourceVersion": "opaque.rv/alpha",
+            },
+            "data": {"holder": "test-holder"},
+        }
+        accepted = subprocess.run(
+            ["jq", "-e", "--arg", "holder", "test-holder", match.group("filter")],
+            input=json.dumps(lock),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        lock["metadata"]["resourceVersion"] = "opaque rv"
+        rejected = subprocess.run(
+            ["jq", "-e", "--arg", "holder", "test-holder", match.group("filter")],
+            input=json.dumps(lock),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+
     def test_runbook_keeps_gates_independent(self) -> None:
         runbook = ETCD_RUNBOOK.read_text()
         self.assertIn("one voter at a time", runbook)

@@ -120,7 +120,7 @@ if [[ $mode != verify-remote ]]; then
   commands+=(sops)
 fi
 if [[ $mode != check && $mode != verify-remote ]]; then
-  commands+=(etcdctl git openssl sha256sum)
+  commands+=(curl etcdctl git openssl sha256sum)
 fi
 if [[ $mode == verify-remote ]]; then
   commands+=(base64 cmp date env etcdctl openssl ps realpath sed sha256sum ssh stat uname yq)
@@ -259,7 +259,7 @@ if [[ $mode == verify-remote ]]; then
     .metadata.namespace == "etcdetcetc" and
     .metadata.deletionTimestamp == null and
     (.metadata.uid | type == "string" and length > 0) and
-    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    (.metadata.resourceVersion | type == "string" and test("^[^[:space:]]+$")) and
     .metadata.labels["app.kubernetes.io/name"] == "etcdetcetc" and
     .metadata.labels["app.kubernetes.io/component"] == "admin-credential" and
     .type == "kubernetes.io/tls" and
@@ -284,7 +284,7 @@ if [[ $mode == verify-remote ]]; then
     .metadata.namespace == "etcdetcetc" and
     .metadata.deletionTimestamp == null and
     (.metadata.uid | type == "string" and length > 0) and
-    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    (.metadata.resourceVersion | type == "string" and test("^[^[:space:]]+$")) and
     (.data | keys) == ["ca.crt"] and
     (.data["ca.crt"] | type == "string" and length > 0)
   ' <<<"$server_ca_json" >/dev/null ||
@@ -648,8 +648,11 @@ work=$(fabric_secure_tmpdir fabric-etcdetcetc-admin 16777216)
 provision_started=false
 accepted=false
 lock_acquired=false
+lock_uid=
+lock_resource_version=
+lock_proxy_pid=
 operation=${mode#plan-}
-ik=("$repo_root/scripts/ik" --context=fabric)
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 
 unset ETCDCTL_API ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY \
   ETCDCTL_USER ETCDCTL_PASSWORD
@@ -670,11 +673,71 @@ ctl=(
   --command-timeout=15s
 )
 
+stop_lock_proxy() {
+  local attempt
+  [[ $lock_proxy_pid =~ ^[1-9][0-9]*$ ]] || return 0
+  kill -TERM "$lock_proxy_pid" 2>/dev/null || true
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$lock_proxy_pid" 2>/dev/null; then
+    kill -KILL "$lock_proxy_pid" 2>/dev/null || true
+  fi
+  wait "$lock_proxy_pid" 2>/dev/null || true
+  lock_proxy_pid=
+}
+
+delete_lock_preconditioned() {
+  local attempt delete_options proxy_log proxy_socket response
+  proxy_socket=$work/kube-api-proxy.sock
+  proxy_log=$work/kube-api-proxy.log
+  [[ ! -e $proxy_socket && ! -L $proxy_socket ]] || return 1
+  "${ik[@]}" proxy --unix-socket="$proxy_socket" \
+    --accept-hosts='^localhost$' \
+    --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\$" \
+    --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+    >"$proxy_log" 2>&1 &
+  lock_proxy_pid=$!
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    [[ -S $proxy_socket ]] && break
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ ! -S $proxy_socket ]]; then
+    stop_lock_proxy
+    return 1
+  fi
+  delete_options=$(jq -cn --arg uid "$lock_uid" \
+    --arg resource_version "$lock_resource_version" '{
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      preconditions: {uid: $uid, resourceVersion: $resource_version}
+    }') || {
+    stop_lock_proxy
+    return 1
+  }
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$proxy_socket" --request DELETE \
+    --header 'Content-Type: application/json' --data-binary "$delete_options" \
+    "http://localhost/api/v1/namespaces/kube-system/configmaps/$lock_name") || {
+    stop_lock_proxy
+    return 1
+  }
+  stop_lock_proxy
+  jq -e --arg name "$lock_name" --arg uid "$lock_uid" '
+    (.kind == "Status" and .status == "Success" and
+      .details.name == $name and (.details.uid // $uid) == $uid) or
+    (.kind == "ConfigMap" and .metadata.name == $name and .metadata.uid == $uid)
+  ' <<<"$response" >/dev/null
+}
+
 cleanup() {
   local status=$? rollback_user_list rollback_admin_json rollback_admin_roles
   local rollback_user_list_after
   trap - EXIT
   set +e
+  stop_lock_proxy
   if $provision_started && ! $accepted; then
     # The add or grant RPC may have committed even when etcdctl lost its
     # response. Query the reserved name under the same lock and remove only the
@@ -888,13 +951,29 @@ fi
   die "exact --confirm $expected_confirmation is required for this revision and pre-state"
 [[ $("${ik[@]}" get --raw=/readyz) == ok ]] || die 'Fabric Kubernetes API is not ready'
 lock_holder="$(hostname):$$:$operation:$head_commit:$prestate_hash"
-if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
-  --from-literal="holder=$lock_holder" >/dev/null; then
+if ! lock_object=$("${ik[@]}" -n kube-system create configmap "$lock_name" \
+  --from-literal="holder=$lock_holder" --output=json); then
   current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
     -o jsonpath='{.data.holder}' 2>/dev/null || true)
   die "another or stale delegated-admin operation lock exists: ${current_holder:-unknown}"
 fi
 lock_acquired=true
+jq -e --arg holder "$lock_holder" '
+  .apiVersion == "v1" and
+  .kind == "ConfigMap" and
+  .metadata.name == "fabric-maintenance-lock" and
+  .metadata.namespace == "kube-system" and
+  .metadata.deletionTimestamp == null and
+  (.metadata.uid | type == "string" and
+    test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+  (.metadata.resourceVersion | type == "string" and test("^[^[:space:]]+$")) and
+  .data == {holder: $holder}
+' <<<"$lock_object" >/dev/null ||
+  die 'created delegated-admin operation lock has an unexpected identity or shape'
+lock_uid=$(jq -er '.metadata.uid' <<<"$lock_object") ||
+  die 'cannot record delegated-admin operation lock UID'
+lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$lock_object") ||
+  die 'cannot record delegated-admin operation lock resourceVersion'
 
 # The plan/confirmation was computed before acquiring the global lock. Re-read
 # every bound authorization and membership field while holding it so a trust or
@@ -974,13 +1053,32 @@ assert_no_alarms "$alarm_after"
   die 'etcd alarm state changed during delegated administrator mutation'
 
 accepted=true
-current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
-  -o jsonpath='{.data.holder}') || die 'cannot read back delegated-admin operation lock'
-[[ $current_holder == "$lock_holder" ]] ||
-  die "delegated-admin operation lock holder changed unexpectedly: $current_holder"
-"${ik[@]}" -n kube-system delete configmap "$lock_name" --wait=true >/dev/null ||
-  die 'delegated-admin operation succeeded but its shared lock could not be removed'
+current_lock=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+  --output=json) || die 'cannot read back delegated-admin operation lock'
+jq -e \
+  --arg holder "$lock_holder" \
+  --arg uid "$lock_uid" \
+  --arg resource_version "$lock_resource_version" '
+    .apiVersion == "v1" and
+    .kind == "ConfigMap" and
+    .metadata.name == "fabric-maintenance-lock" and
+    .metadata.namespace == "kube-system" and
+    .metadata.uid == $uid and
+    .metadata.resourceVersion == $resource_version and
+    .metadata.deletionTimestamp == null and
+    .data == {holder: $holder}
+  ' <<<"$current_lock" >/dev/null ||
+  die 'delegated-admin operation lock identity, version, or ownership changed'
+delete_lock_preconditioned ||
+  die 'delegated-admin operation succeeded but its exact shared lock could not be conditionally removed'
+remaining_lock=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+  --ignore-not-found --output=name) ||
+  die 'cannot prove the delegated-admin operation lock is absent after release'
+[[ -z $remaining_lock ]] ||
+  die 'a global Fabric maintenance lock exists after delegated-admin conditional release'
 lock_acquired=false
+lock_uid=
+lock_resource_version=
 if [[ $mode == provision ]]; then
   echo "$admin_user is a passwordless TLS-CN user with exactly the built-in root role"
 else

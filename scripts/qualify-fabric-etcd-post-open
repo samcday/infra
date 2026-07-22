@@ -112,13 +112,13 @@ validate_identity() {
 }
 
 operator_git() {
-  sudo --non-interactive --user "$operator_user" --
+  sudo --non-interactive --user "$operator_user" -- \
     env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
       git -C "$repo_root" "$@"
 }
 
 operator_kubectl() {
-  sudo --non-interactive --user "$operator_user" --
+  sudo --non-interactive --user "$operator_user" -- \
     env \
       HOME="$operator_home" \
       USER="$operator_user" \
@@ -128,10 +128,21 @@ operator_kubectl() {
       "$repo_root/scripts/ik" --context=fabric --request-timeout=10s "$@"
 }
 
+operator_kubectl_proxy() {
+  exec sudo --non-interactive --user "$operator_user" -- \
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" \
+      FABRIC_INFRA_ROOT="$repo_root" \
+      "$repo_root/scripts/ik" --context=fabric --request-timeout=10s proxy "$@"
+}
+
 operator_root_ssh() {
   local node=$1
   shift
-  sudo --non-interactive --user "$operator_user" --
+  sudo --non-interactive --user "$operator_user" -- \
     env \
       HOME="$operator_home" \
       USER="$operator_user" \
@@ -169,29 +180,127 @@ acquire_network_lock() {
 }
 
 acquire_cluster_network_lock() {
-  local current_holder
-  if ! operator_kubectl --namespace kube-system create configmap \
+  local created current_holder
+  if ! created=$(operator_kubectl --namespace kube-system create configmap \
       "$fabric_network_cluster_lock" \
-      --from-literal="holder=$cluster_lock_holder" >/dev/null; then
+      --from-literal="holder=$cluster_lock_holder" --output=json); then
     current_holder=$(operator_kubectl --namespace kube-system get configmap \
       "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
       2>/dev/null || true)
     die "another or stale global Fabric maintenance lock exists: ${current_holder:-unknown}"
   fi
   cluster_lock_held=true
+  jq -e --arg holder "$cluster_lock_holder" '
+    .apiVersion == "v1" and
+    .kind == "ConfigMap" and
+    .metadata.name == "fabric-maintenance-lock" and
+    .metadata.namespace == "kube-system" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and
+      test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.metadata.resourceVersion | type == "string" and test("^[^[:space:]]+$")) and
+    .data == {holder: $holder}
+  ' <<<"$created" >/dev/null ||
+    die 'created global Fabric maintenance lock has an unexpected identity or shape'
+  cluster_lock_uid=$(jq -er '.metadata.uid' <<<"$created") ||
+    die 'cannot record global Fabric maintenance lock UID'
+  cluster_lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$created") ||
+    die 'cannot record global Fabric maintenance lock resourceVersion'
+}
+
+stop_cluster_lock_proxy() {
+  local attempt
+  if [[ $cluster_lock_proxy_pid =~ ^[1-9][0-9]*$ ]]; then
+    kill -TERM "$cluster_lock_proxy_pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      kill -0 "$cluster_lock_proxy_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$cluster_lock_proxy_pid" 2>/dev/null; then
+      kill -KILL "$cluster_lock_proxy_pid" 2>/dev/null || true
+    fi
+    wait "$cluster_lock_proxy_pid" 2>/dev/null || true
+    cluster_lock_proxy_pid=
+  fi
+  [[ -n $cluster_lock_proxy_socket ]] || return 0
+  if [[ -S $cluster_lock_proxy_socket ]]; then
+    rm -f -- "$cluster_lock_proxy_socket" || return 1
+  elif [[ -e $cluster_lock_proxy_socket || -L $cluster_lock_proxy_socket ]]; then
+    return 1
+  fi
+  cluster_lock_proxy_socket=
+}
+
+delete_cluster_lock_preconditioned() {
+  local attempt delete_options proxy_log response
+  cluster_lock_proxy_socket=$operator_runtime/fabric-etcd-post-open-lock-proxy-$$.sock
+  proxy_log=$evidence_dir/kube-api-lock-proxy.log
+  [[ ! -e $cluster_lock_proxy_socket && ! -L $cluster_lock_proxy_socket ]] || return 1
+  operator_kubectl_proxy --unix-socket="$cluster_lock_proxy_socket" \
+    --accept-hosts='^localhost$' \
+    --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$fabric_network_cluster_lock\$" \
+    --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+    >"$proxy_log" 2>&1 &
+  cluster_lock_proxy_pid=$!
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    [[ -S $cluster_lock_proxy_socket ]] && break
+    kill -0 "$cluster_lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ ! -S $cluster_lock_proxy_socket ]]; then
+    stop_cluster_lock_proxy
+    return 1
+  fi
+  delete_options=$(jq -cn --arg uid "$cluster_lock_uid" \
+    --arg resource_version "$cluster_lock_resource_version" '{
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      preconditions: {uid: $uid, resourceVersion: $resource_version}
+    }') || {
+    stop_cluster_lock_proxy
+    return 1
+  }
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$cluster_lock_proxy_socket" --request DELETE \
+    --header 'Content-Type: application/json' --data-binary "$delete_options" \
+    "http://localhost/api/v1/namespaces/kube-system/configmaps/$fabric_network_cluster_lock") || {
+    stop_cluster_lock_proxy
+    return 1
+  }
+  stop_cluster_lock_proxy || return 1
+  jq -e --arg name "$fabric_network_cluster_lock" --arg uid "$cluster_lock_uid" '
+    (.kind == "Status" and .status == "Success" and
+      .details.name == $name and (.details.uid // $uid) == $uid) or
+    (.kind == "ConfigMap" and .metadata.name == $name and .metadata.uid == $uid)
+  ' <<<"$response" >/dev/null
 }
 
 release_cluster_network_lock() {
-  local current_holder
-  current_holder=$(operator_kubectl --namespace kube-system get configmap \
-    "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}') ||
-    die 'cannot verify global Fabric maintenance lock ownership before release'
-  [[ $current_holder == "$cluster_lock_holder" ]] ||
-    die 'global Fabric maintenance lock ownership changed; refuse to delete it'
-  operator_kubectl --namespace kube-system delete configmap \
-    "$fabric_network_cluster_lock" --wait=true >/dev/null ||
-    die 'global Fabric maintenance lock could not be released'
+  local current remaining
+  $cluster_lock_held || return 1
+  [[ -n $cluster_lock_uid && -n $cluster_lock_resource_version ]] || return 1
+  current=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --output=json) || return 1
+  jq -e \
+    --arg holder "$cluster_lock_holder" \
+    --arg uid "$cluster_lock_uid" \
+    --arg resource_version "$cluster_lock_resource_version" '
+      .apiVersion == "v1" and
+      .kind == "ConfigMap" and
+      .metadata.name == "fabric-maintenance-lock" and
+      .metadata.namespace == "kube-system" and
+      .metadata.uid == $uid and
+      .metadata.resourceVersion == $resource_version and
+      .metadata.deletionTimestamp == null and
+      .data == {holder: $holder}
+    ' <<<"$current" >/dev/null || return 1
+  delete_cluster_lock_preconditioned || return 1
+  remaining=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --ignore-not-found --output=name) || return 1
+  [[ -z $remaining ]] || return 1
   cluster_lock_held=false
+  cluster_lock_uid=
+  cluster_lock_resource_version=
 }
 
 observer_verify() {
@@ -662,6 +771,37 @@ validate_service_nodes() {
     die 'service nodes are not the exact Ready platform identities at 10.66.1.10/.11'
 }
 
+validate_controller_signer_key_denials() {
+  local controller_identity get_status list_status
+  controller_identity=system:serviceaccount:etcdetcetc:etcdetcetc
+  if operator_kubectl auth can-i get secret/fabric-etcd-client-v1-ca \
+      --namespace cert-manager --as="$controller_identity" --quiet \
+      >"$evidence_dir/controller-ca-secret-get.txt" \
+      2>"$evidence_dir/controller-ca-secret-get.stderr"; then
+    die 'etcdetcetc controller can read the delegated client CA private-key Secret'
+  else
+    get_status=$?
+  fi
+  [[ $get_status -eq 1 ]] ||
+    die 'cannot prove the etcdetcetc controller is denied the delegated client CA Secret'
+
+  if operator_kubectl auth can-i list secrets \
+      --namespace cert-manager --as="$controller_identity" --quiet \
+      >"$evidence_dir/controller-cert-manager-secret-list.txt" \
+      2>"$evidence_dir/controller-cert-manager-secret-list.stderr"; then
+    die 'etcdetcetc controller can list Secrets in cert-manager'
+  else
+    list_status=$?
+  fi
+  [[ $list_status -eq 1 ]] ||
+    die 'cannot prove the etcdetcetc controller is denied Secret listing in cert-manager'
+  chmod 0600 -- \
+    "$evidence_dir/controller-ca-secret-get.txt" \
+    "$evidence_dir/controller-ca-secret-get.stderr" \
+    "$evidence_dir/controller-cert-manager-secret-list.txt" \
+    "$evidence_dir/controller-cert-manager-secret-list.stderr"
+}
+
 validate_flux_runtime() {
   local expected_revision="main@sha1:$head" kustomization state release deployment controller_pods desired_image leader_lease
   for kustomization in \
@@ -740,6 +880,7 @@ validate_flux_runtime() {
         any($pods.items[]; .metadata.uid == $identity.uid))
     ' <<<"$leader_lease" >/dev/null ||
     die 'etcdetcetc Lease does not identify exactly one current controller Pod'
+  validate_controller_signer_key_denials
 }
 
 validate_admission_contract() {
@@ -1604,7 +1745,7 @@ fi
 [[ $EUID -eq 0 ]] || die 'run this helper with sudo'
 require_root_namespace
 
-for command in awk base64 chmod cmp cut df dirname env flock getent git grep hostname id ip \
+for command in awk base64 chmod cmp curl cut df dirname env flock getent git grep hostname id ip \
   jq kubectl mktemp openssl readlink realpath rm sed sha256sum sleep sort ssh \
   ssh-keygen ssh-keyscan stat sudo timeout tr yq; do
   need_command "$command"
@@ -1654,6 +1795,10 @@ default_deny_after=$evidence_dir/default-deny-after.json
 network_lock_fd=
 cluster_lock_holder="$(hostname):$$:etcd-post-open:$head"
 cluster_lock_held=false
+cluster_lock_uid=
+cluster_lock_resource_version=
+cluster_lock_proxy_pid=
+cluster_lock_proxy_socket=
 network_policy_uid=
 network_policy_creation_attempted=false
 network_policy_created=false
@@ -1777,10 +1922,15 @@ printf 'TENANT_PREFIX=pass node=%s inside=put,get,delete outside=read-denied,wri
 PROBE_SCRIPT
 
 cleanup() {
-  local status=$? index name state current_holder cleanup_failed=false tables
+  local status=$? index name state cleanup_failed=false tables
   trap - EXIT HUP INT TERM
   trap '' HUP INT TERM
   set +e
+
+  if ! stop_cluster_lock_proxy; then
+    cleanup_failed=true
+    printf 'ERROR: filtered Kubernetes API lock proxy could not be cleaned up\n' >&2
+  fi
 
   if [[ $mode == run ]]; then
     for index in "${!service_nodes[@]}"; do
@@ -1833,18 +1983,9 @@ cleanup() {
 
     if $cluster_lock_held; then
       if $complete && ((status == 0)) && ! $cleanup_failed; then
-        current_holder=$(operator_kubectl --namespace kube-system get configmap \
-          "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
-          2>/dev/null || true)
-        if [[ $current_holder != "$cluster_lock_holder" ]]; then
+        if ! release_cluster_network_lock >/dev/null 2>&1; then
           cleanup_failed=true
-          printf 'ERROR: global Fabric maintenance lock ownership changed\n' >&2
-        elif operator_kubectl --namespace kube-system delete configmap \
-            "$fabric_network_cluster_lock" --wait=true >/dev/null 2>&1; then
-          cluster_lock_held=false
-        else
-          cleanup_failed=true
-          printf 'ERROR: global Fabric maintenance lock could not be released\n' >&2
+          printf 'ERROR: exact global Fabric maintenance lock could not be conditionally released\n' >&2
         fi
       else
         printf 'Global Fabric maintenance lock remains held by %s for inspection\n' \

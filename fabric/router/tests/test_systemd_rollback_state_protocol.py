@@ -27,7 +27,7 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             "restore_markers": (
                 "restore_scope ipv4",
                 'restore_file "$firewall_path" "$firewall_previous"',
-                "systemctl restart fabric-guard.service",
+                "systemctl reload --no-block fabric-guard.service",
             ),
         },
         "client-trust": {
@@ -115,30 +115,36 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
         helper: str,
         state: str,
         *,
-        client_trust_failure: str | None = None,
+        failure_mode: str | None = None,
     ) -> tuple[str, str, int, bool]:
         contract = self.helpers[helper]
         rollback = self.program(helper, "rollback_program")
         token = "fixture-token"
-        if client_trust_failure is not None:
-            self.assertEqual(helper, "client-trust")
+        if failure_mode is not None:
             self.assertIn(
-                client_trust_failure,
-                {"api-timeout", "api-not-ready", "lease-unchanged"},
+                failure_mode,
+                {
+                    "api-timeout",
+                    "api-not-ready",
+                    "vip-not-ready",
+                    "lease-unchanged",
+                    "lease-final-replaced",
+                    "reload-failed",
+                },
             )
             long_deadline = "rollback_deadline=$((now + 240))"
             short_deadline = "rollback_deadline=$((now + 2))"
             self.assertIn(long_deadline, rollback)
             rollback = rollback.replace(long_deadline, short_deadline, 1)
-            if client_trust_failure == "api-timeout":
+            if failure_mode == "api-timeout":
                 long_timeout = "--kill-after=2s 5s"
                 short_timeout = "--kill-after=0.05s 0.05s"
                 self.assertIn(long_timeout, rollback)
                 rollback = rollback.replace(long_timeout, short_timeout, 1)
 
-        # /tmp is tmpfs without SELinux labels on the FCOS test host. The
-        # rollback contract intentionally records %C, so use labeled /var/tmp.
-        with tempfile.TemporaryDirectory(dir="/var/tmp") as temporary:
+        # The fixture replaces the SELinux-aware stat/copy commands, so a
+        # tmpfs is sufficient and avoids depending on mutable-root free space.
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
             root = pathlib.Path(temporary)
             work = root / "work"
             fake_bin = root / "bin"
@@ -164,6 +170,22 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 'printf "success\\n" ;;\n'
                 '  "show --property=ActiveState --value "*) '
                 'printf "inactive\\n" ;;\n'
+                '  "show --property=FragmentPath --value k3s.service") '
+                'printf "/etc/systemd/system/k3s.service\\n" ;;\n'
+                '  "show --property=DropInPaths --value k3s.service") '
+                'printf "/etc/systemd/system/k3s.service.d/'
+                '10-fabric-guard.conf /etc/systemd/system/k3s.service.d/'
+                '20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/'
+                'etcd.conf /usr/lib/systemd/system/service.d/'
+                '10-timeout-abort.conf\\n" ;;\n'
+                '  "show --property=Requires --value k3s.service") '
+                'printf "etcd.service fabric-guard.service\\n" ;;\n'
+                '  "show --property=After --value k3s.service") '
+                'printf "etcd.service fabric-guard.service\\n" ;;\n'
+                '  "show --property=ReloadResult --value '
+                'fabric-guard.service") '
+                'if [[ ${K3S_FIXTURE_MODE-} == reload-failed ]]; then '
+                'printf "exit-code\\n"; else printf "success\\n"; fi ;;\n'
                 'esac\n',
                 encoding="utf-8",
             )
@@ -349,9 +371,6 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 (work / "trust.previously-active").touch()
                 (work / "k3s.previously-enabled").touch()
                 (work / "k3s.previously-active").touch()
-                (work / "k3s-node").write_text(
-                    "fabric-az1-cp1\n", encoding="utf-8"
-                )
                 dependency_contract = work / "etcd-dependency-contract.previous"
                 dependency_contract.write_text(
                     "Requires=fabric-etcd-client-trust.service\n"
@@ -366,43 +385,56 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                     f"{dependency_digest}  etcd-dependency-contract.previous\n",
                     encoding="utf-8",
                 )
-                fake_etcdctl = fake_bin / "etcdctl"
-                fake_etcdctl.write_text(
-                    "#!/usr/bin/env bash\nset -euo pipefail\n",
-                    encoding="utf-8",
-                )
-                fake_etcdctl.chmod(0o700)
-                replacements["/usr/local/bin/etcdctl"] = str(fake_etcdctl)
-                fake_k3s = fake_bin / "k3s"
-                fake_k3s.write_text(
-                    "#!/usr/bin/env bash\n"
-                    "set -euo pipefail\n"
-                    'case "$*" in\n'
-                    '  *"--raw=/readyz?verbose"*)\n'
-                    '    case ${K3S_FIXTURE_MODE-} in\n'
-                    '      api-timeout) sleep 5; exit 1 ;;\n'
-                    '      api-not-ready) printf "not ready\\n"; exit 1 ;;\n'
-                    '      *) printf "readyz check passed\\n" ;;\n'
-                    '    esac ;;\n'
-                    '  *"get node fabric-az1-cp1"*) printf "True" ;;\n'
-                    '  *"-n kube-node-lease get lease fabric-az1-cp1"*) '
-                    'count=0; '
-                    '[[ ! -f $K3S_LEASE_COUNTER ]] || '
-                    'count=$(<"$K3S_LEASE_COUNTER"); '
-                    'count=$((count + 1)); '
-                    'printf "%s\\n" "$count" >"$K3S_LEASE_COUNTER"; '
-                    'if [[ ${K3S_FIXTURE_MODE-} == lease-unchanged ]] || '
-                    '   ((count == 1)); then '
-                    'printf "11111111-1111-1111-1111-111111111111\\t10\\t'
-                    '2026-01-01T00:00:00Z"; else '
-                    'printf "11111111-1111-1111-1111-111111111111\\t11\\t'
-                    '2026-01-01T00:00:01Z"; fi ;;\n'
-                    "  *) exit 1 ;;\n"
-                    "esac\n",
-                    encoding="utf-8",
-                )
-                fake_k3s.chmod(0o700)
-                replacements["/usr/local/bin/k3s"] = str(fake_k3s)
+
+            (work / "k3s-node").write_text(
+                "fabric-az1-cp1\n", encoding="utf-8"
+            )
+            fake_etcdctl = fake_bin / "etcdctl"
+            fake_etcdctl.write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n",
+                encoding="utf-8",
+            )
+            fake_etcdctl.chmod(0o700)
+            replacements["/usr/local/bin/etcdctl"] = str(fake_etcdctl)
+            fake_k3s = fake_bin / "k3s"
+            fake_k3s.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'case "$*" in\n'
+                '  *"--raw=/readyz?verbose"*)\n'
+                '    case ${K3S_FIXTURE_MODE-} in\n'
+                '      api-timeout) sleep 5; exit 1 ;;\n'
+                '      api-not-ready) '
+                'printf "not ready\\n"; exit 1 ;;\n'
+                '      vip-not-ready) '
+                'if [[ $* == *"--server=https://10.66.0.254:6443"* ]]; '
+                'then printf "not ready\\n"; exit 1; fi; '
+                'printf "readyz check passed\\n" ;;\n'
+                '      *) printf "readyz check passed\\n" ;;\n'
+                '    esac ;;\n'
+                '  *"get node fabric-az1-cp1"*) printf "True" ;;\n'
+                '  *"-n kube-node-lease get lease fabric-az1-cp1"*) '
+                'count=0; '
+                '[[ ! -f $K3S_LEASE_COUNTER ]] || '
+                'count=$(<"$K3S_LEASE_COUNTER"); '
+                'count=$((count + 1)); '
+                'printf "%s\\n" "$count" >"$K3S_LEASE_COUNTER"; '
+                'if [[ ${K3S_FIXTURE_MODE-} == lease-final-replaced ]] && '
+                '   ((count >= 3)); then '
+                'printf "22222222-2222-2222-2222-222222222222\\t12\\t'
+                '2026-01-01T00:00:02Z"; '
+                'elif [[ ${K3S_FIXTURE_MODE-} == lease-unchanged ]] || '
+                '   ((count == 1)); then '
+                'printf "11111111-1111-1111-1111-111111111111\\t10\\t'
+                '2026-01-01T00:00:00Z"; else '
+                'printf "11111111-1111-1111-1111-111111111111\\t11\\t'
+                '2026-01-01T00:00:01Z"; fi ;;\n'
+                "  *) exit 1 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_k3s.chmod(0o700)
+            replacements["/usr/local/bin/k3s"] = str(fake_k3s)
 
             replacements["/usr/bin/matchpathcon"] = str(fake_matchpathcon)
 
@@ -423,12 +455,12 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{os.environ['PATH']}",
                     "SYSTEMCTL_LOG": str(log),
                     "K3S_LEASE_COUNTER": str(root / "k3s-lease-counter"),
-                    "K3S_FIXTURE_MODE": client_trust_failure or "healthy",
+                    "K3S_FIXTURE_MODE": failure_mode or "healthy",
                 },
                 capture_output=True,
                 check=False,
             )
-            if client_trust_failure is None:
+            if failure_mode is None:
                 self.assertEqual(
                     result.returncode,
                     0,
@@ -663,7 +695,28 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 state, _, returncode, rolled_back = self.run_boot_fixture(
                     "client-trust",
                     "rolling-back",
-                    client_trust_failure=failure,
+                    failure_mode=failure,
+                )
+                self.assertNotEqual(returncode, 0)
+                self.assertEqual(state, "rolling-back:fixture-token")
+                self.assertFalse(rolled_back)
+
+    def test_root_firewall_rollback_does_not_finish_without_api_and_lease_proof(
+        self,
+    ) -> None:
+        for failure in (
+            "api-timeout",
+            "api-not-ready",
+            "vip-not-ready",
+            "lease-unchanged",
+            "lease-final-replaced",
+            "reload-failed",
+        ):
+            with self.subTest(failure=failure):
+                state, _, returncode, rolled_back = self.run_boot_fixture(
+                    "root-firewall",
+                    "rolling-back",
+                    failure_mode=failure,
                 )
                 self.assertNotEqual(returncode, 0)
                 self.assertEqual(state, "rolling-back:fixture-token")
@@ -693,7 +746,7 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
         self,
     ) -> None:
         last_mutation = {
-            "root-firewall": "systemctl reload fabric-guard.service",
+            "root-firewall": "systemctl reload --no-block fabric-guard.service",
             "client-trust": "systemctl start --no-block k3s.service",
         }
         for helper, contract in self.helpers.items():
@@ -762,7 +815,6 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
         self.assertIn(
             "((10#$lease_after_ns > 10#$lease_before_ns))", rollback
         )
-
         self.assert_ordered(
             apply,
             "systemctl restart --no-block etcd.service",
@@ -770,6 +822,126 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             'bounded_k3s get --raw="/readyz?verbose"',
             "ROLLOUT_APPLIED=",
         )
+
+    def test_root_rollback_reloads_without_restart_and_requires_full_health_proof(
+        self,
+    ) -> None:
+        rollback = self.program("root-firewall", "rollback_program")
+        apply = self.program("root-firewall", "apply_candidate_program")
+        self.assertNotIn("restart fabric-guard.service", rollback)
+        self.assert_ordered(
+            rollback,
+            'restore_file "$firewall_path" "$firewall_previous"',
+            "systemctl start --no-block fabric-guard.service",
+            "systemctl reload --no-block fabric-guard.service",
+            "restore_scope ipv4 all",
+            "systemctl start --no-block etcd.service",
+            "systemctl start --no-block k3s.service",
+            "local_and_vip_api_ready\nk3s_ready=",
+            "lease_advanced=true",
+            'write_state rolled-back',
+        )
+        self.assertIn("--server=https://10.66.0.254:6443", rollback)
+        self.assertIn("$k3s_ready == True", rollback)
+        self.assertIn('$lease_rv_after != "$lease_rv_before"', rollback)
+        self.assertIn(
+            "((10#$lease_after_ns > 10#$lease_before_ns))", rollback
+        )
+        self.assertIn('$lease_uid_final == "$lease_uid_after"', rollback)
+        self.assertIn(
+            "((10#$lease_final_ns > 10#$lease_after_ns))", rollback
+        )
+        for program in (rollback, apply):
+            reload_wait = self.function(program, "wait_unit_reloaded")
+            self.assertIn("--property=ReloadResult", reload_wait)
+            self.assertIn("== success", reload_wait)
+            self.assert_ordered(
+                program,
+                "systemctl reload --no-block fabric-guard.service",
+                "wait_unit_reloaded fabric-guard.service",
+            )
+        outer_health = self.function(
+            self.helpers["root-firewall"]["text"],
+            "assert_control_plane_health",
+        )
+        self.assertIn("--property=Job --value fabric-guard.service", outer_health)
+        self.assertIn(
+            "--property=Result --value fabric-guard.service", outer_health
+        )
+        self.assertIn(
+            "--property=ReloadResult --value", outer_health
+        )
+        terminal = rollback.index("write_state rolled-back")
+        self.assertLess(
+            rollback.rindex("local_and_vip_api_ready", 0, terminal),
+            terminal,
+        )
+        self.assertLess(
+            rollback.rindex("endpoint health", 0, terminal), terminal
+        )
+
+    def test_rollback_timing_budgets_are_strictly_nested(self) -> None:
+        for helper, contract in self.helpers.items():
+            text = contract["text"]
+            rollback = self.program(helper, "rollback_program")
+            force = self.program(helper, "force_rollback_program")
+            with self.subTest(helper=helper):
+                internal = re.search(
+                    r"rollback_deadline=\$\(\(now \+ ([0-9]+)\)\)",
+                    rollback,
+                )
+                service = re.search(r"TimeoutStartSec=([0-9]+)s", text)
+                acknowledgement = re.search(
+                    r"attempt < ([0-9]+)", force
+                )
+                self.assertIsNotNone(internal)
+                self.assertIsNotNone(service)
+                self.assertIsNotNone(acknowledgement)
+                self.assertLess(
+                    int(internal.group(1)), int(service.group(1))
+                )
+                self.assertLess(
+                    int(service.group(1)), int(acknowledgement.group(1))
+                )
+
+    def test_root_authorization_and_lock_release_bind_revision_uid_and_rv(
+        self,
+    ) -> None:
+        text = self.helpers["root-firewall"]["text"]
+        self.assertIn(
+            "ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:<full-node>:"
+            "<main-commit>:<combined-policy-sha256>",
+            text,
+        )
+        self.assertIn(
+            'expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:'
+            '$full_node:$head_commit:$policy_hash"',
+            text,
+        )
+        self.assertIn("lock_uid=$(jq -er '.metadata.uid'", text)
+        self.assertIn(
+            "preconditions: {uid: $uid, resourceVersion: $rv}", text
+        )
+        self.assertIn("delete_lock_preconditioned", text)
+        self.assertNotIn(
+            '-n kube-system delete configmap "$lock_name"', text
+        )
+
+    def test_root_k3s_and_api_calls_are_explicitly_bounded(self) -> None:
+        text = self.helpers["root-firewall"]["text"]
+        calls = text.count("/usr/local/bin/k3s kubectl")
+        bounded = re.findall(
+            r"--kill-after=2s 5s\s+\\?\s*"
+            r"/usr/local/bin/k3s kubectl --request-timeout=3s",
+            text,
+        )
+        self.assertGreaterEqual(calls, 5)
+        self.assertEqual(len(bounded), calls)
+        ik_calls = re.findall(r'"\$\{ik\[@\]\}" (?!proxy\b)', text)
+        bounded_ik_calls = re.findall(
+            r'"\$\{ik\[@\]\}" --request-timeout=5s', text
+        )
+        self.assertEqual(len(bounded_ik_calls), len(ik_calls))
 
     def test_payload_promotions_and_restores_are_atomic_and_durable(
         self,

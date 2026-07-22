@@ -163,6 +163,30 @@ verify_service_nodes() {
     die 'service nodes are not the exact Ready platform identities at 10.66.1.10/.11'
 }
 
+verify_controller_signer_key_denials() {
+  local controller_identity get_status list_status
+  controller_identity=system:serviceaccount:etcdetcetc:etcdetcetc
+  if "${ik[@]}" auth can-i get secret/fabric-etcd-client-v1-ca \
+      --namespace cert-manager --as="$controller_identity" --quiet \
+      >/dev/null; then
+    die 'etcdetcetc controller can read the delegated client CA private-key Secret'
+  else
+    get_status=$?
+  fi
+  [[ $get_status -eq 1 ]] ||
+    die 'cannot prove the etcdetcetc controller is denied the delegated client CA Secret'
+
+  if "${ik[@]}" auth can-i list secrets \
+      --namespace cert-manager --as="$controller_identity" --quiet \
+      >/dev/null; then
+    die 'etcdetcetc controller can list Secrets in cert-manager'
+  else
+    list_status=$?
+  fi
+  [[ $list_status -eq 1 ]] ||
+    die 'cannot prove the etcdetcetc controller is denied Secret listing in cert-manager'
+}
+
 verify_hub_reconciliation() {
   local chart kustomizations release source
   source=$("${hub_ik[@]}" --namespace flux-system get gitrepository infra \
@@ -637,6 +661,7 @@ verify_service_nodes
 verify_hub_reconciliation
 verify_legacy_suspensions
 verify_no_controller_or_runtime
+verify_controller_signer_key_denials
 verify_issuer selfsigned selfsigned
 verify_issuer "$client_issuer" ca
 verify_admission_status

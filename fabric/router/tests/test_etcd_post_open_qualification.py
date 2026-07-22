@@ -5,8 +5,11 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import pwd
 import re
+import shlex
 import subprocess
+import tempfile
 import unittest
 
 
@@ -56,6 +59,106 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             check=True,
         )
 
+    def test_operator_helpers_cannot_fall_through_to_the_root_caller(self) -> None:
+        def function_source(name: str) -> str:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}$",
+                self.script,
+            )
+            self.assertIsNotNone(match)
+            return match.group(0)
+
+        operator = pwd.getpwnam("sam")
+        with tempfile.TemporaryDirectory(prefix="etcd-post-open-helpers-") as raw:
+            work = pathlib.Path(raw)
+            repo = work / "repo"
+            scripts = repo / "scripts"
+            scripts.mkdir(parents=True)
+            subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+            identity = work / "identity"
+            identity.write_text("test-only\n", encoding="utf-8")
+            identity.chmod(0o600)
+
+            reports = {
+                "git": work / "git.report",
+                "kubectl": work / "kubectl.report",
+                "ssh": work / "ssh.report",
+            }
+
+            def write_probe(path: pathlib.Path, report: pathlib.Path) -> None:
+                path.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
+                    '"$(id -u)" "${HOME-}" "${USER-}" "${LOGNAME-}" '
+                    '"${XDG_RUNTIME_DIR-}" "${FABRIC_INFRA_ROOT-}" '
+                    '"${FABRIC_SSH_IDENTITY-}" "$*" '
+                    f">{shlex.quote(str(report))}\n",
+                    encoding="utf-8",
+                )
+                path.chmod(0o755)
+
+            git_probe = work / "git-probe"
+            write_probe(git_probe, reports["git"])
+            write_probe(scripts / "ik", reports["kubectl"])
+            write_probe(scripts / "fabric-ssh", reports["ssh"])
+
+            harness = work / "harness"
+            harness.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                + "\n\n".join(
+                    function_source(name)
+                    for name in (
+                        "operator_git",
+                        "operator_kubectl",
+                        "operator_root_ssh",
+                    )
+                )
+                + "\n"
+                + f"operator_user={shlex.quote(operator.pw_name)}\n"
+                + f"operator_home={shlex.quote(operator.pw_dir)}\n"
+                + f"operator_runtime=/run/user/{operator.pw_uid}\n"
+                + f"repo_root={shlex.quote(str(repo))}\n"
+                + f"identity={shlex.quote(str(identity))}\n"
+                + "operator_git -c "
+                + shlex.quote(f"alias.probe=!{git_probe}")
+                + " probe\n"
+                + "operator_kubectl get nodes\n"
+                + "operator_root_ssh fabric-az1-cp1 true\n",
+                encoding="utf-8",
+            )
+            harness.chmod(0o755)
+            executed = subprocess.run(
+                ["sudo", "--non-interactive", "bash", str(harness)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+
+            observed = {
+                name: report.read_text(encoding="utf-8").rstrip("\n").split("\t")
+                for name, report in reports.items()
+            }
+            for name, fields in observed.items():
+                with self.subTest(helper=name):
+                    self.assertEqual(len(fields), 8)
+                    self.assertEqual(fields[0], str(operator.pw_uid))
+                    self.assertNotEqual(fields[0], "0")
+                    self.assertEqual(fields[1], operator.pw_dir)
+                    self.assertEqual(fields[2], operator.pw_name)
+                    self.assertEqual(fields[3], operator.pw_name)
+            self.assertEqual(observed["kubectl"][4], f"/run/user/{operator.pw_uid}")
+            self.assertEqual(observed["kubectl"][5], str(repo))
+            self.assertEqual(
+                observed["kubectl"][7],
+                "--context=fabric --request-timeout=10s get nodes",
+            )
+            self.assertEqual(observed["ssh"][6], str(identity))
+            self.assertEqual(observed["ssh"][7], "fabric-az1-cp1 true")
+
     def test_revision_attendance_and_both_network_locks_are_mandatory(self) -> None:
         for required in (
             "QUALIFY-FABRIC-ETCD-POST-OPEN",
@@ -68,12 +171,79 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             "readonly fabric_network_lock=/run/lock/fabric-network-operation.lock",
             'flock --exclusive --nonblock "$network_lock_fd"',
             "readonly fabric_network_cluster_lock=fabric-maintenance-lock",
+            '"$repo_root/scripts/ik" --context=fabric --request-timeout=10s',
             "acquire_cluster_network_lock",
             '--from-literal="holder=$cluster_lock_holder"',
+            "cluster_lock_uid=$(jq -er '.metadata.uid'",
+            "cluster_lock_resource_version=$(jq -er '.metadata.resourceVersion'",
+            '.metadata.uid == $uid',
+            '.metadata.resourceVersion == $resource_version',
+            'preconditions: {uid: $uid, resourceVersion: $resource_version}',
+            "operator_kubectl_proxy() {",
+            'exec sudo --non-interactive --user "$operator_user" -- \\\n    env',
+            'operator_kubectl_proxy --unix-socket="$cluster_lock_proxy_socket"',
+            '--accept-paths="^/api/v1/namespaces/kube-system/configmaps/$fabric_network_cluster_lock\\$"',
+            "--reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$'",
+            '--unix-socket "$cluster_lock_proxy_socket" --request DELETE',
+            '--data-binary "$delete_options"',
+            '--max-time 10',
+            'kill -KILL "$cluster_lock_proxy_pid"',
+            "stop_cluster_lock_proxy",
+            "release_cluster_network_lock",
             "Global Fabric maintenance lock remains held by %s for inspection",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
+        self.assertNotIn("delete configmap", self.script)
+        self.assertNotIn("delete --raw", self.script)
+        self.assertNotIn("operator_kubectl proxy --unix-socket", self.script)
+        cleanup = self.script[self.script.index("cleanup() {") :]
+        self.assertIn("if ! stop_cluster_lock_proxy; then", cleanup)
+        self.assertLess(
+            self.script.index("cluster_lock_uid=$(jq -er '.metadata.uid'"),
+            self.script.index(
+                'preconditions: {uid: $uid, resourceVersion: $resource_version}'
+            ),
+        )
+
+    def test_cluster_lock_accepts_an_opaque_resource_version(self) -> None:
+        match = re.search(
+            r"jq -e --arg holder \"\$cluster_lock_holder\" '(?P<filter>.*?)'"
+            r" <<<\"\$created\"",
+            self.script,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        lock = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "fabric-maintenance-lock",
+                "namespace": "kube-system",
+                "uid": "217c60e5-e4b3-4a8b-a453-7a0b4db60cb3",
+                "resourceVersion": "opaque.rv/alpha",
+            },
+            "data": {"holder": "test-holder"},
+        }
+        accepted = subprocess.run(
+            ["jq", "-e", "--arg", "holder", "test-holder", match.group("filter")],
+            input=json.dumps(lock),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        lock["metadata"]["resourceVersion"] = "opaque rv"
+        rejected = subprocess.run(
+            ["jq", "-e", "--arg", "holder", "test-holder", match.group("filter")],
+            input=json.dumps(lock),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
 
     def test_router_ssh_and_final_policy_are_exact(self) -> None:
         for required in (
@@ -335,6 +505,22 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
         self.assertEqual(self.script.count("validate_admission_contract\n"), 3)
+
+    def test_controller_cannot_read_or_enumerate_the_signer_key_secret(self) -> None:
+        for required in (
+            "validate_controller_signer_key_denials",
+            "system:serviceaccount:etcdetcetc:etcdetcetc",
+            "auth can-i get secret/fabric-etcd-client-v1-ca",
+            "auth can-i list secrets",
+            "--namespace cert-manager",
+            "--quiet",
+            "[[ $get_status -eq 1 ]]",
+            "[[ $list_status -eq 1 ]]",
+            "controller can read the delegated client CA private-key Secret",
+            "controller can list Secrets in cert-manager",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.script)
 
     def test_jq_pipe_precedence_is_parenthesized(self) -> None:
         self.assertIn(
