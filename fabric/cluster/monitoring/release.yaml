@@ -172,13 +172,15 @@ spec:
         # K3s multiplexes apiserver, etcd, scheduler, and other embedded
         # component registries through the root kubelet endpoint. Those
         # components have dedicated targets or explicit Lease coverage here;
-        # retaining only genuine kubelet metrics avoids ingesting roughly one
-        # hundred thousand duplicate, high-cardinality series per replica.
+        # retaining only genuine kubelet metrics plus the five node build-info
+        # samples avoids ingesting roughly one hundred thousand duplicate,
+        # high-cardinality series per replica. The build-info exception keeps
+        # the stock KubeVersionMismatch rule aware of both service nodes.
         # Prometheus-generated scrape health (`up`) is unaffected, and the
         # separately configured cAdvisor endpoint keeps workload metrics.
         metricRelabelings:
           - action: keep
-            regex: kubelet_.*
+            regex: kubelet_.*|kubernetes_build_info
             sourceLabels:
               - __name__
         probes: false
