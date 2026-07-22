@@ -32,8 +32,8 @@ spec:
     remediation:
       retries: 3
   interval: 1h
-  # The pinned bootstrap image still requires cluster-wide core-object watches.
-  # The image-build activation change replaces this digest before unsuspending.
+  # Activation remains attended; keep both this release and its parent
+  # Kustomization suspended until the live configuration gates pass.
   suspend: true
   timeout: 5m
   upgrade:
@@ -47,8 +47,8 @@ spec:
       - etcdetcetc-smoke
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
-      tag: "2026072008"
-      digest: sha256:863603a393e2671b1492b9a212df1ff87a37925bc6bac67c207133b9ce108977
+      tag: "2026072201.00000000029883331493"
+      digest: sha256:640c7237c0931d01f8a867e713d60752ab450cda38726d2a1b864ea4dbfc6f35
       pullPolicy: IfNotPresent
     managedNamespaces:
       - etcdetcetc-smoke
