@@ -21,7 +21,8 @@ Destructive execution (copy the exact confirmation from the dry run):
     --apply --confirm 'WRITE-FABRIC-INSTALLER:...'
 
 Options:
-  --iso PATH       Exact fabric-az1-cp[1-3]-installer.iso or
+  --iso PATH       Exact fabric-az1-cp[1-3]-installer.iso,
+                   fabric-az1-svc[1-2]-installer.iso, or
                    fabric-inventory-live.iso to write.
   --device PATH    Exact /dev/disk/by-id/usb-* whole-disk symlink.
   --sha256 HASH    Use this exact lowercase SHA-256 instead of ISO.sha256.
@@ -137,6 +138,11 @@ case $iso_basename in
   fabric-az1-cp[123]-installer.iso)
     confirmation_prefix=WRITE-FABRIC-INSTALLER
     media_label='consensus installer'
+    secret_media=true
+    ;;
+  fabric-az1-svc[12]-installer.iso)
+    confirmation_prefix=WRITE-FABRIC-INSTALLER
+    media_label='service-worker installer'
     secret_media=true
     ;;
   fabric-inventory-live.iso)

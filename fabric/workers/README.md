@@ -165,9 +165,10 @@ Sam's preferred induction path is Bootie/PXE. The durable design must therefore
 run its boot service somewhere that does not depend on these two workers
 already being alive, and must authenticate worker identity and one-use install
 authorization. The ISO builder above is an audited fallback/manufacturing path,
-not the promised default. The existing USB writer also needs a separately
-reviewed basename extension before it will accept the new
-`fabric-az1-svc*-installer.iso` outputs.
+not the promised default. The guarded `scripts/write-fabric-installer-usb`
+writer accepts the resulting `fabric-az1-svc*-installer.iso` outputs with the
+same stable-device, device-specific confirmation, write, flush, and exact
+readback checks used for the consensus installers.
 
 The PXE manufacturing adapter, one-use Bootie delivery contract, remaining
 attended-station gates, and resumable ceremony are documented in
