@@ -47,8 +47,8 @@ spec:
       - etcdetcetc-smoke
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
-      tag: "2026072201.00000000029883331493"
-      digest: sha256:640c7237c0931d01f8a867e713d60752ab450cda38726d2a1b864ea4dbfc6f35
+      tag: "2026072208.00000000029903421480"
+      digest: sha256:7f227d321c2730eb09a57cbf95cc8ebc7ccee75b82302a1f898f189066c4397f
       pullPolicy: IfNotPresent
     managedNamespaces:
       - etcdetcetc-smoke
