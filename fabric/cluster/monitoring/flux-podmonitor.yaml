@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  labels:
+    release: kube-prometheus-stack
+  name: flux-controllers
+  namespace: monitoring
+spec:
+  jobLabel: app.kubernetes.io/component
+  namespaceSelector:
+    matchNames:
+      - flux-system
+  podMetricsEndpoints:
+    - interval: 30s
+      path: /metrics
+      port: http-prom
+      scrapeTimeout: 10s
+  podTargetLabels:
+    - app.kubernetes.io/component
+    - app.kubernetes.io/version
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: flux

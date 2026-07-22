@@ -1,0 +1,150 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/part-of: fabric-monitoring
+    release: kube-prometheus-stack
+  name: fabric-flux
+  namespace: monitoring
+spec:
+  groups:
+    - name: fabric-flux-critical
+      rules:
+        - alert: FabricFluxControllerUnavailable
+          expr: |
+            (
+              max by (namespace, deployment) (
+                kube_deployment_status_replicas_available{
+                  namespace="flux-system",
+                  deployment=~".*-controller"
+                }
+              )
+                <
+              max by (namespace, deployment) (
+                kube_deployment_spec_replicas{
+                  namespace="flux-system",
+                  deployment=~".*-controller"
+                }
+              )
+            )
+            or
+            (
+              count(
+                max by (namespace, deployment) (
+                  kube_deployment_spec_replicas{
+                    namespace="flux-system",
+                    deployment=~".*-controller"
+                  }
+                )
+              ) or vector(0)
+            ) < 4
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: A fabric Flux controller is unavailable or missing.
+            description: >-
+              All four Flux controllers must exist and keep their desired
+              replicas available. Reconciliation and event delivery may be
+              degraded.
+
+        - alert: FabricCoreReconciliationFailure
+          expr: |
+            max by (exported_namespace, name, kind) (
+              gotk_reconcile_condition{
+                exported_namespace="flux-system",
+                kind="Kustomization",
+                name=~"fabric-(root|foundation|platform|prometheus-operator|monitoring)",
+                type="Ready",
+                status=~"False|Unknown"
+              }
+            ) == 1
+            or
+            max by (exported_namespace, name, kind) (
+              gotk_reconcile_condition{
+                exported_namespace="flux-system",
+                kind="GitRepository",
+                name="infra",
+                type="Ready",
+                status=~"False|Unknown"
+              }
+            ) == 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Core fabric {{ $labels.kind }}
+              {{ $labels.exported_namespace }}/{{ $labels.name }} is failing.
+            description: >-
+              The root Git source or a root, foundation, platform,
+              Prometheus-operator, or monitoring reconciliation has not been
+              Ready for ten minutes.
+
+        - alert: FabricCoreReconciliationSuspended
+          expr: |
+            max by (exported_namespace, name, kind) (
+              gotk_suspend_status{
+                exported_namespace="flux-system",
+                kind="Kustomization",
+                name=~"fabric-(root|foundation|platform|prometheus-operator|monitoring)"
+              }
+            ) == 1
+            or
+            max by (exported_namespace, name, kind) (
+              gotk_suspend_status{
+                exported_namespace="flux-system",
+                kind="GitRepository",
+                name="infra"
+              }
+            ) == 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Core fabric {{ $labels.kind }}
+              {{ $labels.exported_namespace }}/{{ $labels.name }} is suspended.
+            description: >-
+              A bedrock reconciliation loop has been deliberately or
+              accidentally suspended for ten minutes.
+
+    - name: fabric-flux-warning
+      rules:
+        - alert: FabricFluxReconciliationFailure
+          expr: |
+            max by (exported_namespace, name, kind) (
+              gotk_reconcile_condition{
+                name!~"fabric-(root|foundation|platform|prometheus-operator|monitoring)|infra",
+                type="Ready",
+                status=~"False|Unknown"
+              }
+            ) == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Flux {{ $labels.kind }}
+              {{ $labels.exported_namespace }}/{{ $labels.name }} is failing.
+            description: >-
+              This non-core reconciliation has not been Ready for fifteen
+              minutes. Inspect its condition message and source dependency.
+
+        - alert: FabricFluxReconciliationSuspended
+          expr: |
+            max by (exported_namespace, name, kind) (
+              gotk_suspend_status{
+                name!~"fabric-(root|foundation|platform|prometheus-operator|monitoring)|infra"
+              }
+            ) == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Flux {{ $labels.kind }}
+              {{ $labels.exported_namespace }}/{{ $labels.name }} is suspended.
+            description: >-
+              A non-core reconciliation has remained suspended for thirty
+              minutes. Confirm this is intentional and time-bounded.

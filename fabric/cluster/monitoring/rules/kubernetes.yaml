@@ -1,0 +1,231 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/part-of: fabric-monitoring
+    release: kube-prometheus-stack
+  name: fabric-kubernetes
+  namespace: monitoring
+spec:
+  groups:
+    - name: fabric-kubernetes-critical
+      rules:
+        - alert: FabricAPIServerTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{
+                  job="apiserver"
+                } == 1
+              ) or vector(0)
+            ) < 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than three fabric API server targets are healthy.
+            description: >-
+              Prometheus can scrape only {{ $value }} of the three expected
+              direct API server endpoints. This does not by itself prove the
+              kube-vip endpoint is ready; correlate with kube-vip and Lease
+              alerts.
+
+        - alert: FabricNodeNotReady
+          expr: |
+            max by (node) (
+              kube_node_status_condition{
+                condition="Ready",
+                status=~"false|unknown"
+              }
+            ) == 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric node {{ $labels.node }} is not Ready.
+            description: >-
+              The node has remained NotReady or Unknown for two minutes.
+              Every current fabric node is an explicitly managed platform or
+              consensus machine and requires investigation.
+
+        - alert: FabricControlPlaneLeaseStaleOrMissing
+          expr: |
+            (
+              time()
+                -
+              max by (namespace, lease) (
+                kube_lease_renew_time{
+                  namespace="kube-system",
+                  lease=~"k3s|k3s-cloud-controller-manager|kube-controller-manager|kube-scheduler"
+                }
+              )
+            ) > 60
+            or
+            (
+              count(
+                max by (namespace, lease) (
+                  kube_lease_renew_time{
+                    namespace="kube-system",
+                    lease=~"k3s|k3s-cloud-controller-manager|kube-controller-manager|kube-scheduler"
+                  }
+                )
+              ) or vector(0)
+            ) < 4
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: A fabric control-plane leader Lease is stale or missing.
+            description: >-
+              The scheduler, controller-manager, K3s, and cloud-controller
+              leader Leases must all be present and renewed within one minute.
+
+        - alert: FabricCoreDNSReplicasUnavailable
+          expr: |
+            max by (namespace, deployment) (
+              kube_deployment_status_replicas_available{
+                namespace="kube-system",
+                deployment="coredns"
+              }
+            )
+              <
+            max by (namespace, deployment) (
+              kube_deployment_spec_replicas{
+                namespace="kube-system",
+                deployment="coredns"
+              }
+            )
+            or
+            (
+              count(
+                max by (namespace, deployment) (
+                  kube_deployment_spec_replicas{
+                    namespace="kube-system",
+                    deployment="coredns"
+                  }
+                )
+              ) or vector(0)
+            ) < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric CoreDNS is below its desired replica count.
+            description: >-
+              CoreDNS has had fewer available replicas than desired for five
+              minutes. Confirm one healthy replica remains on each service node.
+
+        - alert: FabricMetricsServerReplicasUnavailable
+          expr: |
+            max by (namespace, deployment) (
+              kube_deployment_status_replicas_available{
+                namespace="kube-system",
+                deployment="metrics-server"
+              }
+            )
+              <
+            max by (namespace, deployment) (
+              kube_deployment_spec_replicas{
+                namespace="kube-system",
+                deployment="metrics-server"
+              }
+            )
+            or
+            (
+              count(
+                max by (namespace, deployment) (
+                  kube_deployment_spec_replicas{
+                    namespace="kube-system",
+                    deployment="metrics-server"
+                  }
+                )
+              ) or vector(0)
+            ) < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric metrics-server is below its desired replica count.
+            description: >-
+              metrics-server has had fewer available replicas than desired for
+              five minutes. Node resource evidence may be incomplete.
+
+        - alert: FabricMetricsAPIUnavailable
+          expr: |
+            (
+              max(
+                kube_apiservice_status_condition{
+                  name="v1beta1.metrics.k8s.io",
+                  condition="Available",
+                  status="true"
+                }
+              ) or vector(0)
+            ) != 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: The fabric resource metrics API is unavailable.
+            description: >-
+              APIService v1beta1.metrics.k8s.io has not reported Available for
+              five minutes. Check serving TLS and both metrics-server replicas.
+
+    - name: fabric-kubernetes-warning
+      rules:
+        - alert: FabricNodeReadyFlapping
+          expr: |
+            max by (node) (
+              changes(
+                kube_node_status_condition{
+                  condition="Ready",
+                  status="true"
+                }[30m]
+              )
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric node {{ $labels.node }} is flapping Ready state.
+            description: >-
+              The Ready condition changed more than twice in thirty minutes.
+              Correlate with carrier, kubelet, pressure, and API evidence.
+
+        - alert: FabricNodePressure
+          expr: |
+            max by (node, condition) (
+              kube_node_status_condition{
+                condition=~"DiskPressure|MemoryPressure|PIDPressure",
+                status="true"
+              }
+            ) == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric node {{ $labels.node }} has {{ $labels.condition }}.
+            description: >-
+              The Kubernetes pressure condition has remained active for ten
+              minutes. Inspect node and workload resource consumption.
+
+        - alert: FabricKubeVIPContainerRestarted
+          expr: |
+            sum(
+              max by (namespace, uid, container) (
+                increase(
+                  kube_pod_container_status_restarts_total{
+                    namespace="kube-system",
+                    container="kube-vip"
+                  }[15m]
+                )
+              )
+            ) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: A fabric kube-vip container restarted recently.
+            description: >-
+              At least one kube-vip container restarted in the last fifteen
+              minutes. Correlate with Lease transitions and API availability.

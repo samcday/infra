@@ -1,0 +1,384 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: monitoring
+spec:
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      version: 70.3.0
+  dependsOn:
+    - name: prometheus-operator
+      namespace: prometheus-operator
+  driftDetection:
+    mode: enabled
+  install:
+    crds: Skip
+    remediation:
+      retries: 3
+  interval: 1h
+  releaseName: kube-prometheus-stack
+  timeout: 15m
+  upgrade:
+    cleanupOnFail: true
+    crds: Skip
+    remediation:
+      retries: 3
+  values:
+    alertmanager:
+      networkPolicy:
+        additionalIngress:
+          - from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: prometheus
+              # Prometheus uses host networking so the policy engine may see
+              # the exact service-node address instead of Pod identity.
+              - ipBlock:
+                  cidr: 10.66.1.10/32
+              - ipBlock:
+                  cidr: 10.66.1.11/32
+            ports:
+              - port: 9093
+                protocol: TCP
+              - port: 8080
+                protocol: TCP
+          - from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: alertmanager
+            ports:
+              - port: 9094
+                protocol: TCP
+              - port: 9094
+                protocol: UDP
+        enabled: true
+        monitoringRules:
+          configReloader: false
+          prometheus: true
+      alertmanagerSpec:
+        alertmanagerConfigMatcherStrategy:
+          type: None
+        alertmanagerConfigNamespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        alertmanagerConfigSelector:
+          matchLabels:
+            fabric.samcday.com/alert-route: "true"
+        nodeSelector:
+          fabric.samcday.com/platform: "true"
+        podAntiAffinity: hard
+        podAntiAffinityTopologyKey: kubernetes.io/hostname
+        priorityClassName: system-cluster-critical
+        replicas: 2
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 25m
+            memory: 64Mi
+        retention: 48h
+        storage:
+          emptyDir:
+            sizeLimit: 256Mi
+        tolerations:
+          - effect: NoSchedule
+            key: fabric.samcday.com/platform
+            operator: Equal
+            value: "true"
+      enabled: true
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+      serviceMonitor:
+        interval: 30s
+        selfMonitor: true
+    coreDns:
+      enabled: true
+      serviceMonitor:
+        interval: 30s
+    defaultRules:
+      create: true
+      rules:
+        etcd: false
+        kubeControllerManager: false
+        kubeProxy: false
+        kubeSchedulerAlerting: false
+        kubeSchedulerRecording: false
+        prometheusOperator: false
+    grafana:
+      enabled: false
+      forceDeployDashboards: false
+    kubeApiServer:
+      enabled: true
+      serviceMonitor:
+        interval: 30s
+    kubeControllerManager:
+      enabled: false
+    kubeDns:
+      enabled: false
+    kubeEtcd:
+      enabled: false
+    kubeProxy:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeStateMetrics:
+      enabled: true
+    kube-state-metrics:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: kube-prometheus-stack
+                  app.kubernetes.io/name: kube-state-metrics
+              topologyKey: kubernetes.io/hostname
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+      podDisruptionBudget:
+        minAvailable: 1
+      priorityClassName: system-cluster-critical
+      prometheus:
+        monitor:
+          interval: 30s
+      replicas: 2
+      resources:
+        limits:
+          cpu: 250m
+          memory: 256Mi
+        requests:
+          cpu: 50m
+          memory: 96Mi
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    kubelet:
+      enabled: true
+      serviceMonitor:
+        cAdvisor: true
+        insecureSkipVerify: false
+        interval: 30s
+        kubelet: true
+        probes: false
+        resource: false
+    nodeExporter:
+      enabled: true
+      operatingSystems:
+        aix:
+          enabled: false
+        darwin:
+          enabled: false
+        linux:
+          enabled: true
+    prometheus-node-exporter:
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+      hostPID: false
+      hostRootFsMount:
+        enabled: true
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      prometheus:
+        monitor:
+          interval: 30s
+          relabelings:
+            - action: replace
+              sourceLabels:
+                - __meta_kubernetes_pod_node_name
+              targetLabel: instance
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 20m
+          memory: 32Mi
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    prometheus:
+      enabled: true
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+      prometheusSpec:
+        additionalAlertRelabelConfigs:
+          - action: labeldrop
+            regex: __replica__
+        additionalScrapeConfigs:
+          - job_name: fabric-etcd
+            metrics_path: /metrics
+            scheme: http
+            scrape_interval: 15s
+            scrape_timeout: 5s
+            static_configs:
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp1
+                  tier: root
+                targets:
+                  - 10.66.0.10:2381
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp2
+                  tier: root
+                targets:
+                  - 10.66.0.11:2381
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp3
+                  tier: root
+                targets:
+                  - 10.66.0.12:2381
+          - job_name: fabric-kube-vip
+            metrics_path: /metrics
+            scheme: http
+            scrape_interval: 15s
+            scrape_timeout: 5s
+            static_configs:
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp1
+                  tier: root
+                targets:
+                  - 10.66.0.10:2112
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp2
+                  tier: root
+                targets:
+                  - 10.66.0.11:2112
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp3
+                  tier: root
+                targets:
+                  - 10.66.0.12:2112
+          - job_name: fabric-root-node
+            metrics_path: /metrics
+            scheme: http
+            scrape_interval: 15s
+            scrape_timeout: 5s
+            static_configs:
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp1
+                  tier: root
+                targets:
+                  - 10.66.0.10:9100
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp2
+                  tier: root
+                targets:
+                  - 10.66.0.11:9100
+              - labels:
+                  cluster: fabric
+                  node: fabric-az1-cp3
+                  tier: root
+                targets:
+                  - 10.66.0.12:9100
+        enableAdminAPI: false
+        enableRemoteWriteReceiver: false
+        evaluationInterval: 30s
+        externalLabels:
+          cluster: fabric
+        hostNetwork: true
+        nodeSelector:
+          fabric.samcday.com/platform: "true"
+        podAntiAffinity: hard
+        podAntiAffinityTopologyKey: kubernetes.io/hostname
+        podMonitorNamespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        podMonitorSelector:
+          matchLabels:
+            release: kube-prometheus-stack
+        podMonitorSelectorNilUsesHelmValues: false
+        priorityClassName: system-cluster-critical
+        probeNamespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        probeSelector:
+          matchLabels:
+            release: kube-prometheus-stack
+        probeSelectorNilUsesHelmValues: false
+        replicaExternalLabelName: __replica__
+        replicas: 2
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1536Mi
+          requests:
+            cpu: 200m
+            memory: 512Mi
+        retention: 48h
+        retentionSize: 2GB
+        ruleNamespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        ruleSelector:
+          matchLabels:
+            release: kube-prometheus-stack
+        ruleSelectorNilUsesHelmValues: false
+        scrapeInterval: 30s
+        scrapeConfigNamespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        scrapeConfigSelector:
+          matchLabels:
+            release: kube-prometheus-stack
+        scrapeConfigSelectorNilUsesHelmValues: false
+        scrapeTimeout: 10s
+        serviceMonitorNamespaceSelector:
+          matchExpressions:
+            - key: kubernetes.io/metadata.name
+              operator: In
+              values:
+                - kube-system
+                - monitoring
+                - prometheus-operator
+        serviceMonitorSelector:
+          matchExpressions:
+            - key: release
+              operator: In
+              values:
+                - kube-prometheus-stack
+                - prometheus-operator
+        serviceMonitorSelectorNilUsesHelmValues: false
+        storageSpec:
+          emptyDir:
+            sizeLimit: 2Gi
+        tolerations:
+          - effect: NoSchedule
+            key: fabric.samcday.com/platform
+            operator: Equal
+            value: "true"
+        walCompression: true
+    prometheusOperator:
+      enabled: false
+      kubeletService:
+        enabled: true
+        name: kube-prometheus-stack-kubelet
+        namespace: kube-system
+    thanosRuler:
+      enabled: false
+    windowsMonitoring:
+      enabled: false

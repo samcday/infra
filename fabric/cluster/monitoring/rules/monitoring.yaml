@@ -1,0 +1,210 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/part-of: fabric-monitoring
+    release: kube-prometheus-stack
+  name: fabric-monitoring
+  namespace: monitoring
+spec:
+  groups:
+    - name: fabric-monitoring-critical
+      rules:
+        - alert: FabricKubeStateMetricsTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{job="kube-state-metrics"} == 1
+              ) or vector(0)
+            ) < 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than two kube-state-metrics targets are healthy.
+            description: >-
+              kube-state-metrics is the source for fabric node, Lease,
+              workload, and monitoring-HA alerts. Fewer than two healthy
+              targets for five minutes means that evidence is degraded or
+              absent.
+
+        - alert: FabricPlatformNodeExporterTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{job="node-exporter"} == 1
+              ) or vector(0)
+            ) < 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than two service-node exporters are healthy.
+            description: >-
+              The two platform nodes are the only intended node-exporter
+              targets in this minimal deployment. Missing either target for
+              five minutes removes host evidence from the monitoring plane.
+
+        - alert: FabricFluxMetricsTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{
+                  namespace="flux-system",
+                  job=~"(helm|kustomize|notification|source)-controller"
+                } == 1
+              ) or vector(0)
+            ) < 4
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than four Flux controller metric targets are healthy.
+            description: >-
+              Reconciliation-condition alerts depend on all four Flux metrics
+              targets. KSM still proves controller Deployment availability,
+              but the GitOps health surface is incomplete.
+
+        - alert: FabricMonitoringStatefulSetReplicaShortfall
+          expr: |
+            (
+              max by (namespace, statefulset) (
+                kube_statefulset_status_replicas_ready{
+                  namespace="monitoring",
+                  statefulset=~"(prometheus|alertmanager)-.*"
+                }
+              )
+                <
+              max by (namespace, statefulset) (
+                kube_statefulset_replicas{
+                  namespace="monitoring",
+                  statefulset=~"(prometheus|alertmanager)-.*"
+                }
+              )
+            )
+            or
+            (
+              count(
+                max by (namespace, statefulset) (
+                  kube_statefulset_replicas{
+                    namespace="monitoring",
+                    statefulset=~"(prometheus|alertmanager)-.*"
+                  }
+                )
+              ) or vector(0)
+            ) < 2
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Prometheus or Alertmanager is below desired replicas.
+            description: >-
+              Both monitoring StatefulSets must exist and keep their desired
+              replicas Ready across the two service nodes. The local alerting
+              path has been degraded for ten minutes.
+
+        - alert: FabricMonitoringDeploymentReplicaShortfall
+          expr: |
+            (
+              max by (namespace, deployment) (
+                kube_deployment_status_replicas_available{
+                  namespace=~"monitoring|prometheus-operator"
+                }
+              )
+                <
+              max by (namespace, deployment) (
+                kube_deployment_spec_replicas{
+                  namespace=~"monitoring|prometheus-operator"
+                }
+              )
+            )
+            or
+            (
+              count(
+                max by (namespace, deployment) (
+                  kube_deployment_spec_replicas{
+                    namespace="prometheus-operator",
+                    deployment=~".*operator.*"
+                  }
+                )
+              ) or vector(0)
+            ) < 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric monitoring Deployment availability is incomplete.
+            description: >-
+              A Deployment in monitoring or prometheus-operator is below its
+              desired replicas, or the expected Prometheus operator Deployment
+              is missing. State discovery, reconciliation, or probes may be
+              incomplete even if Prometheus itself still answers.
+
+        - alert: FabricPrometheusConfigReloadFailed
+          expr: |
+            prometheus_config_last_reload_successful != 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Prometheus failed to load its configuration.
+            description: >-
+              A Prometheus replica has rejected its generated configuration
+              for five minutes. Scrapes or alert rules may be stale.
+
+        - alert: FabricPrometheusRuleEvaluationFailures
+          expr: |
+            increase(
+              prometheus_rule_evaluation_failures_total[10m]
+            ) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Prometheus is failing to evaluate alert rules.
+            description: >-
+              More than two rule evaluations failed in the last ten minutes,
+              and failures persisted for five minutes. The paging surface may
+              be blind.
+
+        - alert: FabricPrometheusNotificationFailures
+          expr: |
+            increase(
+              prometheus_notifications_errors_total[10m]
+            ) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Prometheus cannot deliver alerts to Alertmanager.
+            description: >-
+              More than two notification errors occurred in ten minutes and
+              failures persisted for five minutes. Confirm both Alertmanager
+              replicas and service routing.
+
+        - alert: FabricAlertmanagerConfigReloadFailed
+          expr: |
+            alertmanager_config_last_reload_successful != 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Alertmanager failed to load its configuration.
+            description: >-
+              A replica has rejected its generated configuration for five
+              minutes. PagerDuty or dead-man routing may be stale.
+
+        - alert: FabricAlertmanagerNotificationFailures
+          expr: |
+            increase(
+              alertmanager_notifications_failed_total[10m]
+            ) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric Alertmanager is failing outbound notifications.
+            description: >-
+              More than two outbound notification failures occurred in ten
+              minutes and failures persisted for five minutes. PagerDuty and
+              dead-man delivery may be impaired.

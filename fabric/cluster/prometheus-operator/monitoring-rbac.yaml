@@ -1,0 +1,82 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fabric-prometheus-operator
+  namespace: monitoring
+rules:
+  - apiGroups:
+      - monitoring.coreos.com
+    resources:
+      - alertmanagerconfigs
+      - alertmanagers
+      - alertmanagers/finalizers
+      - alertmanagers/status
+      - podmonitors
+      - probes
+      - prometheusagents
+      - prometheusagents/finalizers
+      - prometheusagents/status
+      - prometheuses
+      - prometheuses/finalizers
+      - prometheuses/status
+      - prometheusrules
+      - scrapeconfigs
+      - servicemonitors
+      - thanosrulers
+      - thanosrulers/finalizers
+      - thanosrulers/status
+    verbs:
+      - "*"
+  - apiGroups:
+      - apps
+    resources:
+      - statefulsets
+    verbs:
+      - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - secrets
+    verbs:
+      - "*"
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - delete
+      - list
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+      - services
+      - services/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fabric-prometheus-operator
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fabric-prometheus-operator
+subjects:
+  - kind: ServiceAccount
+    name: fabric-prometheus-operator
+    namespace: prometheus-operator

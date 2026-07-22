@@ -39,6 +39,47 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
+  name: fabric-prometheus-operator
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-platform
+  interval: 10m
+  path: ./fabric/cluster/prometheus-operator
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-monitoring
+  namespace: flux-system
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: fabric-platform
+    - name: fabric-prometheus-operator
+  interval: 10m
+  path: ./fabric/cluster/monitoring
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
   name: fabric-etcdetcetc-policy
   namespace: flux-system
 spec:

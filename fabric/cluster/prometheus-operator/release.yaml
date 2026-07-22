@@ -1,0 +1,122 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://prometheus-community.github.io/helm-charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus-operator
+  namespace: prometheus-operator
+spec:
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      version: 70.3.0
+  driftDetection:
+    mode: enabled
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  interval: 1h
+  timeout: 10m
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    global:
+      rbac:
+        create: false
+    alertmanager:
+      enabled: false
+    coreDns:
+      enabled: false
+    defaultRules:
+      create: false
+    grafana:
+      enabled: false
+    kubeApiServer:
+      enabled: false
+    kubeControllerManager:
+      enabled: false
+    kubeDns:
+      enabled: false
+    kubeEtcd:
+      enabled: false
+    kubeProxy:
+      enabled: false
+    kubeScheduler:
+      enabled: false
+    kubeStateMetrics:
+      enabled: false
+    kubelet:
+      enabled: false
+    nodeExporter:
+      enabled: false
+    prometheus:
+      enabled: false
+    prometheusOperator:
+      admissionWebhooks:
+        certManager:
+          enabled: true
+        enabled: true
+        failurePolicy: Fail
+        patch:
+          enabled: false
+      clusterDomain: cluster.fabric.internal
+      namespaces:
+        additional:
+          - monitoring
+        releaseNamespace: false
+      alertmanagerConfigNamespaces:
+        - monitoring
+      alertmanagerInstanceNamespaces:
+        - monitoring
+      kubeletService:
+        enabled: true
+        name: kube-prometheus-stack-kubelet
+        namespace: kube-system
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+      priorityClassName: system-cluster-critical
+      resources:
+        limits:
+          cpu: 250m
+          memory: 256Mi
+        requests:
+          cpu: 50m
+          memory: 96Mi
+      prometheusConfigReloader:
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+      serviceMonitor:
+        selfMonitor: false
+      prometheusInstanceNamespaces:
+        - monitoring
+      serviceAccount:
+        name: fabric-prometheus-operator
+      thanosRulerInstanceNamespaces:
+        - monitoring
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    thanosRuler:
+      enabled: false

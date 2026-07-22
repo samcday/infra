@@ -1,0 +1,71 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fabric-prometheus-operator-discovery
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - storageclasses
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fabric-prometheus-operator-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fabric-prometheus-operator-discovery
+subjects:
+  - kind: ServiceAccount
+    name: fabric-prometheus-operator
+    namespace: prometheus-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fabric-prometheus-operator-kubelet
+  namespace: kube-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+      - services
+      - services/finalizers
+    verbs:
+      - create
+      - delete
+      - get
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fabric-prometheus-operator-kubelet
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fabric-prometheus-operator-kubelet
+subjects:
+  - kind: ServiceAccount
+    name: fabric-prometheus-operator
+    namespace: prometheus-operator

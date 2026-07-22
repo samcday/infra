@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  labels:
+    fabric.samcday.com/alert-route: "true"
+  name: pagerduty
+  namespace: monitoring
+spec:
+  receivers:
+    - name: pagerduty
+      pagerdutyConfigs:
+        - sendResolved: true
+          serviceKey:
+            key: integration-key
+            name: pagerduty
+          url: https://events.eu.pagerduty.com/generic/2010-04-15/create_event.json
+  route:
+    groupBy:
+      - alertname
+      - cluster
+      - node
+    groupInterval: 5m
+    groupWait: 30s
+    matchers:
+      - name: severity
+        value: critical
+    receiver: pagerduty
+    repeatInterval: 2h

@@ -1,0 +1,591 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/part-of: fabric-monitoring
+    release: kube-prometheus-stack
+  name: fabric-root
+  namespace: monitoring
+spec:
+  groups:
+    - name: fabric-root-etcd-critical
+      rules:
+        - alert: FabricEtcdTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{
+                  cluster="fabric",
+                  job="fabric-etcd",
+                  tier="root"
+                } == 1
+              ) or vector(0)
+            ) < 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than three fabric etcd metrics targets are healthy.
+            description: >-
+              Prometheus can scrape only {{ $value }} of the three expected
+              root etcd members. Treat this as lost member visibility until
+              direct health evidence proves otherwise.
+
+        - alert: FabricEtcdNoLeader
+          expr: |
+            etcd_server_has_leader{
+              cluster="fabric",
+              job="fabric-etcd",
+              tier="root"
+            } == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric etcd member {{ $labels.node }} cannot see a leader.
+            description: >-
+              {{ $labels.instance }} has reported no leader for one minute.
+              Check quorum, peer reachability, and disk latency before making
+              any membership change.
+
+        - alert: FabricEtcdBackendQuotaCritical
+          expr: |
+            (
+              etcd_mvcc_db_total_size_in_bytes{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }
+                /
+              etcd_server_quota_backend_bytes{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }
+            ) > 0.95
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Fabric etcd backend is over 95% of quota on {{ $labels.node }}.
+            description: >-
+              {{ $labels.instance }} is close to the NOSPACE alarm boundary
+              and may soon reject writes. Resolve compaction, fragmentation,
+              or unexpected growth before considering a quota change.
+
+        - alert: FabricEtcdAlarmCollectionUnhealthy
+          expr: |
+            (
+              up{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              } == 1
+                unless on (cluster, instance, node)
+              fabric_etcd_alarm_list_success{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+            )
+            or
+            fabric_etcd_alarm_list_success{
+              cluster="fabric",
+              job="fabric-root-node",
+              tier="root"
+            } != 1
+            or
+            (
+              up{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              } == 1
+                unless on (cluster, instance, node)
+              fabric_etcd_alarm_collection_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+            )
+            or
+            (
+              time()
+                -
+              fabric_etcd_alarm_collection_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+            ) > 60
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Authenticated etcd alarm evidence is unhealthy on
+              {{ $labels.node }}.
+            description: >-
+              The root-local zero-role identity is failing to list alarms, its
+              metric is missing, or its latest collection attempt is stale.
+              Never interpret absent alarm evidence as an all-clear.
+
+        - alert: FabricEtcdAuthenticatedAlarmActive
+          expr: |
+            fabric_etcd_active_alarms{
+              cluster="fabric",
+              job="fabric-root-node",
+              tier="root"
+            } > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Authenticated etcd alarms are active on {{ $labels.node }}.
+            description: >-
+              The local authenticated alarm list contains one or more alarms.
+              Inspect fabric_etcd_alarm_active for the member and alarm type;
+              do not disarm an alarm without resolving and recording its cause.
+
+    - name: fabric-root-host-critical
+      rules:
+        - alert: FabricRootNodeTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{
+                  cluster="fabric",
+                  job="fabric-root-node",
+                  tier="root"
+                } == 1
+              ) or vector(0)
+            ) < 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than three fabric root host targets are healthy.
+            description: >-
+              Prometheus can scrape only {{ $value }} of the three expected
+              root node exporters. Host, filesystem, disk, and pressure
+              evidence is incomplete.
+
+        - alert: FabricRootFilesystemReadOnly
+          expr: |
+            node_filesystem_readonly{
+              cluster="fabric",
+              job="fabric-root-node",
+              tier="root",
+              mountpoint=~"/|/var|/var/lib/etcd"
+            } == 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Fabric root filesystem {{ $labels.mountpoint }} is read-only on
+              {{ $labels.node }}.
+            description: >-
+              Preserve evidence and inspect the device and kernel journal
+              before attempting repair.
+
+        - alert: FabricRootIOStalled
+          expr: |
+            rate(
+              node_pressure_io_stalled_seconds_total{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }[5m]
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric root has full I/O stalls on {{ $labels.node }}.
+            description: >-
+              No runnable task could make progress because of I/O congestion
+              for more than five percent of wall time on {{ $labels.instance }}.
+
+    - name: fabric-root-kube-vip-critical
+      rules:
+        - alert: FabricKubeVIPTargetsIncomplete
+          expr: |
+            (
+              count(
+                up{
+                  cluster="fabric",
+                  job="fabric-kube-vip",
+                  tier="root"
+                } == 1
+              ) or vector(0)
+            ) < 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than three fabric kube-vip targets are healthy.
+            description: >-
+              Prometheus can scrape only {{ $value }} of the three expected
+              kube-vip instances. Confirm the pods and API VIP before treating
+              the control-plane endpoint as healthy.
+
+        - alert: FabricKubeVIPLeaseStale
+          expr: |
+            time()
+              -
+            (
+              max(
+                kube_lease_renew_time{
+                  namespace="kube-system",
+                  lease="plndr-cp-lock"
+                }
+              ) or vector(0)
+            ) > 90
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric kube-vip leader Lease is stale or missing.
+            description: >-
+              The plndr-cp-lock Lease has not been renewed for more than 90
+              seconds. Confirm API and root-node reachability before touching
+              the Lease.
+
+    - name: fabric-root-etcd-warning
+      rules:
+        - alert: FabricEtcdLeaderChangesHigh
+          expr: |
+            max by (cluster) (
+              round(
+                increase(
+                  etcd_server_leader_changes_seen_total{
+                    cluster="fabric",
+                    job="fabric-etcd",
+                    tier="root"
+                  }[15m]
+                )
+              )
+            ) > 2
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric etcd changed leader repeatedly in fifteen minutes.
+            description: >-
+              More than two elections usually indicate peer-network, host, or
+              storage latency instability.
+
+        - alert: FabricEtcdProposalFailures
+          expr: |
+            increase(
+              etcd_server_proposals_failed_total{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }[15m]
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric etcd member {{ $labels.node }} recorded failed proposals.
+            description: >-
+              Correlate the failures with leader changes, peer reachability,
+              and disk latency before changing membership.
+
+        - alert: FabricEtcdSlowApplies
+          expr: |
+            increase(
+              etcd_server_slow_apply_total{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }[15m]
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric etcd is applying proposals slowly on {{ $labels.node }}.
+            description: >-
+              More than five slow applies occurred in fifteen minutes.
+              Correlate with WAL fsync, backend commit, CPU, and I/O pressure.
+
+        - alert: FabricEtcdHeartbeatFailures
+          expr: |
+            increase(
+              etcd_server_heartbeat_send_failures_total{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }[15m]
+            ) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric etcd heartbeat sends are failing on {{ $labels.node }}.
+            description: >-
+              More than three heartbeat sends failed in fifteen minutes.
+              Inspect peer networking and root host pressure.
+
+        - alert: FabricEtcdProposalsPending
+          expr: |
+            etcd_server_proposals_pending{
+              cluster="fabric",
+              job="fabric-etcd",
+              tier="root"
+            } > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric etcd has pending proposals on {{ $labels.node }}.
+            description: >-
+              The member has been unable to commit all outstanding proposals
+              for two minutes.
+
+        - alert: FabricEtcdWALFsyncLatencyHigh
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (cluster, node, instance, le) (
+                rate(
+                  etcd_disk_wal_fsync_duration_seconds_bucket{
+                    cluster="fabric",
+                    job="fabric-etcd",
+                    tier="root"
+                  }[5m]
+                )
+              )
+            ) > 0.010
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric etcd WAL fsync p99 is above 10 ms on {{ $labels.node }}.
+            description: >-
+              {{ $labels.instance }} has exceeded the disk-latency guidance
+              continuously for ten minutes.
+
+        - alert: FabricEtcdBackendCommitLatencyHigh
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (cluster, node, instance, le) (
+                rate(
+                  etcd_disk_backend_commit_duration_seconds_bucket{
+                    cluster="fabric",
+                    job="fabric-etcd",
+                    tier="root"
+                  }[5m]
+                )
+              )
+            ) > 0.025
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric etcd backend commit p99 is above 25 ms on
+              {{ $labels.node }}.
+            description: >-
+              {{ $labels.instance }} has exceeded the backend latency guidance
+              continuously for ten minutes.
+
+        - alert: FabricEtcdBackendQuotaWarning
+          expr: |
+            (
+              etcd_mvcc_db_total_size_in_bytes{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }
+                /
+              etcd_server_quota_backend_bytes{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }
+            ) > 0.80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric etcd backend is over 80% of quota on {{ $labels.node }}.
+            description: >-
+              Inspect compaction and fragmentation; do not raise the quota
+              reflexively.
+
+        - alert: FabricEtcdProcessRestarted
+          expr: |
+            changes(
+              process_start_time_seconds{
+                cluster="fabric",
+                job="fabric-etcd",
+                tier="root"
+              }[15m]
+            ) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric etcd restarted on {{ $labels.node }}.
+            description: >-
+              Correlate the restart with journald, elections, and storage or
+              network alerts.
+
+    - name: fabric-root-host-warning
+      rules:
+        - alert: FabricRootNodeCollectorFailed
+          expr: |
+            node_scrape_collector_success{
+              cluster="fabric",
+              job="fabric-root-node",
+              tier="root"
+            } == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Root node collector {{ $labels.collector }} is failing on
+              {{ $labels.node }}.
+            description: >-
+              Node exporter is reachable, but this collector has failed for
+              five minutes. Treat its evidence as incomplete.
+
+        - alert: FabricRootFilesystemSpaceLow
+          expr: |
+            (
+              node_filesystem_avail_bytes{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root",
+                mountpoint=~"/|/var|/var/lib/etcd"
+              }
+                /
+              node_filesystem_size_bytes{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root",
+                mountpoint=~"/|/var|/var/lib/etcd"
+              }
+            ) < 0.15
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Fabric root filesystem {{ $labels.mountpoint }} is low on space
+              on {{ $labels.node }}.
+            description: >-
+              Less than fifteen percent remains available. Preserve the host
+              and etcd filesystem reserve.
+
+        - alert: FabricRootCPUPressureHigh
+          expr: |
+            rate(
+              node_pressure_cpu_waiting_seconds_total{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }[5m]
+            ) > 0.20
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric root CPU pressure is high on {{ $labels.node }}.
+            description: >-
+              Runnable work has waited for CPU for more than twenty percent of
+              wall time over a sustained interval.
+
+        - alert: FabricRootMemoryPressure
+          expr: |
+            rate(
+              node_pressure_memory_stalled_seconds_total{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }[5m]
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric root has full memory stalls on {{ $labels.node }}.
+            description: >-
+              No runnable work could make progress because of memory pressure
+              for more than one percent of wall time.
+
+        - alert: FabricRootIOPressureHigh
+          expr: |
+            rate(
+              node_pressure_io_waiting_seconds_total{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }[5m]
+            ) > 0.20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Fabric root I/O pressure is high on {{ $labels.node }}.
+            description: >-
+              At least one task has waited on congested I/O for more than
+              twenty percent of wall time. Correlate with etcd disk latency.
+
+        - alert: FabricEtcdAlarmObserverCertificateExpiring
+          expr: |
+            (
+              up{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              } == 1
+                unless on (cluster, instance, node)
+              fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+            )
+            or
+            (
+              fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              } - time()
+            ) < 7776000
+            or
+            (
+              fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+                !=
+              fabric_etcd_observer_certificate_not_after_timestamp_seconds{
+                cluster="fabric",
+                job="fabric-root-node",
+                tier="root"
+              }
+            )
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              The etcd alarm observer certificate is missing or expires within
+              90 days on {{ $labels.node }}.
+            description: >-
+              Rotate and re-test the zero-role identity before expiry; alarm
+              absence must continue to fail closed.
