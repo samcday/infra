@@ -40,9 +40,38 @@ class TrustRolloutTests(unittest.TestCase):
     def test_check_validates_public_payload_without_live_access(self) -> None:
         result = run(str(ROLLOUT), "--check")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(
+        output = re.fullmatch(
+            r"validated Fabric etcd client-trust rollout payload "
+            r"(?P<payload>[0-9a-f]{64}) at revision "
+            r"(?P<revision>[0-9a-f]{40})\n",
             result.stdout,
-            r"^validated Fabric etcd client-trust rollout payload [0-9a-f]{64}\n$",
+        )
+        self.assertIsNotNone(output)
+        head = run("git", "rev-parse", "HEAD")
+        self.assertEqual(head.returncode, 0, head.stderr)
+        self.assertEqual(output.group("revision"), head.stdout.strip())
+
+    def test_confirmation_binds_node_revision_and_payload(self) -> None:
+        source = ROLLOUT.read_text()
+        self.assertIn(
+            "--confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:"
+            "<full-node>:<main-commit>:<payload-sha256>",
+            source,
+        )
+        self.assertIn(
+            'expected="ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:'
+            '$full_node:$head_commit:$payload_hash"',
+            source,
+        )
+        head_commit = source.index(
+            "head_commit=$(git -C \"$repo_root\" rev-parse HEAD)"
+        )
+        self.assertLess(
+            head_commit,
+            source.index(
+                'echo "validated Fabric etcd client-trust rollout payload',
+                head_commit,
+            ),
         )
 
     def test_check_rejects_live_selectors(self) -> None:
@@ -79,6 +108,8 @@ class TrustRolloutTests(unittest.TestCase):
         self.assertEqual(live_all.count("verify_remote_etcdctl_version"), 2)
         self.assertEqual(live_all.count("assert_etcd_health"), 2)
         self.assertEqual(live_all.count("verify_live_trust"), 1)
+        self.assertEqual(live_all.count("assert_api_health"), 1)
+        self.assertEqual(live_all.count("assert_k3s_fresh_heartbeat"), 1)
         self.assertLess(
             live_all.index("assert_etcd_health"),
             live_all.index("verify_live_trust"),
@@ -431,9 +462,13 @@ class TrustRolloutTests(unittest.TestCase):
             body,
         )
         self.assertIn('"$work/etcd-firewall-dropin.conf" 644', body)
-        self.assertIn('[[ -z $trust_dropins ]]', body)
         self.assertIn(
-            '[[ $etcd_dropins == "$etcd_firewall_dropin_path" ]]', body
+            '[[ $trust_dropins == "$systemd_service_dropin_path" ]]', body
+        )
+        self.assertIn(
+            '[[ $etcd_dropins == "$etcd_firewall_dropin_path '
+            '$systemd_service_dropin_path" ]]',
+            body,
         )
         self.assertNotIn('"etcd.service:$etcd_unit_path"', body)
 
@@ -465,10 +500,19 @@ class TrustRolloutTests(unittest.TestCase):
             'systemctl start --no-block "${service##*/}"',
             "ROLLBACK_FORCED=",
             "ROLLBACK_CLEANED=",
-            "global lock ownership changed; refuse to delete it",
+            "preconditions: {uid: $uid, resourceVersion: $rv}",
+            '--unix-socket "$proxy_socket" --request DELETE',
             "global lock could not be released",
             "trust.previously-active",
-            "systemctl restart fabric-etcd-client-trust.service",
+            "k3s.previously-active",
+            "lease_anchor=$(lease_tuple)",
+            "lease_advanced=false",
+            "prove_lease_not_regressed",
+            "verify_k3s_dependency",
+            "systemctl restart --no-block fabric-etcd-client-trust.service",
+            "systemctl start --no-block k3s.service",
+            "/usr/bin/timeout --signal=TERM --kill-after=2s 5s",
+            "/usr/local/bin/k3s kubectl --request-timeout=3s",
             "endpoint health",
             "endpoint status",
             "alarm list",
@@ -480,13 +524,217 @@ class TrustRolloutTests(unittest.TestCase):
         )
         for contract in required:
             with self.subTest(contract=contract):
-                self.assertIn(contract, source)
+                self.assertTrue(contract in source, contract)
         self.assertNotIn("systemd-run", source)
         self.assertNotIn("remote_work=/run/", source)
         disarm = source.index("disarm_ready_program=")
         self.assertLess(source.rindex("verify_live_trust"), disarm)
         self.assertLess(source.rindex("assert_etcd_health"), disarm)
         self.assertLess(source.rindex("assert_api_health"), disarm)
+
+    def test_success_lock_release_is_exact_object_preconditioned(self) -> None:
+        source = ROLLOUT.read_text()
+        self.assertIn('lock_uid=$(jq -er \'.metadata.uid\'', source)
+        self.assertIn(
+            'lock_rv=$(jq -er \'.metadata.resourceVersion\'', source
+        )
+        cleanup = source[
+            source.index("stop_lock_proxy() {") : source.index("trap cleanup EXIT")
+        ]
+        self.assertIn(
+            "preconditions: {uid: $uid, resourceVersion: $rv}", cleanup
+        )
+        self.assertIn(
+            '--unix-socket="$proxy_socket"',
+            cleanup,
+        )
+        self.assertIn('--request DELETE \\', cleanup)
+        self.assertIn('--data-binary "$delete_options"', cleanup)
+        self.assertIn("--max-time 10", cleanup)
+        self.assertIn("--accept-paths=", cleanup)
+        self.assertIn("--reject-methods=", cleanup)
+        self.assertIn('kill -KILL "$lock_proxy_pid"', cleanup)
+        self.assertNotIn("delete configmap", cleanup)
+        self.assertNotIn("delete --raw", cleanup)
+
+    def test_etcd_restart_and_rollback_restore_k3s_before_acknowledgement(
+        self,
+    ) -> None:
+        source = ROLLOUT.read_text()
+        rollback_match = re.search(
+            r"(?ms)^rollback_program='(?P<body>.*?)'\n",
+            source,
+        )
+        apply_match = re.search(
+            r"(?ms)^apply_candidate_program='(?P<body>.*?)'\n",
+            source,
+        )
+        self.assertIsNotNone(rollback_match)
+        self.assertIsNotNone(apply_match)
+        rollback = rollback_match.group("body")
+        apply = apply_match.group("body")
+
+        rollback_order = (
+            "restore /etc/systemd/system/etcd.service etcd.service",
+            "systemctl daemon-reload",
+            "systemctl restart --no-block etcd.service",
+            "systemctl start --no-block k3s.service",
+            "lease_anchor=$(lease_tuple)",
+            "lease_advanced=false",
+            "write_state rolled-back",
+        )
+        rollback_positions = [rollback.index(item) for item in rollback_order]
+        self.assertEqual(rollback_positions, sorted(rollback_positions))
+        daemon_reload = rollback.index("systemctl daemon-reload")
+        etcd_restart = rollback.index("systemctl restart --no-block etcd.service")
+        for trust_transition in (
+            "systemctl restart --no-block fabric-etcd-client-trust.service",
+            "systemctl stop --no-block fabric-etcd-client-trust.service",
+        ):
+            with self.subTest(trust_transition=trust_transition):
+                transition = rollback.index(trust_transition)
+                self.assertLess(daemon_reload, transition)
+                self.assertLess(transition, etcd_restart)
+        self.assertIn("$k3s_ready == True", rollback)
+        self.assertIn(
+            '$lease_uid_after == "$lease_uid_before"', rollback
+        )
+        self.assertIn('$lease_rv_after != "$lease_rv_before"', rollback)
+        self.assertIn(
+            "((10#$lease_after_ns > 10#$lease_before_ns))", rollback
+        )
+        self.assertLess(
+            rollback.index("$k3s_healthy"),
+            rollback.index("lease_anchor=$(lease_tuple)"),
+        )
+
+        apply_order = (
+            "systemctl restart --no-block fabric-etcd-client-trust.service",
+            "systemctl restart --no-block etcd.service",
+            "systemctl start --no-block k3s.service",
+            'bounded_k3s get --raw="/readyz?verbose"',
+            "ROLLOUT_APPLIED=",
+        )
+        apply_positions = [apply.index(item) for item in apply_order]
+        self.assertEqual(apply_positions, sorted(apply_positions))
+
+    def test_state_locked_k3s_calls_have_double_timeouts(self) -> None:
+        source = ROLLOUT.read_text()
+        for variable in (
+            "rollback_program",
+            "apply_candidate_program",
+            "disarm_ready_program",
+            "disarm_program",
+        ):
+            with self.subTest(variable=variable):
+                match = re.search(
+                    rf"(?ms)^\s*{variable}='(?P<body>.*?)'\n", source
+                )
+                self.assertIsNotNone(match)
+                body = match.group("body")
+                bounded = re.search(
+                    r"(?ms)^bounded_k3s\(\) \{(?P<body>.*?)^\}\n", body
+                )
+                self.assertIsNotNone(bounded)
+                self.assertIn(
+                    "/usr/bin/timeout --signal=TERM --kill-after=2s 5s",
+                    bounded.group("body"),
+                )
+                self.assertIn(
+                    "/usr/local/bin/k3s kubectl --request-timeout=3s",
+                    bounded.group("body"),
+                )
+                without_wrapper = body.replace(bounded.group(0), "")
+                self.assertNotIn("/usr/local/bin/k3s kubectl", without_wrapper)
+                self.assertIn("bounded_k3s ", without_wrapper)
+
+    def test_rollback_timing_budgets_are_strictly_nested(self) -> None:
+        source = ROLLOUT.read_text()
+        rollback = re.search(
+            r"(?ms)^rollback_program='(?P<body>.*?)'\n", source
+        ).group("body")
+        force = re.search(
+            r"(?ms)^force_rollback_program='(?P<body>.*?)'\n", source
+        ).group("body")
+
+        internal = int(
+            re.search(r"rollback_deadline=\$\(\(now \+ ([0-9]+)\)\)", rollback).group(1)
+        )
+        service = int(re.search(r"TimeoutStartSec=([0-9]+)s", source).group(1))
+        force_poll = int(
+            re.search(
+                r"for \(\(attempt = 0; attempt < ([0-9]+); attempt\+\+\)\); do",
+                force,
+            ).group(1)
+        )
+        armed = int(
+            re.search(r"deadline_epoch=\$\(\(remote_now \+ ([0-9]+)\)\)", source).group(1)
+        )
+
+        self.assertLess(internal, service)
+        self.assertLess(service, force_poll)
+        self.assertEqual(force_poll, armed)
+        self.assertIn("sleep 1", force)
+
+    def test_disarm_lease_proof_rejects_replacement_and_regression(self) -> None:
+        source = ROLLOUT.read_text()
+        programs = {}
+        for variable in ("disarm_ready_program", "disarm_program"):
+            match = re.search(
+                rf"(?ms)^\s*{variable}='(?P<body>.*?)'\n", source
+            )
+            self.assertIsNotNone(match)
+            body = match.group("body")
+            rfc3339 = re.search(
+                r"(?ms)^rfc3339_ns\(\) \{.*?^\}\n", body
+            )
+            proof = re.search(
+                r"(?ms)^prove_lease_not_regressed\(\) \{.*?^\}\n", body
+            )
+            self.assertIsNotNone(rfc3339)
+            self.assertIsNotNone(proof)
+            programs[variable] = rfc3339.group(0) + proof.group(0)
+
+        self.assertEqual(
+            programs["disarm_ready_program"], programs["disarm_program"]
+        )
+        harness = r'''set -euo pipefail
+proof_uid=11111111-1111-1111-1111-111111111111
+proof_rv=10
+proof_renew=2026-07-22T00:00:00Z
+node=fabric-az1-cp1
+lease_tuple=$1
+node_ready=$2
+bounded_k3s() {
+  if [[ " $* " == *" get lease "* ]]; then
+    printf '%s\n' "$lease_tuple"
+  else
+    printf '%s\n' "$node_ready"
+  fi
+}
+''' + programs["disarm_program"] + "\nprove_lease_not_regressed\n"
+
+        uid = "11111111-1111-1111-1111-111111111111"
+        other_uid = "22222222-2222-2222-2222-222222222222"
+        cases = (
+            ("exact proof", f"{uid}\t10\t2026-07-22T00:00:00Z", "True", True),
+            ("advanced", f"{uid}\t11\t2026-07-22T00:00:01Z", "True", True),
+            ("advanced same rv", f"{uid}\t10\t2026-07-22T00:00:01Z", "True", False),
+            ("same time new rv", f"{uid}\t11\t2026-07-22T00:00:00Z", "True", False),
+            ("older", f"{uid}\t9\t2026-07-21T23:59:59Z", "True", False),
+            ("replacement", f"{other_uid}\t11\t2026-07-22T00:00:01Z", "True", False),
+            ("not ready", f"{uid}\t11\t2026-07-22T00:00:01Z", "False", False),
+        )
+        for name, lease_tuple, ready, accepted in cases:
+            with self.subTest(name=name):
+                result = subprocess.run(
+                    ["bash", "-c", harness, "lease-proof", lease_tuple, ready],
+                    text=True,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
     def test_embedded_rollback_and_disarm_programs_are_valid_bash(self) -> None:
         source = ROLLOUT.read_text()

@@ -105,6 +105,8 @@ firewall_path=/etc/nftables/fabric-guard.nft
 routing_path=/etc/sysctl.d/90-fabric-root-routing.conf
 guard_unit_path=/etc/systemd/system/fabric-guard.service
 etcd_guard_dropin_path=/etc/systemd/system/etcd.service.d/10-fabric-guard.conf
+systemd_service_dropin_path=/usr/lib/systemd/system/service.d/10-timeout-abort.conf
+systemd_service_dropin_hash=ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37
 # shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
 firewall_policy=$(TARGET_PATH="$firewall_path" yq -er \
   '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
@@ -420,9 +422,33 @@ assert_maintenance_window_closed() {
     die "$full_node etcd maintenance window is not exactly closed"
 }
 
+assert_systemd_service_dropin() {
+  local installed_hash metadata
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test -f \
+    "$systemd_service_dropin_path" ||
+    die "$full_node reviewed system service drop-in is not a regular file"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L \
+    "$systemd_service_dropin_path" ||
+    die "$full_node reviewed system service drop-in is an unsafe symlink"
+  metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$systemd_service_dropin_path") ||
+    die "$full_node reviewed system service drop-in cannot be read"
+  [[ $metadata == '0:0:644:1:regular file' ]] ||
+    die "$full_node reviewed system service drop-in metadata is unsafe: $metadata"
+  installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$systemd_service_dropin_path" | awk '{print $1}') ||
+    die "$full_node reviewed system service drop-in cannot be hashed"
+  [[ $installed_hash == "$systemd_service_dropin_hash" ]] ||
+    die "$full_node system service drop-in differs from the reviewed Fedora contract"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+    "$systemd_service_dropin_path" >/dev/null ||
+    die "$full_node reviewed system service drop-in has the wrong security context"
+}
+
 assert_firewall_loader_provenance() {
   local fragment dropins metadata loaded_unit exec_reload expected_exec_reload
   local installed_hash
+  assert_systemd_service_dropin
   fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=FragmentPath --value fabric-guard.service) ||
     die "$full_node fabric-guard fragment cannot be resolved"
@@ -431,7 +457,8 @@ assert_firewall_loader_provenance() {
   dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=DropInPaths --value fabric-guard.service) ||
     die "$full_node fabric-guard drop-ins cannot be resolved"
-  [[ -z $dropins ]] || die "$full_node fabric-guard has unreviewed drop-ins: $dropins"
+  [[ $dropins == "$systemd_service_dropin_path" ]] ||
+    die "$full_node fabric-guard does not load exactly the reviewed system service drop-in: $dropins"
   metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
     --format='%u:%g:%a:%h:%F' "$fragment") ||
     die "$full_node fabric-guard fragment metadata cannot be read"
@@ -453,8 +480,8 @@ ExecReload=/usr/sbin/nft --file /etc/nftables/fabric-guard.nft'
   dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=DropInPaths --value etcd.service) ||
     die "$full_node etcd drop-in provenance cannot be resolved"
-  [[ $dropins == "$etcd_guard_dropin_path" ]] ||
-    die "$full_node etcd does not load exactly the reviewed fabric-guard drop-in: $dropins"
+  [[ $dropins == "$etcd_guard_dropin_path $systemd_service_dropin_path" ]] ||
+    die "$full_node etcd does not load exactly the reviewed fabric-guard drop-in plus system service drop-in: $dropins"
   metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
     --format='%u:%g:%a:%h:%F' "$etcd_guard_dropin_path") ||
     die "$full_node etcd fabric-guard drop-in metadata cannot be read"
@@ -1406,8 +1433,14 @@ if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
 [[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
 [[ $(systemctl show --property=FragmentPath --value "${service##*/}") == "$service" ]]
 [[ $(systemctl show --property=FragmentPath --value "${timer##*/}") == "$timer" ]]
-[[ -z $(systemctl show --property=DropInPaths --value "${service##*/}") ]]
+[[ $(systemctl show --property=DropInPaths --value "${service##*/}") == /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
 [[ -z $(systemctl show --property=DropInPaths --value "${timer##*/}") ]]
+[[ -f /usr/lib/systemd/system/service.d/10-timeout-abort.conf &&
+   ! -L /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /usr/lib/systemd/system/service.d/10-timeout-abort.conf) == "0:0:644:1:regular file" ]]
+system_dropin_hash=$(sha256sum /usr/lib/systemd/system/service.d/10-timeout-abort.conf)
+[[ ${system_dropin_hash%% *} == ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37 ]]
+/usr/bin/matchpathcon -V /usr/lib/systemd/system/service.d/10-timeout-abort.conf >/dev/null
 [[ -f $work/deadline && ! -L $work/deadline ]]
 deadline=$(<"$work/deadline")
 now=$(date +%s)
@@ -1474,6 +1507,14 @@ for directory in /proc/sys/net/ipv6/conf/*; do
   [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_source_route") == -1 ]]
 done
 systemctl is-active --quiet fabric-guard.service
+[[ $(systemctl show --property=DropInPaths --value fabric-guard.service) == /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
+[[ $(systemctl show --property=DropInPaths --value etcd.service) == "/etc/systemd/system/etcd.service.d/10-fabric-guard.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+[[ -f /usr/lib/systemd/system/service.d/10-timeout-abort.conf &&
+   ! -L /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /usr/lib/systemd/system/service.d/10-timeout-abort.conf) == "0:0:644:1:regular file" ]]
+system_dropin_hash=$(sha256sum /usr/lib/systemd/system/service.d/10-timeout-abort.conf)
+[[ ${system_dropin_hash%% *} == ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37 ]]
+/usr/bin/matchpathcon -V /usr/lib/systemd/system/service.d/10-timeout-abort.conf >/dev/null
 if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
 [[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
 [[ -z $(systemctl show --property=Job --value "${service##*/}") ]]

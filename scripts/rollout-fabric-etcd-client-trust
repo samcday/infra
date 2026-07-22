@@ -5,6 +5,7 @@ export LC_ALL=C
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 profile=$repo_root/fabric/butane/etcd.yaml
 firewall_profile=$repo_root/fabric/butane/firewall.yaml
+control_plane_profile=$repo_root/fabric/butane/control-plane.yaml
 canonical_delegated_ca=$repo_root/fabric/pki/etcdetcetc/client-ca.pem
 node=
 confirmation=
@@ -14,9 +15,16 @@ verify_live_all=false
 readonly delegated_ca_path=/etc/etcd/pki/etcdetcetc-client-ca.pem
 readonly renderer_path=/usr/local/sbin/render-fabric-etcd-client-trust
 readonly trust_unit_name=fabric-etcd-client-trust.service
+readonly k3s_unit_name=k3s.service
 readonly trust_unit_path=/etc/systemd/system/fabric-etcd-client-trust.service
 readonly etcd_unit_path=/etc/systemd/system/etcd.service
 readonly etcd_firewall_dropin_path=/etc/systemd/system/etcd.service.d/10-fabric-guard.conf
+readonly k3s_unit_path=/etc/systemd/system/k3s.service
+readonly k3s_firewall_dropin_path=/etc/systemd/system/k3s.service.d/10-fabric-guard.conf
+readonly k3s_quorum_dropin_path=/etc/systemd/system/k3s.service.d/20-etcd-quorum.conf
+readonly k3s_etcd_dropin_path=/etc/systemd/system/k3s.service.d/etcd.conf
+readonly systemd_service_dropin_path=/usr/lib/systemd/system/service.d/10-timeout-abort.conf
+readonly systemd_service_dropin_hash=ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37
 readonly runtime_bundle=/run/fabric-etcd-client-trust/client-ca-bundle.pem
 readonly endpoints=https://10.66.0.10:2379,https://10.66.0.11:2379,https://10.66.0.12:2379
 
@@ -30,7 +38,7 @@ Usage:
   scripts/rollout-fabric-etcd-client-trust --verify-live-all
 
   scripts/rollout-fabric-etcd-client-trust --node <cp1|cp2|cp3> \
-    --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:<full-node>:<payload-sha256>
+    --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:<full-node>:<main-commit>:<payload-sha256>
 
 The helper installs only public CA/policy material. It requires a clean pushed
 main branch, serializes every Fabric foundation operation with the global
@@ -104,7 +112,7 @@ fi
 
 commands=(awk cmp git grep jq mktemp openssl sha256sum tr yq)
 if ! $check_only && ! $verify_live_all; then
-  commands+=(kubectl)
+  commands+=(curl kubectl)
 fi
 for command in "${commands[@]}"; do
   command -v "$command" >/dev/null || die "required command is unavailable: $command"
@@ -115,6 +123,8 @@ done
 [[ -f $profile && ! -L $profile ]] || die 'Fabric etcd Butane profile is absent or unsafe'
 [[ -f $firewall_profile && ! -L $firewall_profile ]] ||
   die 'Fabric firewall Butane profile is absent or unsafe'
+[[ -f $control_plane_profile && ! -L $control_plane_profile ]] ||
+  die 'Fabric control-plane Butane profile is absent or unsafe'
 [[ -f $canonical_delegated_ca && ! -L $canonical_delegated_ca ]] ||
   die 'canonical delegated client CA is absent or unsafe'
 
@@ -192,16 +202,55 @@ extract_dropin() {
   ' "$firewall_profile" | tr -d '\000' >"$output"
 }
 
+extract_control_plane_dropin() {
+  local unit_name=$1 dropin_name=$2 output=$3
+
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" yq -er \
+    '[.systemd.units[] | select(.name == strenv(UNIT_NAME))] | length' \
+    "$control_plane_profile") == 1 ]] ||
+    die "control-plane Butane must define exactly one $unit_name"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" DROPIN_NAME="$dropin_name" yq -er '
+    [.systemd.units[]
+     | select(.name == strenv(UNIT_NAME))
+     | .dropins[]
+     | select(.name == strenv(DROPIN_NAME))] | length
+  ' "$control_plane_profile") == 1 ]] ||
+    die "control-plane Butane must define exactly one $unit_name.d/$dropin_name"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  UNIT_NAME="$unit_name" DROPIN_NAME="$dropin_name" yq -er -0 '
+    .systemd.units[]
+    | select(.name == strenv(UNIT_NAME))
+    | .dropins[]
+    | select(.name == strenv(DROPIN_NAME))
+    | .contents
+  ' "$control_plane_profile" | tr -d '\000' >"$output"
+}
+
 extract_file "$delegated_ca_path" "$work/delegated-ca.pem" 420
 extract_file "$renderer_path" "$work/render-client-trust" 493
 extract_unit "$trust_unit_name" "$work/client-trust.service"
 extract_unit etcd.service "$work/etcd.service"
 extract_dropin etcd.service 10-fabric-guard.conf "$work/etcd-firewall-dropin.conf"
+extract_dropin k3s.service 10-fabric-guard.conf "$work/k3s-firewall-dropin.conf"
+extract_control_plane_dropin k3s.service 20-etcd-quorum.conf \
+  "$work/k3s-quorum-dropin.conf"
+extract_control_plane_dropin k3s.service etcd.conf "$work/k3s-etcd-dropin.conf"
 bash -n "$work/render-client-trust" ||
   die 'embedded client-trust renderer is not valid Bash'
 cmp -s "$work/etcd-firewall-dropin.conf" <(printf '%s' \
   $'[Unit]\nRequires=fabric-guard.service\nAfter=fabric-guard.service\n') ||
   die 'committed etcd firewall drop-in has unexpected contents'
+cmp -s "$work/k3s-firewall-dropin.conf" <(printf '%s' \
+  $'[Unit]\nRequires=fabric-guard.service\nAfter=fabric-guard.service\n') ||
+  die 'committed K3s firewall drop-in has unexpected contents'
+cmp -s "$work/k3s-etcd-dropin.conf" <(printf '%s' \
+  $'[Unit]\nRequires=etcd.service\nAfter=etcd.service\n') ||
+  die 'committed K3s etcd dependency drop-in has unexpected contents'
+cmp -s "$work/k3s-quorum-dropin.conf" <(printf '%s' \
+  $'[Service]\nExecStartPre=/usr/local/sbin/wait-for-fabric-etcd-quorum\n') ||
+  die 'committed K3s quorum-gate drop-in has unexpected contents'
 
 cmp -s "$canonical_delegated_ca" "$work/delegated-ca.pem" ||
   die 'Butane delegated CA differs from its canonical public artifact'
@@ -265,15 +314,17 @@ payload_hash=$(
   } | sha256sum | awk '{print $1}'
 )
 
+head_commit=$(git -C "$repo_root" rev-parse HEAD)
+[[ $head_commit =~ ^[0-9a-f]{40}$ ]] || die 'HEAD is not an exact Git commit'
+
 if $check_only; then
-  echo "validated Fabric etcd client-trust rollout payload $payload_hash"
+  echo "validated Fabric etcd client-trust rollout payload $payload_hash at revision $head_commit"
   exit 0
 fi
 
 [[ $(git -C "$repo_root" branch --show-current) == main ]] || die 'run only from main'
 [[ -z $(git -C "$repo_root" status --porcelain) ]] || die 'worktree must be clean'
 git -C "$repo_root" fetch --quiet origin main
-head_commit=$(git -C "$repo_root" rev-parse HEAD)
 origin_main=$(git -C "$repo_root" rev-parse refs/remotes/origin/main)
 [[ $head_commit == "$origin_main" ]] ||
   die 'HEAD must exactly match freshly fetched origin/main'
@@ -304,6 +355,29 @@ set_node_context() {
     --dial-timeout=5s
     --command-timeout=15s
   )
+}
+
+verify_systemd_service_dropin() {
+  local installed_hash metadata
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test -f \
+    "$systemd_service_dropin_path" ||
+    die "$full_node reviewed system service drop-in is not a regular file"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L \
+    "$systemd_service_dropin_path" ||
+    die "$full_node reviewed system service drop-in is an unsafe symlink"
+  metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$systemd_service_dropin_path") ||
+    die "$full_node reviewed system service drop-in cannot be read"
+  [[ $metadata == '0:0:644:1:regular file' ]] ||
+    die "$full_node reviewed system service drop-in metadata is unsafe: $metadata"
+  installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$systemd_service_dropin_path" | awk '{print $1}') ||
+    die "$full_node reviewed system service drop-in cannot be hashed"
+  [[ $installed_hash == "$systemd_service_dropin_hash" ]] ||
+    die "$full_node system service drop-in differs from the reviewed Fedora contract"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+    "$systemd_service_dropin_path" >/dev/null ||
+    die "$full_node reviewed system service drop-in has the wrong security context"
 }
 
 etcd_member_contract=
@@ -460,6 +534,10 @@ verify_remote_etcdctl_version() {
 
 verify_installed_file() {
   local target=$1 source=$2 expected_mode=$3 expected_hash actual_hash metadata
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test -f "$target" ||
+    die "installed payload is not a regular file: $target"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$target" ||
+    die "installed payload is an unsafe symlink: $target"
   expected_hash=$(sha256sum "$source" | awk '{print $1}')
   actual_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum "$target" | awk '{print $1}')
   [[ $actual_hash == "$expected_hash" ]] || die "installed payload differs from Git: $target"
@@ -467,6 +545,51 @@ verify_installed_file() {
     --format='%u:%g:%a:%h:%F' "$target")
   [[ $metadata == "0:0:$expected_mode:1:regular file" ]] ||
     die "installed payload has unsafe metadata: $target ($metadata)"
+}
+
+verify_live_k3s_unit() {
+  local after binds_to dropins fragment part_of requires requisite
+  local stop_propagated_from
+
+  verify_installed_file "$k3s_firewall_dropin_path" \
+    "$work/k3s-firewall-dropin.conf" 644
+  verify_installed_file "$k3s_quorum_dropin_path" \
+    "$work/k3s-quorum-dropin.conf" 644
+  verify_installed_file "$k3s_etcd_dropin_path" \
+    "$work/k3s-etcd-dropin.conf" 644
+
+  fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=FragmentPath --value "$k3s_unit_name")
+  [[ $fragment == "$k3s_unit_path" ]] ||
+    die "$full_node K3s service loads an unexpected fragment: $fragment"
+  dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=DropInPaths --value "$k3s_unit_name")
+  [[ $dropins == "$k3s_firewall_dropin_path $k3s_quorum_dropin_path $k3s_etcd_dropin_path $systemd_service_dropin_path" ]] ||
+    die "$full_node K3s service does not load exactly the reviewed drop-ins: $dropins"
+
+  requires=" $("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=Requires --value "$k3s_unit_name") "
+  after=" $("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=After --value "$k3s_unit_name") "
+  [[ $requires == *' etcd.service '* && $requires == *' fabric-guard.service '* ]] ||
+    die "$full_node K3s service lacks the reviewed etcd/firewall requirements"
+  [[ $after == *' etcd.service '* && $after == *' fabric-guard.service '* ]] ||
+    die "$full_node K3s service lacks the reviewed etcd/firewall ordering"
+  [[ $requires != *' fabric-etcd-client-trust.service '* &&
+     $after != *' fabric-etcd-client-trust.service '* ]] ||
+    die "$full_node K3s service has an unreviewed direct trust-renderer dependency"
+  binds_to=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=BindsTo --value "$k3s_unit_name")
+  part_of=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=PartOf --value "$k3s_unit_name")
+  requisite=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=Requisite --value "$k3s_unit_name")
+  stop_propagated_from=$("${ssh[@]}" sudo --non-interactive \
+    /usr/bin/systemctl show --property=StopPropagatedFrom --value \
+    "$k3s_unit_name")
+  [[ -z $binds_to && -z $part_of && -z $requisite &&
+     -z $stop_propagated_from ]] ||
+    die "$full_node K3s service has an unreviewed reverse-stop dependency"
 }
 
 assert_rollback_residue_absent() {
@@ -537,6 +660,8 @@ verify_live_trust() {
   local etcd_pid etcd_argv trust_fragment trust_dropins etcd_fragment etcd_dropins
   local persistent_target
 
+  verify_systemd_service_dropin
+
   verify_installed_file "$delegated_ca_path" "$work/delegated-ca.pem" 644
   verify_installed_file "$renderer_path" "$work/render-client-trust" 755
   verify_installed_file "$trust_unit_path" "$work/client-trust.service" 644
@@ -561,8 +686,8 @@ verify_live_trust() {
     die "$trust_unit_name loads an unexpected fragment: $trust_fragment"
   trust_dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=DropInPaths --value "$trust_unit_name")
-  [[ -z $trust_dropins ]] ||
-    die "$trust_unit_name has unreviewed drop-ins: $trust_dropins"
+  [[ $trust_dropins == "$systemd_service_dropin_path" ]] ||
+    die "$trust_unit_name does not load exactly the reviewed system service drop-in: $trust_dropins"
 
   etcd_fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=FragmentPath --value etcd.service)
@@ -570,8 +695,8 @@ verify_live_trust() {
     die "etcd.service loads an unexpected fragment: $etcd_fragment"
   etcd_dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=DropInPaths --value etcd.service)
-  [[ $etcd_dropins == "$etcd_firewall_dropin_path" ]] ||
-    die "etcd.service does not load exactly the committed firewall drop-in: $etcd_dropins"
+  [[ $etcd_dropins == "$etcd_firewall_dropin_path $systemd_service_dropin_path" ]] ||
+    die "etcd.service does not load exactly the committed firewall and reviewed system drop-ins: $etcd_dropins"
 
   runtime_cert_count=$("${ssh[@]}" sudo --non-interactive /usr/bin/grep \
     -c '^-----BEGIN CERTIFICATE-----$' "$runtime_bundle")
@@ -623,6 +748,90 @@ verify_live_trust() {
     '--peer-trusted-ca-file=' '--peer-trusted-ca-file=/etc/etcd/pki/ca.pem'
 }
 
+ik=("$repo_root/scripts/ik" --context=fabric)
+lease_proof_uid=
+lease_proof_rv=
+lease_proof_renew=
+
+rfc3339_ns() {
+  local instant=$1 nanoseconds
+  [[ $instant =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] ||
+    return 1
+  nanoseconds=$(date --utc --date="$instant" +%s%N) || return 1
+  [[ $nanoseconds =~ ^[0-9]{19}$ ]] || return 1
+  printf '%s\n' "$nanoseconds"
+}
+
+cluster_lease_tuple() {
+  local lease_json renew rv uid
+  lease_json=$("${ik[@]}" --request-timeout=5s -n kube-node-lease \
+    get lease "$full_node" -o json) || return 1
+  uid=$(jq -er '.metadata.uid' <<<"$lease_json") || return 1
+  rv=$(jq -er '.metadata.resourceVersion' <<<"$lease_json") || return 1
+  renew=$(jq -er '.spec.renewTime' <<<"$lease_json") || return 1
+  [[ $uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+     $rv =~ ^[^[:space:]]+$ ]] || return 1
+  rfc3339_ns "$renew" >/dev/null || return 1
+  printf '%s\t%s\t%s\n' "$uid" "$rv" "$renew"
+}
+
+assert_api_health() {
+  local k3s_job k3s_result lease_tuple node_ready
+  verify_live_k3s_unit
+  "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+    "$k3s_unit_name" || die "$full_node K3s service is not enabled"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+    "$k3s_unit_name" || die "$full_node K3s service is not active"
+  k3s_job=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=Job --value "$k3s_unit_name")
+  [[ -z $k3s_job ]] || die "$full_node K3s service still has a queued job: $k3s_job"
+  k3s_result=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=Result --value "$k3s_unit_name")
+  [[ $k3s_result == success ]] ||
+    die "$full_node K3s service result is not success: $k3s_result"
+  "${ik[@]}" --request-timeout=5s get --raw=/readyz >/dev/null ||
+    die 'Fabric API is not ready'
+  "${ik[@]}" --request-timeout=5s get --raw='/readyz?verbose' |
+    grep -Fq '[+]etcd ok' || die 'Fabric API does not report a healthy etcd check'
+  "${ssh[@]}" sudo --non-interactive /usr/bin/timeout --signal=TERM \
+    --kill-after=2s 5s /usr/local/bin/k3s kubectl --request-timeout=3s \
+    get --raw='/readyz?verbose' | grep -Fq 'readyz check passed' ||
+    die "$full_node local API readiness failed"
+  node_ready=$("${ik[@]}" --request-timeout=5s get node "$full_node" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  [[ $node_ready == True ]] || die "$full_node is not Ready"
+  lease_tuple=$(cluster_lease_tuple) || die "$full_node has no valid heartbeat Lease"
+  [[ -n $lease_tuple ]] || die "$full_node heartbeat Lease tuple is empty"
+}
+
+assert_k3s_fresh_heartbeat() {
+  local after_ns before_ns lease_after lease_before node_ready
+  local uid_after uid_before rv_after rv_before renew_after renew_before
+  lease_before=$(cluster_lease_tuple) ||
+    die "cannot anchor $full_node heartbeat after K3s readiness"
+  IFS=$'\t' read -r uid_before rv_before renew_before <<<"$lease_before"
+  before_ns=$(rfc3339_ns "$renew_before") || die 'invalid heartbeat anchor time'
+  for _attempt in {1..40}; do
+    sleep 1
+    if lease_after=$(cluster_lease_tuple); then
+      IFS=$'\t' read -r uid_after rv_after renew_after <<<"$lease_after"
+      after_ns=$(rfc3339_ns "$renew_after") || continue
+      node_ready=$("${ik[@]}" --request-timeout=5s get node "$full_node" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' \
+        2>/dev/null || true)
+      if [[ $uid_after == "$uid_before" && $rv_after != "$rv_before" &&
+            $node_ready == True ]] &&
+          ((10#$after_ns > 10#$before_ns)); then
+        lease_proof_uid=$uid_after
+        lease_proof_rv=$rv_after
+        lease_proof_renew=$renew_after
+        return 0
+      fi
+    fi
+  done
+  die "$full_node did not publish a strictly newer Ready heartbeat after K3s readiness"
+}
+
 if $verify_live_all; then
   readonly verification_nodes=(cp1 cp2 cp3)
   for verification_node in "${verification_nodes[@]}"; do
@@ -639,6 +848,8 @@ if $verify_live_all; then
     set_node_context "$verification_node"
     verify_remote_etcdctl_version
     assert_etcd_health
+    assert_api_health
+    assert_k3s_fresh_heartbeat
     assert_rollback_residue_absent
   done
   printf 'FABRIC_ETCD_CLIENT_TRUST_LIVE_ALL=PASS revision=%s payload_sha256=%s\n' \
@@ -646,45 +857,102 @@ if $verify_live_all; then
   exit 0
 fi
 
-expected="ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:$full_node:$payload_hash"
+expected="ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:$full_node:$head_commit:$payload_hash"
 [[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
 
-ik=("$repo_root/scripts/ik" --context=fabric)
 set_node_context "$node"
+verify_systemd_service_dropin
 readonly lock_name=fabric-maintenance-lock
-lock_holder="$(hostname):$$:$full_node:$payload_hash"
+lock_holder="$(hostname):$$:$full_node:$head_commit:$payload_hash"
+lock_uid=
+lock_rv=
+lock_proxy_pid=
 success=false
 rollback_armed=false
 rollback_disarmed=false
 
-assert_api_health() {
-  "${ik[@]}" get --raw=/readyz >/dev/null || die 'Fabric API is not ready'
-  "${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
-    die 'Fabric API does not report a healthy etcd check'
-  "${ssh[@]}" sudo --non-interactive /usr/local/bin/k3s kubectl get \
-    --raw='/readyz?verbose' | grep -Fq 'readyz check passed' ||
-    die "$full_node local API readiness failed"
-}
-
 verify_remote_etcdctl_version
 assert_etcd_health
 assert_api_health
-lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
-  -o jsonpath='{.spec.renewTime}')
-[[ -n $lease_before ]] || die "cannot read $full_node heartbeat Lease"
-[[ $("${ik[@]}" get node "$full_node" \
-  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}') == True ]] ||
-  die "$full_node is not Ready before rollout"
 
-if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
-  --from-literal="holder=$lock_holder" >/dev/null; then
-  current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+if ! lock_object=$("${ik[@]}" --request-timeout=5s -n kube-system \
+  create configmap "$lock_name" --from-literal="holder=$lock_holder" -o json); then
+  current_holder=$("${ik[@]}" --request-timeout=5s -n kube-system \
+    get configmap "$lock_name" \
     -o jsonpath='{.data.holder}' 2>/dev/null || true)
   die "another or stale client-trust rollout lock exists: ${current_holder:-unknown}"
 fi
+lock_uid=$(jq -er '.metadata.uid' <<<"$lock_object") ||
+  die "$lock_name was created but its UID is unavailable; leave it for attended inspection"
+lock_rv=$(jq -er '.metadata.resourceVersion' <<<"$lock_object") ||
+  die "$lock_name was created but its resourceVersion is unavailable; leave it for attended inspection"
+[[ $lock_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+   $lock_rv =~ ^[^[:space:]]+$ &&
+   $(jq -er '.metadata.name' <<<"$lock_object") == "$lock_name" &&
+   $(jq -er '.metadata.namespace' <<<"$lock_object") == kube-system &&
+   $(jq -er '.data.holder' <<<"$lock_object") == "$lock_holder" ]] ||
+  die "$lock_name creation response is not the exact owned object; leave it for attended inspection"
+
+stop_lock_proxy() {
+  local attempt
+  [[ $lock_proxy_pid =~ ^[1-9][0-9]*$ ]] || return 0
+  kill -TERM "$lock_proxy_pid" 2>/dev/null || true
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$lock_proxy_pid" 2>/dev/null; then
+    kill -KILL "$lock_proxy_pid" 2>/dev/null || true
+  fi
+  wait "$lock_proxy_pid" 2>/dev/null || true
+  lock_proxy_pid=
+}
+
+delete_lock_preconditioned() {
+  local attempt delete_options proxy_log proxy_socket response
+  proxy_socket=$work/kube-api-proxy.sock
+  proxy_log=$work/kube-api-proxy.log
+  [[ ! -e $proxy_socket && ! -L $proxy_socket ]] || return 1
+  "${ik[@]}" proxy --unix-socket="$proxy_socket" \
+    --accept-hosts='^localhost$' \
+    --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\$" \
+    --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+    >"$proxy_log" 2>&1 &
+  lock_proxy_pid=$!
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    [[ -S $proxy_socket ]] && break
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ ! -S $proxy_socket ]]; then
+    stop_lock_proxy
+    return 1
+  fi
+  delete_options=$(jq -cn --arg uid "$lock_uid" --arg rv "$lock_rv" '{
+    apiVersion: "v1",
+    kind: "DeleteOptions",
+    preconditions: {uid: $uid, resourceVersion: $rv}
+  }') || {
+    stop_lock_proxy
+    return 1
+  }
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$proxy_socket" --request DELETE \
+    --header 'Content-Type: application/json' --data-binary "$delete_options" \
+    "http://localhost/api/v1/namespaces/kube-system/configmaps/$lock_name") || {
+    stop_lock_proxy
+    return 1
+  }
+  stop_lock_proxy
+  jq -e --arg name "$lock_name" --arg uid "$lock_uid" '
+    (.kind == "Status" and .status == "Success" and
+     .details.name == $name and (.details.uid // $uid) == $uid) or
+    (.kind == "ConfigMap" and .metadata.name == $name and .metadata.uid == $uid)
+  ' <<<"$response" >/dev/null
+}
 
 cleanup() {
-  local status=$? current_holder
+  local status=$?
   trap - EXIT HUP INT TERM
   trap '' HUP INT TERM
   set +e
@@ -729,7 +997,7 @@ sync --file-system "$work"
 flock --unlock "$state_fd"
 exec {state_fd}>&-
 systemctl start --no-block "${service##*/}"
-for ((attempt = 0; attempt < 120; attempt++)); do
+for ((attempt = 0; attempt < 300; attempt++)); do
   if [[ $(<"$state_path") == "rolled-back:$token" &&
         -f $work/rolled-back && ! -L $work/rolled-back &&
         $(<"$work/rolled-back") == "$token" &&
@@ -756,19 +1024,14 @@ exit 1
   elif ! $success; then
     echo "rollout stopped before rollback was armed; $lock_name remains held by $lock_holder for inspection" >&2
   fi
-  rm -rf -- "$work"
   if $success; then
-    current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
-      -o jsonpath='{.data.holder}' 2>/dev/null || true)
-    if [[ $current_holder != "$lock_holder" ]]; then
-      echo "client-trust rollout passed but global lock ownership changed; refuse to delete it" >&2
-      status=1
-    elif ! "${ik[@]}" -n kube-system delete configmap "$lock_name" \
-        --wait=true >/dev/null; then
+    if ! delete_lock_preconditioned; then
       echo "client-trust rollout passed but global lock could not be released" >&2
       status=1
     fi
   fi
+  stop_lock_proxy
+  rm -rf -- "$work"
   exit "$status"
 }
 trap cleanup EXIT
@@ -786,12 +1049,6 @@ rollout_token="$head_commit:$payload_hash:$full_node"
 # earlier probes may have overlapped a just-finishing attended operation.
 assert_etcd_health
 assert_api_health
-lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
-  -o jsonpath='{.spec.renewTime}')
-[[ -n $lease_before ]] || die "cannot refresh $full_node heartbeat Lease under the global lock"
-[[ $("${ik[@]}" get node "$full_node" \
-  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}') == True ]] ||
-  die "$full_node is not Ready after acquiring the global lock"
 
 assert_rollback_residue_absent
 for transient in "$rollback_unit.timer" "$rollback_unit.service"; do
@@ -835,7 +1092,21 @@ done
 "${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/restorecon
 "${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/matchpathcon
 "${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/sync
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/timeout
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/date
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/local/bin/k3s
 "${ssh[@]}" sudo --non-interactive /usr/bin/mkdir --mode=0700 "$remote_work"
+
+printf '%s\n' "$full_node" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$remote_work/k3s-node" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/touch \
+  "$remote_work/k3s.previously-enabled" \
+  "$remote_work/k3s.previously-active"
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$remote_work/k3s-node" \
+  "$remote_work/k3s.previously-enabled" \
+  "$remote_work/k3s.previously-active"
 
 stage_public_file() {
   local source=$1 remote_name=$2 expected_hash remote_hash
@@ -847,6 +1118,25 @@ stage_public_file() {
     "$remote_work/$remote_name" | awk '{print $1}')
   [[ $remote_hash == "$expected_hash" ]] || die "$remote_name changed in transport"
 }
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show --no-pager \
+  --property=Requires --property=After --property=BindsTo --property=PartOf \
+  --property=Requisite --property=StopPropagatedFrom etcd.service \
+  >"$work/etcd-dependency-contract.previous"
+for dependency_property in Requires After BindsTo PartOf Requisite StopPropagatedFrom; do
+  [[ $(grep -c "^$dependency_property=" \
+    "$work/etcd-dependency-contract.previous") == 1 ]] ||
+    die "cannot capture the exact pre-rollout etcd $dependency_property contract"
+done
+stage_public_file "$work/etcd-dependency-contract.previous" \
+  etcd-dependency-contract.previous
+dependency_contract_hash=$(sha256sum \
+  "$work/etcd-dependency-contract.previous" | awk '{print $1}')
+printf '%s  %s\n' "$dependency_contract_hash" etcd-dependency-contract.previous |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$remote_work/etcd-dependency-contract.previous.sha256" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$remote_work/etcd-dependency-contract.previous.sha256"
 
 stage_public_file "$work/delegated-ca.pem" delegated-ca.next
 stage_public_file "$work/render-client-trust" renderer.next
@@ -943,12 +1233,20 @@ write_state() {
   sync --file-system "$work"
 }
 [[ -d $work && ! -L $work ]]
-for marker in owner expected-token armed deadline; do
+for marker in owner expected-token armed deadline k3s-node \
+    etcd-dependency-contract.previous \
+    etcd-dependency-contract.previous.sha256 \
+    k3s.previously-enabled k3s.previously-active; do
   [[ -f $work/$marker && ! -L $work/$marker ]]
 done
 [[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
 [[ $(<"$work/armed") == "$(<"$work/expected-token")" ]]
 token=$(<"$work/expected-token")
+k3s_node=$(<"$work/k3s-node")
+case $k3s_node in
+  fabric-az1-cp1|fabric-az1-cp2|fabric-az1-cp3) ;;
+  *) exit 1 ;;
+esac
 [[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
 exec {state_fd}>>"$state_lock"
 flock --exclusive "$state_fd"
@@ -968,8 +1266,67 @@ now=$(date +%s)
 if [[ $state == "armed:$token" ]]; then
   [[ -e $work/force-rollback || $now -ge $deadline ]]
 fi
+rollback_deadline=$((now + 240))
 write_state rolling-back
-systemctl stop fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+before_rollback_deadline() {
+  (( $(date +%s) < rollback_deadline ))
+}
+wait_unit_active() {
+  local unit=$1
+  while before_rollback_deadline; do
+    if systemctl is-active --quiet "$unit" &&
+        [[ -z $(systemctl show --property=Job --value "$unit") ]] &&
+        [[ $(systemctl show --property=Result --value "$unit") == success ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+wait_unit_inactive() {
+  local unit=$1
+  while before_rollback_deadline; do
+    if ! systemctl is-active --quiet "$unit" &&
+        [[ $(systemctl show --property=ActiveState --value "$unit") == inactive ]] &&
+        [[ -z $(systemctl show --property=Job --value "$unit") ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+bounded_k3s() {
+  /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+    /usr/local/bin/k3s kubectl --request-timeout=3s "$@"
+}
+rfc3339_ns() {
+  local instant=$1 nanoseconds
+  [[ $instant =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] ||
+    return 1
+  nanoseconds=$(date --utc --date="$instant" +%s%N) || return 1
+  [[ $nanoseconds =~ ^[0-9]{19}$ ]] || return 1
+  printf "%s\n" "$nanoseconds"
+}
+lease_tuple() {
+  local renew rv tuple uid
+  tuple=$(bounded_k3s -n kube-node-lease get lease "$k3s_node" \
+    -o "jsonpath={.metadata.uid}{\"\\t\"}{.metadata.resourceVersion}{\"\\t\"}{.spec.renewTime}") ||
+    return 1
+  IFS="$(printf "\t")" read -r uid rv renew <<<"$tuple"
+  [[ $uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+     $rv =~ ^[^[:space:]]+$ ]] || return 1
+  rfc3339_ns "$renew" >/dev/null || return 1
+  printf "%s\t%s\t%s\n" "$uid" "$rv" "$renew"
+}
+verify_restored_dependency_graph() {
+  local restored
+  (cd "$work" &&
+    sha256sum --check etcd-dependency-contract.previous.sha256 >/dev/null)
+  restored=$(systemctl show --no-pager \
+    --property=Requires --property=After --property=BindsTo --property=PartOf \
+    --property=Requisite --property=StopPropagatedFrom etcd.service)
+  [[ $restored == "$(<"$work/etcd-dependency-contract.previous")" ]]
+}
 remove_staging() {
   local path=$1
   if [[ -e $path || -L $path ]]; then
@@ -1016,36 +1373,85 @@ restore /etc/systemd/system/etcd.service etcd.service
 sync --file-system /etc
 sync --file-system /usr/local
 systemctl daemon-reload
+# Load and prove the exact pre-rollout dependency graph before transitioning the
+# renderer. A previous accepted policy may legitimately retain the dependency;
+# either way the explicit etcd/K3s starts below recover any propagated stop.
+verify_restored_dependency_graph
 if [[ -e $work/trust.previously-enabled ]]; then
   systemctl enable fabric-etcd-client-trust.service >/dev/null
 else
   systemctl disable fabric-etcd-client-trust.service >/dev/null 2>&1 || true
 fi
 if [[ -e $work/trust.previously-active ]]; then
-  systemctl restart fabric-etcd-client-trust.service
+  systemctl restart --no-block fabric-etcd-client-trust.service
+  wait_unit_active fabric-etcd-client-trust.service
 else
-  systemctl stop fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+  systemctl stop --no-block fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+  wait_unit_inactive fabric-etcd-client-trust.service
 fi
-systemctl restart etcd.service
+systemctl restart --no-block etcd.service
+wait_unit_active etcd.service
+systemctl is-enabled --quiet k3s.service
+systemctl start --no-block k3s.service
 if [[ -e $work/trust.previously-enabled ]]; then
   systemctl is-enabled --quiet fabric-etcd-client-trust.service
 else
   if systemctl is-enabled --quiet fabric-etcd-client-trust.service; then exit 1; fi
 fi
-if [[ -e $work/trust.previously-active ]]; then
-  systemctl is-active --quiet fabric-etcd-client-trust.service
-else
-  if systemctl is-active --quiet fabric-etcd-client-trust.service; then exit 1; fi
-  [[ $(systemctl show --property=ActiveState --value fabric-etcd-client-trust.service) == inactive ]]
-  [[ -z $(systemctl show --property=Job --value fabric-etcd-client-trust.service) ]]
-fi
-systemctl is-active --quiet etcd.service
 /usr/local/bin/etcdctl \
   --endpoints=https://127.0.0.1:2379 \
   --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
   --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
   --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
   --dial-timeout=2s --command-timeout=3s endpoint health >/dev/null
+k3s_healthy=false
+while before_rollback_deadline; do
+  if systemctl is-active --quiet k3s.service &&
+      [[ -z $(systemctl show --property=Job --value k3s.service) ]] &&
+      [[ $(systemctl show --property=Result --value k3s.service) == success ]] &&
+      bounded_k3s get --raw="/readyz?verbose" 2>/dev/null |
+        grep -Fq "readyz check passed" &&
+      k3s_ready=$(bounded_k3s get node "$k3s_node" \
+        -o "jsonpath={.status.conditions[?(@.type==\"Ready\")].status}" \
+        2>/dev/null) && [[ $k3s_ready == True ]]; then
+    k3s_healthy=true
+    break
+  fi
+  sleep 1
+done
+$k3s_healthy
+lease_anchor=$(lease_tuple)
+IFS="$(printf "\t")" read -r lease_uid_before lease_rv_before lease_renew_before \
+  <<<"$lease_anchor"
+lease_before_ns=$(rfc3339_ns "$lease_renew_before")
+lease_advanced=false
+while before_rollback_deadline; do
+  sleep 1
+  if lease_after=$(lease_tuple); then
+    IFS="$(printf "\t")" read -r lease_uid_after lease_rv_after lease_renew_after \
+      <<<"$lease_after"
+    lease_after_ns=$(rfc3339_ns "$lease_renew_after") || continue
+    k3s_ready=$(bounded_k3s get node "$k3s_node" \
+      -o "jsonpath={.status.conditions[?(@.type==\"Ready\")].status}" \
+      2>/dev/null || true)
+    if [[ $lease_uid_after == "$lease_uid_before" &&
+          $lease_rv_after != "$lease_rv_before" && $k3s_ready == True ]] &&
+        ((10#$lease_after_ns > 10#$lease_before_ns)); then
+      lease_advanced=true
+      break
+    fi
+  fi
+done
+$lease_advanced
+if [[ -e $work/trust.previously-active ]]; then
+  systemctl is-active --quiet fabric-etcd-client-trust.service
+else
+  if systemctl is-active --quiet fabric-etcd-client-trust.service; then exit 1; fi
+  [[ $(systemctl show --property=ActiveState --value \
+    fabric-etcd-client-trust.service) == inactive ]]
+  [[ -z $(systemctl show --property=Job --value \
+    fabric-etcd-client-trust.service) ]]
+fi
 sync --file-system /etc
 sync --file-system /usr/local
 printf "%s\n" "$token" >"$work/rolled-back.next"
@@ -1088,6 +1494,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
+TimeoutStartSec=270s
 ExecStart=/usr/bin/bash $remote_work/rollback
 Restart=on-failure
 RestartSec=2s
@@ -1161,6 +1568,41 @@ flock --exclusive "$state_fd"
 deadline=$(<"$work/deadline")
 now=$(date +%s)
 [[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+before_deadline() {
+  (( $(date +%s) < deadline ))
+}
+wait_unit_active() {
+  local unit=$1
+  while before_deadline; do
+    if systemctl is-active --quiet "$unit" &&
+        [[ -z $(systemctl show --property=Job --value "$unit") ]] &&
+        [[ $(systemctl show --property=Result --value "$unit") == success ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+bounded_k3s() {
+  /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+    /usr/local/bin/k3s kubectl --request-timeout=3s "$@"
+}
+verify_candidate_dependency_graph() {
+  local after requires stop_propagated_from
+  requires=" $(systemctl show --property=Requires --value etcd.service) "
+  after=" $(systemctl show --property=After --value etcd.service) "
+  [[ $requires == *" fabric-etcd-client-trust.service "* &&
+     $after == *" fabric-etcd-client-trust.service "* ]]
+  requires=" $(systemctl show --property=Requires --value k3s.service) "
+  after=" $(systemctl show --property=After --value k3s.service) "
+  [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]
+  [[ $after == *" etcd.service "* && $after == *" fabric-guard.service "* ]]
+  [[ $requires != *" fabric-etcd-client-trust.service "* &&
+     $after != *" fabric-etcd-client-trust.service "* ]]
+  stop_propagated_from=$(systemctl show \
+    --property=StopPropagatedFrom --value k3s.service)
+  [[ -z $stop_propagated_from ]]
+}
 install_atomic() {
   local source=$1 target=$2 mode=$3 next directory metadata expected_mode
   next=$target.fabric-rollout.next
@@ -1183,12 +1625,37 @@ install_atomic "$work/delegated-ca.next" "$delegated_ca_path" 0644
 install_atomic "$work/renderer.next" "$renderer_path" 0755
 install_atomic "$work/fabric-etcd-client-trust.service" "$trust_unit_path" 0644
 install_atomic "$work/etcd.service" "$etcd_unit_path" 0644
-systemd-analyze verify "$trust_unit_path" "$etcd_unit_path" >/dev/null
+/usr/bin/timeout --signal=TERM --kill-after=2s 10s \
+  systemd-analyze verify "$trust_unit_path" "$etcd_unit_path" >/dev/null
 systemctl daemon-reload
+verify_candidate_dependency_graph
 systemctl enable fabric-etcd-client-trust.service >/dev/null
-systemctl restart fabric-etcd-client-trust.service
-systemctl is-active --quiet fabric-etcd-client-trust.service
-systemctl restart etcd.service
+systemctl restart --no-block fabric-etcd-client-trust.service
+wait_unit_active fabric-etcd-client-trust.service
+systemctl restart --no-block etcd.service
+wait_unit_active etcd.service
+/usr/local/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
+  --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
+  --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+  --dial-timeout=2s --command-timeout=3s endpoint health >/dev/null
+systemctl is-enabled --quiet k3s.service
+systemctl start --no-block k3s.service
+k3s_healthy=false
+while before_deadline; do
+  if systemctl is-active --quiet k3s.service &&
+      [[ -z $(systemctl show --property=Job --value k3s.service) ]] &&
+      [[ $(systemctl show --property=Result --value k3s.service) == success ]] &&
+      bounded_k3s get --raw="/readyz?verbose" 2>/dev/null |
+        grep -Fq "readyz check passed"; then
+    k3s_healthy=true
+    break
+  fi
+  sleep 1
+done
+$k3s_healthy
+before_deadline
 [[ $(<"$state_path") == "armed:$token" ]]
 [[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
 printf "ROLLOUT_APPLIED=%s\n" "$token"
@@ -1227,19 +1694,7 @@ verify_live_trust
 # VIP API and a fresh node heartbeat. Do not collapse it into one weak probe.
 assert_etcd_health
 assert_api_health
-heartbeat_advanced=false
-for _attempt in {1..30}; do
-  lease_after=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
-    -o jsonpath='{.spec.renewTime}')
-  ready=$("${ik[@]}" get node "$full_node" \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
-  if [[ $lease_after != "$lease_before" && $ready == True ]]; then
-    heartbeat_advanced=true
-    break
-  fi
-  sleep 2
-done
-$heartbeat_advanced || die "$full_node did not publish a fresh Ready heartbeat after etcd restart"
+assert_k3s_fresh_heartbeat
 
 # Phase one proves a fresh, locked readiness snapshot while rollback remains
 # armed. Phase two re-proves payload, live state, durability, and deadline under
@@ -1251,8 +1706,68 @@ work=$1
 service=$2
 timer=$3
 token=$4
+node=$5
+proof_uid=$6
+proof_rv=$7
+proof_renew=$8
 state_path=$work/state
 state_lock=$work/state.lock
+case $node in
+  fabric-az1-cp1|fabric-az1-cp2|fabric-az1-cp3) ;;
+  *) exit 1 ;;
+esac
+[[ $(<"$work/k3s-node") == "$node" ]]
+[[ $proof_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+[[ $proof_rv =~ ^[^[:space:]]+$ ]]
+bounded_k3s() {
+  /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+    /usr/local/bin/k3s kubectl --request-timeout=3s "$@"
+}
+rfc3339_ns() {
+  local instant=$1 nanoseconds
+  [[ $instant =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] ||
+    return 1
+  nanoseconds=$(date --utc --date="$instant" +%s%N) || return 1
+  [[ $nanoseconds =~ ^[0-9]{19}$ ]] || return 1
+  printf "%s\n" "$nanoseconds"
+}
+prove_lease_not_regressed() {
+  local current_ns proof_ns ready renew rv tuple uid
+  tuple=$(bounded_k3s -n kube-node-lease get lease "$node" \
+    -o "jsonpath={.metadata.uid}{\"\\t\"}{.metadata.resourceVersion}{\"\\t\"}{.spec.renewTime}") ||
+    return 1
+  IFS="$(printf "\t")" read -r uid rv renew <<<"$tuple"
+  [[ $uid == "$proof_uid" && $rv =~ ^[^[:space:]]+$ ]] || return 1
+  current_ns=$(rfc3339_ns "$renew") || return 1
+  proof_ns=$(rfc3339_ns "$proof_renew") || return 1
+  if ((10#$current_ns == 10#$proof_ns)); then
+    [[ $rv == "$proof_rv" ]] || return 1
+  else
+    [[ $rv != "$proof_rv" ]] || return 1
+    ((10#$current_ns > 10#$proof_ns)) || return 1
+  fi
+  ready=$(bounded_k3s get node "$node" \
+    -o "jsonpath={.status.conditions[?(@.type==\"Ready\")].status}") || return 1
+  [[ $ready == True ]]
+}
+verify_k3s_dependency() {
+  local after binds_to part_of requires requisite stop_propagated_from
+  [[ $(systemctl show --property=FragmentPath --value k3s.service) == /etc/systemd/system/k3s.service ]]
+  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+  requires=" $(systemctl show --property=Requires --value k3s.service) "
+  after=" $(systemctl show --property=After --value k3s.service) "
+  [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]
+  [[ $after == *" etcd.service "* && $after == *" fabric-guard.service "* ]]
+  [[ $requires != *" fabric-etcd-client-trust.service "* &&
+     $after != *" fabric-etcd-client-trust.service "* ]]
+  binds_to=$(systemctl show --property=BindsTo --value k3s.service)
+  part_of=$(systemctl show --property=PartOf --value k3s.service)
+  requisite=$(systemctl show --property=Requisite --value k3s.service)
+  stop_propagated_from=$(systemctl show \
+    --property=StopPropagatedFrom --value k3s.service)
+  [[ -z $binds_to && -z $part_of && -z $requisite &&
+     -z $stop_propagated_from ]]
+}
 [[ -d $work && ! -L $work ]]
 [[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
 [[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
@@ -1269,10 +1784,24 @@ systemctl is-active --quiet "${timer##*/}"
 if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
 [[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
 [[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+systemctl is-enabled --quiet k3s.service
+systemctl is-active --quiet k3s.service
+[[ -z $(systemctl show --property=Job --value k3s.service) ]]
+[[ $(systemctl show --property=Result --value k3s.service) == success ]]
+verify_k3s_dependency
+bounded_k3s get --raw="/readyz?verbose" 2>/dev/null |
+  grep -Fq "readyz check passed"
+prove_lease_not_regressed
 [[ $(systemctl show --property=FragmentPath --value "${service##*/}") == "$service" ]]
 [[ $(systemctl show --property=FragmentPath --value "${timer##*/}") == "$timer" ]]
-[[ -z $(systemctl show --property=DropInPaths --value "${service##*/}") ]]
+[[ $(systemctl show --property=DropInPaths --value "${service##*/}") == /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
 [[ -z $(systemctl show --property=DropInPaths --value "${timer##*/}") ]]
+[[ -f /usr/lib/systemd/system/service.d/10-timeout-abort.conf &&
+   ! -L /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /usr/lib/systemd/system/service.d/10-timeout-abort.conf) == "0:0:644:1:regular file" ]]
+system_dropin_hash=$(sha256sum /usr/lib/systemd/system/service.d/10-timeout-abort.conf)
+[[ ${system_dropin_hash%% *} == ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37 ]]
+/usr/bin/matchpathcon -V /usr/lib/systemd/system/service.d/10-timeout-abort.conf >/dev/null
 [[ -f $work/deadline && ! -L $work/deadline ]]
 deadline=$(<"$work/deadline")
 now=$(date +%s)
@@ -1282,7 +1811,8 @@ printf "ROLLBACK_DISARM_READY=%s\n" "$token"
 disarm_ready=$(printf '%s' "$disarm_ready_program" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
     "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
-    "$rollout_token")
+    "$rollout_token" "$full_node" "$lease_proof_uid" "$lease_proof_rv" \
+    "$lease_proof_renew")
 [[ $disarm_ready == "ROLLBACK_DISARM_READY=$rollout_token" ]] ||
   die 'target-local rollback readiness acknowledgement was not exact'
 
@@ -1293,8 +1823,68 @@ work=$1
 service=$2
 timer=$3
 token=$4
+node=$5
+proof_uid=$6
+proof_rv=$7
+proof_renew=$8
 state_path=$work/state
 state_lock=$work/state.lock
+case $node in
+  fabric-az1-cp1|fabric-az1-cp2|fabric-az1-cp3) ;;
+  *) exit 1 ;;
+esac
+[[ $(<"$work/k3s-node") == "$node" ]]
+[[ $proof_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+[[ $proof_rv =~ ^[^[:space:]]+$ ]]
+bounded_k3s() {
+  /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+    /usr/local/bin/k3s kubectl --request-timeout=3s "$@"
+}
+rfc3339_ns() {
+  local instant=$1 nanoseconds
+  [[ $instant =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] ||
+    return 1
+  nanoseconds=$(date --utc --date="$instant" +%s%N) || return 1
+  [[ $nanoseconds =~ ^[0-9]{19}$ ]] || return 1
+  printf "%s\n" "$nanoseconds"
+}
+prove_lease_not_regressed() {
+  local current_ns proof_ns ready renew rv tuple uid
+  tuple=$(bounded_k3s -n kube-node-lease get lease "$node" \
+    -o "jsonpath={.metadata.uid}{\"\\t\"}{.metadata.resourceVersion}{\"\\t\"}{.spec.renewTime}") ||
+    return 1
+  IFS="$(printf "\t")" read -r uid rv renew <<<"$tuple"
+  [[ $uid == "$proof_uid" && $rv =~ ^[^[:space:]]+$ ]] || return 1
+  current_ns=$(rfc3339_ns "$renew") || return 1
+  proof_ns=$(rfc3339_ns "$proof_renew") || return 1
+  if ((10#$current_ns == 10#$proof_ns)); then
+    [[ $rv == "$proof_rv" ]] || return 1
+  else
+    [[ $rv != "$proof_rv" ]] || return 1
+    ((10#$current_ns > 10#$proof_ns)) || return 1
+  fi
+  ready=$(bounded_k3s get node "$node" \
+    -o "jsonpath={.status.conditions[?(@.type==\"Ready\")].status}") || return 1
+  [[ $ready == True ]]
+}
+verify_k3s_dependency() {
+  local after binds_to part_of requires requisite stop_propagated_from
+  [[ $(systemctl show --property=FragmentPath --value k3s.service) == /etc/systemd/system/k3s.service ]]
+  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+  requires=" $(systemctl show --property=Requires --value k3s.service) "
+  after=" $(systemctl show --property=After --value k3s.service) "
+  [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]
+  [[ $after == *" etcd.service "* && $after == *" fabric-guard.service "* ]]
+  [[ $requires != *" fabric-etcd-client-trust.service "* &&
+     $after != *" fabric-etcd-client-trust.service "* ]]
+  binds_to=$(systemctl show --property=BindsTo --value k3s.service)
+  part_of=$(systemctl show --property=PartOf --value k3s.service)
+  requisite=$(systemctl show --property=Requisite --value k3s.service)
+  stop_propagated_from=$(systemctl show \
+    --property=StopPropagatedFrom --value k3s.service)
+  [[ -z $binds_to && -z $part_of && -z $requisite &&
+     -z $stop_propagated_from ]]
+}
 write_state() {
   printf "%s:%s\n" "$1" "$token" >"$work/state.next"
   chmod 0600 "$work/state.next"
@@ -1327,10 +1917,24 @@ for target in /etc/etcd/pki/etcdetcetc-client-ca.pem \
 done
 systemctl is-active --quiet fabric-etcd-client-trust.service
 systemctl is-active --quiet etcd.service
+systemctl is-enabled --quiet k3s.service
+systemctl is-active --quiet k3s.service
+[[ -z $(systemctl show --property=Job --value k3s.service) ]]
+[[ $(systemctl show --property=Result --value k3s.service) == success ]]
+verify_k3s_dependency
+bounded_k3s get --raw="/readyz?verbose" 2>/dev/null |
+  grep -Fq "readyz check passed"
+prove_lease_not_regressed
 [[ $(systemctl show --property=FragmentPath --value fabric-etcd-client-trust.service) == /etc/systemd/system/fabric-etcd-client-trust.service ]]
-[[ -z $(systemctl show --property=DropInPaths --value fabric-etcd-client-trust.service) ]]
+[[ $(systemctl show --property=DropInPaths --value fabric-etcd-client-trust.service) == /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
 [[ $(systemctl show --property=FragmentPath --value etcd.service) == /etc/systemd/system/etcd.service ]]
-[[ $(systemctl show --property=DropInPaths --value etcd.service) == /etc/systemd/system/etcd.service.d/10-fabric-guard.conf ]]
+[[ $(systemctl show --property=DropInPaths --value etcd.service) == "/etc/systemd/system/etcd.service.d/10-fabric-guard.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+[[ -f /usr/lib/systemd/system/service.d/10-timeout-abort.conf &&
+   ! -L /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /usr/lib/systemd/system/service.d/10-timeout-abort.conf) == "0:0:644:1:regular file" ]]
+system_dropin_hash=$(sha256sum /usr/lib/systemd/system/service.d/10-timeout-abort.conf)
+[[ ${system_dropin_hash%% *} == ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37 ]]
+/usr/bin/matchpathcon -V /usr/lib/systemd/system/service.d/10-timeout-abort.conf >/dev/null
 cmp --silent /run/fabric-etcd-client-trust/client-ca-bundle.pem <(
   cat /etc/etcd/pki/ca.pem /etc/etcd/pki/etcdetcetc-client-ca.pem
 )
@@ -1388,7 +1992,8 @@ printf "ROLLBACK_DISARMED=%s\n" "$token"
 disarm_result=$(printf '%s' "$disarm_program" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
     "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
-    "$rollout_token")
+    "$rollout_token" "$full_node" "$lease_proof_uid" "$lease_proof_rv" \
+    "$lease_proof_renew")
 [[ $disarm_result == "ROLLBACK_DISARMED=$rollout_token" ]] ||
   die 'target-local rollback disarm acknowledgement was not exact'
 rollback_disarmed=true

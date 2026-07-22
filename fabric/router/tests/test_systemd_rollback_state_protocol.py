@@ -41,7 +41,7 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             "restore_markers": (
                 'mv --force -- "$next" "$target"',
                 "systemctl daemon-reload",
-                "systemctl restart etcd.service",
+                "systemctl restart --no-block etcd.service",
             ),
         },
     }
@@ -110,10 +110,31 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
         self.assertGreaterEqual(body.count("--property=ActiveState"), minimum)
         self.assertGreaterEqual(body.count("== inactive"), minimum)
 
-    def run_boot_fixture(self, helper: str, state: str) -> tuple[str, str]:
+    def run_boot_fixture(
+        self,
+        helper: str,
+        state: str,
+        *,
+        client_trust_failure: str | None = None,
+    ) -> tuple[str, str, int, bool]:
         contract = self.helpers[helper]
         rollback = self.program(helper, "rollback_program")
         token = "fixture-token"
+        if client_trust_failure is not None:
+            self.assertEqual(helper, "client-trust")
+            self.assertIn(
+                client_trust_failure,
+                {"api-timeout", "api-not-ready", "lease-unchanged"},
+            )
+            long_deadline = "rollback_deadline=$((now + 240))"
+            short_deadline = "rollback_deadline=$((now + 2))"
+            self.assertIn(long_deadline, rollback)
+            rollback = rollback.replace(long_deadline, short_deadline, 1)
+            if client_trust_failure == "api-timeout":
+                long_timeout = "--kill-after=2s 5s"
+                short_timeout = "--kill-after=0.05s 0.05s"
+                self.assertIn(long_timeout, rollback)
+                rollback = rollback.replace(long_timeout, short_timeout, 1)
 
         # /tmp is tmpfs without SELinux labels on the FCOS test host. The
         # rollback contract intentionally records %C, so use labeled /var/tmp.
@@ -131,7 +152,19 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             fake_systemctl.write_text(
                 '#!/usr/bin/env bash\n'
                 'set -euo pipefail\n'
-                'printf "%s\\n" "$*" >>"$SYSTEMCTL_LOG"\n',
+                'printf "%s\\n" "$*" >>"$SYSTEMCTL_LOG"\n'
+                'case "$*" in\n'
+                '  "show --no-pager --property=Requires --property=After '
+                '--property=BindsTo --property=PartOf --property=Requisite '
+                '--property=StopPropagatedFrom etcd.service") '
+                'printf "Requires=fabric-etcd-client-trust.service\\n'
+                'After=fabric-etcd-client-trust.service\\nBindsTo=\\n'
+                'PartOf=\\nRequisite=\\nStopPropagatedFrom=\\n" ;;\n'
+                '  "show --property=Result --value "*) '
+                'printf "success\\n" ;;\n'
+                '  "show --property=ActiveState --value "*) '
+                'printf "inactive\\n" ;;\n'
+                'esac\n',
                 encoding="utf-8",
             )
             fake_systemctl.chmod(0o700)
@@ -314,6 +347,25 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                     )
                 (work / "trust.previously-enabled").touch()
                 (work / "trust.previously-active").touch()
+                (work / "k3s.previously-enabled").touch()
+                (work / "k3s.previously-active").touch()
+                (work / "k3s-node").write_text(
+                    "fabric-az1-cp1\n", encoding="utf-8"
+                )
+                dependency_contract = work / "etcd-dependency-contract.previous"
+                dependency_contract.write_text(
+                    "Requires=fabric-etcd-client-trust.service\n"
+                    "After=fabric-etcd-client-trust.service\n"
+                    "BindsTo=\nPartOf=\nRequisite=\nStopPropagatedFrom=\n",
+                    encoding="utf-8",
+                )
+                dependency_digest = hashlib.sha256(
+                    dependency_contract.read_bytes()
+                ).hexdigest()
+                (work / "etcd-dependency-contract.previous.sha256").write_text(
+                    f"{dependency_digest}  etcd-dependency-contract.previous\n",
+                    encoding="utf-8",
+                )
                 fake_etcdctl = fake_bin / "etcdctl"
                 fake_etcdctl.write_text(
                     "#!/usr/bin/env bash\nset -euo pipefail\n",
@@ -321,6 +373,36 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 )
                 fake_etcdctl.chmod(0o700)
                 replacements["/usr/local/bin/etcdctl"] = str(fake_etcdctl)
+                fake_k3s = fake_bin / "k3s"
+                fake_k3s.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    'case "$*" in\n'
+                    '  *"--raw=/readyz?verbose"*)\n'
+                    '    case ${K3S_FIXTURE_MODE-} in\n'
+                    '      api-timeout) sleep 5; exit 1 ;;\n'
+                    '      api-not-ready) printf "not ready\\n"; exit 1 ;;\n'
+                    '      *) printf "readyz check passed\\n" ;;\n'
+                    '    esac ;;\n'
+                    '  *"get node fabric-az1-cp1"*) printf "True" ;;\n'
+                    '  *"-n kube-node-lease get lease fabric-az1-cp1"*) '
+                    'count=0; '
+                    '[[ ! -f $K3S_LEASE_COUNTER ]] || '
+                    'count=$(<"$K3S_LEASE_COUNTER"); '
+                    'count=$((count + 1)); '
+                    'printf "%s\\n" "$count" >"$K3S_LEASE_COUNTER"; '
+                    'if [[ ${K3S_FIXTURE_MODE-} == lease-unchanged ]] || '
+                    '   ((count == 1)); then '
+                    'printf "11111111-1111-1111-1111-111111111111\\t10\\t'
+                    '2026-01-01T00:00:00Z"; else '
+                    'printf "11111111-1111-1111-1111-111111111111\\t11\\t'
+                    '2026-01-01T00:00:01Z"; fi ;;\n'
+                    "  *) exit 1 ;;\n"
+                    "esac\n",
+                    encoding="utf-8",
+                )
+                fake_k3s.chmod(0o700)
+                replacements["/usr/local/bin/k3s"] = str(fake_k3s)
 
             replacements["/usr/bin/matchpathcon"] = str(fake_matchpathcon)
 
@@ -340,15 +422,18 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                     **os.environ,
                     "PATH": f"{fake_bin}:{os.environ['PATH']}",
                     "SYSTEMCTL_LOG": str(log),
+                    "K3S_LEASE_COUNTER": str(root / "k3s-lease-counter"),
+                    "K3S_FIXTURE_MODE": client_trust_failure or "healthy",
                 },
                 capture_output=True,
                 check=False,
             )
-            self.assertEqual(
-                result.returncode,
-                0,
-                f"{helper} {state} fixture failed: {result.stderr}",
-            )
+            if client_trust_failure is None:
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    f"{helper} {state} fixture failed: {result.stderr}",
+                )
             resulting_state = (work / "state").read_text(
                 encoding="utf-8"
             ).strip()
@@ -361,7 +446,12 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                         target.read_text(encoding="utf-8"),
                         "must survive accepted boot\n",
                     )
-            return resulting_state, systemctl_log
+            return (
+                resulting_state,
+                systemctl_log,
+                result.returncode,
+                (work / "rolled-back").exists(),
+            )
 
     def test_outer_helpers_and_all_embedded_protocol_programs_parse_as_bash(
         self,
@@ -541,19 +631,43 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             service = f"{contract['unit']}.service"
             timer = f"{contract['unit']}.timer"
             with self.subTest(helper=helper, state="rolling-back"):
-                state, systemctl_log = self.run_boot_fixture(
-                    helper, "rolling-back"
-                )
+                (
+                    state,
+                    systemctl_log,
+                    returncode,
+                    rolled_back,
+                ) = self.run_boot_fixture(helper, "rolling-back")
+                self.assertEqual(returncode, 0)
                 self.assertEqual(state, "rolled-back:fixture-token")
+                self.assertTrue(rolled_back)
                 self.assertIn(f"disable {timer} {service}", systemctl_log)
             with self.subTest(helper=helper, state="accepted"):
-                state, systemctl_log = self.run_boot_fixture(
-                    helper, "accepted"
-                )
+                (
+                    state,
+                    systemctl_log,
+                    returncode,
+                    rolled_back,
+                ) = self.run_boot_fixture(helper, "accepted")
+                self.assertEqual(returncode, 0)
                 self.assertEqual(state, "accepted:fixture-token")
+                self.assertFalse(rolled_back)
                 self.assertIn(f"disable {timer} {service}", systemctl_log)
                 self.assertNotIn("restart", systemctl_log)
                 self.assertNotIn("reload", systemctl_log)
+
+    def test_client_trust_rollback_does_not_finish_without_k3s_liveness(
+        self,
+    ) -> None:
+        for failure in ("api-timeout", "api-not-ready", "lease-unchanged"):
+            with self.subTest(failure=failure):
+                state, _, returncode, rolled_back = self.run_boot_fixture(
+                    "client-trust",
+                    "rolling-back",
+                    client_trust_failure=failure,
+                )
+                self.assertNotEqual(returncode, 0)
+                self.assertEqual(state, "rolling-back:fixture-token")
+                self.assertFalse(rolled_back)
 
     def test_rollback_holds_the_state_lock_through_restore_and_terminal_state(
         self,
@@ -580,7 +694,7 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
     ) -> None:
         last_mutation = {
             "root-firewall": "systemctl reload fabric-guard.service",
-            "client-trust": "systemctl restart etcd.service",
+            "client-trust": "systemctl start --no-block k3s.service",
         }
         for helper, contract in self.helpers.items():
             apply = self.program(helper, "apply_candidate_program")
@@ -618,6 +732,44 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 )
                 self.assertNotIn("sysctl -q -w", post_apply)
                 self.assertNotIn("install_atomic ", post_apply)
+
+    def test_client_trust_rollback_restores_dependency_graph_and_k3s(self) -> None:
+        rollback = self.program("client-trust", "rollback_program")
+        apply = self.program("client-trust", "apply_candidate_program")
+
+        self.assert_ordered(
+            rollback,
+            "restore /etc/systemd/system/etcd.service etcd.service",
+            "systemctl daemon-reload",
+            "systemctl stop --no-block fabric-etcd-client-trust.service",
+            "systemctl restart --no-block etcd.service",
+            "systemctl start --no-block k3s.service",
+            "lease_advanced=true",
+            'write_state rolled-back',
+        )
+        self.assertNotIn(
+            "systemctl stop --no-block fabric-etcd-client-trust.service",
+            rollback[: rollback.index("systemctl daemon-reload")],
+        )
+        for marker in (
+            "k3s-node",
+            "k3s.previously-enabled",
+            "k3s.previously-active",
+        ):
+            self.assertIn(marker, rollback)
+        self.assertIn("$k3s_ready == True", rollback)
+        self.assertIn('$lease_rv_after != "$lease_rv_before"', rollback)
+        self.assertIn(
+            "((10#$lease_after_ns > 10#$lease_before_ns))", rollback
+        )
+
+        self.assert_ordered(
+            apply,
+            "systemctl restart --no-block etcd.service",
+            "systemctl start --no-block k3s.service",
+            'bounded_k3s get --raw="/readyz?verbose"',
+            "ROLLOUT_APPLIED=",
+        )
 
     def test_payload_promotions_and_restores_are_atomic_and_durable(
         self,
@@ -663,6 +815,43 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
             with self.subTest(helper=helper):
                 self.assertIn('/usr/bin/restorecon -F "$target"', install)
                 self.assertNotIn("restorecon --force", install)
+
+    def test_system_service_dropin_is_exactly_reviewed_everywhere(self) -> None:
+        path = "/usr/lib/systemd/system/service.d/10-timeout-abort.conf"
+        digest = (
+            "ae6b234f92bc22f1201a7572b59b454c"
+            "9809f33c80d13f361b9674e1801acc37"
+        )
+        for helper, contract in self.helpers.items():
+            text = contract["text"]
+            disarm_ready = self.program(helper, "disarm_ready_program")
+            disarm = self.program(helper, "disarm_program")
+            with self.subTest(helper=helper):
+                self.assertIn(path, text)
+                self.assertIn(digest, text)
+                self.assertIn("reviewed system service drop-in is an unsafe symlink", text)
+                self.assertIn("system service drop-in metadata is unsafe", text)
+                self.assertIn("system service drop-in differs", text)
+                self.assertIn(
+                    f'== {path} ]]',
+                    disarm_ready,
+                )
+                self.assertIn(
+                    '[[ -z $(systemctl show --property=DropInPaths '
+                    '--value "${timer##*/}") ]]',
+                    disarm_ready,
+                )
+                for program in (disarm_ready, disarm):
+                    self.assertIn(f"! -L {path}", program)
+                    self.assertIn(
+                        f"system_dropin_hash=$(sha256sum {path})",
+                        program,
+                    )
+                    self.assertIn(digest, program)
+                    self.assertIn(
+                        f"/usr/bin/matchpathcon -V {path}",
+                        program,
+                    )
 
     def test_terminal_states_follow_live_proof_target_sync_and_deadline(
         self,

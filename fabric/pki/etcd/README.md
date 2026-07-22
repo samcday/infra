@@ -120,16 +120,16 @@ the confirmation hash without contacting a node:
 scripts/rollout-fabric-etcd-client-trust --check
 ```
 
-Then roll exactly one voter at a time. Substitute the hash printed by
-`--check`; do not prepare all three commands in parallel:
+Then roll exactly one voter at a time. Substitute the revision and payload hash
+printed by `--check`; do not prepare all three commands in parallel:
 
 ```sh
 scripts/rollout-fabric-etcd-client-trust --node cp1 \
-  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp1:<payload-sha256>
+  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp1:<main-commit>:<payload-sha256>
 scripts/rollout-fabric-etcd-client-trust --node cp2 \
-  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp2:<payload-sha256>
+  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp2:<main-commit>:<payload-sha256>
 scripts/rollout-fabric-etcd-client-trust --node cp3 \
-  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp3:<payload-sha256>
+  --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:fabric-az1-cp3:<main-commit>:<payload-sha256>
 ```
 
 Each invocation refuses a dirty, unpushed, or non-`main` checkout; takes the
@@ -140,11 +140,17 @@ target-local state lock, recheck the exact deadline before mutation, use
 same-directory atomic promotion, and durably verify bytes, metadata, and
 SELinux context. The helper restarts one etcd member and proves the exact
 three-member/no-learner/no-alarm consensus state, target-local and VIP API
-readiness, and a fresh node heartbeat. It also checks systemd fragments and
-absence of drop-ins, both live CA fingerprints, the exact two-certificate
-runtime bundle, and the live etcd client/peer trust arguments. Acceptance is
-persisted only while holding that same lock after a fresh deadline check and
-complete target, live-state, and filesystem-durability proof.
+readiness, and a fresh node heartbeat. Because K3s requires the host etcd
+service, both the candidate and rollback paths explicitly restore K3s and
+refuse acknowledgement until its local API is ready and its Node Lease has
+advanced. Rollback loads the restored etcd dependency graph before stopping
+the candidate trust renderer, proves it matches the pre-rollout graph, and
+explicitly restores etcd and K3s after any resulting stop propagation. The
+helper also checks exact reviewed systemd fragments and drop-ins, both live CA
+fingerprints, the exact two-certificate runtime bundle, and the live etcd
+client/peer trust arguments. Acceptance is persisted only while holding that
+same lock after a fresh deadline check and complete target, live-state, and
+filesystem-durability proof.
 The admin helper and every root, router, pre-open, and post-open foundation
 operation take that same ConfigMap lock, so an etcd restart or auth mutation
 cannot overlap a network-policy change or acceptance probe.
