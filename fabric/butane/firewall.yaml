@@ -25,9 +25,10 @@ storage:
         inline: |
           # Consensus-root policy. The services plane is routed even during
           # the temporary shared-L2 phase; only the two declared, trusted
-          # platform agents receive the narrow API, kubelet, Flannel, and
-          # etcdetcetc client admissions below. Source allow-lists are not
-          # anti-spoofing until the managed-switch VLAN boundary lands.
+          # platform agents receive the narrow API, kubelet, Flannel,
+          # etcdetcetc client, and host-metrics admissions below. Source
+          # allow-lists are not anti-spoofing until the managed-switch VLAN
+          # boundary lands.
           # Recreate only this owned table; never flush the host ruleset or
           # modify tables and chains managed by K3s or kube-proxy.
           destroy table inet fabric_guard
@@ -83,8 +84,9 @@ storage:
                   ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
                   # Transitional flat-L2 exception for the two physically
                   # trusted service agents. The router and Kubernetes policy
-                  # independently constrain the controller path; 2380/2381
-                  # remain root/observer-only below.
+                  # independently constrain the controller path. The etcd
+                  # peer port 2380 remains root-only; its separate metrics
+                  # port 2381 is admitted only by the monitoring rule below.
                   ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
                   tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"
 
@@ -96,6 +98,7 @@ storage:
 
                   ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
                   ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+                  ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
 
                   ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 

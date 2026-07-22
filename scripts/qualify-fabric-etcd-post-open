@@ -63,7 +63,7 @@ credential copy are created. Each Pod mounts only Secret $secret_name, fetches
 the checksum-pinned etcdctl $etcd_version archive from the service-side router
 address $router_service_address into a
 memory emptyDir, and emits fixed non-secret result markers. It proves all roots
-on TCP/2379, rejects TCP/2380-2381 and clients without a certificate, then
+on TCP/2379 and TCP/2381, rejects TCP/2380 and clients without a certificate, then
 proves in-prefix put/get/delete and exact outside-prefix PermissionDenied.
 Short-TTL leases bound every possible probe write.
 
@@ -372,7 +372,9 @@ live_input=$(nft -a list chain inet fw4 input_lan) || fail 'live input_lan chain
 assert_target_section fabric_flat_services_etcd_client \
   Allow-platform-to-root-etcd-client 2379 ACCEPT
 assert_target_section fabric_flat_reject_services_etcd_internal \
-  Reject-services-to-root-etcd-internal '2380 2381' REJECT
+  Reject-services-to-root-etcd-internal 2380 REJECT
+assert_target_section fabric_flat_services_root_metrics \
+  Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
 assert_uci_absent firewall.fabric_flat_reject_services_etcd
 assert_uci firewall.fabric_router_services_http rule
 assert_option_keys fabric_router_services_http 'dest_ip dest_port family name proto src src_ip target'
@@ -386,6 +388,7 @@ assert_uci firewall.fabric_router_services_http.dest_port 80
 assert_uci firewall.fabric_router_services_http.target ACCEPT
 assert_live_rule Allow-platform-to-root-etcd-client 'jump accept_to_lan'
 assert_live_rule Reject-services-to-root-etcd-internal 'jump reject_to_lan'
+assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan'
 if printf '%s\n' "$live_table" | grep -F 'comment "!fw4: Reject-services-to-root-etcd"' >/dev/null; then
   fail 'obsolete live all-port etcd reject is present'
 fi
@@ -417,6 +420,7 @@ fabric_reject_other_fabric_to_wan
 fabric_reject_wan_to_fabric
 fabric_flat_services_etcd_client
 fabric_flat_reject_services_etcd_internal
+fabric_flat_services_root_metrics
 fabric_flat_services_api
 fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
@@ -436,9 +440,9 @@ fabric_router_ssh
 fabric_reject_other_fabric_router_input'
 actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)='rule'$/\\1/p")
 [ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
-[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 26 ] ||
+[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 27 ] ||
   fail 'firewall rule count is not exact'
-[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 29 ] ||
+[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 30 ] ||
   fail 'firewall contains an unexpected non-rule section'
 
 expected_forward='Block-fabric-to-private-WAN
@@ -447,6 +451,7 @@ Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
@@ -465,7 +470,7 @@ actual_chain_count=$(printf '%s\n' "$live_chain" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 16 ] || fail 'live forward_lan rule count is not exact'
+[ "$actual_chain_count" -eq 17 ] || fail 'live forward_lan rule count is not exact'
 terminal=$(printf '%s\n' "$live_chain" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
@@ -539,8 +544,10 @@ validate_root_guard() {
     die "${root_nodes[$index]} lacks one exact service-node TCP/2379 admission"
   [[ $(grep -Fxc 'tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"' "$normalized") -eq 1 ]] ||
     die "${root_nodes[$index]} lacks the exact TCP/2379 catch-all"
-  ! grep -Eq '@service_nodes_v4 tcp dport.*(2380|2381)' "$normalized" ||
-    die "${root_nodes[$index]} admits service nodes to an etcd internal port"
+  [[ $(grep -Fxc 'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"' "$normalized") -eq 1 ]] ||
+    die "${root_nodes[$index]} lacks one exact service-node metrics admission"
+  ! grep -Eq '@service_nodes_v4 tcp dport.*2380' "$normalized" ||
+    die "${root_nodes[$index]} admits service nodes to the etcd peer port"
   expected_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
 ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
 ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
@@ -1390,7 +1397,7 @@ wait_probe_pod() {
   operator_kubectl --namespace "$namespace" logs "$name" >"$evidence_dir/$name.log"
   chmod 0600 -- "$evidence_dir/$name.json" "$evidence_dir/$name.log"
   expected_log="ETCDCTL_PIN=pass node=$node version=3.6.13
-TCP_BOUNDARY=pass node=$node roots=3 client=reachable internal=blocked
+TCP_BOUNDARY=pass node=$node roots=3 client=reachable metrics=reachable peer=blocked
 MTLS_BOUNDARY=pass node=$node roots=3 no_client_cert=rejected tenant_client=accepted
 TENANT_PREFIX=pass node=$node inside=put,get,delete outside=read-denied,write-denied ttl_cleanup=armed"
   [[ $(<"$evidence_dir/$name.log") == "$expected_log" ]] ||
@@ -1410,9 +1417,13 @@ write_counter_spec() {
     "etcd_internal_reject": {
       "family": "inet", "table": "fw4", "chain": "forward_lan",
       "comment": "!fw4: Reject-services-to-root-etcd-internal", "expected_matches": 1
+    },
+    "root_metrics_allow": {
+      "family": "inet", "table": "fw4", "chain": "forward_lan",
+      "comment": "!fw4: Allow-platform-to-root-metrics", "expected_matches": 1
     }
   },
-  "require_increase": ["etcd_client_allow", "etcd_internal_reject"],
+  "require_increase": ["etcd_client_allow", "etcd_internal_reject", "root_metrics_allow"],
   "require_unchanged": []
 }
 EOF
@@ -1703,13 +1714,12 @@ printf 'ETCDCTL_PIN=pass node=%s version=3.6.13\n' "$node"
 
 for address in 10.66.0.10 10.66.0.11 10.66.0.12; do
   nc -n -z -w 3 "$address" 2379 >/dev/null 2>&1
-  for port in 2380 2381; do
-    if nc -n -z -w 3 "$address" "$port" >/dev/null 2>&1; then
-      exit 20
-    fi
-  done
+  nc -n -z -w 3 "$address" 2381 >/dev/null 2>&1
+  if nc -n -z -w 3 "$address" 2380 >/dev/null 2>&1; then
+    exit 20
+  fi
 done
-printf 'TCP_BOUNDARY=pass node=%s roots=3 client=reachable internal=blocked\n' "$node"
+printf 'TCP_BOUNDARY=pass node=%s roots=3 client=reachable metrics=reachable peer=blocked\n' "$node"
 
 for endpoint in \
   https://fabric-az1-cp1.fabric.internal:2379 \
@@ -1937,10 +1947,15 @@ allow_delta=$(jq -er \
 reject_delta=$(jq -er \
   '.results[] | select(.logical_name == "etcd_internal_reject") | .delta.packets' \
   "$counter_result") || die 'router result lacks etcd internal reject delta'
+metrics_delta=$(jq -er \
+  '.results[] | select(.logical_name == "root_metrics_allow") | .delta.packets' \
+  "$counter_result") || die 'router result lacks root metrics allow delta'
 [[ $allow_delta =~ ^[0-9]+$ && $allow_delta -ge 6 ]] ||
   die "router etcd client allow saw only $allow_delta packets; expected at least six"
-[[ $reject_delta =~ ^[0-9]+$ && $reject_delta -ge 12 ]] ||
-  die "router internal-port reject saw only $reject_delta packets; expected at least twelve"
+[[ $reject_delta =~ ^[0-9]+$ && $reject_delta -ge 6 ]] ||
+  die "router peer-port reject saw only $reject_delta packets; expected at least six"
+[[ $metrics_delta =~ ^[0-9]+$ && $metrics_delta -ge 6 ]] ||
+  die "router metrics allow saw only $metrics_delta packets; expected at least six"
 
 for index in "${!root_nodes[@]}"; do
   root_guard_snapshot "$index" "$evidence_dir/root-$((index + 1))-guard.after"
@@ -1964,7 +1979,7 @@ jq -n \
   --arg revision "$head" --arg image "$probe_image" \
   --arg archiveSha256 "$etcd_archive_sha256" --arg tenantUid "$initial_tenant_uid" \
   --arg prefix "$tenant_prefix" --argjson routerAllowDelta "$allow_delta" \
-  --argjson routerRejectDelta "$reject_delta" \
+  --argjson routerRejectDelta "$reject_delta" --argjson routerMetricsDelta "$metrics_delta" \
   --argjson cp1Packets "${root_packet_deltas[0]}" \
   --argjson cp2Packets "${root_packet_deltas[1]}" \
   --argjson cp3Packets "${root_packet_deltas[2]}" '
@@ -1977,9 +1992,11 @@ jq -n \
         prefix: $prefix, credentialCopy: false},
       probes: {"fabric-az1-svc1": "pass", "fabric-az1-svc2": "pass"},
       boundary: {
-        clientPort: "reachable", internalPorts: "blocked", noClientCertificate: "rejected",
+        clientPort: "reachable", metricsPort: "reachable", peerPort: "blocked",
+        noClientCertificate: "rejected",
         routerAllowPacketsDelta: $routerAllowDelta,
         routerRejectPacketsDelta: $routerRejectDelta,
+        routerMetricsPacketsDelta: $routerMetricsDelta,
         rootAllowPacketsDelta: {cp1: $cp1Packets, cp2: $cp2Packets, cp3: $cp3Packets}
       },
       rbac: {inside: "put-get-delete", outsideRead: "PermissionDenied",

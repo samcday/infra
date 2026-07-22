@@ -91,7 +91,9 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             'assert_target_section fabric_flat_services_etcd_client',
             "Allow-platform-to-root-etcd-client 2379 ACCEPT",
             'assert_target_section fabric_flat_reject_services_etcd_internal',
-            "Reject-services-to-root-etcd-internal '2380 2381' REJECT",
+            "Reject-services-to-root-etcd-internal 2380 REJECT",
+            'assert_target_section fabric_flat_services_root_metrics',
+            "Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd",
             "assert_uci firewall.fabric_router_services_http.dest_ip '10.66.1.1/32'",
             "assert_uci firewall.fabric_router_services_http.dest_port 80",
@@ -105,12 +107,13 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
 
-    def test_root_guards_accept_only_exact_service_nodes_on_client_port(self) -> None:
+    def test_root_guards_accept_exact_service_nodes_on_client_and_metrics_ports(self) -> None:
         for required in (
             "elements = { 10.66.1.10, 10.66.1.11 }",
             'ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"',
             'tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"',
-            "! grep -Eq '@service_nodes_v4 tcp dport.*(2380|2381)'",
+            'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"',
+            "! grep -Eq '@service_nodes_v4 tcp dport.*2380'",
             "fabric_guard semantics changed during acceptance",
             "new_packets - old_packets >= 2",
         ):
@@ -181,7 +184,9 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
         for required in (
             "for address in 10.66.0.10 10.66.0.11 10.66.0.12",
             'nc -n -z -w 3 "$address" 2379',
-            "for port in 2380 2381",
+            'nc -n -z -w 3 "$address" 2381',
+            'nc -n -z -w 3 "$address" 2380',
+            "metrics=reachable peer=blocked",
             "no_client_cert=rejected tenant_client=accepted",
             '--cacert=/credential/ca.crt --cert=/credential/tls.crt --key=/credential/tls.key',
             'tenant_ctl lease grant 30',
@@ -347,9 +352,10 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             "del(.handle)",
             '.counter |= del(.packets, .bytes)',
             'cmp -s -- "$router_before_semantic" "$router_after_semantic"',
-            '"require_increase": ["etcd_client_allow", "etcd_internal_reject"]',
+            '"require_increase": ["etcd_client_allow", "etcd_internal_reject", "root_metrics_allow"]',
             "allow_delta -ge 6",
-            "reject_delta -ge 12",
+            "reject_delta -ge 6",
+            "metrics_delta -ge 6",
             "table inet $router_probe_table",
             "type filter hook forward priority -10",
             'router_ssh /usr/sbin/nft delete table inet "$router_probe_table"',

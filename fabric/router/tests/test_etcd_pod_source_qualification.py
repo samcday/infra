@@ -336,7 +336,7 @@ bash -c '
             with self.subTest(required=required):
                 self.assertIn(required, self.root_rollout)
 
-    def test_root_static_contract_is_exact_node_2379_only(self) -> None:
+    def test_root_static_contract_separates_etcd_client_and_metrics(self) -> None:
         service_set = "elements = { 10.66.1.10, 10.66.1.11 }"
         service_allow = (
             "ip saddr @service_nodes_v4 tcp dport 2379 counter accept "
@@ -346,17 +346,23 @@ bash -c '
             'tcp dport 2379 counter drop comment "deny all other etcd clients '
             'including stale flows"'
         )
+        metrics_allow = (
+            "ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } "
+            'counter accept comment "trusted platform monitoring"'
+        )
         self.assertEqual(self.root_firewall.count(service_set), 1)
         self.assertEqual(self.root_firewall.count(service_allow), 1)
         self.assertEqual(self.root_firewall.count(catchall), 1)
+        self.assertEqual(self.root_firewall.count(metrics_allow), 1)
         self.assertLess(
             self.root_firewall.index(service_allow), self.root_firewall.index(catchall)
         )
         self.assertNotRegex(self.root_firewall, r"10\.66\.1\.0/24|10\.42\.\d")
         self.assertNotRegex(
             self.root_firewall,
-            r"@service_nodes_v4 tcp dport[^\n]*(?:2380|2381)",
+            r"@service_nodes_v4 tcp dport[^\n]*2380",
         )
+        self.assertNotRegex(metrics_allow, r"\b(?:2379|2380)\b")
         etcd_accepts = [
             line.strip()
             for line in self.root_firewall.splitlines()
@@ -377,7 +383,7 @@ bash -c '
             "service_etcd_allow_line -lt $etcd_catchall_line",
             "expected_etcd_accepts='ip saddr @root_nodes_v4 tcp dport 2379",
             '[[ $actual_etcd_accepts == "$expected_etcd_accepts" ]]',
-            "committed root etcd policy broadens service access to a subnet, PodCIDR, or internal port",
+            "committed root policy broadens service access to a subnet, PodCIDR, or etcd peer port",
             "lock_name=fabric-maintenance-lock",
         ):
             with self.subTest(required=required):

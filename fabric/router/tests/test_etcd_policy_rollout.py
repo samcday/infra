@@ -105,10 +105,10 @@ class EtcdPolicyRolloutTests(unittest.TestCase):
                     check=True,
                 )
 
-    def test_transition_payload_is_fixed_and_matches_first_boot_policy(self) -> None:
+    def test_transition_payload_is_fixed_and_matches_current_etcd_policy(self) -> None:
         digest = hashlib.sha256(TRANSITION.read_bytes()).hexdigest()
         self.assertIn(f"readonly transition_sha256={digest}", self.helper)
-        self.assertEqual(len(self.transition.splitlines()), 28)
+        self.assertEqual(len(self.transition.splitlines()), 27)
         self.assertEqual(
             self.transition.splitlines()[0],
             "delete firewall.fabric_flat_reject_services_etcd",
@@ -116,6 +116,10 @@ class EtcdPolicyRolloutTests(unittest.TestCase):
         for line in self.transition.splitlines()[1:]:
             with self.subTest(line=line):
                 self.assertEqual(self.desired.count(line), 1)
+        self.assertNotIn("dest_port='2381'", self.transition)
+        self.assertIn(
+            "set firewall.fabric_flat_services_root_metrics='rule'", self.desired
+        )
         self.assertNotIn(
             "firewall.fabric_flat_reject_services_etcd.", self.desired
         )
@@ -128,6 +132,14 @@ class EtcdPolicyRolloutTests(unittest.TestCase):
         self.assertLess(
             self.desired.index(
                 "set firewall.fabric_flat_reject_services_etcd_internal='rule'"
+            ),
+            self.desired.index(
+                "set firewall.fabric_flat_services_root_metrics='rule'"
+            ),
+        )
+        self.assertLess(
+            self.desired.index(
+                "set firewall.fabric_flat_services_root_metrics='rule'"
             ),
             self.desired.index("set firewall.fabric_flat_services_api='rule'"),
         )
@@ -1208,13 +1220,14 @@ guard_live
     def test_pre_and_post_states_are_exact_and_phase_locked(self) -> None:
         for required in (
             "assert_target_section fabric_flat_reject_services_etcd",
-            "Reject-services-to-root-etcd '2379 2380 2381' REJECT",
+            "Reject-services-to-root-etcd '2379 2380' REJECT",
             "assert_uci_absent firewall.fabric_flat_services_etcd_client",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd_internal",
             "assert_target_section fabric_flat_services_etcd_client",
             "Allow-platform-to-root-etcd-client 2379 ACCEPT",
             "assert_target_section fabric_flat_reject_services_etcd_internal",
-            "Reject-services-to-root-etcd-internal '2380 2381' REJECT",
+            "Reject-services-to-root-etcd-internal 2380 REJECT",
+            "Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd",
             '[ "$actual_rules" = "$expected_rules" ]',
             '[ "$actual_forward" = "$expected_forward" ]',

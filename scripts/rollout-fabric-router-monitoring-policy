@@ -1,0 +1,669 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+readonly router_address=10.66.0.1
+readonly observer_namespace=fabric-observer
+readonly confirmation_prefix=ROLLOUT-FABRIC-ROUTER-MONITORING-POLICY
+readonly payload_sha256=4a46c5e8233e9c003c6c6243c22993d88f2bb5c0ad7075e79405db2607ef6cb8
+readonly local_lock=/run/lock/fabric-network-operation.lock
+readonly cluster_lock_name=fabric-maintenance-lock
+readonly remote_lock=/tmp/fabric-router-monitoring-policy.operation
+readonly remote_work=/etc/fabric-router-monitoring-policy-rollback
+readonly remote_init=/etc/init.d/fabric-router-monitoring-policy-rollback
+readonly rollback_seconds=300
+
+usage() {
+  cat <<EOF
+Install the exact Fabric service-node to root-host metrics aperture.
+
+Read-only preflight:
+  sudo scripts/rollout-fabric-router-monitoring-policy \\
+    --check \\
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \\
+    --identity /var/home/sam/.ssh/id_ed25519
+
+Attended rollout:
+  sudo scripts/rollout-fabric-router-monitoring-policy \\
+    --run \\
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \\
+    --identity /var/home/sam/.ssh/id_ed25519 \\
+    --confirm '$confirmation_prefix:<pushed-main-commit>:$payload_sha256'
+
+The helper accepts only the currently-open exact-node TCP/2379 policy with
+TCP/2380-2381 explicitly rejected. It removes 2381 from that reject and adds
+an exact 10.66.1.10/32,10.66.1.11/32 to root-node TCP/2112,2381,9100 allow.
+TCP/2380 and all catch-all cross-prefix rejects remain in place.
+
+A live run requires clean pushed main, the payload-bound confirmation, the
+global Fabric maintenance lock, and a router-local operation lock. Before the
+mutation it stages an exact candidate and enables a reboot-persistent rollback
+watchdog. Failure leaves rollback evidence and the global lock for inspection.
+EOF
+}
+
+die() {
+  printf 'rollout-fabric-router-monitoring-policy: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*"
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+valid_fingerprint() {
+  [[ $1 =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+}
+
+require_root_namespace() {
+  local current initial
+  current=$(readlink /proc/self/ns/user) || die 'cannot inspect current user namespace'
+  initial=$(readlink /proc/1/ns/user) || die 'cannot inspect initial user namespace'
+  [[ $current == "$initial" ]] || die 'refusing to run outside the initial user namespace'
+}
+
+operator_git() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" git "$@"
+}
+
+operator_kubectl() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" FABRIC_INFRA_ROOT="$repo_root" \
+      "$repo_root/scripts/ik" --context=fabric --request-timeout=10s "$@"
+}
+
+validate_identity() {
+  [[ -n $identity ]] || die '--identity is required'
+  [[ $identity == /* && -f $identity && ! -L $identity ]] ||
+    die 'identity must be an absolute, regular, non-symlink file'
+  [[ $(stat -Lc '%u:%a:%h' -- "$identity") == "$operator_uid:600:1" ]] ||
+    die 'identity must be operator-owned mode-0600 with one link'
+}
+
+acquire_local_lock() {
+  local metadata resolved
+  [[ $(stat -Lc '%F:%u:%g:%a' -- /run/lock) == 'directory:0:0:755' ]] ||
+    die 'fabric network lock directory has unsafe ownership or mode'
+  [[ ! -L $local_lock ]] || die 'fabric network lock is a symlink'
+  if [[ -e $local_lock ]]; then
+    [[ -f $local_lock ]] || die 'fabric network lock is not regular'
+    [[ $(stat -Lc '%u:%g:%a:%h' -- "$local_lock") == '0:0:600:1' ]] ||
+      die 'fabric network lock has unsafe ownership or mode'
+  fi
+  exec {local_lock_fd}>>"$local_lock" || die 'cannot open fabric network lock'
+  chmod 0600 -- "/proc/self/fd/$local_lock_fd"
+  resolved=$(readlink -e -- "/proc/self/fd/$local_lock_fd") ||
+    die 'cannot resolve fabric network lock'
+  [[ $resolved == "$local_lock" ]] || die 'opened an unexpected lock file'
+  metadata=$(stat -Lc '%u:%g:%a:%h:%F' -- "/proc/self/fd/$local_lock_fd")
+  [[ $metadata == '0:0:600:1:regular file' ]] ||
+    die 'opened fabric network lock is unsafe'
+  flock --exclusive --nonblock "$local_lock_fd" ||
+    die 'another Fabric network operation is active'
+}
+
+acquire_cluster_lock() {
+  local created current_holder
+  if ! created=$(operator_kubectl --namespace kube-system create configmap \
+      "$cluster_lock_name" --from-literal="holder=$cluster_lock_holder" \
+      --output=json); then
+    current_holder=$(operator_kubectl --namespace kube-system get configmap \
+      "$cluster_lock_name" --output=jsonpath='{.data.holder}' 2>/dev/null || true)
+    die "another or stale global Fabric maintenance lock exists: ${current_holder:-unknown}"
+  fi
+  jq -e --arg holder "$cluster_lock_holder" '
+    .apiVersion == "v1" and .kind == "ConfigMap" and
+    .metadata.name == "fabric-maintenance-lock" and
+    .metadata.namespace == "kube-system" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    .data == {holder: $holder}
+  ' <<<"$created" >/dev/null || die 'global Fabric lock has an unexpected shape'
+  cluster_lock_uid=$(jq -er '.metadata.uid' <<<"$created")
+  cluster_lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$created")
+  cluster_lock_held=true
+}
+
+assert_cluster_lock() {
+  local current
+  $cluster_lock_held || die 'global Fabric lock is not recorded as held'
+  current=$(operator_kubectl --namespace kube-system get configmap \
+    "$cluster_lock_name" --output=json) || die 'cannot read global Fabric lock'
+  jq -e --arg holder "$cluster_lock_holder" --arg uid "$cluster_lock_uid" \
+    --arg rv "$cluster_lock_resource_version" '
+      .metadata.uid == $uid and .metadata.resourceVersion == $rv and
+      .metadata.deletionTimestamp == null and .data == {holder: $holder}
+    ' <<<"$current" >/dev/null || die 'global Fabric lock identity changed'
+}
+
+release_cluster_lock() {
+  local deleted remaining
+  assert_cluster_lock
+  deleted=$(jq -cn --arg uid "$cluster_lock_uid" \
+    --arg rv "$cluster_lock_resource_version" '{
+      apiVersion: "v1", kind: "DeleteOptions",
+      preconditions: {uid: $uid, resourceVersion: $rv}
+    }' | operator_kubectl delete \
+      --raw="/api/v1/namespaces/kube-system/configmaps/$cluster_lock_name" \
+      --filename=-) || die 'cannot conditionally release global Fabric lock'
+  jq -e '(.kind == "Status" and .status == "Success") or
+    (.kind == "ConfigMap" and .metadata.name == "fabric-maintenance-lock")' \
+    <<<"$deleted" >/dev/null || die 'global lock delete response is unexpected'
+  remaining=$(operator_kubectl --namespace kube-system get configmap \
+    "$cluster_lock_name" --ignore-not-found --output=name) ||
+    die 'cannot prove global Fabric lock removal'
+  [[ -z $remaining ]] || die 'global Fabric lock remains after conditional delete'
+  cluster_lock_held=false
+}
+
+prepare_router_ssh() {
+  local extra scanned_fingerprint scanned_host scanned_key scanned_type
+  timeout --kill-after=2s 10s ip netns exec "$observer_namespace" \
+    ssh-keyscan -4 -T 5 -t ed25519 "$router_address" \
+    >"$router_known_hosts" 2>"$evidence_dir/router-keyscan.stderr" ||
+    die 'router ED25519 host-key scan failed'
+  chmod 0600 -- "$router_known_hosts" "$evidence_dir/router-keyscan.stderr"
+  mapfile -t scanned_keys < <(grep -Ev '^[[:space:]]*(#|$)' "$router_known_hosts")
+  [[ ${#scanned_keys[@]} -eq 1 ]] || die 'router scan returned an unexpected key count'
+  read -r scanned_host scanned_type scanned_key extra <<<"${scanned_keys[0]}"
+  [[ $scanned_host == "$router_address" && $scanned_type == ssh-ed25519 &&
+     -n $scanned_key && -z ${extra:-} ]] || die 'router key record is malformed'
+  scanned_fingerprint=$(ssh-keygen -E sha256 -lf "$router_known_hosts" |
+    awk 'NR == 1 { print $2 }')
+  [[ $scanned_fingerprint == "$serial_fingerprint" ]] ||
+    die 'router key does not match the attended serial fingerprint'
+  router_ssh_options=(
+    -F none -o BatchMode=yes -o StrictHostKeyChecking=yes
+    -o HostKeyAlgorithms=ssh-ed25519 -o UpdateHostKeys=no
+    -o AddressFamily=inet -o GlobalKnownHostsFile=/dev/null
+    -o "UserKnownHostsFile=$router_known_hosts" -o KnownHostsCommand=none
+    -o ForwardAgent=no -o ClearAllForwardings=yes -o ProxyCommand=none
+    -o ProxyJump=none -o ControlMaster=no -o ControlPath=none
+    -o IdentityAgent=none -o IdentitiesOnly=yes -o PasswordAuthentication=no
+    -o KbdInteractiveAuthentication=no -o PreferredAuthentications=publickey
+    -o RequestTTY=no -o PermitLocalCommand=no -o ConnectTimeout=5
+    -o LogLevel=ERROR -i "$identity"
+  )
+}
+
+router_ssh() {
+  timeout --kill-after=3s 35s ip netns exec "$observer_namespace" \
+    ssh "${router_ssh_options[@]}" "root@$router_address" "$@"
+}
+
+validate_remote_phase() {
+  local phase=$1 output=$2
+  router_ssh /bin/sh -s -- "$phase" >"$output" <<'REMOTE_VALIDATE'
+set -eu
+phase=$1
+fail() { printf 'remote monitoring-policy validation: %s\n' "$*" >&2; exit 1; }
+[ -z "$(uci -q changes firewall || true)" ] || fail 'pending UCI changes exist'
+fw4 check >/dev/null || fail 'fw4 rejects the current configuration'
+[ "$(nft list tables | LC_ALL=C sort)" = 'table inet fw4' ] ||
+  fail 'nftables table membership is not exact'
+
+sections=$(uci -q show firewall | sed -n "s/^firewall\.\([^.=]*\)='rule'$/\1/p")
+prefix='fabric_wan_dhcp_reply
+fabric_reject_other_wan_input
+fabric_block_private
+fabric_root_egress
+fabric_services_egress
+fabric_reject_other_fabric_to_wan
+fabric_reject_wan_to_fabric
+fabric_flat_services_etcd_client
+fabric_flat_reject_services_etcd_internal'
+suffix='fabric_flat_services_api
+fabric_flat_services_vxlan
+fabric_flat_roots_vxlan
+fabric_flat_services_kubelet
+fabric_flat_roots_kubelet
+fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_reject_services_roots
+fabric_flat_reject_roots_services
+fabric_router_dns
+fabric_router_ntp
+fabric_router_http
+fabric_router_services_dns
+fabric_router_services_ntp
+fabric_router_services_http
+fabric_router_ssh
+fabric_reject_other_fabric_router_input'
+forward_prefix='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal'
+forward_suffix='Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+
+assert_uci() {
+  key=$1 expected=$2
+  actual=$(uci -q get "$key") || fail "missing UCI option: $key"
+  [ "$actual" = "$expected" ] || fail "UCI option differs: $key"
+}
+assert_absent() { ! uci -q get "$1" >/dev/null 2>&1 || fail "unexpected UCI option: $1"; }
+assert_option_keys() {
+  section=$1
+  actual=$(uci -q show firewall |
+    sed -n "s/^firewall\\.$section\\.\\([^=]*\\)=.*/\\1/p" |
+    LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  [ "$actual" = 'dest dest_ip dest_port family name proto src src_ip target' ] ||
+    fail "UCI option membership differs: $section"
+}
+roots='10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+services='10.66.1.10/32 10.66.1.11/32'
+assert_uci firewall.fabric_flat_services_etcd_client rule
+assert_option_keys fabric_flat_services_etcd_client
+assert_uci firewall.fabric_flat_services_etcd_client.name Allow-platform-to-root-etcd-client
+assert_uci firewall.fabric_flat_services_etcd_client.src lan
+assert_uci firewall.fabric_flat_services_etcd_client.dest lan
+assert_uci firewall.fabric_flat_services_etcd_client.family ipv4
+assert_uci firewall.fabric_flat_services_etcd_client.src_ip "$services"
+assert_uci firewall.fabric_flat_services_etcd_client.dest_ip "$roots"
+assert_uci firewall.fabric_flat_services_etcd_client.proto tcp
+assert_uci firewall.fabric_flat_services_etcd_client.dest_port 2379
+assert_uci firewall.fabric_flat_services_etcd_client.target ACCEPT
+assert_uci firewall.fabric_flat_reject_services_etcd_internal rule
+assert_option_keys fabric_flat_reject_services_etcd_internal
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.name Reject-services-to-root-etcd-internal
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.src lan
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest lan
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.family ipv4
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.src_ip "$services"
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest_ip "$roots"
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.proto tcp
+assert_uci firewall.fabric_flat_reject_services_etcd_internal.target REJECT
+assert_absent firewall.fabric_flat_reject_services_etcd
+
+case $phase in
+  pre)
+    expected_sections="$prefix
+$suffix"
+    expected_forward="$forward_prefix
+$forward_suffix"
+    expected_rules=26
+    expected_chain=16
+    assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest_port '2380 2381'
+    assert_absent firewall.fabric_flat_services_root_metrics
+    ;;
+  post)
+    expected_sections="$prefix
+fabric_flat_services_root_metrics
+$suffix"
+    expected_forward="$forward_prefix
+Allow-platform-to-root-metrics
+$forward_suffix"
+    expected_rules=27
+    expected_chain=17
+    assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest_port 2380
+    assert_uci firewall.fabric_flat_services_root_metrics rule
+    assert_option_keys fabric_flat_services_root_metrics
+    assert_uci firewall.fabric_flat_services_root_metrics.name Allow-platform-to-root-metrics
+    assert_uci firewall.fabric_flat_services_root_metrics.src lan
+    assert_uci firewall.fabric_flat_services_root_metrics.dest lan
+    assert_uci firewall.fabric_flat_services_root_metrics.family ipv4
+    assert_uci firewall.fabric_flat_services_root_metrics.src_ip "$services"
+    assert_uci firewall.fabric_flat_services_root_metrics.dest_ip "$roots"
+    assert_uci firewall.fabric_flat_services_root_metrics.proto tcp
+    assert_uci firewall.fabric_flat_services_root_metrics.dest_port '2112 2381 9100'
+    assert_uci firewall.fabric_flat_services_root_metrics.target ACCEPT
+    ;;
+  *) fail 'unknown validation phase' ;;
+esac
+[ "$sections" = "$expected_sections" ] || fail 'firewall rule order is not exact'
+[ "$(printf '%s\n' "$sections" | awk 'NF {n++} END {print n+0}')" -eq "$expected_rules" ] ||
+  fail 'firewall rule count is not exact'
+total=$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ {n++} END {print n+0}')
+[ "$total" -eq $((expected_rules + 3)) ] || fail 'firewall section count is not exact'
+
+live=$(nft -a list chain inet fw4 forward_lan) || fail 'forward_lan is absent'
+actual_forward=$(printf '%s\n' "$live" | sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+[ "$actual_forward" = "$expected_forward" ] || fail 'live forward_lan order is not exact'
+actual_chain=$(printf '%s\n' "$live" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" {inside=1; next}
+  inside && $1 == "}" {inside=0}
+  inside && /# handle [0-9]+$/ {n++}
+  END {print n+0}')
+[ "$actual_chain" -eq "$expected_chain" ] || fail 'live forward_lan count is not exact'
+terminal=$(printf '%s\n' "$live" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" {inside=1; next}
+  inside && $1 == "}" {inside=0}
+  inside && /# handle [0-9]+$/ {line=$0}
+  END {print line}' | sed -e 's/^[[:space:]]*//' \
+  -e 's/[[:space:]][[:space:]]*/ /g' -e 's/ # handle [0-9][0-9]*$//')
+[ "$terminal" = 'jump reject_to_lan' ] || fail 'terminal verdict is not exact'
+printf 'FABRIC_ROUTER_MONITORING_POLICY_PHASE=%s rules=%s forward=%s\n' \
+  "$phase" "$expected_rules" "$expected_chain"
+REMOTE_VALIDATE
+  chmod 0600 -- "$output"
+}
+
+stage_and_apply() {
+  local payload_b64 operation_id
+  payload_b64=$(base64 -w0 -- "$transition_file")
+  operation_id=$(printf '%s:%s:%s:%s' "$head" "$payload_sha256" "$$" "$(date +%s%N)" |
+    sha256sum | awk '{print $1}')
+  router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$remote_lock" \
+    "$rollout_token" "$operation_id" "$payload_sha256" "$payload_b64" \
+    "$rollback_seconds" <<'REMOTE_APPLY'
+set -eu
+work=$1 init=$2 operation_lock=$3 token=$4 operation_id=$5 payload_sha=$6
+payload_b64=$7 rollback_seconds=$8 firewall=/etc/config/firewall
+fail() { printf 'remote monitoring-policy apply: %s\n' "$*" >&2; exit 1; }
+[ "$work" = /etc/fabric-router-monitoring-policy-rollback ] || fail 'work path differs'
+[ "$init" = /etc/init.d/fabric-router-monitoring-policy-rollback ] || fail 'init path differs'
+[ "$operation_lock" = /tmp/fabric-router-monitoring-policy.operation ] || fail 'lock path differs'
+case "$token:$operation_id:$payload_sha" in *[!0-9a-f:]*) fail 'token material is malformed' ;; esac
+[ "$(printf '%s' "$operation_id" | wc -c)" -eq 64 ] || fail 'operation id is malformed'
+[ "$rollback_seconds" -eq 300 ] || fail 'rollback deadline differs'
+[ -d /tmp ] && [ ! -L /tmp ] &&
+  [ "$(stat -c '%u:%g:%a:%F' /tmp)" = '0:0:1777:directory' ] || fail '/tmp is unsafe'
+mkdir "$operation_lock" || fail 'router-local operation lock is already held'
+chmod 0700 "$operation_lock"
+printf '%s\n' "$operation_id" >"$operation_lock/owner"
+chmod 0600 "$operation_lock/owner"
+[ ! -e "$work" ] && [ ! -L "$work" ] || fail 'rollback work path already exists'
+[ ! -e "$init" ] && [ ! -L "$init" ] || fail 'rollback init already exists'
+mkdir "$work" "$work/candidate" "$work/save"
+chmod 0700 "$work" "$work/candidate" "$work/save"
+printf '%s\n' "$token" >"$work/token"
+printf '%s\n' "$operation_id" >"$work/operation-id"
+printf '%s' "$payload_b64" | base64 -d >"$work/transition.uci"
+chmod 0600 "$work/token" "$work/operation-id" "$work/transition.uci"
+[ "$(sha256sum "$work/transition.uci" | awk '{print $1}')" = "$payload_sha" ] ||
+  fail 'transition changed in transport'
+cp -p "$firewall" "$work/firewall.before"
+cp -p "$firewall" "$work/candidate/firewall"
+uci -q -c "$work/candidate" -t "$work/save" batch <"$work/transition.uci" ||
+  fail 'candidate UCI batch failed'
+uci -q -c "$work/candidate" -t "$work/save" commit firewall ||
+  fail 'candidate UCI commit failed'
+get_candidate() { uci -q -c "$work/candidate" -t "$work/save" get "$1"; }
+[ "$(get_candidate firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = 2380 ] ||
+  fail 'candidate peer reject is not exact'
+[ "$(get_candidate firewall.fabric_flat_services_root_metrics.name)" = Allow-platform-to-root-metrics ] ||
+  fail 'candidate metrics rule is absent'
+[ "$(get_candidate firewall.fabric_flat_services_root_metrics.src_ip)" = \
+  '10.66.1.10/32 10.66.1.11/32' ] || fail 'candidate metrics sources differ'
+[ "$(get_candidate firewall.fabric_flat_services_root_metrics.dest_ip)" = \
+  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32' ] || fail 'candidate roots differ'
+[ "$(get_candidate firewall.fabric_flat_services_root_metrics.dest_port)" = \
+  '2112 2381 9100' ] || fail 'candidate metrics ports differ'
+[ "$(get_candidate firewall.fabric_flat_services_root_metrics.target)" = ACCEPT ] ||
+  fail 'candidate metrics verdict differs'
+candidate_rules=$(uci -q -c "$work/candidate" -t "$work/save" show firewall |
+  sed -n "s/^firewall\.\([^.=]*\)='rule'$/\1/p")
+[ "$(printf '%s\n' "$candidate_rules" | awk 'NF {n++} END {print n+0}')" -eq 27 ] ||
+  fail 'candidate rule count differs'
+[ "$(printf '%s\n' "$candidate_rules" | sed -n '8,11p')" = \
+  'fabric_flat_services_etcd_client
+fabric_flat_reject_services_etcd_internal
+fabric_flat_services_root_metrics
+fabric_flat_services_api' ] || fail 'candidate transition ordering differs'
+sha256sum "$work/firewall.before" >"$work/firewall.before.sha256"
+sha256sum "$work/candidate/firewall" >"$work/firewall.candidate.sha256"
+chmod 0600 "$work/firewall.before" "$work/firewall.before.sha256" \
+  "$work/candidate/firewall" "$work/firewall.candidate.sha256"
+
+cat >"$work/rollback" <<'ROLLBACK'
+#!/bin/sh
+set -eu
+work=/etc/fabric-router-monitoring-policy-rollback
+firewall=/etc/config/firewall
+mode=${1:-wait}
+[ -d "$work" ] && [ ! -L "$work" ]
+[ "$(stat -c '%u:%g:%a:%F' "$work")" = '0:0:700:directory' ]
+case $mode in wait) sleep 300 ;; now) ;; *) exit 2 ;; esac
+token=$(cat "$work/token")
+if [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+    [ "$(cat "$work/accepted")" = "$token" ]; then
+  exit 0
+fi
+(cd "$work" && sha256sum -c firewall.before.sha256 >/dev/null)
+cp "$work/firewall.before" /etc/config/.firewall.monitoring-rollback.next
+chown 0:0 /etc/config/.firewall.monitoring-rollback.next
+chmod 0600 /etc/config/.firewall.monitoring-rollback.next
+uci -q revert firewall || true
+mv /etc/config/.firewall.monitoring-rollback.next "$firewall"
+fw4 check >/dev/null
+/etc/init.d/firewall reload >/dev/null
+printf '%s\n' "$token" >"$work/rolled-back.next"
+chmod 0600 "$work/rolled-back.next"
+mv "$work/rolled-back.next" "$work/rolled-back"
+sync
+ROLLBACK
+chmod 0700 "$work/rollback"
+cat >"$init" <<'INIT'
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=11
+start_service() {
+  procd_open_instance
+  procd_set_param command /etc/fabric-router-monitoring-policy-rollback/rollback wait
+  procd_close_instance
+}
+INIT
+chmod 0700 "$init"
+"$init" enable
+"$init" start
+"$init" enabled || fail 'rollback watchdog is not enabled'
+"$init" running || fail 'rollback watchdog is not running'
+cp "$work/candidate/firewall" /etc/config/.firewall.monitoring-candidate.next
+chown 0:0 /etc/config/.firewall.monitoring-candidate.next
+chmod 0600 /etc/config/.firewall.monitoring-candidate.next
+uci -q revert firewall || true
+mv /etc/config/.firewall.monitoring-candidate.next "$firewall"
+fw4 check >/dev/null || fail 'live candidate fails fw4 check'
+/etc/init.d/firewall reload >/dev/null || fail 'firewall reload failed'
+printf '%s\n' "$token" >"$work/applied"
+chmod 0600 "$work/applied"
+sync
+printf 'FABRIC_ROUTER_MONITORING_POLICY_APPLIED=%s\n' "$token"
+REMOTE_APPLY
+  remote_staged=true
+}
+
+finalize_remote() {
+  router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$remote_lock" \
+    "$rollout_token" <<'REMOTE_FINALIZE'
+set -eu
+work=$1 init=$2 operation_lock=$3 token=$4
+fail() { printf 'remote monitoring-policy finalize: %s\n' "$*" >&2; exit 1; }
+[ -d "$work" ] && [ ! -L "$work" ] || fail 'rollback work is absent'
+[ -f "$work/token" ] && [ ! -L "$work/token" ] &&
+  [ "$(cat "$work/token")" = "$token" ] || fail 'rollback token differs'
+[ -f "$work/applied" ] && [ ! -L "$work/applied" ] &&
+  [ "$(cat "$work/applied")" = "$token" ] || fail 'apply marker differs'
+(cd "$work" && sha256sum -c firewall.candidate.sha256 >/dev/null) ||
+  fail 'candidate manifest differs'
+cmp -s "$work/candidate/firewall" /etc/config/firewall || fail 'live config differs'
+printf '%s\n' "$token" >"$work/accepted.next"
+chmod 0600 "$work/accepted.next"
+mv "$work/accepted.next" "$work/accepted"
+sync
+"$init" stop || fail 'cannot stop rollback watchdog'
+"$init" disable || fail 'cannot disable rollback watchdog'
+! "$init" running || fail 'rollback watchdog remains running'
+rm -- "$init"
+entries=$(find "$operation_lock" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)
+[ "$entries" = "$operation_lock/owner" ] || fail 'operation lock contents differ'
+rm -- "$operation_lock/owner"
+rmdir -- "$operation_lock"
+rm -rf -- "$work"
+[ ! -e "$work" ] && [ ! -L "$work" ] || fail 'rollback work survived cleanup'
+[ ! -e "$init" ] && [ ! -L "$init" ] || fail 'rollback init survived cleanup'
+[ ! -e "$operation_lock" ] && [ ! -L "$operation_lock" ] ||
+  fail 'router-local lock survived cleanup'
+printf 'FABRIC_ROUTER_MONITORING_POLICY_FINALIZED=%s\n' "$token"
+REMOTE_FINALIZE
+}
+
+request_remote_rollback() {
+  router_ssh /bin/sh -s -- "$remote_work" "$remote_init" <<'REMOTE_ROLLBACK_NOW'
+set -eu
+work=$1 init=$2
+[ "$work" = /etc/fabric-router-monitoring-policy-rollback ]
+[ "$init" = /etc/init.d/fabric-router-monitoring-policy-rollback ]
+[ -x "$work/rollback" ] && [ ! -L "$work/rollback" ]
+if [ -x "$init" ] && [ ! -L "$init" ]; then
+  "$init" stop || true
+fi
+exec "$work/rollback" now
+REMOTE_ROLLBACK_NOW
+}
+
+mode=
+serial_fingerprint=
+identity=
+confirm=
+while (($#)); do
+  case $1 in
+    --check|--run)
+      [[ -z $mode ]] || die 'select exactly one mode'
+      mode=${1#--}
+      shift
+      ;;
+    --serial-ed25519-fingerprint)
+      (($# >= 2)) || die '--serial-ed25519-fingerprint needs a value'
+      serial_fingerprint=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity needs a value'
+      identity=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm needs a value'
+      confirm=$2
+      shift 2
+      ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ $mode == check || $mode == run ]] || die 'select --check or --run'
+[[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
+if [[ $mode == check ]]; then
+  [[ -z $confirm ]] || die '--confirm is invalid with --check'
+else
+  [[ -n $confirm ]] || die '--confirm is required with --run'
+fi
+[[ $EUID -eq 0 ]] || die 'run this helper with sudo'
+require_root_namespace
+for command in awk base64 chmod cmp date env find flock getent git grep id ip jq \
+  kubectl mktemp readlink realpath sed sha256sum sort ssh ssh-keygen ssh-keyscan \
+  stat sudo timeout wc; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(realpath -- "$script_dir/..")
+transition_file=$repo_root/fabric/router/monitoring-policy-transition.uci
+[[ -f $transition_file && ! -L $transition_file ]] || die 'transition payload is unsafe'
+[[ $(stat -Lc '%a:%F:%h' -- "$transition_file") == '644:regular file:1' ]] ||
+  die 'transition payload metadata differs'
+[[ $(sha256sum -- "$transition_file" | awk '{print $1}') == "$payload_sha256" ]] ||
+  die 'transition payload differs from the reviewed hash'
+[[ $(wc -l <"$transition_file") -eq 17 ]] || die 'transition command count differs'
+operator_user=sam
+operator_home=$(getent passwd "$operator_user" | awk -F: 'NR == 1 {print $6}')
+operator_uid=$(id -u "$operator_user")
+operator_runtime=/run/user/$operator_uid
+[[ -n $operator_home && -d $operator_home ]] || die 'operator home is absent'
+[[ -d $operator_runtime && ! -L $operator_runtime &&
+   $(stat -Lc '%u:%a' -- "$operator_runtime") == "$operator_uid:700" ]] ||
+  die 'operator runtime directory is unsafe'
+validate_identity
+
+cd -- "$repo_root"
+[[ $(operator_git branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(operator_git status --porcelain) ]] || die 'worktree must be clean'
+operator_git fetch --quiet origin main
+head=$(operator_git rev-parse HEAD)
+[[ $head =~ ^[0-9a-f]{40}$ && $head == "$(operator_git rev-parse origin/main)" ]] ||
+  die 'HEAD must exactly match pushed origin/main'
+expected_confirmation=$confirmation_prefix:$head:$payload_sha256
+if [[ $mode == run ]]; then
+  [[ $confirm == "$expected_confirmation" ]] ||
+    die "exact --confirm '$expected_confirmation' is required"
+fi
+
+# shellcheck source=scripts/lib/fabric-secure-tempdir.sh
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+evidence_dir=$(fabric_secure_tmpdir fabric-router-monitoring-policy 4194304) ||
+  die 'cannot create protected tmpfs evidence directory'
+chmod 0700 -- "$evidence_dir"
+router_known_hosts=$evidence_dir/router-known-hosts
+prepare_router_ssh
+timeout --kill-after=2s 15s "$repo_root/fabric/observer/fabric-observer-netns" \
+  verify-isolation >/dev/null || die 'Fabric observer isolation verification failed'
+validate_remote_phase pre "$evidence_dir/router-preflight.txt"
+
+if [[ $mode == check ]]; then
+  note "CONFIRMATION=$expected_confirmation"
+  note "PAYLOAD_SHA256=$payload_sha256"
+  note 'FABRIC_ROUTER_MONITORING_POLICY_CHECK=pass'
+  exit 0
+fi
+
+local_lock_fd=
+cluster_lock_holder="$(hostname):$$:router-monitoring:$head:$payload_sha256"
+cluster_lock_held=false
+cluster_lock_uid=
+cluster_lock_resource_version=
+remote_staged=false
+success=false
+cleanup() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  trap '' HUP INT TERM
+  set +e
+  if ! $success && $remote_staged; then
+    request_remote_rollback >/dev/null 2>&1 || true
+    note 'Rollout did not finalize; automatic rollback was requested. Evidence and the global lock remain for inspection.' >&2
+  fi
+  if $success && $cluster_lock_held; then
+    release_cluster_lock || status=1
+  elif $cluster_lock_held; then
+    note "Global Fabric maintenance lock remains held by $cluster_lock_holder" >&2
+  fi
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+acquire_local_lock
+acquire_cluster_lock
+assert_cluster_lock
+validate_remote_phase pre "$evidence_dir/router-before-apply.txt"
+rollout_token=$head:$payload_sha256
+stage_and_apply
+assert_cluster_lock
+validate_remote_phase post "$evidence_dir/router-post-apply.txt"
+timeout --kill-after=2s 15s "$repo_root/fabric/observer/fabric-observer-netns" \
+  verify-isolation >/dev/null || die 'Fabric observer isolation failed after apply'
+finalize_remote
+validate_remote_phase post "$evidence_dir/router-final.txt"
+assert_cluster_lock
+success=true
+note "FABRIC_ROUTER_MONITORING_POLICY_ROLLOUT=pass revision=$head payload=$payload_sha256"

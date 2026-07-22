@@ -14,6 +14,7 @@ REPO_ROOT = pathlib.Path(__file__).parents[3]
 VERIFIER = REPO_ROOT / "scripts/verify-fabric-router"
 SYSTEM_DEFAULT = ROUTER_ROOT / "files/etc/uci-defaults/10-system"
 FIREWALL_DEFAULT = ROUTER_ROOT / "files/etc/uci-defaults/30-isolation"
+ROOT_FIREWALL = REPO_ROOT / "fabric/butane/firewall.yaml"
 TRANSITION_CONFIG = ROUTER_ROOT / "files/etc/config/fabric"
 SYSCTL_CONFIG = ROUTER_ROOT / "files/etc/sysctl.d/90-fabric-flat-l2.conf"
 STORAGE_DEFAULT = ROUTER_ROOT / "files/etc/uci-defaults/storage"
@@ -243,8 +244,8 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "flat_l2_sysctl=/etc/sysctl.d/90-fabric-flat-l2.conf",
             "net.ipv6.conf.all.accept_source_route=-1",
             "SYSCTL_POLICY=image-owned-no-preserved-overrides-live-exact",
-            "assert_section_count rule 26",
-            "assert_live_fw4_chain forward_lan 16",
+            "assert_section_count rule 27",
+            "assert_live_fw4_chain forward_lan 17",
             "assert_live_fw4_chain input_lan 11",
             "Allow-observer-to-services-SSH",
             "Allow-services-to-Bootie-rootfs",
@@ -257,6 +258,27 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, verifier)
         self.assertNotIn("assert_uci network.lan.ipaddr 10.66.0.1\n", verifier)
+
+    def test_root_host_metrics_aperture_is_source_and_port_exact(self) -> None:
+        root_firewall = ROOT_FIREWALL.read_text(encoding="utf-8")
+        service_set = "elements = { 10.66.1.10, 10.66.1.11 }"
+        metrics_allow = (
+            "ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } "
+            'counter accept comment "trusted platform monitoring"'
+        )
+        peer_allow = "@service_nodes_v4 tcp dport 2380"
+
+        self.assertEqual(root_firewall.count(service_set), 1)
+        self.assertEqual(root_firewall.count(metrics_allow), 1)
+        self.assertNotIn(peer_allow, root_firewall)
+        self.assertNotRegex(
+            root_firewall,
+            r"@service_nodes_v4 tcp dport \{[^\n}]*(?:2379|2380)[^\n}]*\}[^\n]*trusted platform monitoring",
+        )
+        self.assertLess(
+            root_firewall.index(metrics_allow),
+            root_firewall.index('counter drop comment "deny all remaining input"'),
+        )
 
 
 class FlatL2FirewallTests(unittest.TestCase):
@@ -380,7 +402,7 @@ class FlatL2FirewallTests(unittest.TestCase):
             **self.routed_flow("10.66.1.12", "10.66.0.2", "tcp", 80),
         )
 
-    def test_platform_etcd_client_is_exact_and_internal_ports_are_rejected(self) -> None:
+    def test_platform_etcd_and_metrics_apertures_are_exact(self) -> None:
         for service in ("10.66.1.10", "10.66.1.11"):
             for root in ("10.66.0.10", "10.66.0.11", "10.66.0.12"):
                 self.assert_flow(
@@ -388,16 +410,24 @@ class FlatL2FirewallTests(unittest.TestCase):
                     "fabric_flat_services_etcd_client",
                     **self.routed_flow(service, root, "tcp", 2379),
                 )
-                for port in (2380, 2381):
+                self.assert_flow(
+                    "REJECT",
+                    "fabric_flat_reject_services_etcd_internal",
+                    **self.routed_flow(service, root, "tcp", 2380),
+                )
+                for port in (2112, 2381, 9100):
                     self.assert_flow(
-                        "REJECT",
-                        "fabric_flat_reject_services_etcd_internal",
+                        "ACCEPT",
+                        "fabric_flat_services_root_metrics",
                         **self.routed_flow(service, root, "tcp", port),
                     )
         for flow in (
             self.routed_flow("10.66.1.12", "10.66.0.10", "tcp", 2379),
             self.routed_flow("10.66.1.10", "10.66.0.13", "tcp", 2379),
             self.routed_flow("10.66.1.10", "10.66.0.10", "udp", 2379),
+            self.routed_flow("10.66.1.12", "10.66.0.10", "tcp", 2381),
+            self.routed_flow("10.66.1.10", "10.66.0.13", "tcp", 9100),
+            self.routed_flow("10.66.1.10", "10.66.0.10", "udp", 2112),
         ):
             with self.subTest(flow=flow):
                 self.assert_flow(
@@ -495,6 +525,7 @@ class FlatL2FirewallTests(unittest.TestCase):
                 "fabric_root_egress",
                 "fabric_services_egress",
                 "fabric_flat_services_etcd_client",
+                "fabric_flat_services_root_metrics",
                 "fabric_flat_services_api",
                 "fabric_flat_services_vxlan",
                 "fabric_flat_roots_vxlan",

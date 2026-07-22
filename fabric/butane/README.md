@@ -40,14 +40,17 @@ included in the current hub Flux fan-out, and nothing merges the current
   etcd or K3s. It admits consensus traffic only among the three declared root
   addresses, admits operational/API metrics only from observer `10.66.0.2`,
   and stages API, kubelet, Flannel, plus TCP/2379 client access for exactly the
-  two declared service-node addresses. It never admits service sources to etcd
-  peer TCP/2380 or metrics TCP/2381. It fixes kube-proxy to iptables, keeps new
+  two declared service-node addresses. It separately admits those same exact
+  sources to host metrics TCP/2112,2381,9100, while never admitting them to etcd
+  peer TCP/2380. It fixes kube-proxy to iptables, keeps new
   root forwarding denied, and makes NodePorts unreachable on roots. Roll the
   combined root policy one member at a time only after the ordinary-Pod source
   qualification passes, and while the live router's legacy rule still rejects
   all three etcd ports. The guarded router transition is the final network-open
   gate and replaces that legacy rule with exact-node TCP/2379 allow followed by
-  TCP/2380-2381 reject. During the temporary flat-L2 exception those IP rules
+  a TCP/2380 reject. The monitoring aperture has a separate attended router
+  rollout because the live router is already beyond the one-time etcd gate.
+  During the temporary flat-L2 exception those IP rules
   constrain trusted nodes but are not anti-spoofing isolation; the
   managed-switch VLAN remains mandatory for broader workloads.
   `scripts/rollout-fabric-root-firewall` treats this guard and the routed-host

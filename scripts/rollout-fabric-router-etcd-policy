@@ -10,14 +10,14 @@ readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
 readonly fabric_network_cluster_lock=fabric-maintenance-lock
 readonly confirmation_prefix=ROLLOUT-FABRIC-ROUTER-ETCD-POLICY
 readonly pod_source_confirmation_prefix=QUALIFY-FABRIC-ETCD-POD-SOURCES
-readonly transition_sha256=4dd1fb38e38da18054149bc42d470e744b4c10ac8cd8f8cd169d12046975041a
+readonly transition_sha256=d00a40a79f6dd61a47ba993eabd23492a9b0ecec06c90f4ba2f1c9f878295f2c
 readonly remote_work=/etc/fabric-router-etcd-policy-rollback
 readonly remote_init=/etc/init.d/fabric-router-etcd-policy-rollback
 readonly rollback_seconds=300
 readonly fence_confirmation_prefix=FENCE-FABRIC-ROUTER-ETCD-POLICY
-readonly fence_transition_sha256=fc14d132f13d0c46b47df5746d347f68e0bf626737eaf780b63824bba05b8e82
+readonly fence_transition_sha256=ce4dd8a30e5d524e707bf1537b63b88de430450d9e205ab009956779ff56b0f9
 readonly fence_guard_sha256=d5af6bff9ede7dc47bf13f41c9717a4af9886380a85a5b6b91e6e831f13f77f7
-readonly fence_contract_sha256=a0325d3badd5c2241425716a53e7e553f904d49fb3edf0cf6cb3bb44f31a5982
+readonly fence_contract_sha256=0cc36a2ea6638f513af7d5b35a0899a088d3b0cb913df3d10d835a4b41af8f2a
 readonly fence_remote_work=/etc/fabric-router-etcd-policy-fence
 readonly fence_remote_init=/etc/init.d/fabric-router-etcd-policy-fence
 readonly fence_remote_guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
@@ -55,9 +55,10 @@ Attended persistent emergency fence:
     --identity /var/home/sam/.ssh/id_ed25519 \
     --confirm '$fence_confirmation_prefix:<pushed-main-commit>:$fence_contract_sha256'
 
-The helper accepts only the exact old Reject-services-to-root-etcd state. It
-replaces that rule with an exact-node TCP/2379 allow followed by a TCP/2380-2381
-reject. It holds the Fabric network-operation lock, stages and syntax-checks an
+The helper accepts only the exact old Reject-services-to-root-etcd state, with
+the separately reviewed host-metrics aperture already present. It replaces that
+rule with an exact-node TCP/2379 allow followed by a TCP/2380 reject while
+preserving TCP/2381 metrics. It holds the Fabric network-operation lock, stages and syntax-checks an
 exact UCI candidate, installs a persistent early-drop guard, and arms a
 reboot-surviving procd watchdog before any opening UCI mutation. The guard
 remains live and in the automatic nftables include through commit, reload, and
@@ -892,7 +893,7 @@ remove_exact_post_open_probe() {
 }
 
 validate_committed_transition() {
-  local actual_hash allow_line api_line internal_line line
+  local actual_hash allow_line api_line internal_line metrics_line line
   [[ -f $transition_file && ! -L $transition_file ]] ||
     die 'committed router transition must be a regular, non-symlink file'
   [[ $(stat -Lc '%a:%F:%h' -- "$transition_file") == '644:regular file:1' ]] ||
@@ -900,7 +901,7 @@ validate_committed_transition() {
   actual_hash=$(sha256sum -- "$transition_file" | awk '{print $1}')
   [[ $actual_hash == "$transition_sha256" ]] ||
     die 'committed router transition differs from the reviewed exact payload'
-  [[ $(wc -l <"$transition_file") -eq 28 ]] ||
+  [[ $(wc -l <"$transition_file") -eq 27 ]] ||
     die 'committed router transition has an unexpected command count'
   [[ $(sed -n '1p' "$transition_file") == \
       'delete firewall.fabric_flat_reject_services_etcd' ]] ||
@@ -923,11 +924,16 @@ validate_committed_transition() {
   internal_line=$(grep -nF \
     "set firewall.fabric_flat_reject_services_etcd_internal='rule'" "$desired_overlay" |
     awk -F: 'NR == 1 { print $1 }')
+  metrics_line=$(grep -nF \
+    "set firewall.fabric_flat_services_root_metrics='rule'" "$desired_overlay" |
+    awk -F: 'NR == 1 { print $1 }')
   api_line=$(grep -nF "set firewall.fabric_flat_services_api='rule'" "$desired_overlay" |
     awk -F: 'NR == 1 { print $1 }')
-  [[ $allow_line =~ ^[0-9]+$ && $internal_line =~ ^[0-9]+$ && $api_line =~ ^[0-9]+$ &&
-     $allow_line -lt $internal_line && $internal_line -lt $api_line ]] ||
-    die 'desired router etcd allow/reject ordering is not exact'
+  [[ $allow_line =~ ^[0-9]+$ && $internal_line =~ ^[0-9]+$ &&
+     $metrics_line =~ ^[0-9]+$ && $api_line =~ ^[0-9]+$ &&
+     $allow_line -lt $internal_line && $internal_line -lt $metrics_line &&
+     $metrics_line -lt $api_line ]] ||
+    die 'desired router etcd and metrics ordering is not exact'
 }
 
 validate_remote_phase() {
@@ -1338,7 +1344,8 @@ fabric_root_egress
 fabric_services_egress
 fabric_reject_other_fabric_to_wan
 fabric_reject_wan_to_fabric'
-common_suffix='fabric_flat_services_api
+common_suffix='fabric_flat_services_root_metrics
+fabric_flat_services_api
 fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
 fabric_flat_services_kubelet
@@ -1359,7 +1366,8 @@ forward_prefix='Block-fabric-to-private-WAN
 Allow-roots-to-public-WAN
 Allow-services-to-public-Web
 Reject-other-fabric-to-WAN'
-forward_suffix='Allow-services-to-fabric-API
+forward_suffix='Allow-platform-to-root-metrics
+Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
@@ -1369,6 +1377,10 @@ Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
 
+assert_target_section fabric_flat_services_root_metrics \
+  Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
+assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan' no
+
 case $phase in
   pre | fenced)
     expected_rules="$common_prefix
@@ -1377,10 +1389,10 @@ $common_suffix"
     expected_forward="$forward_prefix
 Reject-services-to-root-etcd
 $forward_suffix"
-    expected_rule_count=25
-    expected_chain_count=15
+    expected_rule_count=26
+    expected_chain_count=16
     assert_target_section fabric_flat_reject_services_etcd \
-      Reject-services-to-root-etcd '2379 2380 2381' REJECT
+      Reject-services-to-root-etcd '2379 2380' REJECT
     assert_uci_absent firewall.fabric_flat_services_etcd_client
     assert_uci_absent firewall.fabric_flat_reject_services_etcd_internal
     assert_live_rule Reject-services-to-root-etcd 'jump reject_to_lan' no
@@ -1396,12 +1408,12 @@ $common_suffix"
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
 $forward_suffix"
-    expected_rule_count=26
-    expected_chain_count=16
+    expected_rule_count=27
+    expected_chain_count=17
     assert_target_section fabric_flat_services_etcd_client \
       Allow-platform-to-root-etcd-client 2379 ACCEPT
     assert_target_section fabric_flat_reject_services_etcd_internal \
-      Reject-services-to-root-etcd-internal '2380 2381' REJECT
+      Reject-services-to-root-etcd-internal 2380 REJECT
     assert_uci_absent firewall.fabric_flat_reject_services_etcd
     if [ "$phase" = post ] || [ "$phase" = guarded-post ]; then
       require_zero=yes
@@ -1484,7 +1496,6 @@ add_list firewall.fabric_flat_reject_services_etcd.dest_ip='10.66.0.12/32'
 set firewall.fabric_flat_reject_services_etcd.proto='tcp'
 add_list firewall.fabric_flat_reject_services_etcd.dest_port='2379'
 add_list firewall.fabric_flat_reject_services_etcd.dest_port='2380'
-add_list firewall.fabric_flat_reject_services_etcd.dest_port='2381'
 set firewall.fabric_flat_reject_services_etcd.target='REJECT'
 reorder firewall.fabric_flat_reject_services_etcd='7'
 FENCE_TRANSITION
@@ -1496,7 +1507,7 @@ validate_fence_transition() {
   actual_hash=$(sha256sum -- "$payload" | awk '{print $1}')
   [[ $actual_hash == "$fence_transition_sha256" ]] ||
     die 'embedded fence transition differs from the reviewed exact payload'
-  [[ $(wc -l <"$payload") -eq 18 ]] ||
+  [[ $(wc -l <"$payload") -eq 17 ]] ||
     die 'embedded fence transition has an unexpected command count'
   [[ $(sed -n '1p' "$payload") == \
       'delete firewall.fabric_flat_services_etcd_client' &&
@@ -2085,7 +2096,7 @@ is_fenced() {
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.name)" = \
     Reject-services-to-root-etcd ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
-    '2379 2380 2381' ] || return 1
+    '2379 2380' ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.target)" = REJECT ] || return 1
   ! uci -q get firewall.fabric_flat_services_etcd_client >/dev/null 2>&1 || return 1
   ! uci -q get firewall.fabric_flat_reject_services_etcd_internal >/dev/null 2>&1 || return 1
@@ -2382,7 +2393,7 @@ uci -q -c "$work/candidate" -t "$work/candidate-save" commit firewall ||
 [ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.name)" = \
   Reject-services-to-root-etcd ] || fail 'fenced candidate reject is absent'
 [ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
-  '2379 2380 2381' ] || fail 'fenced candidate reject ports are not exact'
+  '2379 2380' ] || fail 'fenced candidate reject ports are not exact'
 [ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.target)" = \
   REJECT ] || fail 'fenced candidate verdict is not REJECT'
 if uci -q -c "$work/candidate" -t "$work/candidate-save" \
@@ -2401,6 +2412,7 @@ fabric_services_egress
 fabric_reject_other_fabric_to_wan
 fabric_reject_wan_to_fabric
 fabric_flat_reject_services_etcd
+fabric_flat_services_root_metrics
 fabric_flat_services_api
 fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
@@ -2635,6 +2647,12 @@ accepted_open_exact() {
     Allow-platform-to-root-etcd-client ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
     Reject-services-to-root-etcd-internal ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
+    2380 ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.name)" = \
+    Allow-platform-to-root-metrics ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+    '2112 2381 9100' ] || return 1
   ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
     return 1
   [ ! -e "$guard" ] && [ ! -L "$guard" ] || return 1
@@ -2651,6 +2669,7 @@ Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
@@ -2668,7 +2687,7 @@ Reject-other-roots-to-services'
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 16 ] || return 1
+  ')" -eq 17 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3007,11 +3026,17 @@ assert_closed_lan() {
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.name)" = \
     Reject-services-to-root-etcd ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
-    '2379 2380 2381' ] || return 1
+    '2379 2380' ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.target)" = REJECT ] ||
     return 1
   ! uci -q get firewall.fabric_flat_services_etcd_client >/dev/null 2>&1 || return 1
   ! uci -q get firewall.fabric_flat_reject_services_etcd_internal >/dev/null 2>&1 ||
+    return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.name)" = \
+    Allow-platform-to-root-metrics ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+    '2112 2381 9100' ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.target)" = ACCEPT ] ||
     return 1
   live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
   [ "$(printf '%s\n' "$live_lan" | grep -Fc 'comment "!fw4: Reject-services-to-root-etcd"')" -eq 1 ] ||
@@ -3025,6 +3050,7 @@ Allow-roots-to-public-WAN
 Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Reject-services-to-root-etcd
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
@@ -3043,7 +3069,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 15 ] || return 1
+  [ "$rule_count" -eq 16 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3137,10 +3163,16 @@ assert_open_lan() {
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
     Reject-services-to-root-etcd-internal ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
-    '2380 2381' ] || return 1
+    2380 ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.target)" = \
     REJECT ] || return 1
   ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
+    return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.name)" = \
+    Allow-platform-to-root-metrics ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+    '2112 2381 9100' ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.target)" = ACCEPT ] ||
     return 1
   live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
   expected_order='Block-fabric-to-private-WAN
@@ -3149,6 +3181,7 @@ Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
@@ -3167,7 +3200,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 16 ] || return 1
+  [ "$rule_count" -eq 17 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3471,7 +3504,11 @@ uci -q -c "$work/candidate" -t "$work/candidate-save" commit firewall ||
 [ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
   Reject-services-to-root-etcd-internal ] || fail 'candidate internal reject is absent'
 [ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
-  '2380 2381' ] || fail 'candidate internal ports are not exact'
+  2380 ] || fail 'candidate internal ports are not exact'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_services_root_metrics.name)" = \
+  Allow-platform-to-root-metrics ] || fail 'candidate metrics allow is absent'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+  '2112 2381 9100' ] || fail 'candidate metrics ports are not exact'
 if uci -q -c "$work/candidate" -t "$work/candidate-save" \
     get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1; then
   fail 'candidate retained the legacy reject'
@@ -3705,7 +3742,11 @@ fw4 check >/dev/null
 [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
   Reject-services-to-root-etcd-internal ]
 [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
-  '2380 2381' ]
+  2380 ]
+[ "$(uci -q get firewall.fabric_flat_services_root_metrics.name)" = \
+  Allow-platform-to-root-metrics ]
+[ "$(uci -q get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+  '2112 2381 9100' ]
 if uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1; then
   exit 1
 fi
@@ -3802,6 +3843,7 @@ Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
@@ -3820,7 +3862,7 @@ actual_chain_count=$(printf '%s\n' "$live" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 16 ]
+[ "$actual_chain_count" -eq 17 ]
 terminal_rule=$(printf '%s\n' "$live" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
@@ -3926,6 +3968,12 @@ accepted_open_exact() {
     Allow-platform-to-root-etcd-client ] || return 1
   [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
     Reject-services-to-root-etcd-internal ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
+    2380 ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.name)" = \
+    Allow-platform-to-root-metrics ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_root_metrics.dest_port)" = \
+    '2112 2381 9100' ] || return 1
   ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
     return 1
   [ ! -e "$guard" ] && [ ! -L "$guard" ] || return 1
@@ -3944,7 +3992,7 @@ accepted_open_exact() {
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 16 ] || return 1
+  ')" -eq 17 ] || return 1
   aoe_terminal=$(printf '%s\n' "$aoe_live" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }

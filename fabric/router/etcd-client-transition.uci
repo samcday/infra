@@ -24,5 +24,4 @@ add_list firewall.fabric_flat_reject_services_etcd_internal.dest_ip='10.66.0.11/
 add_list firewall.fabric_flat_reject_services_etcd_internal.dest_ip='10.66.0.12/32'
 set firewall.fabric_flat_reject_services_etcd_internal.proto='tcp'
 add_list firewall.fabric_flat_reject_services_etcd_internal.dest_port='2380'
-add_list firewall.fabric_flat_reject_services_etcd_internal.dest_port='2381'
 set firewall.fabric_flat_reject_services_etcd_internal.target='REJECT'

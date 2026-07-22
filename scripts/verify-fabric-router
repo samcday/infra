@@ -726,14 +726,14 @@ printf 'DATA_MOUNT source=%s type=%s options=%s\n' \
 
 assert_section_count defaults 1
 assert_section_count zone 2
-assert_section_count rule 26
+assert_section_count rule 27
 assert_section_count forwarding 0
 assert_section_count redirect 0
 assert_section_count nat 0
 assert_section_count include 0
 firewall_section_count=$(uci -q show firewall |
   awk -F= '$1 ~ /^firewall\.[^.]+$/ { count++ } END { print count + 0 }')
-[ "$firewall_section_count" -eq 29 ] ||
+[ "$firewall_section_count" -eq 30 ] ||
   fail 'firewall contains an unexpected section type'
 
 defaults_section=$(sections_of_type defaults)
@@ -778,6 +778,7 @@ fabric_reject_other_fabric_to_wan
 fabric_reject_wan_to_fabric
 fabric_flat_services_etcd_client
 fabric_flat_reject_services_etcd_internal
+fabric_flat_services_root_metrics
 fabric_flat_services_api
 fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
@@ -811,6 +812,7 @@ assert_firewall_option_keys fabric_services_egress \
 for exact_flat_forward in \
   fabric_flat_services_etcd_client \
   fabric_flat_reject_services_etcd_internal \
+  fabric_flat_services_root_metrics \
   fabric_flat_services_api \
   fabric_flat_services_vxlan \
   fabric_flat_roots_vxlan \
@@ -932,7 +934,10 @@ assert_flat_rule fabric_flat_services_etcd_client \
   2379 ACCEPT
 assert_flat_rule fabric_flat_reject_services_etcd_internal \
   Reject-services-to-root-etcd-internal "$service_nodes" "$root_nodes" tcp \
-  '2380 2381' REJECT
+  2380 REJECT
+assert_flat_rule fabric_flat_services_root_metrics \
+  Allow-platform-to-root-metrics "$service_nodes" "$root_nodes" tcp \
+  '2112 2381 9100' ACCEPT
 assert_flat_rule fabric_flat_services_api \
   Allow-services-to-fabric-API "$service_nodes" "$api_endpoints" tcp 6443 ACCEPT
 assert_flat_rule fabric_flat_services_vxlan \
@@ -1186,6 +1191,8 @@ assert_live_fw4_rule forward_lan Allow-platform-to-root-etcd-client 1 \
   'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Reject-services-to-root-etcd-internal 1 \
   'ip saddr' 'jump reject_to_lan'
+assert_live_fw4_rule forward_lan Allow-platform-to-root-metrics 1 \
+  'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Allow-services-to-fabric-API 1 \
   'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Allow-services-to-root-VXLAN 1 \
@@ -1224,13 +1231,14 @@ assert_live_fw4_rule input_lan Reject-other-fabric-router-input 1 \
 assert_live_fw4_chain input_wan 3 'jump reject_from_wan' \
   'Allow-WAN-DHCPv4-replies
 Reject-other-WAN-input'
-assert_live_fw4_chain forward_lan 16 'jump reject_to_lan' \
+assert_live_fw4_chain forward_lan 17 'jump reject_to_lan' \
   'Block-fabric-to-private-WAN
 Allow-roots-to-public-WAN
 Allow-services-to-public-Web
 Reject-other-fabric-to-WAN
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
+Allow-platform-to-root-metrics
 Allow-services-to-fabric-API
 Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN

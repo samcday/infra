@@ -138,7 +138,8 @@ attended install, those two service addresses may also fetch the live rootfs
 from Bootie at exactly `10.66.0.2:80`. The etcdetcetc foundation exception adds
 one earlier exact-source/exact-destination TCP/2379 client allow for only those
 two service nodes and three roots, immediately followed by an exact reject for
-the same endpoints on internal TCP/2380 and TCP/2381. Per-direction
+the same endpoints on peer TCP/2380. A following exact rule admits those same
+sources and roots only on host-metrics TCP/2112,2381,9100. Per-direction
 cross-prefix catch-all rejects follow. IPv4 ICMP redirects are disabled so
 ordinary hosts retain the router path. Same-subnet traffic still bypasses the
 router and is constrained separately by the FCOS root and services host
@@ -468,9 +469,14 @@ accepted authorization and exact-open completion. On failure, stop: use serial
 to inspect `/etc/fabric-router-etcd-policy-rollback`,
 `/etc/init.d/fabric-router-etcd-policy-rollback`, the live UCI sections, and
 the live `forward_lan` chain. Do not delete stale evidence merely to retry.
-After a pass, rerun the serial-pinned commissioning verifier; its desired
-policy now requires the TCP/2379 allow followed immediately by the
-TCP/2380-2381 reject.
+After the historical etcd opening pass, use the separate attended
+`scripts/rollout-fabric-router-monitoring-policy` helper for the current
+already-open router. It removes TCP/2381 from the internal reject, installs the
+exact two-service-source to three-root TCP/2112,2381,9100 rule, and preserves
+the TCP/2380 reject plus both cross-prefix catch-alls. That helper has its own
+clean-pushed-main and payload-hash confirmation, global and router-local locks,
+reboot-persistent rollback watchdog, and exact post-proof. Rerun the
+serial-pinned commissioning verifier after it passes.
 
 This router operation is the final network-open gate. It does not issue a
 certificate or activate the controller. Keep both controller suspension gates

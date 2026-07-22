@@ -113,6 +113,7 @@ firewall_policy=$(TARGET_PATH="$firewall_path" yq -er \
   fabric/butane/firewall.yaml)
 service_set='elements = { 10.66.1.10, 10.66.1.11 }'
 service_etcd_allow='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
+service_metrics_allow='ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"'
 etcd_catchall='tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"'
 expected_etcd_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
 ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
@@ -121,6 +122,8 @@ ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platfo
   die 'committed firewall policy lacks one exact two-address service set'
 [[ $(grep -Fc "$service_etcd_allow" <<<"$firewall_policy") -eq 1 ]] ||
   die 'committed firewall policy lacks one exact service-node TCP/2379 allow'
+[[ $(grep -Fc "$service_metrics_allow" <<<"$firewall_policy") -eq 1 ]] ||
+  die 'committed firewall policy lacks one exact service-node metrics allow'
 [[ $(grep -Fc "$etcd_catchall" <<<"$firewall_policy") -eq 1 ]] ||
   die 'committed firewall policy lacks one TCP/2379 catch-all drop'
 service_etcd_allow_line=$(grep -nF "$service_etcd_allow" <<<"$firewall_policy" |
@@ -139,9 +142,9 @@ actual_etcd_accepts=$(awk '
 ' <<<"$firewall_policy")
 [[ $actual_etcd_accepts == "$expected_etcd_accepts" ]] ||
   die 'committed TCP/2379 accepts are not exactly root, maintenance, and service identities'
-if grep -Eq '10\.66\.1\.0/24|10\.42\.[0-9]|@service_nodes_v4 tcp dport.*(2380|2381)' \
+if grep -Eq '10\.66\.1\.0/24|10\.42\.[0-9]|@service_nodes_v4 tcp dport.*2380' \
     <<<"$firewall_policy"; then
-  die 'committed root etcd policy broadens service access to a subnet, PodCIDR, or internal port'
+  die 'committed root policy broadens service access to a subnet, PodCIDR, or etcd peer port'
 fi
 # shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
 routing_policy=$(TARGET_PATH="$routing_path" yq -er \
@@ -357,6 +360,7 @@ ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root pe
 ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
 ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
 ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 counter drop comment "deny all remaining input"'
   [[ $live_rules == "$expected_live_rules" ]] ||
@@ -366,9 +370,10 @@ counter drop comment "deny all remaining input"'
     <<<"$normalized_input")
   expected_live_service_accepts='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
-ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"'
+ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"'
   [[ $live_service_accepts == "$expected_live_service_accepts" ]] ||
-    die "$full_node live service-source accepts are not exactly TCP/2379, API/kubelet, and VXLAN"
+    die "$full_node live service-source accepts are not exactly TCP/2379, API/kubelet, VXLAN, and host metrics"
   live_etcd_rules=$(awk '/tcp dport 2379/ && /comment/ { print }' \
     <<<"$normalized_input")
   expected_live_etcd_rules='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"

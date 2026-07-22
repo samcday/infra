@@ -663,6 +663,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 "Allow-services-to-public-Web",
                 "Reject-other-fabric-to-WAN",
                 "Reject-services-to-root-etcd",
+                "Allow-platform-to-root-metrics",
                 "Allow-services-to-fabric-API",
                 "Allow-services-to-root-VXLAN",
                 "Allow-roots-to-services-VXLAN",
@@ -678,7 +679,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 f'  counter comment "!fw4: {name}" # handle {index}'
                 for index, name in enumerate(closed_order, start=1)
             )
-            lan_lines.extend(("  jump reject_to_lan # handle 15", "}"))
+            lan_lines.extend(("  jump reject_to_lan # handle 16", "}"))
             lan_fixture.write_text("\n".join(lan_lines) + "\n", encoding="utf-8")
             open_order = (
                 "Block-fabric-to-private-WAN",
@@ -687,6 +688,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 "Reject-other-fabric-to-WAN",
                 "Allow-platform-to-root-etcd-client",
                 "Reject-services-to-root-etcd-internal",
+                "Allow-platform-to-root-metrics",
                 "Allow-services-to-fabric-API",
                 "Allow-services-to-root-VXLAN",
                 "Allow-roots-to-services-VXLAN",
@@ -702,7 +704,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 f'  counter comment "!fw4: {name}" # handle {index}'
                 for index, name in enumerate(open_order, start=1)
             )
-            open_lan_lines.extend(("  jump reject_to_lan # handle 16", "}"))
+            open_lan_lines.extend(("  jump reject_to_lan # handle 17", "}"))
             open_lan_fixture.write_text(
                 "\n".join(open_lan_lines) + "\n", encoding="utf-8"
             )
@@ -735,21 +737,34 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                     *" firewall.fabric_flat_reject_services_etcd_internal.name")
                       printf '%s\n' Reject-services-to-root-etcd-internal ;;
                     *" firewall.fabric_flat_reject_services_etcd_internal.dest_port")
-                      printf '%s\n' '2380 2381' ;;
+                      printf '%s\n' 2380 ;;
                     *" firewall.fabric_flat_reject_services_etcd_internal.target")
                       printf '%s\n' REJECT ;;
+                    *" firewall.fabric_flat_services_root_metrics.name")
+                      printf '%s\n' Allow-platform-to-root-metrics ;;
+                    *" firewall.fabric_flat_services_root_metrics.dest_port")
+                      printf '%s\n' '2112 2381 9100' ;;
+                    *" firewall.fabric_flat_services_root_metrics.target")
+                      printf '%s\n' ACCEPT ;;
                     *" firewall.fabric_flat_reject_services_etcd") exit 1 ;;
                     *) exit 0 ;;
                   esac
+                  exit 0
                 fi
                 case "$*" in
                   *" changes firewall"*) exit 0 ;;
                   *"fabric_flat_reject_services_etcd.name"*)
                     printf '%s\n' Reject-services-to-root-etcd ;;
                   *"fabric_flat_reject_services_etcd.dest_port"*)
-                    printf '%s\n' '2379 2380 2381' ;;
+                    printf '%s\n' '2379 2380' ;;
                   *"fabric_flat_reject_services_etcd.target"*)
                     printf '%s\n' REJECT ;;
+                  *"fabric_flat_services_root_metrics.name"*)
+                    printf '%s\n' Allow-platform-to-root-metrics ;;
+                  *"fabric_flat_services_root_metrics.dest_port"*)
+                    printf '%s\n' '2112 2381 9100' ;;
+                  *"fabric_flat_services_root_metrics.target"*)
+                    printf '%s\n' ACCEPT ;;
                   *"fabric_flat_services_etcd_client"*|\
                   *"fabric_flat_reject_services_etcd_internal"*) exit 1 ;;
                   *) exit 0 ;;
@@ -994,6 +1009,10 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 result.returncode,
                 74,
                 f"stdout={result.stdout!r}\nstderr={result.stderr!r}",
+            )
+            self.assertTrue(
+                (work / "accept-complete").exists(),
+                f"trace={trace.read_text(encoding='utf-8')!r} stderr={result.stderr!r}",
             )
             self.assertEqual(
                 (work / "accept-complete").stat().st_ino,

@@ -112,23 +112,33 @@ Use this exact activation order; do not collapse it into one Flux commit:
    activation overrides from the final check through the attended run. The
    earlier step-3 result is discovery evidence, not a substitute for this fresh
    locked proof.
-9. Remove both controller suspension gates in one reviewed change. The
+9. Before enabling host monitoring or running final post-open qualification,
+   roll the current `scripts/rollout-fabric-root-firewall` policy through cp1,
+   cp2, and cp3 one at a time while the router still rejects TCP/2381. Only
+   after all three roots pass should
+   `scripts/rollout-fabric-router-monitoring-policy` open the routed aperture.
+   The dedicated router helper accepts only the already-open exact TCP/2379
+   state, removes TCP/2381 from the internal reject, and adds only the two exact
+   service sources to root TCP/2112,2381,9100. TCP/2380 and both cross-prefix
+   catch-alls remain denied. Both rollout paths are independently attended,
+   hash-bound, locked, and rollback-guarded.
+10. Remove both controller suspension gates in one reviewed change. The
    controller child depends on the Ready bootstrap config; wait for the
    HelmRelease, both CRDs, and the controller Deployment. No runtime custom
    resource exists yet.
-10. Remove only `fabric-etcdetcetc-runtime.spec.suspend`. Wait first for the
+11. Remove only `fabric-etcdetcetc-runtime.spec.suspend`. Wait first for the
    EtcdCluster, then for the one permanent smoke Tenant and its TLS Secret. Do
    not create another tenant. EtcdCluster acceptance must contact all three
    configured members and show exact server version `3.6.13` on each; tenant
    credential publication additionally proves that a populated admin lease
    outside its prefix cannot accept the tenant's nested-transaction attachment
    or be revoked by the tenant.
-11. Run `scripts/qualify-fabric-etcd-post-open`. It must prove the real ordinary
-   Pod path on both service nodes, TCP/2379 positive and TCP/2380-2381 negative
-   behavior, unauthenticated TLS rejection, and the permanent smoke identity's
-   in-prefix read/write plus outside-prefix denial. It also requires exactly
-   one physical EtcdCluster and one smoke EtcdTenant, all ten fail-closed signer
-   policies and bindings with current API-server type checking and zero CEL
+12. Run `scripts/qualify-fabric-etcd-post-open`. It must prove the real ordinary
+   Pod path on both service nodes, TCP/2379 and TCP/2381 positive plus TCP/2380
+   negative behavior, unauthenticated TLS rejection, and the permanent smoke
+   identity's in-prefix read/write plus outside-prefix denial. It also requires
+   exactly one physical EtcdCluster and one smoke EtcdTenant, all ten
+   fail-closed signer policies and bindings with current API-server type checking and zero CEL
    warnings, a successful dry-run of the exact Flux-owned admin Certificate,
    and denial of an unauthorized signer request. Only that pass completes
    foundation acceptance. It participates in the same
@@ -214,8 +224,8 @@ run as restricted non-root ordinary Pods, and emit only fixed result markers.
 Every possible probe write uses a short-TTL lease. Acceptance requires exact
 `PermissionDenied` responses for both an outside-prefix read and write, while
 the in-prefix put/get/delete succeeds. Router and root counters prove that both
-service sources traversed TCP/2379 and that all TCP/2380-2381 attempts reached
-the named reject. On success, UID-aware cleanup removes both Pods, the temporary
+service sources traversed TCP/2379 and TCP/2381 and that all TCP/2380 attempts
+reached the named reject. On success, UID-aware cleanup removes both Pods, the temporary
 NetworkPolicy, and the verdict-free router observer; it also proves the
 permanent default-deny stayed unchanged. The run retains only non-secret
 evidence. A failed run cleans only objects whose recorded UIDs still match and
