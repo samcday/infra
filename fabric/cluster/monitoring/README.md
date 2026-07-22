@@ -38,8 +38,8 @@ disabled rather than gaining cluster-wide write access.
 ## Staged first activation
 
 The first reconciliation intentionally has no outbound Alertmanager receiver.
-`pagerduty.yaml` and its SOPS Secret are committed but omitted from
-`kustomization.yaml`, preventing installation noise from paging.
+`dms.yaml`, `pagerduty.yaml`, and the PagerDuty SOPS Secret are committed but
+omitted from `kustomization.yaml`, preventing installation noise from paging.
 
 1. Reconcile the operator and monitoring children and inspect all targets and
    active critical alerts.
@@ -48,7 +48,7 @@ The first reconciliation intentionally has no outbound Alertmanager receiver.
 3. Run `scripts/rollout-fabric-router-monitoring-policy` last, then prove all
    nine root targets are healthy and the root visibility alerts have cleared.
 4. Create the unique `fabric` Dead Man's Snitch, encrypt its callback into this
-   namespace, and add its Watchdog route together with `pagerduty.yaml` and
+   namespace, and add `dms.yaml` together with `pagerduty.yaml` and
    `pagerduty-secret.yaml` to `kustomization.yaml`.
 5. Prove both Alertmanager replicas can notify, the Watchdog check-in is fresh,
    and no unexpected critical alert is firing before calling activation done.

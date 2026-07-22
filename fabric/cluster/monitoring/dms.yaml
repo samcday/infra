@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  labels:
+    fabric.samcday.com/alert-route: "true"
+  name: dms
+  namespace: monitoring
+spec:
+  receivers:
+    - name: dms
+      webhookConfigs:
+        - urlSecret:
+            key: url
+            name: dms-url
+  route:
+    groupWait: 0s
+    matchers:
+      - name: alertname
+        value: Watchdog
+    receiver: dms
+    repeatInterval: 30m
