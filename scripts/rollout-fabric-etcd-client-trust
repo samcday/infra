@@ -1173,7 +1173,7 @@ install_atomic() {
   cmp --silent "$source" "$next"
   sync --file-system "$next"
   mv --force -- "$next" "$target"
-  /usr/bin/restorecon --force "$target"
+  /usr/bin/restorecon -F "$target"
   /usr/bin/matchpathcon -V "$target" >/dev/null
   sync --file-system "$directory"
   cmp --silent "$source" "$target"

@@ -654,6 +654,16 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                     sorted([file_sync, move, directory_sync, compare]),
                 )
 
+    def test_candidate_selinux_restore_uses_the_supported_short_option(
+        self,
+    ) -> None:
+        for helper in self.helpers:
+            apply = self.program(helper, "apply_candidate_program")
+            install = self.function(apply, "install_atomic")
+            with self.subTest(helper=helper):
+                self.assertIn('/usr/bin/restorecon -F "$target"', install)
+                self.assertNotIn("restorecon --force", install)
+
     def test_terminal_states_follow_live_proof_target_sync_and_deadline(
         self,
     ) -> None:
