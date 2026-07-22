@@ -1,3 +1,5 @@
 .terraform/
 _build/
 credhelper/target/
+__pycache__/
+*.py[cod]

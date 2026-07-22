@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/../../.." && pwd)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+
+readonly public_target="$script_dir/client-ca.pem"
+readonly secret_target="$repo_root/fabric/cluster/etcdetcetc/client-ca.yaml"
+readonly secret_filename_override=fabric/cluster/etcdetcetc/client-ca.yaml
+readonly ca_name=fabric-etcdetcetc-client-ca
+readonly secret_name=fabric-etcd-client-v1-ca
+readonly namespace=cert-manager
+readonly runtime_recipient=age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+readonly recovery_recipient=age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+readonly confirmation_text=GENERATE:fabric-etcdetcetc-client-ca
+
+mode=
+confirmation=
+
+usage() {
+  cat >&2 <<EOF
+Generate or validate the dedicated online Fabric etcd client CA.
+
+  $0 --check
+  $0 --apply --confirm $confirmation_text
+
+Generation refuses to replace either published artifact. Plaintext private
+key material is held only in a verified tmpfs directory and the Kubernetes
+Secret is encrypted to the Fabric runtime and recovery age recipients before
+publication.
+EOF
+}
+
+die() {
+  echo "generate-client-ca: $*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --check | --apply)
+      [[ -z $mode ]] || die 'choose exactly one of --check or --apply'
+      mode=${1#--}
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $mode ]] || die 'choose exactly one of --check or --apply'
+if [[ $mode == check ]]; then
+  [[ -z $confirmation ]] || die '--check does not accept --confirm'
+else
+  [[ $confirmation == "$confirmation_text" ]] ||
+    die "exact --confirm $confirmation_text is required"
+fi
+
+for command in awk base64 cat chmod cmp df dirname git grep install kubectl mktemp openssl \
+  realpath rm sha256sum sops sort stat yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+[[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
+  die 'script is not inside the expected Git worktree'
+
+workdir=$(fabric_secure_tmpdir fabric-etcdetcetc-client-ca 16777216)
+trap 'rm -rf -- "$workdir"' EXIT
+
+validate_ca() {
+  local cert=$1
+  local text subject
+
+  openssl x509 -in "$cert" -noout >/dev/null || die 'client CA is not a PEM certificate'
+  subject=$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253)
+  [[ $subject == "subject=CN=$ca_name" ]] || die "unexpected client CA subject: $subject"
+  openssl x509 -in "$cert" -noout -checkend 63072000 >/dev/null ||
+    die 'client CA has less than two years remaining'
+  text=$(openssl x509 -in "$cert" -noout -text)
+  grep -Fq 'CA:TRUE, pathlen:0' <<<"$text" || die 'client CA must be pathlen:0'
+  grep -Fq 'Certificate Sign, CRL Sign' <<<"$text" ||
+    die 'client CA key usage is not certificate-signing only'
+  grep -Fq 'TLS Web Client Authentication' <<<"$text" ||
+    die 'client CA lacks the client-auth EKU'
+  grep -Fq 'ASN1 OID: prime256v1' <<<"$text" || die 'client CA is not ECDSA P-256'
+  ! grep -Fq 'PRIVATE KEY' "$cert" || die 'public CA artifact contains a private key'
+}
+
+validate_published() {
+  local cert_key_hash key_key_hash recipients
+  local decrypted="$workdir/decrypted-secret.yaml"
+  local secret_cert="$workdir/secret-ca.pem"
+  local secret_ca="$workdir/secret-ca-copy.pem"
+  local secret_key="$workdir/secret-ca-key.pem"
+  local probe_key="$workdir/probe-key.pem"
+  local probe_csr="$workdir/probe.csr"
+  local probe_cert="$workdir/probe.pem"
+  local probe_ext="$workdir/probe-ext.cnf"
+
+  [[ -f $public_target && ! -L $public_target ]] || die 'public client CA is absent or unsafe'
+  [[ -f $secret_target && ! -L $secret_target ]] || die 'encrypted client CA Secret is absent or unsafe'
+  validate_ca "$public_target"
+
+  [[ $(sops filestatus "$secret_target" | yq -r '.encrypted') == true ]] ||
+    die 'client CA Secret is not SOPS-encrypted'
+  recipients=$(yq -r '.sops.age[].recipient' "$secret_target" | sort)
+  [[ $recipients == $(printf '%s\n%s\n' "$recovery_recipient" "$runtime_recipient" | sort) ]] ||
+    die 'client CA Secret does not have exactly the runtime and recovery recipients'
+  ! grep -Eq -- '-----BEGIN (CERTIFICATE|[^-]*PRIVATE KEY)-----' "$secret_target" ||
+    die 'client CA Secret contains plaintext PEM material'
+
+  sops --decrypt --output "$decrypted" "$secret_target"
+  [[ $(yq -r '.apiVersion' "$decrypted") == v1 &&
+     $(yq -r '.kind' "$decrypted") == Secret &&
+     $(yq -r '.metadata.name' "$decrypted") == "$secret_name" &&
+     $(yq -r '.metadata.namespace' "$decrypted") == "$namespace" &&
+     $(yq -r '.type' "$decrypted") == kubernetes.io/tls ]] ||
+    die 'decrypted client CA Secret metadata differs from contract'
+  yq -r '.data["tls.crt"]' "$decrypted" | base64 --decode >"$secret_cert"
+  yq -r '.data["ca.crt"]' "$decrypted" | base64 --decode >"$secret_ca"
+  yq -r '.data["tls.key"]' "$decrypted" | base64 --decode >"$secret_key"
+  cmp -s "$public_target" "$secret_cert" || die 'Secret tls.crt differs from public client CA'
+  cmp -s "$public_target" "$secret_ca" || die 'Secret ca.crt differs from public client CA'
+
+  cert_key_hash=$(openssl x509 -in "$secret_cert" -pubkey -noout |
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+  key_key_hash=$(openssl pkey -in "$secret_key" -pubout -outform DER 2>/dev/null |
+    sha256sum | awk '{print $1}')
+  [[ $cert_key_hash == "$key_key_hash" ]] || die 'client CA certificate and private key do not match'
+
+  cat >"$probe_ext" <<'EOF'
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,clientAuth
+EOF
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$probe_key"
+  openssl req -new -sha256 -subj /CN=etcdetcetc-ca-check -key "$probe_key" -out "$probe_csr"
+  openssl x509 -req -sha256 -days 1 \
+    -CA "$secret_cert" -CAkey "$secret_key" -CAcreateserial \
+    -extfile "$probe_ext" -in "$probe_csr" -out "$probe_cert" >/dev/null 2>&1
+  openssl verify -purpose sslclient -CAfile "$secret_cert" "$probe_cert" >/dev/null ||
+    die 'delegated CA cannot validate a client-auth leaf'
+  if openssl verify -purpose sslserver -CAfile "$secret_cert" "$probe_cert" >/dev/null 2>&1; then
+    die 'delegated client CA unexpectedly validates a server-auth leaf'
+  fi
+}
+
+if [[ $mode == check ]]; then
+  validate_published
+  echo 'validated dedicated Fabric etcdetcetc client CA and encrypted Secret'
+  exit 0
+fi
+
+[[ ! -e $public_target ]] || die "refusing to replace existing artifact: $public_target"
+[[ ! -e $secret_target ]] || die "refusing to replace existing artifact: $secret_target"
+[[ -d $(dirname -- "$secret_target") ]] || die 'Fabric etcdetcetc configuration directory is absent'
+
+cat >"$workdir/openssl.cnf" <<EOF
+[req]
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_ca
+
+[dn]
+CN = $ca_name
+
+[v3_ca]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+basicConstraints = critical,CA:true,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+extendedKeyUsage = critical,clientAuth
+EOF
+
+openssl genpkey \
+  -algorithm EC \
+  -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$workdir/client-ca-key.pem"
+openssl req \
+  -new \
+  -x509 \
+  -sha256 \
+  -days 1095 \
+  -config "$workdir/openssl.cnf" \
+  -key "$workdir/client-ca-key.pem" \
+  -out "$workdir/client-ca.pem"
+validate_ca "$workdir/client-ca.pem"
+
+kubectl create secret tls "$secret_name" \
+  --namespace "$namespace" \
+  --cert "$workdir/client-ca.pem" \
+  --key "$workdir/client-ca-key.pem" \
+  --dry-run=client \
+  --output yaml >"$workdir/client-ca-secret.yaml"
+CA_DATA=$(base64 -w0 <"$workdir/client-ca.pem") \
+  yq -i '.data["ca.crt"] = strenv(CA_DATA)' "$workdir/client-ca-secret.yaml"
+
+sops \
+  --config "$repo_root/.sops.yaml" \
+  --encrypt \
+  --filename-override "$secret_filename_override" \
+  --output "$workdir/client-ca-secret.enc.yaml" \
+  "$workdir/client-ca-secret.yaml"
+
+install -m 0644 "$workdir/client-ca.pem" "$public_target"
+install -m 0644 "$workdir/client-ca-secret.enc.yaml" "$secret_target"
+validate_published
+
+echo 'generated dedicated Fabric etcdetcetc client CA; plaintext key material existed only in verified tmpfs' >&2

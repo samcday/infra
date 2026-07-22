@@ -1,0 +1,1175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+app_dir=$(cd -- "$script_dir/.." && pwd -P)
+repo_dir=$(cd -- "$app_dir/../.." && pwd -P)
+
+readonly etcd_version=3.6.13
+readonly etcd_archive=etcd-v3.6.13-linux-amd64.tar.gz
+readonly etcd_archive_sha256=b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465
+readonly etcd_archive_url="https://github.com/etcd-io/etcd/releases/download/v${etcd_version}/${etcd_archive}"
+readonly kind_version=v1.32.2
+readonly kind_amd64_digest=sha256:700b761ae9bd49af30d2222ed98ae83416be7f41f303f4f5a871ad14de5c7f69
+readonly timeout_seconds=180
+readonly system_namespace=etcdetcetc-lifecycle-system
+readonly tenant_namespace=etcdetcetc-lifecycle-tenant
+readonly cluster_name=lifecycle
+readonly tenant_name=lifecycle
+readonly hold_finalizer=integration.etcdetcetc.samcday.com/hold
+readonly risk_annotation=etcdetcetc.samcday.com/shared-availability-risk
+readonly required_healthy_renewals=3
+
+mode=
+work=
+kubeconfig=
+kind_cluster=
+kind_created=false
+controller_pid=
+standby_controller_pid=
+etcd_pid=
+signer_pid=
+cleanup_status=0
+
+usage() {
+  cat >&2 <<'EOF'
+Exercise the controller lifecycle against a disposable Kubernetes API and the
+checksum-pinned real etcd 3.6.13 server.
+
+  scripts/lifecycle-integration --check
+  scripts/lifecycle-integration --run
+
+--check validates local prerequisites and immutable download/image pins without
+creating a cluster. --run creates and always tears down an isolated kind
+cluster, local etcd process, two host controller processes, and deterministic
+Certificate emulator. It retains its private temporary evidence directory only
+on failure. No Fabric context or live infrastructure is read or changed.
+EOF
+}
+
+die() {
+  printf 'lifecycle-integration: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf 'lifecycle-integration: %s\n' "$*" >&2
+}
+
+while (($#)); do
+  case $1 in
+    --check | --run)
+      [[ -z $mode ]] || die 'choose exactly one of --check or --run'
+      mode=${1#--}
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+[[ -n $mode ]] || die 'choose exactly one of --check or --run'
+
+for command in base64 cargo curl docker jq kind kubectl openssl python3 sha256sum tar; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] ||
+  die 'the pinned etcd archive and kind image currently support only Linux x86_64'
+
+archive_contract=$(awk -v name="$etcd_archive" '
+  $0 == name { print; getline; print; getline; print; exit }
+' "$repo_dir/fabric/router/data-files.txt")
+[[ $archive_contract == "$etcd_archive
+$etcd_archive_url
+$etcd_archive_sha256" ]] || die 'repository etcd 3.6.13 archive pin differs from the lifecycle gate'
+
+[[ -f $app_dir/dev/certificate-crd.yaml ]] || die 'minimal Certificate CRD is absent'
+kubectl apply --dry-run=client --validate=false -f "$app_dir/dev/certificate-crd.yaml" \
+  >/dev/null || die 'minimal Certificate CRD is not valid Kubernetes YAML'
+
+if [[ $mode == check ]]; then
+  printf 'validated lifecycle gate pins: etcd %s archive %s, kind %s image %s\n' \
+    "$etcd_version" "$etcd_archive_sha256" "$kind_version" "$kind_amd64_digest"
+  exit 0
+fi
+
+docker info >/dev/null 2>&1 || die 'Docker daemon is unavailable'
+
+cache_dir=$app_dir/.dev/cache
+mkdir -p -- "$cache_dir"
+cached_archive=$cache_dir/$etcd_archive
+if [[ -f $cached_archive ]] && ! printf '%s  %s\n' "$etcd_archive_sha256" "$cached_archive" |
+  sha256sum --check --status; then
+  die "cached archive has the wrong checksum; remove it explicitly: $cached_archive"
+fi
+if [[ ! -f $cached_archive ]]; then
+  archive_candidate=$cache_dir/.$etcd_archive.$$.partial
+  trap 'rm -f -- "$archive_candidate"' EXIT
+  note "downloading checksum-pinned etcd $etcd_version archive"
+  curl --fail --location --proto '=https' --retry 3 --retry-all-errors \
+    --output "$archive_candidate" "$etcd_archive_url"
+  printf '%s  %s\n' "$etcd_archive_sha256" "$archive_candidate" |
+    sha256sum --check --status || die 'downloaded etcd archive checksum differs'
+  mv -- "$archive_candidate" "$cached_archive"
+  trap - EXIT
+fi
+
+work=$(mktemp --directory --tmpdir etcdetcetc-lifecycle.XXXXXXXX)
+[[ $work == /tmp/etcdetcetc-lifecycle.* ]] || die "unexpected temporary path: $work"
+kubeconfig=$work/kubeconfig
+kind_cluster=etcdetcetc-lifecycle-$$
+mkdir -p -- "$work/bin" "$work/pki" "$work/issued"
+tar --extract --gzip --file "$cached_archive" --directory "$work" \
+  "etcd-v${etcd_version}-linux-amd64/etcd" \
+  "etcd-v${etcd_version}-linux-amd64/etcdctl"
+install -m 0755 -- "$work/etcd-v${etcd_version}-linux-amd64/etcd" "$work/bin/etcd"
+install -m 0755 -- "$work/etcd-v${etcd_version}-linux-amd64/etcdctl" "$work/bin/etcdctl"
+[[ $("$work/bin/etcd" --version | awk '/^etcd Version:/ { print $3 }') == "$etcd_version" ]] ||
+  die 'extracted etcd server version differs from the exact pin'
+[[ $("$work/bin/etcdctl" version | awk '/^etcdctl version:/ { print $3 }') == "$etcd_version" ]] ||
+  die 'extracted etcdctl version differs from the exact pin'
+
+cleanup() {
+  cleanup_status=$?
+  trap - EXIT INT TERM
+
+  if [[ -n $signer_pid ]] && kill -0 "$signer_pid" 2>/dev/null; then
+    touch "$work/stop-signer"
+    kill "$signer_pid" 2>/dev/null || true
+    wait "$signer_pid" 2>/dev/null || true
+  fi
+  if [[ -n $controller_pid ]] && kill -0 "$controller_pid" 2>/dev/null; then
+    kill "$controller_pid" 2>/dev/null || true
+    wait "$controller_pid" 2>/dev/null || true
+  fi
+  if [[ -n $standby_controller_pid ]] && kill -0 "$standby_controller_pid" 2>/dev/null; then
+    kill "$standby_controller_pid" 2>/dev/null || true
+    wait "$standby_controller_pid" 2>/dev/null || true
+  fi
+  if [[ -n $etcd_pid ]] && kill -0 "$etcd_pid" 2>/dev/null; then
+    kill "$etcd_pid" 2>/dev/null || true
+    wait "$etcd_pid" 2>/dev/null || true
+  fi
+  if $kind_created; then
+    kind delete cluster --name "$kind_cluster" >/dev/null 2>&1 || true
+  fi
+
+  if ((cleanup_status == 0)); then
+    rm -rf -- "$work"
+  else
+    printf 'lifecycle-integration: failure evidence retained at %s\n' "$work" >&2
+    if [[ -f $work/controller.log ]]; then
+      printf '%s\n' '--- controller.log (tail) ---' >&2
+      tail -n 80 "$work/controller.log" >&2 || true
+    fi
+    if [[ -f $work/controller-standby.log ]]; then
+      printf '%s\n' '--- controller-standby.log (tail) ---' >&2
+      tail -n 80 "$work/controller-standby.log" >&2 || true
+    fi
+    if [[ -f $work/etcd.log ]]; then
+      printf '%s\n' '--- etcd.log (tail) ---' >&2
+      tail -n 80 "$work/etcd.log" >&2 || true
+    fi
+    if [[ -f $work/signer.log ]]; then
+      printf '%s\n' '--- signer.log (tail) ---' >&2
+      tail -n 80 "$work/signer.log" >&2 || true
+    fi
+  fi
+  exit "$cleanup_status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+kube() {
+  kubectl --kubeconfig "$kubeconfig" "$@"
+}
+
+pick_port() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+monotonic_millis() {
+  python3 - <<'PY'
+import time
+print(time.monotonic_ns() // 1_000_000)
+PY
+}
+
+rfc3339_is_after() {
+  python3 - "$1" "$2" <<'PY'
+from datetime import datetime
+import sys
+
+def parse(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+raise SystemExit(0 if parse(sys.argv[1]) > parse(sys.argv[2]) else 1)
+PY
+}
+
+client_port=$(pick_port)
+peer_port=$(pick_port)
+health_port=$(pick_port)
+while [[ $peer_port == "$client_port" || $health_port == "$client_port" || $health_port == "$peer_port" ]]; do
+  peer_port=$(pick_port)
+  health_port=$(pick_port)
+done
+standby_health_port=$(pick_port)
+while [[ $standby_health_port == "$client_port" || \
+  $standby_health_port == "$peer_port" || \
+  $standby_health_port == "$health_port" ]]; do
+  standby_health_port=$(pick_port)
+done
+endpoint=https://127.0.0.1:$client_port
+
+pki=$work/pki
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$pki/ca.key"
+openssl req -new -x509 -sha256 -days 2 -key "$pki/ca.key" \
+  -subj /CN=etcdetcetc-lifecycle-ca -out "$pki/ca.crt"
+
+# Mirror production's two-CA boundary: the physical CA authenticates etcd
+# servers and retained recovery identities, while a separate online,
+# client-auth-only CA issues controller and tenant credentials.
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$pki/client-ca.key"
+openssl req -new -x509 -sha256 -days 2 -key "$pki/client-ca.key" \
+  -subj /CN=etcdetcetc-lifecycle-client-ca \
+  -addext 'basicConstraints=critical,CA:true,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -addext 'extendedKeyUsage=clientAuth' \
+  -out "$pki/client-ca.crt"
+
+cat >"$pki/server.ext" <<'EOF'
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:localhost,IP:127.0.0.1
+EOF
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$pki/server.key"
+openssl req -new -sha256 -key "$pki/server.key" -subj /CN=localhost -out "$pki/server.csr"
+openssl x509 -req -sha256 -days 2 -in "$pki/server.csr" \
+  -CA "$pki/ca.crt" -CAkey "$pki/ca.key" -CAcreateserial \
+  -extfile "$pki/server.ext" -out "$pki/server.crt" >/dev/null 2>&1
+
+cat >"$pki/client.ext" <<'EOF'
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature
+extendedKeyUsage = clientAuth
+EOF
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$pki/admin.key"
+openssl req -new -sha256 -key "$pki/admin.key" -subj /CN=root -out "$pki/admin.csr"
+openssl x509 -req -sha256 -days 2 -in "$pki/admin.csr" \
+  -CA "$pki/ca.crt" -CAkey "$pki/ca.key" -CAserial "$pki/ca.srl" \
+  -extfile "$pki/client.ext" -out "$pki/admin.crt" >/dev/null 2>&1
+
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$pki/fabric-root.key"
+openssl req -new -sha256 -key "$pki/fabric-root.key" \
+  -subj /CN=fabric-root -out "$pki/fabric-root.csr"
+openssl x509 -req -sha256 -days 2 -in "$pki/fabric-root.csr" \
+  -CA "$pki/ca.crt" -CAkey "$pki/ca.key" -CAserial "$pki/ca.srl" \
+  -extfile "$pki/client.ext" -out "$pki/fabric-root.crt" >/dev/null 2>&1
+
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$pki/controller-admin.key"
+openssl req -new -sha256 -key "$pki/controller-admin.key" \
+  -subj /CN=fabric-etcdetcetc -out "$pki/controller-admin.csr"
+openssl x509 -req -sha256 -days 1 -in "$pki/controller-admin.csr" \
+  -CA "$pki/client-ca.crt" -CAkey "$pki/client-ca.key" -CAcreateserial \
+  -extfile "$pki/client.ext" -out "$pki/controller-admin.crt" >/dev/null 2>&1
+
+cat "$pki/ca.crt" "$pki/client-ca.crt" >"$pki/client-trust-bundle.crt"
+
+"$work/bin/etcd" \
+  --name lifecycle \
+  --data-dir "$work/etcd-data" \
+  --listen-client-urls "$endpoint" \
+  --advertise-client-urls "$endpoint" \
+  --listen-peer-urls "http://127.0.0.1:$peer_port" \
+  --initial-advertise-peer-urls "http://127.0.0.1:$peer_port" \
+  --initial-cluster "lifecycle=http://127.0.0.1:$peer_port" \
+  --initial-cluster-state new \
+  --initial-cluster-token etcdetcetc-lifecycle \
+  --client-cert-auth=true \
+  --trusted-ca-file "$pki/client-trust-bundle.crt" \
+  --cert-file "$pki/server.crt" \
+  --key-file "$pki/server.key" \
+  --log-level warn >"$work/etcd.log" 2>&1 &
+etcd_pid=$!
+
+etcd_admin() {
+  "$work/bin/etcdctl" \
+    --endpoints "$endpoint" \
+    --cacert "$pki/ca.crt" \
+    --cert "$pki/admin.crt" \
+    --key "$pki/admin.key" \
+    "$@"
+}
+
+etcd_fabric_root() {
+  "$work/bin/etcdctl" \
+    --endpoints "$endpoint" \
+    --cacert "$pki/ca.crt" \
+    --cert "$pki/fabric-root.crt" \
+    --key "$pki/fabric-root.key" \
+    "$@"
+}
+
+etcd_controller_admin() {
+  "$work/bin/etcdctl" \
+    --endpoints "$endpoint" \
+    --cacert "$pki/ca.crt" \
+    --cert "$pki/controller-admin.crt" \
+    --key "$pki/controller-admin.key" \
+    "$@"
+}
+
+physical_member_contract() {
+  local member_json
+  member_json=$(etcd_admin member list --write-out=json) ||
+    die 'cannot read lifecycle physical member list'
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+members = [{
+    "ID": str(member["ID"]),
+    "name": member["name"],
+    "peerURLs": sorted(member.get("peerURLs", [])),
+    "clientURLs": sorted(member.get("clientURLs", [])),
+    "isLearner": bool(member.get("isLearner", False)),
+} for member in document["members"]]
+contract = {
+    "cluster_id": str(document["header"]["cluster_id"]),
+    "members": sorted(members, key=lambda member: (member["ID"], member["name"])),
+}
+print(json.dumps(contract, sort_keys=True, separators=(",", ":")))
+' <<<"$member_json"
+}
+
+fabric_root_contract() {
+  local role_json user_json
+  user_json=$(etcd_admin --write-out=json user get fabric-root) ||
+    die 'cannot read lifecycle fabric-root user'
+  role_json=$(etcd_admin --write-out=json role get fabric-root) ||
+    die 'cannot read lifecycle fabric-root role'
+  jq -n -cS \
+    --argjson roles "$(jq -cS '.roles' <<<"$user_json")" \
+    --argjson permissions "$(jq -cS '
+      [.perm[] | {
+        permType,
+        key: (.key | @base64d),
+        range_end: (.range_end | @base64d)
+      }] | sort_by(.key)
+    ' <<<"$role_json")" \
+    '{roles: $roles, permissions: $permissions}'
+}
+
+assert_fabric_root_exact() {
+  local contract=$1
+  jq -e '
+    .roles == ["fabric-root"] and
+    .permissions == [
+      {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
+      {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
+    ]
+  ' <<<"$contract" >/dev/null ||
+    die 'lifecycle fabric-root differs from the exact two-prefix contract'
+}
+
+deadline=$((SECONDS + 60))
+until etcd_admin endpoint health >/dev/null 2>&1; do
+  kill -0 "$etcd_pid" 2>/dev/null || die 'etcd exited before becoming healthy'
+  ((SECONDS < deadline)) || die 'etcd did not become healthy within 60 seconds'
+  sleep 0.2
+done
+etcd_admin user add root --no-password >/dev/null
+etcd_admin user grant-role root root >/dev/null
+etcd_admin role add fabric-root >/dev/null
+etcd_admin role grant-permission fabric-root --prefix=true readwrite /fabric-root/ >/dev/null
+etcd_admin role grant-permission fabric-root --prefix=true readwrite /bootstrap/ >/dev/null
+etcd_admin user add fabric-root --no-password >/dev/null
+etcd_admin user grant-role fabric-root fabric-root >/dev/null
+etcd_admin user add fabric-etcdetcetc --no-password >/dev/null
+etcd_admin user grant-role fabric-etcdetcetc root >/dev/null
+etcd_admin auth enable >/dev/null
+etcd_admin endpoint health >/dev/null
+etcd_controller_admin endpoint health >/dev/null
+[[ $(etcd_admin endpoint status --write-out=json | jq -r '.[0].Status.version') == "$etcd_version" ]] ||
+  die 'live etcd endpoint does not report exactly 3.6.13'
+
+physical_members_before=$(physical_member_contract)
+printf '%s\n' "$physical_members_before" >"$work/physical-members-before.json"
+jq -e --arg endpoint "$endpoint" --arg peer "http://127.0.0.1:$peer_port" '
+  (.cluster_id | test("^[1-9][0-9]*$")) and
+  (.members | length) == 1 and
+  (.members[0].ID | test("^[1-9][0-9]*$")) and
+  .members[0].name == "lifecycle" and
+  .members[0].peerURLs == [$peer] and
+  .members[0].clientURLs == [$endpoint] and
+  .members[0].isLearner == false
+' <<<"$physical_members_before" >/dev/null ||
+  die 'initial lifecycle physical member contract is not exactly one voting member'
+
+fabric_root_before=$(fabric_root_contract)
+assert_fabric_root_exact "$fabric_root_before"
+fabric_root_smoke_key=/fabric-root/.etcdetcetc-lifecycle-preservation
+etcd_fabric_root put "$fabric_root_smoke_key" preserved >/dev/null
+[[ $(etcd_fabric_root get "$fabric_root_smoke_key" --print-value-only) == preserved ]] ||
+  die 'fabric-root fixture cannot read its exact prefix'
+etcd_fabric_root del "$fabric_root_smoke_key" >/dev/null
+if etcd_fabric_root get /etcdetcetc-lifecycle-must-deny >/dev/null 2>&1; then
+  die 'fabric-root fixture read outside its two exact prefixes'
+fi
+
+kind_image="kindest/node:${kind_version}@${kind_amd64_digest}"
+note "creating isolated kind cluster $kind_cluster"
+kind_created=true
+kind create cluster \
+  --name "$kind_cluster" \
+  --image "$kind_image" \
+  --config "$app_dir/dev/kind-config.yaml" \
+  --kubeconfig "$kubeconfig" \
+  --wait 120s >"$work/kind.log" 2>&1
+kube version >/dev/null
+
+note 'building current controller and installing test CRDs'
+cargo build --locked --manifest-path "$app_dir/Cargo.toml" -p etcdetcetc
+controller_binary=$app_dir/target/debug/etcdetcetc
+"$controller_binary" crds | kube apply -f - >/dev/null
+kube apply -f "$app_dir/dev/certificate-crd.yaml" >/dev/null
+kube wait --for=condition=Established --timeout=60s \
+  crd/etcdclusters.etcdetcetc.samcday.com \
+  crd/etcdtenants.etcdetcetc.samcday.com \
+  crd/certificates.cert-manager.io >/dev/null
+
+for namespace in "$system_namespace" "$tenant_namespace"; do
+  kube create namespace "$namespace" --dry-run=client -o yaml | kube apply -f - >/dev/null
+done
+
+jq -n --arg namespace "$system_namespace" '{
+  apiVersion: "coordination.k8s.io/v1",
+  kind: "Lease",
+  metadata: {
+    name: "etcdetcetc-leader",
+    namespace: $namespace,
+    labels: {
+      "app.kubernetes.io/name": "etcdetcetc",
+      "app.kubernetes.io/component": "leader-election"
+    }
+  }
+}' | kube apply -f - >/dev/null
+
+kube create secret generic lifecycle-admin \
+  --namespace "$system_namespace" \
+  --from-file="ca.crt=$pki/client-ca.crt" \
+  --from-file="tls.crt=$pki/controller-admin.crt" \
+  --from-file="tls.key=$pki/controller-admin.key" \
+  --dry-run=client -o yaml | kube apply -f - >/dev/null
+kube create configmap lifecycle-server-ca \
+  --namespace "$system_namespace" \
+  --from-file="ca.crt=$pki/ca.crt" \
+  --dry-run=client -o yaml | kube apply -f - >/dev/null
+
+jq -n \
+  --arg namespace "$system_namespace" \
+  --arg endpoint "$endpoint" \
+  --arg allowed "$tenant_namespace" '
+  {
+    apiVersion: "etcdetcetc.samcday.com/v1alpha1",
+    kind: "EtcdCluster",
+    metadata: {name: "lifecycle", namespace: $namespace},
+    spec: {
+      endpoints: [$endpoint],
+      authSecretRef: {name: "lifecycle-admin"},
+      serverCAConfigMapRef: {name: "lifecycle-server-ca", key: "ca.crt"},
+      tenantTls: {issuerRef: {name: "lifecycle-emulator", kind: "Issuer"}},
+      allowedNamespaces: [$allowed]
+    }
+  }' | kube apply -f - >/dev/null
+
+KUBECONFIG=$kubeconfig \
+POD_NAME=lifecycle-controller \
+POD_NAMESPACE=$system_namespace \
+POD_UID=lifecycle-controller-uid \
+RUST_LOG=info,etcdetcetc=debug \
+  "$controller_binary" \
+    --allowed-namespace "$system_namespace" \
+    --allowed-namespace "$tenant_namespace" \
+    --health-address "127.0.0.1:$health_port" \
+    >"$work/controller.log" 2>&1 &
+controller_pid=$!
+
+processes_healthy() {
+  kill -0 "$etcd_pid" 2>/dev/null || return 1
+  if [[ -n $controller_pid ]]; then
+    kill -0 "$controller_pid" 2>/dev/null || return 1
+  fi
+  if [[ -n $standby_controller_pid ]]; then
+    kill -0 "$standby_controller_pid" 2>/dev/null || return 1
+  fi
+  if [[ -n $signer_pid ]]; then
+    kill -0 "$signer_pid" 2>/dev/null || return 1
+  fi
+}
+
+wait_for() {
+  local description=$1
+  shift
+  local deadline=$((SECONDS + timeout_seconds))
+  until "$@"; do
+    processes_healthy || die "a required process exited while waiting for $description"
+    ((SECONDS < deadline)) || die "timed out waiting for $description"
+    sleep 0.2
+  done
+  note "observed $description"
+}
+
+http_status_is() {
+  local expected=$1 url=$2 status
+  status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --max-time 2 "$url" 2>/dev/null || true)
+  [[ $status == "$expected" ]]
+}
+
+observe_healthy_leader_renewals() {
+  local expected_uid=$1 expected_holder=$2 expected_acquire_time=$3 expected_transitions=$4
+  local expected_duration=$5 previous_rv=$6 previous_renew_time=$7 required=$8
+  local current current_uid current_holder current_acquire_time current_duration
+  local current_rv current_renew_time current_transitions
+  local observed=0 deadline=$((SECONDS + timeout_seconds))
+
+  while ((observed < required)); do
+    processes_healthy || die 'a required process exited during the dual-controller renewal proof'
+    http_status_is 200 "$health_endpoint/leaderz" ||
+      die 'original controller lost leadership during the healthy renewal proof'
+    http_status_is 503 "$standby_health_endpoint/leaderz" ||
+      die 'standby controller became leader while the original holder was healthy'
+
+    current=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json) ||
+      die 'cannot read leader-election Lease during the healthy renewal proof'
+    current_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$current")
+    current_uid=$(jq -er '.metadata.uid | select(length > 0)' <<<"$current")
+    current_acquire_time=$(jq -er '.spec.acquireTime | select(length > 0)' <<<"$current")
+    current_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$current")
+    current_duration=$(jq -er '.spec.leaseDurationSeconds | numbers | select(. > 0)' \
+      <<<"$current")
+    current_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$current")
+    current_renew_time=$(jq -er '.spec.renewTime | select(length > 0)' <<<"$current")
+
+    [[ $current_uid == "$expected_uid" &&
+       $current_holder == "$expected_holder" &&
+       $current_acquire_time == "$expected_acquire_time" &&
+       $current_duration == "$expected_duration" ]] ||
+      die 'immutable Lease acquisition fields changed during same-holder renewal'
+    [[ $current_transitions == "$expected_transitions" ]] ||
+      die 'Lease transition counter changed during same-holder renewal'
+
+    if [[ $current_rv != "$previous_rv" ]]; then
+      rfc3339_is_after "$current_renew_time" "$previous_renew_time" ||
+        die 'leader-election Lease changed without strictly advancing renewTime'
+      previous_rv=$current_rv
+      previous_renew_time=$current_renew_time
+      ((observed += 1))
+      note "observed healthy original-holder Lease renewal $observed/$required"
+    fi
+
+    ((SECONDS < deadline)) || die 'timed out observing healthy original-holder Lease renewals'
+    sleep 0.2
+  done
+
+  printf '%s\n' "$current"
+}
+
+health_endpoint=http://127.0.0.1:$health_port
+wait_for 'live controller during initial Lease observation' \
+  http_status_is 200 "$health_endpoint/healthz"
+wait_for 'ready follower after successful Lease API observation' \
+  http_status_is 200 "$health_endpoint/readyz"
+http_status_is 503 "$health_endpoint/leaderz" ||
+  die 'controller reported leader before its initial Lease observation completed'
+
+cluster_ready() {
+  kube get etcdcluster "$cluster_name" -n "$system_namespace" -o json 2>/dev/null |
+    jq -e --arg version "$etcd_version" '
+      .metadata.generation as $generation |
+      .status.connected == true and
+      .status.authEnabled == true and
+      .status.version == $version and
+      (.status.clusterId | test("^[0-9a-f]{16}$")) and
+      (.status.members | length) == 1 and
+      (.status.members[0].isLearner == false) and
+      (.status.alarms == []) and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation)
+    ' >/dev/null
+}
+wait_for 'current-generation Ready EtcdCluster backed by real etcd 3.6.13' cluster_ready
+wait_for 'ready controller after Kubernetes API success' \
+  http_status_is 200 "$health_endpoint/readyz"
+wait_for 'leader controller after Lease acquisition' \
+  http_status_is 200 "$health_endpoint/leaderz"
+
+initial_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+initial_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$initial_lease")
+initial_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$initial_lease")
+lease_duration_seconds=$(jq -er '.spec.leaseDurationSeconds | numbers | select(. > 0)' \
+  <<<"$initial_lease")
+[[ $initial_holder == lifecycle-controller-uid_* ]] ||
+  die 'initial Lease holder does not identify the original controller process'
+[[ $lease_duration_seconds == 30 ]] ||
+  die 'leader-election Lease does not expose the qualified 30-second duration'
+
+standby_health_endpoint=http://127.0.0.1:$standby_health_port
+KUBECONFIG=$kubeconfig \
+POD_NAME=lifecycle-controller-standby \
+POD_NAMESPACE=$system_namespace \
+POD_UID=lifecycle-controller-standby-uid \
+RUST_LOG=info,etcdetcetc=debug \
+  "$controller_binary" \
+    --allowed-namespace "$system_namespace" \
+    --allowed-namespace "$tenant_namespace" \
+    --health-address "127.0.0.1:$standby_health_port" \
+    >"$work/controller-standby.log" 2>&1 &
+standby_controller_pid=$!
+
+wait_for 'second controller as a healthy election participant' \
+  http_status_is 200 "$standby_health_endpoint/readyz"
+http_status_is 503 "$standby_health_endpoint/leaderz" ||
+  die 'second controller became leader while the original holder was healthy'
+
+dual_active_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+dual_active_uid=$(jq -er '.metadata.uid | select(length > 0)' <<<"$dual_active_lease")
+dual_active_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$dual_active_lease")
+dual_active_acquire_time=$(jq -er '.spec.acquireTime | select(length > 0)' <<<"$dual_active_lease")
+dual_active_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$dual_active_lease")
+dual_active_duration=$(jq -er '.spec.leaseDurationSeconds | numbers | select(. > 0)' \
+  <<<"$dual_active_lease")
+dual_active_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$dual_active_lease")
+dual_active_renew_time=$(jq -er '.spec.renewTime | select(length > 0)' <<<"$dual_active_lease")
+[[ $dual_active_holder == "$initial_holder" &&
+   $dual_active_transitions == "$initial_transitions" &&
+   $dual_active_duration == "$lease_duration_seconds" ]] ||
+  die 'leader-election contract changed before the dual-controller renewal proof'
+renewed_active_lease=$(observe_healthy_leader_renewals \
+  "$dual_active_uid" "$initial_holder" "$dual_active_acquire_time" \
+  "$initial_transitions" "$lease_duration_seconds" "$dual_active_rv" \
+  "$dual_active_renew_time" "$required_healthy_renewals")
+renewed_active_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' \
+  <<<"$renewed_active_lease")
+[[ $renewed_active_rv != "$dual_active_rv" ]] ||
+  die 'healthy original holder did not advance the Lease resourceVersion'
+
+note 'terminating the original leader and requiring standby takeover'
+kill "$controller_pid"
+wait "$controller_pid" 2>/dev/null || true
+controller_pid=
+
+abandoned_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+abandoned_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$abandoned_lease")
+abandoned_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$abandoned_lease")
+abandoned_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$abandoned_lease")
+[[ $abandoned_holder == "$initial_holder" &&
+   $abandoned_transitions == "$initial_transitions" ]] ||
+  die 'standby acquired the Lease before the original process fully exited'
+http_status_is 503 "$standby_health_endpoint/leaderz" ||
+  die 'standby reported leadership before the post-exit fencing observation'
+
+# A successful metadata patch gives the foreign Lease a new resourceVersion
+# after the original process is gone. The follower must observe that exact new
+# record and keep it stable for the Lease duration before a guarded takeover.
+# Measure from before the acknowledged patch with a monotonic clock: this is a
+# conservative lower bound that does not depend on either process's wall clock.
+takeover_reset_started_ms=$(monotonic_millis)
+kube annotate lease etcdetcetc-leader -n "$system_namespace" \
+  integration.etcdetcetc.samcday.com/takeover-fence-reset=observed \
+  --overwrite >/dev/null
+fenced_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+fenced_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$fenced_lease")
+fenced_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$fenced_lease")
+fenced_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$fenced_lease")
+[[ $fenced_holder == "$initial_holder" &&
+   $fenced_transitions == "$initial_transitions" &&
+   $fenced_rv != "$abandoned_rv" ]] ||
+  die 'post-exit Lease fencing reset did not preserve holder state on a new resourceVersion'
+
+wait_for 'standby leadership after the original process exited' \
+  http_status_is 200 "$standby_health_endpoint/leaderz"
+takeover_observed_ms=$(monotonic_millis)
+takeover_elapsed_ms=$((takeover_observed_ms - takeover_reset_started_ms))
+minimum_takeover_ms=$((lease_duration_seconds * 1000))
+((takeover_elapsed_ms >= minimum_takeover_ms)) ||
+  die "standby acquired after ${takeover_elapsed_ms}ms, before the ${minimum_takeover_ms}ms stable-Lease interval"
+note "observed standby takeover after ${takeover_elapsed_ms}ms against a ${minimum_takeover_ms}ms stable-Lease minimum"
+replacement_lease=$(kube get lease etcdetcetc-leader -n "$system_namespace" -o json)
+replacement_holder=$(jq -er '.spec.holderIdentity | select(length > 0)' <<<"$replacement_lease")
+replacement_transitions=$(jq -er '.spec.leaseTransitions | numbers' <<<"$replacement_lease")
+[[ $replacement_holder != "$initial_holder" ]] ||
+  die 'standby takeover retained the original leader identity'
+[[ $replacement_holder == lifecycle-controller-standby-uid_* ]] ||
+  die 'replacement Lease holder does not identify the standby controller process'
+((replacement_transitions == initial_transitions + 1)) ||
+  die 'standby takeover did not advance the Lease transition counter exactly once'
+
+controller_pid=$standby_controller_pid
+standby_controller_pid=
+health_endpoint=$standby_health_endpoint
+
+cluster_ready_at_generation() {
+  local expected_generation=$1 patch_resource_version=$2
+  kube get etcdcluster "$cluster_name" -n "$system_namespace" -o json 2>/dev/null |
+    jq -e \
+      --argjson expectedGeneration "$expected_generation" \
+      --arg patchResourceVersion "$patch_resource_version" \
+      --arg version "$etcd_version" '
+      .metadata.generation == $expectedGeneration and
+      .metadata.resourceVersion != $patchResourceVersion and
+      .status.connected == true and
+      .status.authEnabled == true and
+      .status.version == $version and
+      (.status.clusterId | test("^[0-9a-f]{16}$")) and
+      (.status.members | length) == 1 and
+      (.status.members[0].isLearner == false) and
+      (.status.alarms == []) and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $expectedGeneration)
+    ' >/dev/null
+}
+
+note 'forcing a replacement-leader EtcdCluster generation proof'
+before_proof_generation=$(kube get etcdcluster "$cluster_name" -n "$system_namespace" \
+  -o jsonpath='{.metadata.generation}')
+proof_patch=$(jq -nc --arg tenant "$tenant_namespace" --arg system "$system_namespace" \
+  '{spec: {allowedNamespaces: [$tenant, $system]}}')
+proof_cluster=$(kube patch etcdcluster "$cluster_name" -n "$system_namespace" --type=merge \
+  -p "$proof_patch" -o json)
+proof_generation=$(jq -er '.metadata.generation' <<<"$proof_cluster")
+proof_patch_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' <<<"$proof_cluster")
+((proof_generation == before_proof_generation + 1)) ||
+  die 'replacement-leader proof patch did not advance EtcdCluster generation exactly once'
+wait_for 'replacement-leader reconciliation of the proof EtcdCluster generation' \
+  cluster_ready_at_generation "$proof_generation" "$proof_patch_rv"
+
+restore_patch=$(jq -nc --arg tenant "$tenant_namespace" \
+  '{spec: {allowedNamespaces: [$tenant]}}')
+restored_cluster=$(kube patch etcdcluster "$cluster_name" -n "$system_namespace" \
+  --type=merge -p "$restore_patch" -o json)
+restored_generation=$(jq -er '.metadata.generation' <<<"$restored_cluster")
+restore_patch_rv=$(jq -er '.metadata.resourceVersion | select(length > 0)' \
+  <<<"$restored_cluster")
+((restored_generation == proof_generation + 1)) ||
+  die 'restoring the EtcdCluster namespace contract did not advance its generation exactly once'
+wait_for 'replacement-leader restoration of the EtcdCluster namespace contract' \
+  cluster_ready_at_generation "$restored_generation" "$restore_patch_rv"
+
+certificate_signer() {
+  while [[ ! -e $work/stop-signer ]]; do
+    certificates=$(kube get certificates -n "$system_namespace" -o json 2>/dev/null || true)
+    if [[ -n $certificates ]] && jq -e . >/dev/null 2>&1 <<<"$certificates"; then
+      while IFS= read -r certificate; do
+        [[ -n $certificate ]] || continue
+        cert_name=$(jq -r '.metadata.name' <<<"$certificate")
+        cert_uid=$(jq -r '.metadata.uid' <<<"$certificate")
+        cert_generation=$(jq -r '.metadata.generation' <<<"$certificate")
+        common_name=$(jq -r '.spec.commonName' <<<"$certificate")
+        secret_name=$(jq -r '.spec.secretName' <<<"$certificate")
+        labels=$(jq -c '.spec.secretTemplate.labels // .metadata.labels // {}' <<<"$certificate")
+        issue_dir=$work/issued/$cert_uid-$cert_generation
+        mkdir -p -- "$issue_dir"
+
+        if [[ ! -f $issue_dir/tls.crt ]]; then
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+            -out "$issue_dir/tls.key"
+          openssl req -new -sha256 -key "$issue_dir/tls.key" \
+            -subj "/CN=$common_name" -out "$issue_dir/tls.csr"
+          openssl x509 -req -sha256 -days 1 -in "$issue_dir/tls.csr" \
+            -CA "$pki/client-ca.crt" -CAkey "$pki/client-ca.key" \
+            -CAserial "$pki/client-ca.srl" \
+            -extfile "$pki/client.ext" -out "$issue_dir/tls.crt" >/dev/null 2>&1
+        fi
+
+        current=$(kube get certificate "$cert_name" -n "$system_namespace" -o json 2>/dev/null || true)
+        if [[ -z $current ]] || ! jq -e . >/dev/null 2>&1 <<<"$current"; then
+          continue
+        fi
+        [[ $(jq -r '.metadata.uid // ""' <<<"$current") == "$cert_uid" ]] || continue
+        [[ $(jq -r '.metadata.deletionTimestamp // ""' <<<"$current") == "" ]] || continue
+
+        tls_crt=$(base64 -w0 <"$issue_dir/tls.crt")
+        tls_key=$(base64 -w0 <"$issue_dir/tls.key")
+        ca_crt=$(base64 -w0 <"$pki/client-ca.crt")
+        jq -n \
+          --arg namespace "$system_namespace" \
+          --arg name "$secret_name" \
+          --arg tlsCrt "$tls_crt" \
+          --arg tlsKey "$tls_key" \
+          --arg caCrt "$ca_crt" \
+          --argjson labels "$labels" '
+          {
+            apiVersion: "v1", kind: "Secret",
+            metadata: {name: $name, namespace: $namespace, labels: $labels},
+            type: "kubernetes.io/tls",
+            data: {"tls.crt": $tlsCrt, "tls.key": $tlsKey, "ca.crt": $caCrt}
+          }' | kube apply -f - >/dev/null
+
+        current_uid=$(kube get certificate "$cert_name" -n "$system_namespace" \
+          -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+        [[ $current_uid == "$cert_uid" ]] || continue
+        transition_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        status_patch=$(jq -n \
+          --argjson generation "$cert_generation" \
+          --arg transitionTime "$transition_time" '
+          {status: {
+            revision: 1,
+            conditions: [{
+              type: "Ready", status: "True", reason: "LifecycleEmulatorIssued",
+              observedGeneration: $generation,
+              lastTransitionTime: $transitionTime
+            }]
+          }}')
+        kube patch certificate "$cert_name" -n "$system_namespace" \
+          --subresource=status --type=merge -p "$status_patch" >/dev/null
+        touch "$issue_dir/complete"
+        kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+          integration.etcdetcetc.samcday.com/certificate-uid="$cert_uid" \
+          --overwrite >/dev/null 2>&1 || true
+      done < <(jq -c '
+        .items[]? |
+        .metadata.generation as $generation |
+        select(.metadata.deletionTimestamp == null) |
+        select(((.status.conditions // []) |
+          any(.type == "Ready" and .status == "True" and
+              .observedGeneration == $generation)) | not)
+      ' <<<"$certificates")
+    fi
+    sleep 0.2
+  done
+}
+certificate_signer >"$work/signer.log" 2>&1 &
+signer_pid=$!
+
+jq -n \
+  --arg namespace "$tenant_namespace" \
+  --arg clusterNamespace "$system_namespace" \
+  --arg risk "$risk_annotation" '
+  {
+    apiVersion: "etcdetcetc.samcday.com/v1alpha1",
+    kind: "EtcdTenant",
+    metadata: {
+      name: "lifecycle", namespace: $namespace,
+      annotations: {($risk): "accepted-v1"}
+    },
+    spec: {
+      clusterRef: {name: "lifecycle", namespace: $clusterNamespace},
+      credentialMode: "TLS",
+      secretName: "lifecycle-etcd"
+    }
+  }' | kube apply -f - >/dev/null
+
+tenant_ready() {
+  kube get etcdtenant "$tenant_name" -n "$tenant_namespace" -o json 2>/dev/null |
+    jq -e '
+      .metadata.generation as $generation |
+      .status.externalAccessState == "Provisioned" and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .reason == "Provisioned" and .observedGeneration == $generation)
+    ' >/dev/null
+}
+wait_for 'initial tenant provisioning and credential publication' tenant_ready
+
+tenant=$(kube get etcdtenant "$tenant_name" -n "$tenant_namespace" -o json)
+tenant_uid=$(jq -er '.metadata.uid' <<<"$tenant")
+tenant_user=$(jq -er '.status.externalIdentity.etcdUser' <<<"$tenant")
+tenant_role=$(jq -er '.status.externalIdentity.etcdRole' <<<"$tenant")
+tenant_prefix=$(jq -er '.status.externalIdentity.prefix' <<<"$tenant")
+certificate_name=$(jq -er '.status.externalIdentity.certificateName' <<<"$tenant")
+staging_secret_name=$(jq -er '.status.externalIdentity.stagingSecretName' <<<"$tenant")
+output_secret_name=$(jq -er '.status.externalIdentity.outputSecretName' <<<"$tenant")
+configmap_name=$(jq -er '.status.externalIdentity.configMapName' <<<"$tenant")
+
+[[ $tenant_user == "etcdtenant:$tenant_uid" ]] || die 'TLS user is not deterministically UID-scoped'
+[[ $tenant_role == "etcdtenant-role:$tenant_uid" ]] || die 'TLS role is not deterministically UID-scoped'
+[[ $tenant_prefix == "/${tenant_namespace}:${tenant_name}/" ]] || die 'tenant prefix differs from deterministic contract'
+[[ $output_secret_name == lifecycle-etcd && $configmap_name == lifecycle-etcd ]] ||
+  die 'tenant artifact names differ from requested contract'
+
+first_certificate_uid=$(kube get certificate "$certificate_name" -n "$system_namespace" \
+  -o jsonpath='{.metadata.uid}')
+first_output_uid=$(kube get secret "$output_secret_name" -n "$tenant_namespace" \
+  -o jsonpath='{.metadata.uid}')
+
+credential_dir=$work/credential
+mkdir -p -- "$credential_dir"
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.crt"]' | base64 -d >"$credential_dir/tls.crt"
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.key"]' | base64 -d >"$credential_dir/tls.key"
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["ca.crt"]' | base64 -d >"$credential_dir/ca.crt"
+[[ $(openssl x509 -in "$credential_dir/tls.crt" -noout -subject -nameopt RFC2253) == \
+  "subject=CN=$tenant_user" ]] || die 'published tenant certificate CN differs from pinned user'
+cmp -s "$credential_dir/ca.crt" "$pki/ca.crt" || die 'tenant Secret does not retain physical server CA'
+openssl verify -purpose sslclient -CAfile "$pki/client-ca.crt" \
+  "$credential_dir/tls.crt" >/dev/null ||
+  die 'published tenant leaf is not signed by the delegated client CA'
+if openssl verify -purpose sslclient -CAfile "$pki/ca.crt" \
+  "$credential_dir/tls.crt" >/dev/null 2>&1; then
+  die 'published tenant leaf unexpectedly chains to the physical server CA'
+fi
+
+first_client_certificate_revision=sha256:$(sha256sum "$credential_dir/tls.crt" | awk '{print $1}')
+server_ca_trust_revision=sha256:$(sha256sum "$pki/ca.crt" | awk '{print $1}')
+handoff_values=$(kube get configmap "$configmap_name" -n "$tenant_namespace" -o json |
+  jq -er '.data["values.yaml"]')
+jq -e \
+  --arg clientRevision "$first_client_certificate_revision" \
+  --arg serverRevision "$server_ca_trust_revision" \
+  --arg secretName "$output_secret_name" '
+  .etcd.clientCertificateRevision == $clientRevision and
+  .etcd.serverCATrustRevision == $serverRevision and
+  .etcd.externalSecretRevisionsRequired == true and
+  .etcd.clientSecret == {create: false, name: $secretName}
+' <<<"$handoff_values" >/dev/null ||
+  die 'initial control-plane values do not pin the published client leaf and server CA revisions'
+
+note 'rotating the staged client leaf and requiring an exact rollout revision handoff'
+renewed_dir=$work/renewed
+mkdir -p -- "$renewed_dir"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$renewed_dir/tls.key"
+openssl req -new -sha256 -key "$renewed_dir/tls.key" \
+  -subj "/CN=$tenant_user" -out "$renewed_dir/tls.csr"
+openssl x509 -req -sha256 -days 1 -in "$renewed_dir/tls.csr" \
+  -CA "$pki/client-ca.crt" -CAkey "$pki/client-ca.key" \
+  -CAserial "$pki/client-ca.srl" \
+  -extfile "$pki/client.ext" -out "$renewed_dir/tls.crt" >/dev/null 2>&1
+second_client_certificate_revision=sha256:$(sha256sum "$renewed_dir/tls.crt" | awk '{print $1}')
+[[ $second_client_certificate_revision != "$first_client_certificate_revision" ]] ||
+  die 'renewed client leaf unexpectedly retained its previous SHA-256 revision'
+
+renewed_tls_crt=$(base64 -w0 <"$renewed_dir/tls.crt")
+renewed_tls_key=$(base64 -w0 <"$renewed_dir/tls.key")
+renewal_patch=$(jq -n \
+  --arg tlsCrt "$renewed_tls_crt" \
+  --arg tlsKey "$renewed_tls_key" \
+  '{data: {"tls.crt": $tlsCrt, "tls.key": $tlsKey}}')
+kube patch secret "$staging_secret_name" -n "$system_namespace" \
+  --type=merge -p "$renewal_patch" >/dev/null
+kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+  integration.etcdetcetc.samcday.com/client-leaf-renewal=requested \
+  --overwrite >/dev/null
+
+handoff_has_revisions() {
+  local expected_client=$1 expected_server=$2
+  kube get configmap "$configmap_name" -n "$tenant_namespace" -o json 2>/dev/null |
+    jq -e --arg expectedClient "$expected_client" --arg expectedServer "$expected_server" '
+      .data["values.yaml"] | fromjson |
+      .etcd.clientCertificateRevision == $expectedClient and
+      .etcd.serverCATrustRevision == $expectedServer
+    ' \
+      >/dev/null
+}
+wait_for 'renewed client leaf and unchanged server CA revisions in the Flux handoff' \
+  handoff_has_revisions \
+    "$second_client_certificate_revision" "$server_ca_trust_revision"
+
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.crt"]' | base64 -d >"$credential_dir/tls.crt"
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.key"]' | base64 -d >"$credential_dir/tls.key"
+cmp -s "$credential_dir/tls.crt" "$renewed_dir/tls.crt" ||
+  die 'stable tenant Secret did not publish the renewed client leaf'
+cmp -s "$credential_dir/tls.key" "$renewed_dir/tls.key" ||
+  die 'stable tenant Secret did not publish the renewed client private key'
+openssl verify -purpose sslclient -CAfile "$pki/client-ca.crt" \
+  "$credential_dir/tls.crt" >/dev/null ||
+  die 'renewed tenant leaf is not signed by the delegated client CA'
+[[ $(kube get secret "$output_secret_name" -n "$tenant_namespace" \
+  -o jsonpath='{.metadata.uid}') == "$first_output_uid" ]] ||
+  die 'client leaf renewal replaced rather than updated the stable tenant Secret'
+
+etcd_tenant() {
+  "$work/bin/etcdctl" \
+    --endpoints "$endpoint" \
+    --cacert "$credential_dir/ca.crt" \
+    --cert "$credential_dir/tls.crt" \
+    --key "$credential_dir/tls.key" \
+    "$@"
+}
+
+inside_key=${tenant_prefix}retained-lifecycle-key
+inside_value=retained-across-deauthorization-and-deletion
+outside_key=/etcdetcetc-lifecycle-outside/$tenant_uid
+outside_value=admin-owned-outside-sentinel
+etcd_tenant put "$inside_key" "$inside_value" >/dev/null
+[[ $(etcd_tenant get "$inside_key" --print-value-only) == "$inside_value" ]] ||
+  die 'tenant could not read its exact in-prefix value'
+etcd_admin put "$outside_key" "$outside_value" >/dev/null
+
+expect_permission_denied() {
+  local output status
+  set +e
+  output=$("$@" 2>&1)
+  status=$?
+  set -e
+  ((status != 0)) || return 1
+  grep -Fqi 'permission denied' <<<"$output"
+}
+expect_permission_denied etcd_tenant get "$outside_key" ||
+  die 'tenant outside-prefix read was not denied'
+expect_permission_denied etcd_tenant put "$outside_key" tenant-overwrite ||
+  die 'tenant outside-prefix write was not denied'
+[[ $(etcd_admin get "$outside_key" --print-value-only) == "$outside_value" ]] ||
+  die 'outside-prefix denial did not preserve the admin sentinel'
+
+user_contract=$(etcd_admin user get "$tenant_user" --write-out=json)
+[[ $(jq -c '.roles' <<<"$user_contract") == "[\"$tenant_role\"]" ]] ||
+  die 'tenant user does not have exactly its pinned role'
+role_contract=$(etcd_admin role get "$tenant_role" --write-out=json)
+printf '%s\n' "$role_contract" >"$work/role-contract.json"
+expected_range_end=${tenant_prefix%/}0
+jq -e --arg key "$tenant_prefix" --arg end "$expected_range_end" '
+  (.perm | length) == 1 and
+  .perm[0].permType == 2 and
+  (.perm[0].key | @base64d) == $key and
+  (.perm[0].range_end | @base64d) == $end
+' <<<"$role_contract" >/dev/null || die 'tenant role is not exactly one prefix read/write permission'
+
+note 'holding one owned Secret deletion to make the deprovisioning barrier observable'
+kube patch secret "$output_secret_name" -n "$tenant_namespace" --type=merge \
+  -p "{\"metadata\":{\"finalizers\":[\"$hold_finalizer\"]}}" >/dev/null
+kube patch etcdcluster "$cluster_name" -n "$system_namespace" --type=merge \
+  -p '{"spec":{"allowedNamespaces":[]}}' >/dev/null
+# Do not touch the Tenant: the exact EtcdCluster-reference watch must enqueue
+# it immediately when namespace authorization changes.
+
+tenant_state_is() {
+  local expected=$1
+  [[ $(kube get etcdtenant "$tenant_name" -n "$tenant_namespace" \
+    -o jsonpath='{.status.externalAccessState}' 2>/dev/null) == "$expected" ]]
+}
+wait_for 'durable Deprovisioning state' tenant_state_is Deprovisioning
+
+secret_is_terminating() {
+  [[ -n $(kube get secret "$output_secret_name" -n "$tenant_namespace" \
+    -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null) ]]
+}
+user_absent() {
+  ! etcd_admin user get "$tenant_user" >/dev/null 2>&1
+}
+role_absent() {
+  ! etcd_admin role get "$tenant_role" >/dev/null 2>&1
+}
+wait_for 'revoked etcd user during held Deprovisioning' user_absent
+wait_for 'revoked etcd role during held Deprovisioning' role_absent
+wait_for 'held credential Secret deletion' secret_is_terminating
+
+note 'restoring namespace authorization before deprovisioning can finish'
+kube patch etcdcluster "$cluster_name" -n "$system_namespace" --type=merge \
+  -p "{\"spec\":{\"allowedNamespaces\":[\"$tenant_namespace\"]}}" >/dev/null
+kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+  "$risk_annotation-" >/dev/null
+kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+  integration.etcdetcetc.samcday.com/early-reauthorization=observed \
+  --overwrite >/dev/null
+sleep 2
+tenant_state_is Deprovisioning ||
+  die 'early reauthorization bypassed the durable Deprovisioning barrier'
+user_absent || die 'early reauthorization recreated the tenant user before cleanup completed'
+role_absent || die 'early reauthorization recreated the tenant role before cleanup completed'
+secret_is_terminating || die 'held credential Secret unexpectedly disappeared before release'
+
+note 'releasing held cleanup while risk acknowledgement remains absent'
+kube patch secret "$output_secret_name" -n "$tenant_namespace" --type=merge \
+  -p '{"metadata":{"finalizers":[]}}' >/dev/null
+kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+  integration.etcdetcetc.samcday.com/release=cleanup --overwrite >/dev/null
+wait_for 'durable Deprovisioned state after early reauthorization' tenant_state_is Deprovisioned
+
+object_absent() {
+  local kind=$1 namespace=$2 name=$3
+  ! kube get "$kind" "$name" -n "$namespace" >/dev/null 2>&1
+}
+wait_for 'stable tenant Secret cleanup' object_absent secret "$tenant_namespace" "$output_secret_name"
+wait_for 'tenant ConfigMap cleanup' object_absent configmap "$tenant_namespace" "$configmap_name"
+wait_for 'staging Secret cleanup' object_absent secret "$system_namespace" "$staging_secret_name"
+wait_for 'Certificate cleanup' object_absent certificate "$system_namespace" "$certificate_name"
+user_absent || die 'Deprovisioned state retained the tenant user'
+role_absent || die 'Deprovisioned state retained the tenant role'
+[[ $(etcd_admin get "$inside_key" --print-value-only) == "$inside_value" ]] ||
+  die 'deauthorization deleted retained tenant prefix data'
+
+note 'restoring risk acknowledgement and accepting a fresh provisioning cycle'
+kube annotate etcdtenant "$tenant_name" -n "$tenant_namespace" \
+  "$risk_annotation=accepted-v1" --overwrite >/dev/null
+wait_for 'fresh provisioning after Deprovisioned' tenant_ready
+
+second_tenant=$(kube get etcdtenant "$tenant_name" -n "$tenant_namespace" -o json)
+[[ $(jq -r '.metadata.uid' <<<"$second_tenant") == "$tenant_uid" ]] ||
+  die 'reauthorization changed the EtcdTenant UID'
+[[ $(jq -r '.status.externalIdentity.etcdUser' <<<"$second_tenant") == "$tenant_user" ]] ||
+  die 'reauthorization changed the pinned etcd user'
+[[ $(jq -r '.status.externalIdentity.prefix' <<<"$second_tenant") == "$tenant_prefix" ]] ||
+  die 'reauthorization changed the retained prefix'
+second_certificate_uid=$(kube get certificate "$certificate_name" -n "$system_namespace" \
+  -o jsonpath='{.metadata.uid}')
+second_output_uid=$(kube get secret "$output_secret_name" -n "$tenant_namespace" \
+  -o jsonpath='{.metadata.uid}')
+[[ $second_certificate_uid != "$first_certificate_uid" ]] ||
+  die 'reauthorization did not recreate the deleted Certificate'
+[[ $second_output_uid != "$first_output_uid" ]] ||
+  die 'reauthorization did not recreate the stable credential Secret'
+
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.crt"]' | base64 -d >"$credential_dir/tls.crt"
+kube get secret "$output_secret_name" -n "$tenant_namespace" -o json |
+  jq -r '.data["tls.key"]' | base64 -d >"$credential_dir/tls.key"
+[[ $(etcd_tenant get "$inside_key" --print-value-only) == "$inside_value" ]] ||
+  die 'reprovisioned tenant could not read retained prefix data'
+
+note 'deleting the reprovisioned tenant and requiring exact external cleanup'
+kube delete etcdtenant "$tenant_name" -n "$tenant_namespace" --wait=false >/dev/null
+wait_for 'EtcdTenant finalizer removal and object deletion' \
+  object_absent etcdtenant "$tenant_namespace" "$tenant_name"
+wait_for 'tenant user deletion cleanup' user_absent
+wait_for 'tenant role deletion cleanup' role_absent
+wait_for 'stable Secret deletion cleanup' object_absent secret "$tenant_namespace" "$output_secret_name"
+wait_for 'ConfigMap deletion cleanup' object_absent configmap "$tenant_namespace" "$configmap_name"
+wait_for 'staging Secret deletion cleanup' object_absent secret "$system_namespace" "$staging_secret_name"
+wait_for 'Certificate deletion cleanup' object_absent certificate "$system_namespace" "$certificate_name"
+[[ $(etcd_admin get "$inside_key" --print-value-only) == "$inside_value" ]] ||
+  die 'tenant deletion removed deliberately retained prefix data'
+[[ $(etcd_admin get "$outside_key" --print-value-only) == "$outside_value" ]] ||
+  die 'lifecycle operations changed the outside-prefix sentinel'
+
+fabric_root_after=$(fabric_root_contract)
+assert_fabric_root_exact "$fabric_root_after"
+[[ $fabric_root_after == "$fabric_root_before" ]] ||
+  die 'tenant lifecycle changed the retained fabric-root authorization contract'
+etcd_fabric_root get /bootstrap/ --prefix --limit=1 >/dev/null ||
+  die 'retained fabric-root credential lost bootstrap-prefix access'
+
+physical_members_after=$(physical_member_contract)
+printf '%s\n' "$physical_members_after" >"$work/physical-members-after.json"
+[[ $physical_members_after == "$physical_members_before" ]] ||
+  die 'controller lifecycle changed the physical etcd member contract'
+
+note 'PASS: fenced standby takeover, replacement cluster reconciliation, unchanged physical membership, delegated-CA provisioning, prefix isolation, fabric-root preservation, durable deauthorization barrier, reauthorization, and deletion cleanup'

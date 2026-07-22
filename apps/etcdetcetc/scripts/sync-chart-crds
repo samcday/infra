@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/sync-chart-crds --check|--apply
+
+Generate the Helm chart CRDs from the Rust CustomResource definitions.
+EOF
+}
+
+case "${1:-}" in
+  --check | --apply)
+    mode=$1
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+app_dir=$(cd -- "$script_dir/.." && pwd -P)
+repo_dir=$(cd -- "$app_dir/../.." && pwd -P)
+chart_crds="$repo_dir/charts/etcdetcetc/templates/crds.yaml"
+work_dir=$(mktemp -d)
+trap 'rm -rf -- "$work_dir"' EXIT
+
+generated="$work_dir/crds.yaml"
+
+cargo run --quiet \
+  --manifest-path "$app_dir/Cargo.toml" \
+  -p etcdetcetc -- crds \
+  | yq -P \
+      '.items[] | .metadata.annotations."helm.sh/resource-policy" = "keep" | split_doc' \
+      >"$generated"
+
+case "$mode" in
+  --check)
+    if ! diff -u -- "$chart_crds" "$generated"; then
+      printf '%s\n' 'Helm CRDs are stale; run scripts/sync-chart-crds --apply.' >&2
+      exit 1
+    fi
+    printf '%s\n' 'Helm CRDs match the Rust CustomResource definitions.'
+    ;;
+  --apply)
+    install -m 0644 -- "$generated" "$chart_crds"
+    printf 'Updated %s\n' "$chart_crds"
+    ;;
+esac

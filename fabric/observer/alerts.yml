@@ -2,6 +2,83 @@
 groups:
   - name: fabric-root-etcd
     rules:
+      # The value and fingerprint are derived from the reviewed public CA at
+      # fabric/pki/etcdetcetc/client-ca.pem. Routine rotation adds a second
+      # series before trust overlap, marks the old generation "retiring" once
+      # signing stops, and removes it only after old trust is absent. Keeping
+      # this as a recording rule makes expiry warning independent of a live
+      # signer Secret or access to the root-equivalent private key.
+      - record: fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+        expr: vector(1879225290)
+        labels:
+          cluster: fabric-root
+          fingerprint_sha256: 9cab1225892b1d4112f5923e43d40f6517dd925f180ad088714d067ca6fd3292
+          generation: v1
+          lifecycle: active
+
+      - alert: FabricEtcdDelegatedClientCAExpiresWithin90Days
+        expr: |
+          (
+            fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+              - time() < 7776000
+          )
+          and
+          (
+            fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+              - time() >= 2592000
+          )
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric delegated etcd client CA {{ $labels.generation }} expires
+            within 90 days.
+          description: >-
+            Generation {{ $labels.generation }} ({{ $labels.lifecycle }},
+            SHA-256 {{ $labels.fingerprint_sha256 }}) must enter the reviewed
+            overlap rotation before its remaining validity reaches 30 days.
+
+      - alert: FabricEtcdDelegatedClientCAExpiresWithin30Days
+        expr: |
+          (
+            fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+              - time() < 2592000
+          )
+          and
+          (
+            fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+              - time() >= 604800
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Fabric delegated etcd client CA {{ $labels.generation }} expires
+            within 30 days.
+          description: >-
+            Generation {{ $labels.generation }} ({{ $labels.lifecycle }},
+            SHA-256 {{ $labels.fingerprint_sha256 }}) is inside the urgent
+            rotation window. Keep the exact trust and signer phase gates.
+
+      - alert: FabricEtcdDelegatedClientCAExpiresWithin7Days
+        expr: |
+          fabric_etcd_delegated_client_ca_not_after_timestamp_seconds
+            - time() < 604800
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Fabric delegated etcd client CA {{ $labels.generation }} expires
+            within seven days or is already expired.
+          description: >-
+            Generation {{ $labels.generation }} ({{ $labels.lifecycle }},
+            SHA-256 {{ $labels.fingerprint_sha256 }}) is at the renderer's
+            fail-closed boundary. Do not bypass the attended rotation or
+            emergency-containment sequence.
+
       - alert: FabricEtcdTargetDown
         expr: up{job="fabric-etcd"} == 0
         for: 2m
@@ -819,6 +896,119 @@ groups:
           description: >-
             More than two holder transitions in fifteen minutes can indicate
             API, node, or L2 instability.
+
+      - alert: FabricEtcdClientCertificateInventoryUnavailable
+        expr: |
+          absent(
+            fabric_observer_etcd_client_certificate_query_success{
+              job="fabric-observer"
+            }
+          )
+          or
+          fabric_observer_etcd_client_certificate_query_success{
+            job="fabric-observer"
+          } != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The observer cannot read the etcdetcetc Certificate inventory.
+          description: >-
+            The bounded, read-only cert-manager Certificate list request has
+            failed. Renewals have no independent status or expiry evidence
+            until API access recovers.
+
+      - alert: FabricEtcdClientCertificateInventoryInvalid
+        expr: |
+          absent(
+            fabric_observer_etcd_client_certificate_inventory_valid{
+              job="fabric-observer"
+            }
+          )
+          or
+          fabric_observer_etcd_client_certificate_inventory_valid{
+            job="fabric-observer"
+          } != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            The etcdetcetc Certificate inventory violates its fixed contract.
+          description: >-
+            Exactly one admin leaf and only UID-scoped tenant leaves may
+            exist in the etcdetcetc namespace; the list was malformed,
+            truncated, duplicated, missing the admin leaf, or contained an
+            unexpected Certificate.
+
+      - alert: FabricEtcdClientCertificateStatusInvalid
+        expr: |
+          fabric_observer_etcd_client_certificate_status_valid{
+            job="fabric-observer"
+          } != 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Etcd {{ $labels.credential }} Certificate
+            {{ $labels.certificate }} has invalid current status.
+          description: >-
+            cert-manager has not published one current-generation Ready
+            condition, a positive revision, and an exact eight-hour
+            renewal-to-expiry relationship for ten minutes.
+
+      - alert: FabricEtcdClientCertificateNotReady
+        expr: |
+          fabric_observer_etcd_client_certificate_ready{
+            job="fabric-observer"
+          } != 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Etcd {{ $labels.credential }} Certificate
+            {{ $labels.certificate }} is not Ready.
+          description: >-
+            cert-manager has not reported Ready=True for the current
+            Certificate generation for ten minutes. Tenant namespace/name are
+            {{ $labels.tenant_namespace }}/{{ $labels.tenant_name }}.
+
+      - alert: FabricEtcdClientCertificateRenewalStale
+        expr: |
+          fabric_observer_etcd_client_certificate_renewal_timestamp_seconds{
+            job="fabric-observer"
+          } < time() - 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Etcd {{ $labels.credential }} Certificate
+            {{ $labels.certificate }} missed its renewal time.
+          description: >-
+            The current leaf's scheduled renewal time passed at least fifteen
+            minutes ago and cert-manager has not advanced it. Investigate the
+            Certificate and its latest CertificateRequest before expiry.
+
+      - alert: FabricEtcdClientCertificateExpiresWithin4Hours
+        expr: |
+          fabric_observer_etcd_client_certificate_not_after_timestamp_seconds{
+            job="fabric-observer"
+          } - time() < 14400
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            Etcd {{ $labels.credential }} Certificate
+            {{ $labels.certificate }} expires within four hours.
+          description: >-
+            The 24-hour leaf is inside the critical half-renewal window or is
+            already expired. Preserve etcd access and repair issuance without
+            bypassing the delegated-CA controls.
 
       - alert: FabricObserverClientCertificateInvalid
         expr: |

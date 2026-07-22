@@ -45,6 +45,17 @@ etcd:
     create: true
     name: apiserver-etcd-client
   endpoints: []
+  # A stable SHA-256 revision of an externally managed client leaf certificate.
+  # The apiserver does not reliably reload --etcd-certfile/--etcd-keyfile, so
+  # changing this rolls its Pods.
+  clientCertificateRevision: ""
+  # Require both public revision signals for controller-managed external
+  # Secrets. etcdetcetc sets this true in its complete values handoff. The
+  # false default preserves pre-handoff legacy releases until they can migrate.
+  externalSecretRevisionsRequired: false
+  # A stable revision of the physical etcd server-CA bundle. When this changes,
+  # the apiserver Pods roll so their process-local RootCAs are rebuilt.
+  serverCATrustRevision: ""
   # It's assumed that this control plane is using a multi-tenanted etcd cluster with RBAC enabled,
   # and thus the compaction API is not permitted.
   compactionInterval: "0"

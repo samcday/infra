@@ -1,0 +1,988 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/../../.." && pwd -P)
+# shellcheck disable=SC1091
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+
+readonly required_version=3.6.13
+readonly admin_leaf_duration_seconds=86400
+readonly admin_leaf_issuance_skew_seconds=300
+readonly etcdctl_binary_sha256=83040f35846861c2b121a599d7066cf847436dd63b623a91b203ee7db209c6df
+readonly admin_user=fabric-etcdetcetc
+readonly endpoints=https://10.66.0.10:2379,https://10.66.0.11:2379,https://10.66.0.12:2379
+readonly physical_ca_fingerprint=FB:23:A7:72:A5:21:41:42:B3:0A:80:70:55:8D:BC:B5:86:D9:A6:BE:86:20:2C:18:31:B3:24:A8:E0:75:6A:52
+readonly lock_name=fabric-maintenance-lock
+mode=
+confirmation=
+
+usage() {
+  cat >&2 <<EOF
+Plan, provision, revoke, remotely verify, or statically validate the delegated
+etcdetcetc admin user.
+
+  ./manage-etcdetcetc-admin --check
+  ./manage-etcdetcetc-admin --verify-remote
+  ./manage-etcdetcetc-admin --plan-provision
+  ./manage-etcdetcetc-admin --provision --confirm PROVISION:fabric-etcdetcetc-admin:<main-commit>:<prestate-sha256>
+  ./manage-etcdetcetc-admin --plan-revoke
+  ./manage-etcdetcetc-admin --revoke --confirm REVOKE:fabric-etcdetcetc-admin:<main-commit>:<prestate-sha256>
+
+Provisioning creates the passwordless TLS-CN user '$admin_user' with exactly
+the built-in 'root' role. Revocation accepts only that exact role binding and
+then deletes the user. Each read-only plan prints a one-state confirmation
+bound to the pushed main revision, etcd cluster/member IDs, and normalized
+authorization pre-state. Mutation also takes the global Fabric Kubernetes
+maintenance lock shared with trust and network operations. Live
+modes require a clean pushed main branch,
+etcdctl 3.6.13, healthy exact endpoints, and an attended observer maintenance
+window on all three roots. Remote verification instead keeps the live
+Kubernetes admin Secret only on local verified tmpfs and supervises three
+strict loopback-only forwards through cp1; no credential bytes or files are
+placed on a root node. The offline root credential is decrypted only in a
+mode-0700 directory on verified tmpfs. Existing fabric-root permissions are
+verified exactly before the mutation and proven byte-for-byte equivalent in
+normalized form afterwards.
+EOF
+}
+
+die() {
+  echo "manage-etcdetcetc-admin: $*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=check
+      shift
+      ;;
+    --verify-remote)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=verify-remote
+      shift
+      ;;
+    --provision)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=provision
+      shift
+      ;;
+    --plan-provision)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=plan-provision
+      shift
+      ;;
+    --revoke)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=revoke
+      shift
+      ;;
+    --plan-revoke)
+      [[ -z $mode ]] || die 'choose exactly one mode'
+      mode=plan-revoke
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $mode ]] || {
+  usage
+  exit 2
+}
+case $mode in
+  check | verify-remote)
+    [[ -z $confirmation ]] || die "--$mode does not accept --confirm"
+    ;;
+  plan-provision | plan-revoke)
+    [[ -z $confirmation ]] || die 'planning modes do not accept --confirm'
+    ;;
+  provision | revoke)
+    [[ -n $confirmation ]] || die '--confirm is required for mutation'
+    ;;
+esac
+
+commands=(awk git grep jq sort)
+if [[ $mode != verify-remote ]]; then
+  commands+=(sops)
+fi
+if [[ $mode != check && $mode != verify-remote ]]; then
+  commands+=(etcdctl git openssl sha256sum)
+fi
+if [[ $mode == verify-remote ]]; then
+  commands+=(base64 cmp date env etcdctl openssl ps realpath sed sha256sum ssh stat uname yq)
+fi
+for command in "${commands[@]}"; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+[[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
+  die 'script is not inside the expected Git worktree'
+
+offline_artifacts=(ca.pem root.pem root-key.pem)
+if [[ $mode != verify-remote ]]; then
+  readonly recovery_recipient=age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+  for artifact in "${offline_artifacts[@]}"; do
+    encrypted=$script_dir/$artifact.enc
+    [[ -f $encrypted && ! -L $encrypted ]] || die "offline artifact is absent or unsafe: $artifact.enc"
+    [[ $(sops filestatus "$encrypted" | jq -r '.encrypted') == true ]] ||
+      die "offline artifact is not SOPS-encrypted: $artifact.enc"
+    recipients=$(jq -r '.sops.age[].recipient' "$encrypted" | sort)
+    [[ $recipients == "$recovery_recipient" ]] ||
+      die "offline artifact must have only Sam's recovery recipient: $artifact.enc"
+    ! grep -Eq -- '-----BEGIN (CERTIFICATE|[^-]*PRIVATE KEY)-----' "$encrypted" ||
+      die "offline artifact contains plaintext PEM: $artifact.enc"
+  done
+fi
+
+pinned_archive=$(awk '
+  $0 == "etcd-v3.6.13-linux-amd64.tar.gz" {
+    name = $0
+    getline url
+    getline digest
+    print name "\n" url "\n" digest
+    exit
+  }
+' "$repo_root/fabric/router/data-files.txt")
+expected_archive='etcd-v3.6.13-linux-amd64.tar.gz
+https://github.com/etcd-io/etcd/releases/download/v3.6.13/etcd-v3.6.13-linux-amd64.tar.gz
+b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465'
+[[ $pinned_archive == "$expected_archive" ]] ||
+  die 'the checksum-pinned etcdctl 3.6.13 archive contract changed'
+
+if [[ $mode == check ]]; then
+  echo "validated offline $admin_user administration inputs and etcdctl 3.6.13 pin"
+  exit 0
+fi
+
+[[ $(git -C "$repo_root" branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(git -C "$repo_root" status --porcelain) ]] || die 'worktree must be clean'
+git -C "$repo_root" fetch --quiet origin main
+head_commit=$(git -C "$repo_root" rev-parse HEAD)
+origin_main=$(git -C "$repo_root" rev-parse refs/remotes/origin/main)
+[[ $head_commit == "$origin_main" ]] ||
+  die 'HEAD must exactly match freshly fetched origin/main'
+
+if [[ $mode == verify-remote ]]; then
+  readonly online_ca=$repo_root/fabric/pki/etcdetcetc/client-ca.pem
+  readonly committed_server_ca_manifest=$repo_root/fabric/cluster/etcdetcetc/server-ca.yaml
+  readonly known_hosts=$repo_root/fabric/access/known_hosts
+  readonly proxy_command="$repo_root/scripts/fabric-ssh-proxy %h %p"
+  readonly identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+  readonly forwarded_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42380,https://127.0.0.1:42381
+  [[ -f $online_ca && ! -L $online_ca ]] ||
+    die 'reviewed delegated client CA is absent or unsafe'
+  [[ -f $committed_server_ca_manifest && ! -L $committed_server_ca_manifest ]] ||
+    die 'committed physical server CA manifest is absent or unsafe'
+  [[ -f $known_hosts && ! -L $known_hosts ]] ||
+    die 'strict Fabric root host-key file is absent or unsafe'
+  [[ -r $identity && ! -L $identity ]] ||
+    die 'Fabric SSH identity is absent or unsafe'
+  [[ -x $repo_root/scripts/fabric-ssh-proxy &&
+     ! -L $repo_root/scripts/fabric-ssh-proxy ]] ||
+    die 'repo-local Fabric SSH proxy is absent or unsafe'
+
+  remote_ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+  [[ -x ${remote_ik[0]} && ! -L ${remote_ik[0]} ]] ||
+    die 'repo-local Fabric Kubernetes helper is absent or unsafe'
+
+  online_work=$(fabric_secure_tmpdir fabric-etcdetcetc-admin-verify 1048576)
+  tunnel_pid=
+
+  terminate_tunnel() {
+    local _attempt
+    [[ -n ${tunnel_pid:-} ]] || return 0
+    if kill -0 "$tunnel_pid" 2>/dev/null; then
+      kill -TERM "$tunnel_pid" 2>/dev/null || true
+      for _attempt in {1..20}; do
+        kill -0 "$tunnel_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      if kill -0 "$tunnel_pid" 2>/dev/null; then
+        kill -KILL "$tunnel_pid" 2>/dev/null || true
+      fi
+    fi
+    wait "$tunnel_pid" 2>/dev/null || true
+    if kill -0 "$tunnel_pid" 2>/dev/null; then
+      return 1
+    fi
+    tunnel_pid=
+  }
+
+  # shellcheck disable=SC2329 # Invoked through EXIT and signal traps below.
+  cleanup_online_verification() {
+    local status=$?
+    trap - EXIT
+    trap '' HUP INT TERM
+    set +e
+    terminate_tunnel || status=1
+    if [[ -n ${online_work:-} ]]; then
+      rm -f -- \
+        "$online_work/admin.pem" \
+        "$online_work/admin-key.pem" \
+        "$online_work/admin-ca.pem" \
+        "$online_work/server-ca.pem" \
+        "$online_work/committed-server-ca.pem"
+      rmdir -- "$online_work" 2>/dev/null
+      if [[ -e $online_work ]]; then
+        echo 'manage-etcdetcetc-admin: local tmpfs credential cleanup could not be proven' >&2
+        status=1
+      fi
+    fi
+    exit "$status"
+  }
+  trap cleanup_online_verification EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  secret_json=$("${remote_ik[@]}" --namespace etcdetcetc get secret \
+    fabric-etcdetcetc-admin --output=json) ||
+    die 'cannot read the live delegated administrator Secret'
+  jq -e '
+    .apiVersion == "v1" and
+    .kind == "Secret" and
+    .metadata.name == "fabric-etcdetcetc-admin" and
+    .metadata.namespace == "etcdetcetc" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    .metadata.labels["app.kubernetes.io/name"] == "etcdetcetc" and
+    .metadata.labels["app.kubernetes.io/component"] == "admin-credential" and
+    .type == "kubernetes.io/tls" and
+    (.data | keys) == ["ca.crt", "tls.crt", "tls.key"] and
+    all(.data["ca.crt"], .data["tls.crt"], .data["tls.key"];
+      type == "string" and length > 0)
+  ' <<<"$secret_json" >/dev/null ||
+    die 'live delegated administrator Secret differs from the exact contract'
+  secret_uid=$(jq -er '.metadata.uid' <<<"$secret_json")
+  secret_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$secret_json")
+  [[ $secret_uid =~ ^[0-9a-f-]+$ ]] ||
+    die 'live delegated administrator Secret UID is malformed'
+  secret_data_hash=$(jq -cS '.data' <<<"$secret_json" | sha256sum | awk '{print $1}')
+
+  server_ca_json=$("${remote_ik[@]}" --namespace etcdetcetc get configmap \
+    fabric-etcd-server-ca --output=json) ||
+    die 'cannot read the live physical server CA ConfigMap'
+  jq -e '
+    .apiVersion == "v1" and
+    .kind == "ConfigMap" and
+    .metadata.name == "fabric-etcd-server-ca" and
+    .metadata.namespace == "etcdetcetc" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    (.data | keys) == ["ca.crt"] and
+    (.data["ca.crt"] | type == "string" and length > 0)
+  ' <<<"$server_ca_json" >/dev/null ||
+    die 'live physical server CA ConfigMap differs from the exact contract'
+  server_ca_uid=$(jq -er '.metadata.uid' <<<"$server_ca_json")
+  server_ca_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$server_ca_json")
+  server_ca_data_hash=$(jq -cS '.data' <<<"$server_ca_json" |
+    sha256sum | awk '{print $1}')
+
+  jq -er '.data["tls.crt"]' <<<"$secret_json" |
+    base64 --decode >"$online_work/admin.pem" ||
+    die 'cannot decode the delegated administrator leaf'
+  jq -er '.data["tls.key"]' <<<"$secret_json" |
+    base64 --decode >"$online_work/admin-key.pem" ||
+    die 'cannot decode the delegated administrator key'
+  jq -er '.data["ca.crt"]' <<<"$secret_json" |
+    base64 --decode >"$online_work/admin-ca.pem" ||
+    die 'cannot decode the delegated administrator CA'
+  jq -er '.data["ca.crt"]' <<<"$server_ca_json" >"$online_work/server-ca.pem" ||
+    die 'cannot decode the live physical server CA'
+  yq -er '.data["ca.crt"]' "$committed_server_ca_manifest" \
+    >"$online_work/committed-server-ca.pem" ||
+    die 'cannot extract the committed physical server CA'
+  unset secret_json server_ca_json
+  chmod 0600 -- \
+    "$online_work/admin.pem" \
+    "$online_work/admin-key.pem" \
+    "$online_work/admin-ca.pem" \
+    "$online_work/server-ca.pem" \
+    "$online_work/committed-server-ca.pem"
+
+  [[ $(stat -Lc '%u:%g:%a:%F' "$online_work") == \
+     "$(id -u):$(id -g):700:directory" ]] ||
+    die 'local delegated administrator tmpfs directory metadata is unsafe'
+  for credential_path in \
+    "$online_work/admin.pem" \
+    "$online_work/admin-key.pem" \
+    "$online_work/admin-ca.pem" \
+    "$online_work/server-ca.pem" \
+    "$online_work/committed-server-ca.pem"; do
+    [[ -f $credential_path && ! -L $credential_path ]] ||
+      die 'local delegated administrator credential path is unsafe'
+    [[ $(stat -Lc '%u:%g:%a:%F' "$credential_path") == \
+       "$(id -u):$(id -g):600:regular file" ]] ||
+      die 'local delegated administrator credential metadata is unsafe'
+  done
+
+  [[ $(grep -c '^-----BEGIN CERTIFICATE-----$' "$online_work/admin.pem") == 1 &&
+     $(grep -c '^-----END CERTIFICATE-----$' "$online_work/admin.pem") == 1 ]] ||
+    die 'delegated administrator leaf is not exactly one PEM certificate'
+  [[ $(openssl x509 -in "$online_work/admin.pem" -noout -subject -nameopt RFC2253) == \
+     'subject=CN=fabric-etcdetcetc' ]] ||
+    die 'delegated administrator leaf has an unexpected subject'
+  [[ $(openssl x509 -in "$online_work/admin.pem" -noout -issuer -nameopt RFC2253) == \
+     'issuer=CN=fabric-etcdetcetc-client-ca' ]] ||
+    die 'delegated administrator leaf has an unexpected issuer'
+  admin_text=$(openssl x509 -in "$online_work/admin.pem" -noout -text) ||
+    die 'cannot inspect the delegated administrator leaf'
+  grep -Fq 'TLS Web Client Authentication' <<<"$admin_text" ||
+    die 'delegated administrator leaf lacks client-auth EKU'
+  ! grep -Fq 'TLS Web Server Authentication' <<<"$admin_text" ||
+    die 'delegated administrator leaf unexpectedly has server-auth EKU'
+  openssl x509 -in "$online_work/admin.pem" -noout -checkend 3600 >/dev/null ||
+    die 'delegated administrator leaf expires in less than one hour'
+  if openssl x509 -in "$online_work/admin.pem" -noout -checkend 90000 >/dev/null; then
+    die 'delegated administrator leaf exceeds the bounded 24-hour lifetime'
+  fi
+  admin_not_before=$(openssl x509 -in "$online_work/admin.pem" -noout -startdate |
+    sed 's/^notBefore=//')
+  admin_not_after=$(openssl x509 -in "$online_work/admin.pem" -noout -enddate |
+    sed 's/^notAfter=//')
+  admin_not_before_epoch=$(date --date="$admin_not_before" +%s) ||
+    die 'cannot parse delegated administrator notBefore'
+  admin_not_after_epoch=$(date --date="$admin_not_after" +%s) ||
+    die 'cannot parse delegated administrator notAfter'
+  admin_validity_seconds=$((admin_not_after_epoch - admin_not_before_epoch))
+  ((admin_validity_seconds >= admin_leaf_duration_seconds &&
+    admin_validity_seconds <=
+      admin_leaf_duration_seconds + admin_leaf_issuance_skew_seconds)) ||
+    die 'delegated administrator total validity is not the 24-hour contract'
+  openssl verify -purpose sslclient -CAfile "$online_ca" \
+    "$online_work/admin.pem" >/dev/null ||
+    die 'delegated administrator leaf does not chain to the reviewed online CA'
+  cmp --silent -- "$online_ca" "$online_work/admin-ca.pem" ||
+    die 'live delegated administrator CA differs byte-for-byte from the reviewed online CA'
+  cert_key_hash=$(openssl x509 -in "$online_work/admin.pem" -pubkey -noout |
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+  private_key_hash=$(openssl pkey -in "$online_work/admin-key.pem" -pubout \
+    -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+  [[ $cert_key_hash == "$private_key_hash" ]] ||
+    die 'delegated administrator certificate and key do not match'
+
+  cmp --silent -- "$online_work/committed-server-ca.pem" \
+    "$online_work/server-ca.pem" ||
+    die 'live physical server CA differs byte-for-byte from the committed ConfigMap'
+  [[ $(openssl x509 -in "$online_work/server-ca.pem" -noout \
+    -subject -nameopt RFC2253) == 'subject=CN=fabric-etcd-ca' ]] ||
+    die 'physical server CA has an unexpected subject'
+  actual_physical_ca_fingerprint=$(openssl x509 -in "$online_work/server-ca.pem" \
+    -noout -fingerprint -sha256 | sed 's/^sha256 Fingerprint=//')
+  [[ $actual_physical_ca_fingerprint == "$physical_ca_fingerprint" ]] ||
+    die 'physical server CA fingerprint differs from the pinned reviewed CA'
+
+  local_etcdctl=$(realpath -- "$(command -v etcdctl)")
+  [[ $local_etcdctl == /* && -x $local_etcdctl && ! -d $local_etcdctl ]] ||
+    die 'local etcdctl does not resolve to an executable file'
+  [[ $(uname --machine) == x86_64 ]] ||
+    die 'the checksum-pinned local etcdctl proof requires x86_64'
+  [[ $(sha256sum -- "$local_etcdctl" | awk '{print $1}') == \
+     "$etcdctl_binary_sha256" ]] ||
+    die 'local etcdctl bytes differ from the checksum-pinned 3.6.13 archive'
+  etcdctl_output=$(env -i LC_ALL=C "$local_etcdctl" version 2>&1) ||
+    die 'local etcdctl version check failed'
+  [[ $(awk '/^etcdctl version:/ { print $3; exit }' <<<"$etcdctl_output") == \
+     "$required_version" ]] ||
+    die "local etcdctl $required_version is required"
+  grep -Fxq 'API version: 3.6' <<<"$etcdctl_output" ||
+    die 'local etcdctl must report API version 3.6'
+
+  ssh_arguments=(
+    -F /dev/null
+    -i "$identity"
+    -N
+    -T
+    -n
+    -o AddressFamily=inet
+    -o BatchMode=yes
+    -o CanonicalizeHostname=no
+    -o CheckHostIP=no
+    -o ClearAllForwardings=no
+    -o ConnectTimeout=10
+    -o ControlMaster=no
+    -o ControlPath=none
+    -o ControlPersist=no
+    -o EscapeChar=none
+    -o ExitOnForwardFailure=yes
+    -o ForkAfterAuthentication=no
+    -o ForwardAgent=no
+    -o GatewayPorts=no
+    -o GlobalKnownHostsFile=/dev/null
+    -o HostKeyAlgorithms=ssh-ed25519
+    -o IdentitiesOnly=yes
+    -o KbdInteractiveAuthentication=no
+    -o LogLevel=ERROR
+    -o PasswordAuthentication=no
+    -o PermitLocalCommand=no
+    -o ProxyJump=none
+    -o RequestTTY=no
+    -o ServerAliveCountMax=2
+    -o ServerAliveInterval=5
+    -o StrictHostKeyChecking=yes
+    -o StreamLocalBindUnlink=no
+    -o TCPKeepAlive=yes
+    -o Tunnel=no
+    -o UpdateHostKeys=no
+    -o "ProxyCommand=$proxy_command"
+    -o "UserKnownHostsFile=$known_hosts"
+    -L 127.0.0.1:42379:127.0.0.1:2379
+    -L 127.0.0.1:42380:10.66.0.11:2379
+    -L 127.0.0.1:42381:10.66.0.12:2379
+  )
+  ssh "${ssh_arguments[@]}" sam@10.66.0.10 &
+  tunnel_pid=$!
+
+  assert_tunnel_alive() {
+    local state
+    kill -0 "$tunnel_pid" 2>/dev/null || die 'supervised Fabric SSH tunnel exited'
+    state=$(ps -o stat= -p "$tunnel_pid") || die 'cannot inspect supervised Fabric SSH tunnel'
+    [[ -n $state && $state != Z* ]] || die 'supervised Fabric SSH tunnel is not running'
+  }
+
+  ctl=(
+    env -i LC_ALL=C
+    "$local_etcdctl"
+    "--endpoints=$forwarded_endpoints"
+    "--cacert=$online_work/server-ca.pem"
+    "--cert=$online_work/admin.pem"
+    "--key=$online_work/admin-key.pem"
+    --dial-timeout=3s
+    --command-timeout=15s
+  )
+
+  tunnel_ready=false
+  health_json=
+  for _attempt in {1..40}; do
+    assert_tunnel_alive
+    if health_json=$("${ctl[@]}" --write-out=json endpoint health 2>/dev/null); then
+      tunnel_ready=true
+      break
+    fi
+    sleep 0.25
+  done
+  $tunnel_ready || die 'supervised Fabric SSH forwards did not become usable'
+  assert_tunnel_alive
+
+  delegated_query() {
+    local label=$1
+    local query_json
+    shift
+    assert_tunnel_alive
+    query_json=$("${ctl[@]}" --write-out=json "$@") ||
+      die "delegated credential query failed: $label"
+    assert_tunnel_alive
+    printf '%s\n' "$query_json"
+  }
+
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].endpoint] | sort) == [
+      "https://127.0.0.1:42379",
+      "https://127.0.0.1:42380",
+      "https://127.0.0.1:42381"
+    ] and all(.health == true)
+  ' <<<"$health_json" >/dev/null ||
+    die 'not all three exact forwarded etcd endpoints are healthy under the delegated credential'
+
+  status_json=$(delegated_query status endpoint status)
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].Endpoint] | sort) == [
+      "https://127.0.0.1:42379",
+      "https://127.0.0.1:42380",
+      "https://127.0.0.1:42381"
+    ] and
+    ([.[].Status.header.cluster_id] | unique | length) == 1 and
+    ([.[].Status.header.member_id] | unique | length) == 3 and
+    ([.[].Status.leader] | unique | length) == 1 and
+    all(.Status.version == "3.6.13") and
+    all(.Status.header.cluster_id > 0) and
+    all(.Status.header.member_id > 0) and
+    all(.Status.header.revision > 0) and
+    all(.Status.leader > 0) and
+    all((.Status.isLearner // false) == false)
+  ' <<<"$status_json" >/dev/null ||
+    die 'delegated credential observed inconsistent or degraded quorum status'
+
+  alarm_json=$(delegated_query alarms alarm list)
+  jq -e 'type == "object" and (.alarms // []) == []' <<<"$alarm_json" >/dev/null ||
+    die 'delegated credential observed a non-empty or invalid alarm state'
+  auth_json=$(delegated_query auth auth status)
+  jq -e '.enabled == true' <<<"$auth_json" >/dev/null ||
+    die 'etcd authentication is not enabled'
+  root_user_json=$(delegated_query root-user user get root)
+  jq -e '.roles == ["root"]' <<<"$root_user_json" >/dev/null ||
+    die 'reserved root user does not have exactly the built-in root role'
+  fabric_root_user_json=$(delegated_query fabric-root-user user get fabric-root)
+  jq -e '.roles == ["fabric-root"]' <<<"$fabric_root_user_json" >/dev/null ||
+    die 'fabric-root user does not have exactly the fabric-root role'
+  fabric_root_role_json=$(delegated_query fabric-root-role role get fabric-root)
+  jq -e '
+    ([.perm[] | {
+      permType,
+      key: (.key | @base64d),
+      range_end: (.range_end | @base64d)
+    }] | sort_by(.key)) == [
+      {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
+      {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
+    ]
+  ' <<<"$fabric_root_role_json" >/dev/null ||
+    die 'fabric-root role differs from the exact two-prefix contract'
+  admin_user_json=$(delegated_query admin-user user get fabric-etcdetcetc)
+  jq -e '.roles == ["root"]' <<<"$admin_user_json" >/dev/null ||
+    die 'delegated administrator does not have exactly the built-in root role'
+
+  member_json=$(delegated_query members member list)
+  jq -e --argjson status "$status_json" '
+    .header.cluster_id == $status[0].Status.header.cluster_id and
+    (.members | type == "array" and length == 3) and
+    ([.members[].ID] | unique | length) == 3 and
+    ([.members[].ID] | sort) == ([$status[].Status.header.member_id] | sort) and
+    ([$status[] as $endpoint |
+      .members[] |
+      select(.ID == $endpoint.Status.header.member_id) |
+      {endpoint: $endpoint.Endpoint, name}
+    ] | sort_by(.endpoint)) == [
+      {endpoint: "https://127.0.0.1:42379", name: "fabric-az1-cp1"},
+      {endpoint: "https://127.0.0.1:42380", name: "fabric-az1-cp2"},
+      {endpoint: "https://127.0.0.1:42381", name: "fabric-az1-cp3"}
+    ] and
+    ([.members[] | {
+      name,
+      peerURLs,
+      clientURLs,
+      isLearner: (.isLearner // false)
+    }] | sort_by(.name)) == [
+      {
+        name: "fabric-az1-cp1",
+        peerURLs: ["https://fabric-az1-cp1.fabric.internal:2380"],
+        clientURLs: ["https://fabric-az1-cp1.fabric.internal:2379"],
+        isLearner: false
+      },
+      {
+        name: "fabric-az1-cp2",
+        peerURLs: ["https://fabric-az1-cp2.fabric.internal:2380"],
+        clientURLs: ["https://fabric-az1-cp2.fabric.internal:2379"],
+        isLearner: false
+      },
+      {
+        name: "fabric-az1-cp3",
+        peerURLs: ["https://fabric-az1-cp3.fabric.internal:2380"],
+        clientURLs: ["https://fabric-az1-cp3.fabric.internal:2379"],
+        isLearner: false
+      }
+    ]
+  ' <<<"$member_json" >/dev/null ||
+    die 'etcd member list differs from the exact three-voter Fabric contract'
+
+  secret_after_json=$("${remote_ik[@]}" --namespace etcdetcetc get secret \
+    fabric-etcdetcetc-admin --output=json) ||
+    die 'cannot re-read the live delegated administrator Secret'
+  secret_after_uid=$(jq -er '.metadata.uid' <<<"$secret_after_json")
+  secret_after_resource_version=$(jq -er '.metadata.resourceVersion' \
+    <<<"$secret_after_json")
+  secret_after_data_hash=$(jq -cS '.data' <<<"$secret_after_json" |
+    sha256sum | awk '{print $1}')
+  [[ $secret_after_uid == "$secret_uid" &&
+     $secret_after_resource_version == "$secret_resource_version" &&
+     $secret_after_data_hash == "$secret_data_hash" ]] ||
+    die 'delegated administrator Secret rotated during the forwarded proof'
+  unset secret_after_json
+
+  server_ca_after_json=$("${remote_ik[@]}" --namespace etcdetcetc get configmap \
+    fabric-etcd-server-ca --output=json) ||
+    die 'cannot re-read the live physical server CA ConfigMap'
+  server_ca_after_uid=$(jq -er '.metadata.uid' <<<"$server_ca_after_json")
+  server_ca_after_resource_version=$(jq -er '.metadata.resourceVersion' \
+    <<<"$server_ca_after_json")
+  server_ca_after_data_hash=$(jq -cS '.data' <<<"$server_ca_after_json" |
+    sha256sum | awk '{print $1}')
+  [[ $server_ca_after_uid == "$server_ca_uid" &&
+     $server_ca_after_resource_version == "$server_ca_resource_version" &&
+     $server_ca_after_data_hash == "$server_ca_data_hash" ]] ||
+    die 'physical server CA ConfigMap rotated during the forwarded proof'
+  unset server_ca_after_json
+  assert_tunnel_alive
+
+  terminate_tunnel || die 'supervised Fabric SSH tunnel could not be terminated'
+  [[ -z $tunnel_pid ]] || die 'supervised Fabric SSH tunnel cleanup was not proven'
+  rm -f -- \
+    "$online_work/admin.pem" \
+    "$online_work/admin-key.pem" \
+    "$online_work/admin-ca.pem" \
+    "$online_work/server-ca.pem" \
+    "$online_work/committed-server-ca.pem"
+  rmdir -- "$online_work"
+  [[ ! -e $online_work ]] ||
+    die 'local tmpfs credential cleanup could not be proven'
+  online_work=
+  trap - EXIT HUP INT TERM
+  printf 'FABRIC_ETCDETCETC_ADMIN_REMOTE=PASS revision=%s\n' "$head_commit"
+  exit 0
+fi
+
+etcdctl_output=$(etcdctl version 2>&1) || die 'etcdctl version check failed'
+[[ $(awk '/^etcdctl version:/ { print $3; exit }' <<<"$etcdctl_output") == "$required_version" ]] ||
+  die "etcdctl $required_version is required"
+grep -Fxq 'API version: 3.6' <<<"$etcdctl_output" ||
+  die 'etcdctl must report API version 3.6'
+
+work=$(fabric_secure_tmpdir fabric-etcdetcetc-admin 16777216)
+provision_started=false
+accepted=false
+lock_acquired=false
+operation=${mode#plan-}
+ik=("$repo_root/scripts/ik" --context=fabric)
+
+unset ETCDCTL_API ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY \
+  ETCDCTL_USER ETCDCTL_PASSWORD
+
+for artifact in "${offline_artifacts[@]}"; do
+  sops --decrypt --input-type json --output-type binary \
+    "$script_dir/$artifact.enc" >"$work/$artifact"
+done
+chmod 0600 "$work"/*
+
+ctl=(
+  etcdctl
+  "--endpoints=$endpoints"
+  "--cacert=$work/ca.pem"
+  "--cert=$work/root.pem"
+  "--key=$work/root-key.pem"
+  --dial-timeout=5s
+  --command-timeout=15s
+)
+
+cleanup() {
+  local status=$? rollback_user_list rollback_admin_json rollback_admin_roles
+  local rollback_user_list_after
+  trap - EXIT
+  set +e
+  if $provision_started && ! $accepted; then
+    # The add or grant RPC may have committed even when etcdctl lost its
+    # response. Query the reserved name under the same lock and remove only the
+    # exact zero-role or root-only state this invocation can have produced.
+    if ! rollback_user_list=$("${ctl[@]}" --write-out=json user list 2>/dev/null); then
+      echo "WARNING: cannot determine whether the ambiguous $admin_user provision committed; keep every maintenance window closed and inspect with the offline root identity" >&2
+    elif [[ $(jq -r --arg user "$admin_user" \
+      '(.users // []) | index($user) != null' <<<"$rollback_user_list") == true ]]; then
+      if ! rollback_admin_json=$("${ctl[@]}" --write-out=json user get \
+        "$admin_user" 2>/dev/null); then
+        echo "WARNING: cannot inspect the partially provisioned $admin_user; the maintenance lock remains for recovery" >&2
+      else
+        rollback_admin_roles=$(jq -cS '.roles' <<<"$rollback_admin_json" 2>/dev/null)
+        if [[ $rollback_admin_roles != '[]' && $rollback_admin_roles != '["root"]' ]]; then
+          echo "WARNING: refusing to delete $admin_user with unexpected roles $rollback_admin_roles; the maintenance lock remains for recovery" >&2
+        elif ! "${ctl[@]}" user delete "$admin_user" >/dev/null 2>&1; then
+          echo "WARNING: failed to remove partially provisioned $admin_user; keep every maintenance window closed and inspect with the offline root identity" >&2
+        elif ! rollback_user_list_after=$("${ctl[@]}" --write-out=json user list 2>/dev/null) ||
+          [[ $(jq -r --arg user "$admin_user" \
+            '(.users // []) | index($user) != null' <<<"$rollback_user_list_after") != false ]]; then
+          echo "WARNING: deletion of partially provisioned $admin_user could not be proven; the maintenance lock remains for recovery" >&2
+        else
+          echo "removed the exact partially provisioned $admin_user after an unaccepted operation" >&2
+        fi
+      fi
+    fi
+  fi
+  if $lock_acquired; then
+    echo "WARNING: $lock_name remains held for attended inspection" >&2
+  fi
+  rm -rf -- "$work"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+ca_subject=$(openssl x509 -in "$work/ca.pem" -noout -subject -nameopt RFC2253)
+[[ $ca_subject == 'subject=CN=fabric-etcd-ca' ]] || die 'offline CA has an unexpected subject'
+root_subject=$(openssl x509 -in "$work/root.pem" -noout -subject -nameopt RFC2253)
+[[ $root_subject == 'subject=CN=root' ]] || die 'offline administrator certificate CN is not root'
+openssl verify -purpose sslclient -CAfile "$work/ca.pem" "$work/root.pem" >/dev/null ||
+  die 'offline root certificate does not verify for client authentication'
+cert_key_hash=$(openssl x509 -in "$work/root.pem" -pubkey -noout |
+  openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+key_key_hash=$(openssl pkey -in "$work/root-key.pem" -pubout -outform DER 2>/dev/null |
+  sha256sum | awk '{print $1}')
+[[ $cert_key_hash == "$key_key_hash" ]] || die 'offline root certificate and key do not match'
+
+cluster_contract=
+assert_cluster_health() {
+  local health_json status_json current_contract
+  health_json=$("${ctl[@]}" --write-out=json endpoint health) ||
+    die 'three-endpoint etcd health query failed'
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].endpoint] | sort) == [
+      "https://10.66.0.10:2379",
+      "https://10.66.0.11:2379",
+      "https://10.66.0.12:2379"
+    ] and all(.health == true)
+  ' <<<"$health_json" >/dev/null || die 'not all exact etcd endpoints are healthy'
+
+  status_json=$("${ctl[@]}" --write-out=json endpoint status) ||
+    die 'three-endpoint etcd status query failed'
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].Endpoint] | sort) == [
+      "https://10.66.0.10:2379",
+      "https://10.66.0.11:2379",
+      "https://10.66.0.12:2379"
+    ] and
+    ([.[].Status.header.cluster_id] | unique | length) == 1 and
+    ([.[].Status.header.member_id] | unique | length) == 3 and
+    ([.[].Status.leader] | unique | length) == 1 and
+    all(.Status.version == "3.6.13") and
+    all(.Status.header.revision > 0) and
+    all(.Status.leader > 0) and
+    all((.Status.isLearner // false) == false)
+  ' <<<"$status_json" >/dev/null || die 'etcd quorum status is inconsistent or degraded'
+  current_contract=$(jq -cS '{
+    cluster_id: .[0].Status.header.cluster_id,
+    member_ids: ([.[].Status.header.member_id] | sort)
+  }' <<<"$status_json")
+  if [[ -z $cluster_contract ]]; then
+    cluster_contract=$current_contract
+  else
+    [[ $current_contract == "$cluster_contract" ]] ||
+      die 'etcd cluster or member identity changed during administration'
+  fi
+}
+
+alarm_contract() {
+  local alarm_json normalized
+  alarm_json=$("${ctl[@]}" --write-out=json alarm list) ||
+    die 'cannot read etcd alarm state'
+  normalized=$(jq -cS '
+    if type != "object" then
+      error("alarm response is not an object")
+    elif ((.alarms // []) | type) != "array" then
+      error("alarm list is not an array")
+    else
+      {
+        alarms: ((.alarms // []) | map({
+          memberID: .memberID,
+          alarm: .alarm
+        }) | sort_by(.memberID, .alarm))
+      }
+    end
+  ' <<<"$alarm_json") || die 'etcd returned an invalid alarm response'
+  printf '%s\n' "$normalized"
+}
+
+assert_no_alarms() {
+  local contract=$1
+  [[ $contract == '{"alarms":[]}' ]] ||
+    die "etcd alarm state is not exactly empty: $contract"
+}
+
+fabric_root_contract() {
+  local user_json role_json
+  user_json=$("${ctl[@]}" --write-out=json user get fabric-root) ||
+    die 'cannot read existing fabric-root user'
+  role_json=$("${ctl[@]}" --write-out=json role get fabric-root) ||
+    die 'cannot read existing fabric-root role'
+  jq -n -cS \
+    --argjson roles "$(jq -cS '.roles' <<<"$user_json")" \
+    --argjson permissions "$(jq -cS '
+      [.perm[] | {
+        permType,
+        key: (.key | @base64d),
+        range_end: (.range_end | @base64d)
+      }] | sort_by(.key)
+    ' <<<"$role_json")" \
+    '{roles: $roles, permissions: $permissions}'
+}
+
+assert_fabric_root_exact() {
+  local contract=$1
+  jq -e '
+    .roles == ["fabric-root"] and
+    .permissions == [
+      {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
+      {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
+    ]
+  ' <<<"$contract" >/dev/null ||
+    die 'existing fabric-root user/role differs from the exact two-prefix contract'
+}
+
+assert_cluster_health
+alarm_before=$(alarm_contract)
+assert_no_alarms "$alarm_before"
+auth_json=$("${ctl[@]}" --write-out=json auth status) || die 'cannot read etcd auth status'
+jq -e '.enabled == true' <<<"$auth_json" >/dev/null || die 'etcd authentication is not enabled'
+root_user_json=$("${ctl[@]}" --write-out=json user get root) || die 'cannot read root user'
+jq -e '.roles == ["root"]' <<<"$root_user_json" >/dev/null ||
+  die 'reserved root user does not have exactly the built-in root role'
+fabric_root_before=$(fabric_root_contract)
+assert_fabric_root_exact "$fabric_root_before"
+
+user_list_json=$("${ctl[@]}" --write-out=json user list) || die 'cannot list etcd users'
+admin_exists=$(jq -r --arg user "$admin_user" '(.users // []) | index($user) != null' \
+  <<<"$user_list_json")
+
+admin_roles='[]'
+case $operation in
+  provision)
+    [[ $admin_exists == false ]] ||
+      die "$admin_user already exists; refuse to adopt an identity whose passwordless origin cannot be proven"
+    ;;
+  revoke)
+    [[ $admin_exists == true ]] || die "$admin_user does not exist"
+    admin_json=$("${ctl[@]}" --write-out=json user get "$admin_user") ||
+      die 'delegated administrator cannot be read before revocation'
+    admin_roles=$(jq -cS '.roles' <<<"$admin_json")
+    [[ $admin_roles == '["root"]' ]] ||
+      die 'refusing to revoke an administrator with unexpected role bindings'
+    ;;
+esac
+
+prestate=$(jq -n -cS \
+  --arg operation "$operation" \
+  --arg commit "$head_commit" \
+  --argjson cluster "$cluster_contract" \
+  --argjson alarms "$alarm_before" \
+  --argjson fabricRoot "$fabric_root_before" \
+  --argjson rootRoles "$(jq -cS '.roles' <<<"$root_user_json")" \
+  --argjson adminExists "$admin_exists" \
+  --argjson adminRoles "$admin_roles" \
+  '{
+    operation: $operation,
+    commit: $commit,
+    cluster: $cluster,
+    alarms: $alarms,
+    fabricRoot: $fabricRoot,
+    rootRoles: $rootRoles,
+    adminExists: $adminExists,
+    adminRoles: $adminRoles
+  }')
+prestate_hash=$(printf '%s' "$prestate" | sha256sum | awk '{print $1}')
+expected_confirmation="${operation^^}:fabric-etcdetcetc-admin:$head_commit:$prestate_hash"
+
+if [[ $mode == plan-* ]]; then
+  accepted=true
+  echo "Exact live confirmation: $expected_confirmation"
+  exit 0
+fi
+
+[[ $confirmation == "$expected_confirmation" ]] ||
+  die "exact --confirm $expected_confirmation is required for this revision and pre-state"
+[[ $("${ik[@]}" get --raw=/readyz) == ok ]] || die 'Fabric Kubernetes API is not ready'
+lock_holder="$(hostname):$$:$operation:$head_commit:$prestate_hash"
+if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
+  --from-literal="holder=$lock_holder" >/dev/null; then
+  current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+    -o jsonpath='{.data.holder}' 2>/dev/null || true)
+  die "another or stale delegated-admin operation lock exists: ${current_holder:-unknown}"
+fi
+lock_acquired=true
+
+# The plan/confirmation was computed before acquiring the global lock. Re-read
+# every bound authorization and membership field while holding it so a trust or
+# network operation that finished between those points cannot leave a stale
+# pre-state eligible for mutation.
+[[ $("${ik[@]}" get --raw=/readyz) == ok ]] ||
+  die 'Fabric Kubernetes API became unready after acquiring the global lock'
+assert_cluster_health
+alarm_locked=$(alarm_contract)
+assert_no_alarms "$alarm_locked"
+[[ $alarm_locked == "$alarm_before" ]] ||
+  die 'etcd alarm state changed before the delegated administrator mutation'
+auth_locked=$("${ctl[@]}" --write-out=json auth status) ||
+  die 'cannot re-read etcd auth status under the global lock'
+jq -e '.enabled == true' <<<"$auth_locked" >/dev/null ||
+  die 'etcd authentication changed before the delegated administrator mutation'
+root_user_locked=$("${ctl[@]}" --write-out=json user get root) ||
+  die 'cannot re-read root user under the global lock'
+[[ $(jq -cS '.roles' <<<"$root_user_locked") == "$(jq -cS '.roles' <<<"$root_user_json")" ]] ||
+  die 'reserved root roles changed before the delegated administrator mutation'
+fabric_root_locked=$(fabric_root_contract)
+assert_fabric_root_exact "$fabric_root_locked"
+[[ $fabric_root_locked == "$fabric_root_before" ]] ||
+  die 'fabric-root changed before the delegated administrator mutation'
+user_list_locked=$("${ctl[@]}" --write-out=json user list) ||
+  die 'cannot re-list etcd users under the global lock'
+admin_exists_locked=$(jq -r --arg user "$admin_user" \
+  '(.users // []) | index($user) != null' <<<"$user_list_locked")
+[[ $admin_exists_locked == "$admin_exists" ]] ||
+  die 'delegated administrator existence changed before mutation'
+if [[ $operation == revoke ]]; then
+  admin_locked=$("${ctl[@]}" --write-out=json user get "$admin_user") ||
+    die 'cannot re-read delegated administrator under the global lock'
+  [[ $(jq -cS '.roles' <<<"$admin_locked") == "$admin_roles" ]] ||
+    die 'delegated administrator roles changed before revocation'
+fi
+
+case $mode in
+  provision)
+    provision_started=true
+    "${ctl[@]}" user add "$admin_user" --no-password >/dev/null
+    "${ctl[@]}" user grant-role "$admin_user" root >/dev/null
+    admin_json=$("${ctl[@]}" --write-out=json user get "$admin_user") ||
+      die 'new delegated administrator cannot be read back'
+    jq -e '.roles == ["root"]' <<<"$admin_json" >/dev/null ||
+      die 'new delegated administrator does not have exactly the built-in root role'
+    ;;
+  revoke)
+    "${ctl[@]}" user delete "$admin_user" >/dev/null
+    ;;
+esac
+
+user_list_json=$("${ctl[@]}" --write-out=json user list) ||
+  die 'cannot list etcd users after mutation'
+admin_exists_after=$(jq -r --arg user "$admin_user" '(.users // []) | index($user) != null' \
+  <<<"$user_list_json")
+if [[ $mode == provision ]]; then
+  [[ $admin_exists_after == true ]] || die 'delegated administrator disappeared after provisioning'
+else
+  [[ $admin_exists_after == false ]] || die 'delegated administrator still exists after revocation'
+fi
+
+fabric_root_after=$(fabric_root_contract)
+assert_fabric_root_exact "$fabric_root_after"
+[[ $fabric_root_after == "$fabric_root_before" ]] ||
+  die 'fabric-root user/role changed during delegated administrator mutation'
+root_user_after=$("${ctl[@]}" --write-out=json user get root) || die 'cannot re-read root user'
+jq -e '.roles == ["root"]' <<<"$root_user_after" >/dev/null ||
+  die 'reserved root user changed during delegated administrator mutation'
+auth_json=$("${ctl[@]}" --write-out=json auth status) || die 'cannot re-read etcd auth status'
+jq -e '.enabled == true' <<<"$auth_json" >/dev/null ||
+  die 'etcd authentication was disabled during administration'
+assert_cluster_health
+alarm_after=$(alarm_contract)
+assert_no_alarms "$alarm_after"
+[[ $alarm_after == "$alarm_before" ]] ||
+  die 'etcd alarm state changed during delegated administrator mutation'
+
+accepted=true
+current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+  -o jsonpath='{.data.holder}') || die 'cannot read back delegated-admin operation lock'
+[[ $current_holder == "$lock_holder" ]] ||
+  die "delegated-admin operation lock holder changed unexpectedly: $current_holder"
+"${ik[@]}" -n kube-system delete configmap "$lock_name" --wait=true >/dev/null ||
+  die 'delegated-admin operation succeeded but its shared lock could not be removed'
+lock_acquired=false
+if [[ $mode == provision ]]; then
+  echo "$admin_user is a passwordless TLS-CN user with exactly the built-in root role"
+else
+  echo "$admin_user has been revoked; fabric-root remains unchanged"
+fi

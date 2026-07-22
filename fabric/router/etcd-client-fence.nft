@@ -1,0 +1,2 @@
+ip saddr { 10.66.1.10, 10.66.1.11 } ip daddr { 10.66.0.10, 10.66.0.11, 10.66.0.12 } tcp dport 2379 counter drop comment "fabric etcd fence client requests"
+ip saddr { 10.66.0.10, 10.66.0.11, 10.66.0.12 } ip daddr { 10.66.1.10, 10.66.1.11 } tcp sport 2379 counter drop comment "fabric etcd fence server replies"

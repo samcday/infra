@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PYTHONDONTWRITEBYTECODE=1
+
+test_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$test_dir/../../../.." && pwd -P)
+
+bash -n \
+  "$repo_root/scripts/rollout-fabric-etcd-client-trust" \
+  "$repo_root/fabric/pki/etcd/manage-etcdetcetc-admin"
+
+if command -v shellcheck >/dev/null; then
+  shellcheck \
+    "$repo_root/scripts/rollout-fabric-etcd-client-trust" \
+    "$repo_root/fabric/pki/etcd/manage-etcdetcetc-admin"
+fi
+
+python3 -B "$test_dir/test_trust_tooling.py"
+python3 -B "$test_dir/test_remote_admin_verifier.py"

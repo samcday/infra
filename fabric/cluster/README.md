@@ -16,10 +16,12 @@ The first two agents are an explicit transitional exception: the root and
 service prefixes retain separate addressing and router policy but temporarily
 share one physical L2 across daisy-chained unmanaged switches. IP allow-lists
 cannot stop source spoofing on that wire. Until a managed switch enforces the
-declared VLANs, admit only these physically trusted machines and the Flux,
-CoreDNS, metrics-server, and hosted-control-plane foundation needed to finish
-the platform. Do not place child etcd credentials, KubeVirt, tenant VMs, LLM
-jobs, or other untrusted workloads there.
+declared VLANs, admit only these physically trusted machines and the reviewed
+Flux, CoreDNS, metrics-server, cert-manager, and etcdetcetc foundation needed
+to finish the platform. The dedicated etcdetcetc controller identity and one
+retained-data smoke tenant are the sole temporary etcd-client exception. Do
+not place a child control plane, other child etcd credentials, KubeVirt,
+tenant VMs, LLM jobs, or other untrusted workloads there.
 
 K3s keeps only Flannel and kube-proxy from its normal base. Its packaged
 CoreDNS and metrics-server Addons remain disabled: this tree owns pinned,
@@ -34,8 +36,18 @@ the guarded offline-root procedure then enables RBAC and confines K3s to
 authorization tests, a controlled K3s restart/rejoin and token-rotation test,
 negative tests of the installed host guard, and a routed service-policy test
 are hard gates before the first service node joins. Physical VLAN isolation
-and its anti-spoofing tests remain hard gates before a child etcd identity or
-tenant workload is created.
+and its anti-spoofing tests remain hard gates before a child control-plane
+identity or general tenant workload is created. The etcdetcetc foundation
+exception requires separate positive and negative source, port, mTLS, and
+prefix-RBAC qualification before its smoke identity is accepted.
+
+All control planes admitted to the physical Fabric etcd are consequently one
+trusted availability domain. EtcdTenant prefixes protect key confidentiality
+and integrity, but etcd leases, the 2 GiB backend quota, request capacity,
+alarms, and failure fate are shared. The controller accepts only the qualified
+`3.6.13` server and requires each tenant to acknowledge that contract
+explicitly. Do not admit an independently administered or hostile control
+plane; that requires dedicated etcd or an identity-aware mediation layer.
 
 The three root nodes remain consensus-only after workers arrive. Ceph,
 KubeVirt/CDI, hosted control planes, monitoring storage, and applications are

@@ -1,0 +1,4057 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+readonly router_address=10.66.0.1
+readonly observer_namespace=fabric-observer
+readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
+readonly fabric_network_cluster_lock=fabric-maintenance-lock
+readonly confirmation_prefix=ROLLOUT-FABRIC-ROUTER-ETCD-POLICY
+readonly pod_source_confirmation_prefix=QUALIFY-FABRIC-ETCD-POD-SOURCES
+readonly transition_sha256=4dd1fb38e38da18054149bc42d470e744b4c10ac8cd8f8cd169d12046975041a
+readonly remote_work=/etc/fabric-router-etcd-policy-rollback
+readonly remote_init=/etc/init.d/fabric-router-etcd-policy-rollback
+readonly rollback_seconds=300
+readonly fence_confirmation_prefix=FENCE-FABRIC-ROUTER-ETCD-POLICY
+readonly fence_transition_sha256=fc14d132f13d0c46b47df5746d347f68e0bf626737eaf780b63824bba05b8e82
+readonly fence_guard_sha256=d5af6bff9ede7dc47bf13f41c9717a4af9886380a85a5b6b91e6e831f13f77f7
+readonly fence_contract_sha256=a0325d3badd5c2241425716a53e7e553f904d49fb3edf0cf6cb3bb44f31a5982
+readonly fence_remote_work=/etc/fabric-router-etcd-policy-fence
+readonly fence_remote_init=/etc/init.d/fabric-router-etcd-policy-fence
+readonly fence_remote_guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+readonly fence_remote_operation_lock=/tmp/fabric-router-etcd-policy-fence.operation
+readonly post_open_probe_table=fabric_etcd_post_open_probe
+readonly -a root_nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
+
+usage() {
+  cat <<EOF
+Move the live Fabric router through the one-time etcd-client policy transition.
+
+Read-only preflight (prints the exact revision-and-payload confirmation):
+  sudo scripts/rollout-fabric-router-etcd-policy \
+    --check \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519
+
+Attended transition:
+  sudo scripts/rollout-fabric-router-etcd-policy \
+    --run \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519 \
+    --confirm '$confirmation_prefix:<pushed-main-commit>:$transition_sha256'
+
+Read-only emergency-fence preflight from the exact opened state:
+  sudo scripts/rollout-fabric-router-etcd-policy \
+    --fence-check \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519
+
+Attended persistent emergency fence:
+  sudo scripts/rollout-fabric-router-etcd-policy \
+    --fence-run \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519 \
+    --confirm '$fence_confirmation_prefix:<pushed-main-commit>:$fence_contract_sha256'
+
+The helper accepts only the exact old Reject-services-to-root-etcd state. It
+replaces that rule with an exact-node TCP/2379 allow followed by a TCP/2380-2381
+reject. It holds the Fabric network-operation lock, stages and syntax-checks an
+exact UCI candidate, installs a persistent early-drop guard, and arms a
+reboot-surviving procd watchdog before any opening UCI mutation. The guard
+remains live and in the automatic nftables include through commit, reload, and
+all acceptance proofs. Only after durable token-bound acceptance may the
+watchdog, as the sole packet-opening writer, remove the guard, reload the exact
+candidate, and record exact-open completion. The caller then re-proves the
+complete forward_lan order, target UCI sections, counters, observer isolation,
+and Fabric API health before stopping and removing the watchdog.
+
+Deadline or failure atomically selects the fenced terminal state; the watchdog
+keeps or reloads the persistent guard and restores the old reject. A failed run
+deliberately leaves persistent rollback evidence for attended inspection.
+Never remove a stale rollback path, include, or init script until serial access
+has proved which policy and terminal state are live.
+
+The fence modes accept only the exact opened policy and restore the canonical
+Reject-services-to-root-etcd rule. They also install exact bidirectional
+service-to-root TCP/2379 drops in fw4's chain-pre/forward include point, before
+its established/related accept, so already-established gRPC cannot bypass the
+fence. A router-local reboot-persistent enforcer keeps both layers present.
+The persistent include, enforcer, and evidence deliberately remain after
+success. There is no in-place unfence mode: recovery requires an explicitly
+reviewed serial/reprovision procedure before the normal opening gate is run
+again. The FENCE confirmation also authorizes break-glass progress when the
+Fabric API is unavailable or any existing global maintenance-lock holder must
+be preserved. A volatile, exact-owner router-local operation lock serializes
+actual staging, and complete staging is hash-validated before atomic promotion.
+Failure never restores the open policy. Artifacts that were safely staged and
+any global lock acquired by this run remain for inspection; an existing holder
+is never deleted or adopted.
+EOF
+}
+
+die() {
+  printf 'rollout-fabric-router-etcd-policy: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*"
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+valid_fingerprint() {
+  [[ $1 =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+}
+
+require_root_namespace() {
+  local current initial
+  current=$(readlink -- /proc/self/ns/net) || die 'cannot identify current network namespace'
+  initial=$(readlink -- /proc/1/ns/net) || die 'cannot identify initial network namespace'
+  [[ $current == "$initial" ]] || die 'run from the initial/root network namespace'
+}
+
+validate_identity() {
+  local metadata
+  [[ -f $identity && ! -L $identity && -r $identity ]] ||
+    die 'router SSH identity must be a readable regular, non-symlink file'
+  identity=$(realpath -e -- "$identity") || die 'cannot resolve router SSH identity'
+  metadata=$(stat -Lc '%u:%a:%F:%h' -- "$identity") ||
+    die 'cannot inspect router SSH identity'
+  [[ $metadata == "$operator_uid:600:regular file:1" ]] ||
+    die 'router SSH identity must be operator-owned mode-0600 single-link file'
+}
+
+operator_git() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
+      git -C "$repo_root" "$@"
+}
+
+operator_kubectl() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" \
+      FABRIC_INFRA_ROOT="$repo_root" \
+      "$repo_root/scripts/ik" --context=fabric --request-timeout=10s "$@"
+}
+
+operator_hub_kubectl() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" \
+      FABRIC_INFRA_ROOT="$repo_root" \
+      "$repo_root/scripts/ik" --context=hub --request-timeout=10s "$@"
+}
+
+operator_root_ssh() {
+  local node=$1
+  shift
+  sudo --non-interactive --user "$operator_user" -- \
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      FABRIC_SSH_IDENTITY="$identity" \
+      "$repo_root/scripts/fabric-ssh" "$node" "$@"
+}
+
+operator_pre_open() {
+  sudo --non-interactive --user "$operator_user" -- \
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" \
+      FABRIC_INFRA_ROOT="$repo_root" \
+      FABRIC_SSH_IDENTITY="$identity" \
+      "$repo_root/scripts/verify-fabric-etcd-pre-open" "$@"
+}
+
+acquire_network_lock() {
+  local metadata parent_metadata resolved
+  parent_metadata=$(stat -Lc '%F:%u:%g:%a' -- /run/lock) ||
+    die 'cannot inspect fabric network lock directory'
+  [[ $parent_metadata == 'directory:0:0:755' ]] ||
+    die 'fabric network lock directory has unsafe ownership or mode'
+  [[ ! -L $fabric_network_lock ]] || die 'fabric network lock is a symlink'
+  if [[ -e $fabric_network_lock ]]; then
+    [[ -f $fabric_network_lock ]] || die 'fabric network lock is not a regular file'
+    metadata=$(stat -Lc '%u:%g:%a:%h' -- "$fabric_network_lock") ||
+      die 'cannot inspect fabric network lock'
+    [[ $metadata == '0:0:600:1' ]] ||
+      die 'fabric network lock has unsafe ownership or mode'
+  fi
+  exec {network_lock_fd}>>"$fabric_network_lock" || die 'cannot open fabric network lock'
+  chmod 0600 -- "/proc/self/fd/$network_lock_fd"
+  resolved=$(readlink -e -- "/proc/self/fd/$network_lock_fd") ||
+    die 'cannot resolve opened fabric network lock'
+  [[ $resolved == "$fabric_network_lock" ]] || die 'opened an unexpected fabric network lock'
+  [[ -f /proc/self/fd/$network_lock_fd ]] || die 'opened fabric network lock is not regular'
+  metadata=$(stat -Lc '%u:%g:%a:%h' -- "/proc/self/fd/$network_lock_fd") ||
+    die 'cannot inspect opened fabric network lock'
+  [[ $metadata == '0:0:600:1' ]] ||
+    die 'opened fabric network lock has unsafe ownership or mode'
+  flock --exclusive --nonblock "$network_lock_fd" ||
+    die 'another fabric network operation is active'
+}
+
+acquire_cluster_network_lock() {
+  local created current_holder
+  if ! created=$(operator_kubectl --namespace kube-system create configmap \
+      "$fabric_network_cluster_lock" \
+      --from-literal="holder=$cluster_lock_holder" --output=json); then
+    current_holder=$(operator_kubectl --namespace kube-system get configmap \
+      "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
+      2>/dev/null || true)
+    die "another or stale global Fabric maintenance lock exists: ${current_holder:-unknown}"
+  fi
+  jq -e --arg holder "$cluster_lock_holder" '
+    .apiVersion == "v1" and
+    .kind == "ConfigMap" and
+    .metadata.name == "fabric-maintenance-lock" and
+    .metadata.namespace == "kube-system" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+    .data == {holder: $holder}
+  ' <<<"$created" >/dev/null ||
+    die 'created global Fabric maintenance lock has an unexpected identity or shape'
+  cluster_lock_uid=$(jq -er '.metadata.uid' <<<"$created") ||
+    die 'cannot record global Fabric maintenance lock UID'
+  cluster_lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$created") ||
+    die 'cannot record global Fabric maintenance lock resourceVersion'
+  cluster_lock_held=true
+}
+
+assert_cluster_network_lock_exact() {
+  local current
+  $cluster_lock_held || die 'global Fabric maintenance lock is not recorded as held'
+  [[ -n $cluster_lock_uid && -n $cluster_lock_resource_version ]] ||
+    die 'global Fabric maintenance lock identity was not recorded'
+  current=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --output=json) ||
+    die 'cannot read the exact global Fabric maintenance lock'
+  jq -e \
+    --arg holder "$cluster_lock_holder" \
+    --arg uid "$cluster_lock_uid" \
+    --arg resource_version "$cluster_lock_resource_version" '
+      .apiVersion == "v1" and
+      .kind == "ConfigMap" and
+      .metadata.name == "fabric-maintenance-lock" and
+      .metadata.namespace == "kube-system" and
+      .metadata.uid == $uid and
+      .metadata.resourceVersion == $resource_version and
+      .metadata.deletionTimestamp == null and
+      .data == {holder: $holder}
+    ' <<<"$current" >/dev/null ||
+    die 'global Fabric maintenance lock identity, version, or ownership changed'
+}
+
+release_cluster_network_lock() {
+  local deleted remaining
+  assert_cluster_network_lock_exact
+  deleted=$(jq -cn \
+    --arg uid "$cluster_lock_uid" \
+    --arg resource_version "$cluster_lock_resource_version" '{
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      preconditions: {uid: $uid, resourceVersion: $resource_version}
+    }' |
+    operator_kubectl delete \
+      --raw="/api/v1/namespaces/kube-system/configmaps/$fabric_network_cluster_lock" \
+      --filename=-) ||
+    die 'exact global Fabric maintenance lock could not be conditionally released'
+  jq -e '
+    (.kind == "Status" and .status == "Success") or
+    (.kind == "ConfigMap" and .metadata.name == "fabric-maintenance-lock")
+  ' <<<"$deleted" >/dev/null ||
+    die 'global Fabric maintenance lock delete returned an unexpected response'
+  remaining=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --ignore-not-found --output=name) ||
+    die 'cannot prove the global Fabric maintenance lock is absent after release'
+  [[ -z $remaining ]] ||
+    die 'a global Fabric maintenance lock exists after conditional release'
+  cluster_lock_held=false
+  cluster_lock_uid=
+  cluster_lock_resource_version=
+}
+
+qualify_pod_sources_under_parent_locks() {
+  local current_lock evidence_metadata exact_confirmation parent_resource_version
+  local parent_uid pass_count pod_source_evidence pod_source_result resolved_evidence
+  local -a evidence_records
+
+  exact_confirmation="$pod_source_confirmation_prefix:$head:svc1=10.66.1.10:svc2=10.66.1.11"
+  "$repo_root/scripts/qualify-fabric-etcd-pod-sources" \
+    --run \
+    --serial-ed25519-fingerprint "$serial_fingerprint" \
+    --identity "$identity" \
+    --confirm "$exact_confirmation" \
+    --internal-parent-network-lock-fd "$network_lock_fd" \
+    --internal-parent-cluster-lock-holder "$cluster_lock_holder" \
+    >"$evidence_dir/pod-source-qualification.stdout" \
+    2>"$evidence_dir/pod-source-qualification.stderr" ||
+    die 'fresh parent-locked Pod-source qualification failed'
+  chmod 0600 -- \
+    "$evidence_dir/pod-source-qualification.stdout" \
+    "$evidence_dir/pod-source-qualification.stderr"
+
+  pass_count=$(grep -Fxc 'FABRIC_ETCD_POD_SOURCE_QUALIFICATION=pass' \
+    "$evidence_dir/pod-source-qualification.stdout" || true)
+  [[ $pass_count == 1 ]] ||
+    die 'fresh Pod-source qualification did not report exactly one PASS'
+  mapfile -t evidence_records < <(
+    sed -n 's/^EVIDENCE_DIR=//p' "$evidence_dir/pod-source-qualification.stdout"
+  )
+  [[ ${#evidence_records[@]} -eq 1 ]] ||
+    die 'fresh Pod-source qualification did not report exactly one evidence directory'
+  pod_source_evidence=${evidence_records[0]}
+  [[ $pod_source_evidence == /* && -d $pod_source_evidence &&
+     ! -L $pod_source_evidence ]] ||
+    die 'fresh Pod-source qualification reported an unsafe evidence directory'
+  resolved_evidence=$(realpath -e -- "$pod_source_evidence") ||
+    die 'cannot resolve fresh Pod-source qualification evidence directory'
+  [[ $resolved_evidence == "$pod_source_evidence" ]] ||
+    die 'fresh Pod-source qualification evidence directory did not resolve exactly'
+  evidence_metadata=$(stat -Lc '%u:%g:%a:%F' -- "$pod_source_evidence") ||
+    die 'cannot inspect fresh Pod-source qualification evidence directory'
+  [[ $evidence_metadata == '0:0:700:directory' ]] ||
+    die 'fresh Pod-source qualification evidence directory has unsafe metadata'
+  [[ $(stat --file-system --format=%T -- "$pod_source_evidence") == tmpfs ]] ||
+    die 'fresh Pod-source qualification evidence is not on tmpfs'
+
+  pod_source_result=$pod_source_evidence/result.json
+  [[ -f $pod_source_result && ! -L $pod_source_result ]] ||
+    die 'fresh Pod-source qualification result is missing or unsafe'
+  evidence_metadata=$(stat -Lc '%u:%g:%a:%h:%F' -- "$pod_source_result") ||
+    die 'cannot inspect fresh Pod-source qualification result'
+  [[ $evidence_metadata == '0:0:600:1:regular file' ]] ||
+    die 'fresh Pod-source qualification result has unsafe metadata'
+  jq -e \
+    --arg revision "$head" \
+    --arg holder "$cluster_lock_holder" '
+      .version == 1 and
+      .result == "pass" and
+      .revision == $revision and
+      .ephemeralCleanup == "verified" and
+      .parentLock.scope == "router-parent" and
+      .parentLock.holder == $holder and
+      (.parentLock.uid | type == "string" and length > 0) and
+      (.parentLock.resourceVersion | type == "string" and test("^[0-9]+$"))
+    ' "$pod_source_result" >/dev/null ||
+    die 'fresh Pod-source qualification result is not bound to the parent locks'
+  parent_uid=$(jq -er '.parentLock.uid' "$pod_source_result") ||
+    die 'cannot read fresh Pod-source qualification lock UID'
+  parent_resource_version=$(jq -er '.parentLock.resourceVersion' "$pod_source_result") ||
+    die 'cannot read fresh Pod-source qualification lock resourceVersion'
+  [[ $parent_uid == "$cluster_lock_uid" &&
+     $parent_resource_version == "$cluster_lock_resource_version" ]] ||
+    die 'fresh Pod-source qualification observed a different parent lock identity'
+
+  current_lock=$evidence_dir/pod-source-parent-lock-after.json
+  operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --output=json >"$current_lock" ||
+    die 'cannot re-read parent Fabric maintenance lock after source qualification'
+  chmod 0600 -- "$current_lock"
+  jq -e \
+    --arg holder "$cluster_lock_holder" \
+    --arg uid "$parent_uid" \
+    --arg resource_version "$parent_resource_version" '
+      .apiVersion == "v1" and
+      .kind == "ConfigMap" and
+      .metadata.name == "fabric-maintenance-lock" and
+      .metadata.namespace == "kube-system" and
+      .metadata.uid == $uid and
+      .metadata.resourceVersion == $resource_version and
+      (.metadata.deletionTimestamp? == null) and
+      .data == {holder: $holder}
+    ' "$current_lock" >/dev/null ||
+    die 'parent Fabric maintenance lock changed after source qualification'
+  resolved_evidence=$(readlink -e -- "/proc/self/fd/$network_lock_fd") ||
+    die 'cannot resolve parent Fabric host lock fd after source qualification'
+  [[ $resolved_evidence == "$fabric_network_lock" ]] ||
+    die 'parent Fabric host lock fd changed after source qualification'
+  flock --exclusive --nonblock "$network_lock_fd" ||
+    die 'parent Fabric host lock was lost after source qualification'
+  note "FRESH_POD_SOURCE_QUALIFICATION=pass revision=$head"
+}
+
+verify_pre_open_contract() {
+  local expected output stage=$1 stderr
+  shift
+  case $stage in
+    preflight | locked-before-source | locked-after-source | locked-final) ;;
+    *) die "invalid pre-open verification evidence stage: $stage" ;;
+  esac
+  output=$evidence_dir/pre-open-$stage.stdout
+  stderr=$evidence_dir/pre-open-$stage.stderr
+  if [[ $stage != preflight ]]; then
+    assert_cluster_network_lock_exact
+  fi
+  if ! operator_pre_open "$@" >"$output" 2>"$stderr"; then
+    chmod 0600 -- "$output" "$stderr" 2>/dev/null || true
+    die "Fabric etcdetcetc pre-open verification failed at $stage"
+  fi
+  chmod 0600 -- "$output" "$stderr"
+  expected="FABRIC_ETCDETCETC_PRE_OPEN=pass revision=$head"
+  [[ $(<"$output") == "$expected" ]] ||
+    die "Fabric etcdetcetc pre-open verification returned unexpected output at $stage"
+  if [[ $stage != preflight ]]; then
+    assert_cluster_network_lock_exact
+  fi
+}
+
+verify_activation_fence() {
+  local cloud_legacy crd hub_chart hub_kustomizations hub_legacy hub_release
+  local hub_source inventory
+  local kustomizations object_name resource smoke_inventory smoke_namespace
+  local smoke_network_policies source stage=$1
+  local suffix
+  assert_cluster_network_lock_exact
+  operator_git fetch --quiet origin main ||
+    die "cannot refresh origin/main at the $stage activation fence"
+  [[ $(operator_git rev-parse HEAD) == "$head" &&
+     $(operator_git rev-parse origin/main) == "$head" ]] ||
+    die "HEAD or origin/main moved away from the confirmed activation revision at $stage"
+  [[ -z $(operator_git status --porcelain) ]] ||
+    die "worktree changed during the attended activation at $stage"
+  for suffix in before after; do
+    source=$evidence_dir/activation-fence-$stage-source-$suffix.json
+    kustomizations=$evidence_dir/activation-fence-$stage-kustomizations-$suffix.json
+    operator_kubectl --namespace flux-system get gitrepository infra \
+      --output=json >"$source" ||
+      die "cannot read the Fabric source at the $stage activation fence"
+    operator_kubectl --namespace flux-system get kustomization \
+      fabric-root fabric-foundation fabric-platform \
+      fabric-etcdetcetc-policy fabric-etcdetcetc-config \
+      fabric-etcdetcetc-controller fabric-etcdetcetc-runtime \
+      --output=json >"$kustomizations" ||
+      die "cannot read Fabric activation Kustomizations at the $stage fence"
+    hub_legacy=$evidence_dir/activation-fence-$stage-hub-legacy-$suffix.json
+    cloud_legacy=$evidence_dir/activation-fence-$stage-cloud-legacy-$suffix.json
+    operator_hub_kubectl --namespace etcdetcetc get helmrelease etcdetcetc \
+      --output=json >"$hub_legacy" ||
+      die "cannot read the Hub legacy controller at the $stage activation fence"
+    operator_hub_kubectl --namespace cloud-cluster get helmrelease \
+      etcdetcetc etcdetcetc-cloud-etcd --output=json >"$cloud_legacy" ||
+      die "cannot read Cloud legacy releases at the $stage activation fence"
+    hub_source=$evidence_dir/activation-fence-$stage-hub-source-$suffix.json
+    hub_kustomizations=$evidence_dir/activation-fence-$stage-hub-kustomizations-$suffix.json
+    hub_release=$evidence_dir/activation-fence-$stage-hub-fanout-release-$suffix.json
+    hub_chart=$evidence_dir/activation-fence-$stage-hub-fanout-chart-$suffix.json
+    operator_hub_kubectl --namespace flux-system get gitrepository infra \
+      --output=json >"$hub_source" ||
+      die "cannot read the Hub source at the $stage activation fence"
+    operator_hub_kubectl --namespace flux-system get kustomization \
+      infra etcdetcetc cloud-cluster --output=json >"$hub_kustomizations" ||
+      die "cannot read Hub owner Kustomizations at the $stage activation fence"
+    operator_hub_kubectl --namespace flux-system get helmrelease kustomizations \
+      --output=json >"$hub_release" ||
+      die "cannot read the Hub fan-out HelmRelease at the $stage activation fence"
+    operator_hub_kubectl --namespace flux-system get \
+      helmcharts.source.toolkit.fluxcd.io flux-system-kustomizations \
+      --output=json >"$hub_chart" ||
+      die "cannot read the Hub fan-out HelmChart at the $stage activation fence"
+    chmod 0600 -- "$source" "$kustomizations" "$hub_legacy" "$cloud_legacy" \
+      "$hub_source" "$hub_kustomizations" "$hub_release" "$hub_chart"
+    jq -e --arg revision "main@sha1:$head" '
+      .metadata.generation as $generation |
+      .metadata.deletionTimestamp == null and
+      (.spec.suspend // false) == false and
+      .status.observedGeneration == $generation and
+      .status.artifact.revision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation
+      )
+    ' "$source" >/dev/null ||
+      die "Fabric Git source moved away from the activation revision at $stage/$suffix"
+    jq -e --arg revision "main@sha1:$head" '
+      def ready_names: [
+        "fabric-root",
+        "fabric-foundation",
+        "fabric-platform",
+        "fabric-etcdetcetc-policy",
+        "fabric-etcdetcetc-config"
+      ];
+      def suspended_names: [
+        "fabric-etcdetcetc-controller",
+        "fabric-etcdetcetc-runtime"
+      ];
+      ([.items[].metadata.name] | sort) ==
+        ((ready_names + suspended_names) | sort) and
+      all(.items[] | select(.metadata.name as $name | ready_names | index($name));
+        .metadata.generation as $generation |
+        .metadata.deletionTimestamp == null and
+        (.spec.suspend // false) == false and
+        .status.observedGeneration == $generation and
+        .status.lastAppliedRevision == $revision and
+        any(.status.conditions[]?;
+          .type == "Ready" and .status == "True" and
+          .observedGeneration == $generation
+        )
+      ) and
+      all(.items[] | select(.metadata.name as $name | suspended_names | index($name));
+        .metadata.deletionTimestamp == null and .spec.suspend == true
+      )
+    ' "$kustomizations" >/dev/null ||
+      die "Fabric activation Kustomizations changed at $stage/$suffix"
+    jq -e --arg revision "main@sha1:$head" '
+      .metadata.generation as $generation |
+      .metadata.deletionTimestamp == null and
+      (.spec.suspend // false) == false and
+      .spec.ref == {branch: "main"} and
+      .status.observedGeneration == $generation and
+      .status.artifact.revision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation
+      )
+    ' "$hub_source" >/dev/null ||
+      die "Hub Git source moved away from the activation revision at $stage/$suffix"
+    jq -e --arg revision "main@sha1:$head" '
+      def expected_path($name):
+        if $name == "infra" then "hub/cluster/flux-system"
+        elif $name == "etcdetcetc" then "hub/cluster/etcdetcetc"
+        elif $name == "cloud-cluster" then "hub/cluster/cloud-cluster"
+        else null end;
+      ([.items[].metadata.name] | sort) ==
+        ["cloud-cluster", "etcdetcetc", "infra"] and
+      all(.items[];
+        .metadata.generation as $generation |
+        .metadata.deletionTimestamp == null and
+        (.spec.suspend // false) == false and
+        .spec.path == expected_path(.metadata.name) and
+        .spec.sourceRef == {
+          kind: "GitRepository", name: "infra", namespace: "flux-system"
+        } and
+        .status.observedGeneration == $generation and
+        .status.lastAppliedRevision == $revision and
+        any(.status.conditions[]?;
+          .type == "Ready" and .status == "True" and
+          .observedGeneration == $generation
+        )
+      )
+    ' "$hub_kustomizations" >/dev/null ||
+      die "Hub owner Kustomizations changed at $stage/$suffix"
+    jq -e --arg revision "0.0.0+${head:0:12}" '
+      .metadata.generation as $generation |
+      .metadata.deletionTimestamp == null and
+      (.spec.suspend // false) == false and
+      .spec.chart.spec.chart == "charts/resources" and
+      .spec.chart.spec.reconcileStrategy == "Revision" and
+      .spec.chart.spec.sourceRef == {
+        kind: "GitRepository", name: "infra", namespace: "flux-system"
+      } and
+      .status.observedGeneration == $generation and
+      .status.lastAttemptedRevision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation
+      ) and
+      all(.status.conditions[]?;
+        if .type == "Reconciling" or .type == "Stalled" then .status != "True"
+        else true end
+      )
+    ' "$hub_release" >/dev/null ||
+      die "Hub fan-out HelmRelease changed at $stage/$suffix"
+    jq -e --arg revision "0.0.0+${head:0:12}" '
+      .metadata.generation as $generation |
+      .metadata.deletionTimestamp == null and
+      .spec.chart == "charts/resources" and
+      .spec.reconcileStrategy == "Revision" and
+      .spec.sourceRef == {kind: "GitRepository", name: "infra"} and
+      .status.observedGeneration == $generation and
+      .status.artifact.revision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation
+      )
+    ' "$hub_chart" >/dev/null ||
+      die "Hub fan-out HelmChart changed at $stage/$suffix"
+    jq -e '
+      .metadata.name == "etcdetcetc" and
+      .metadata.namespace == "etcdetcetc" and
+      .metadata.deletionTimestamp == null and .spec.suspend == true
+    ' "$hub_legacy" >/dev/null ||
+      die "Hub legacy controller changed at $stage/$suffix"
+    jq -e '
+      ([.items[].metadata.name] | sort) == [
+        "etcdetcetc", "etcdetcetc-cloud-etcd"
+      ] and
+      all(.items[];
+        .metadata.namespace == "cloud-cluster" and
+        .metadata.deletionTimestamp == null and .spec.suspend == true
+      )
+    ' "$cloud_legacy" >/dev/null ||
+      die "Cloud legacy releases changed at $stage/$suffix"
+
+    object_name=$(operator_kubectl --namespace etcdetcetc get helmrelease \
+      etcdetcetc --ignore-not-found --output=name) ||
+      die "cannot prove the controller HelmRelease absent at the $stage/$suffix fence"
+    [[ -z $object_name ]] ||
+      die "controller HelmRelease appeared at the $stage/$suffix activation fence"
+    inventory=$evidence_dir/activation-fence-$stage-workloads-$suffix.json
+    operator_kubectl --namespace etcdetcetc get \
+      deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,replicationcontrollers,pods \
+      --output=json >"$inventory" ||
+      die "cannot inventory controller workloads at the $stage/$suffix activation fence"
+    chmod 0600 -- "$inventory"
+    jq -e '.items == []' "$inventory" >/dev/null ||
+      die "controller workload appeared at the $stage/$suffix activation fence"
+    smoke_inventory=$evidence_dir/activation-fence-$stage-smoke-workloads-$suffix.json
+    operator_kubectl --namespace etcdetcetc-smoke get \
+      deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,replicationcontrollers,pods \
+      --output=json >"$smoke_inventory" ||
+      die "cannot inventory smoke workloads at the $stage/$suffix activation fence"
+    chmod 0600 -- "$smoke_inventory"
+    jq -e '.items == []' "$smoke_inventory" >/dev/null ||
+      die "smoke workload appeared at the $stage/$suffix activation fence"
+    smoke_namespace=$evidence_dir/activation-fence-$stage-smoke-namespace-$suffix.json
+    smoke_network_policies=$evidence_dir/activation-fence-$stage-smoke-network-policies-$suffix.json
+    operator_kubectl get namespace etcdetcetc-smoke --output=json \
+      >"$smoke_namespace" ||
+      die "cannot read the smoke Namespace at the $stage/$suffix activation fence"
+    operator_kubectl --namespace etcdetcetc-smoke get networkpolicy --output=json \
+      >"$smoke_network_policies" ||
+      die "cannot inventory smoke NetworkPolicies at the $stage/$suffix activation fence"
+    chmod 0600 -- "$smoke_namespace" "$smoke_network_policies"
+    jq -e '
+      .metadata.name == "etcdetcetc-smoke" and
+      .metadata.deletionTimestamp == null
+    ' "$smoke_namespace" >/dev/null ||
+      die "smoke Namespace is absent or terminating at the $stage/$suffix activation fence"
+    jq -e '
+      (.items | length) == 1 and
+      .items[0].metadata.name == "default-deny" and
+      .items[0].metadata.namespace == "etcdetcetc-smoke" and
+      .items[0].metadata.deletionTimestamp == null and
+      .items[0].spec == {
+        podSelector: {}, policyTypes: ["Egress", "Ingress"]
+      }
+    ' "$smoke_network_policies" >/dev/null ||
+      die "smoke NetworkPolicy set changed at the $stage/$suffix activation fence"
+    for resource in \
+      secret/fabric-smoke-etcd \
+      configmap/fabric-smoke-etcd; do
+      object_name=$(operator_kubectl --namespace etcdetcetc-smoke get "$resource" \
+        --ignore-not-found --output=name) ||
+        die "cannot prove smoke artifact absent at the $stage/$suffix fence: $resource"
+      [[ -z $object_name ]] ||
+        die "smoke artifact appeared at the $stage/$suffix activation fence: $resource"
+    done
+    for crd in \
+      etcdclusters.etcdetcetc.samcday.com \
+      etcdtenants.etcdetcetc.samcday.com; do
+      object_name=$(operator_kubectl get customresourcedefinition "$crd" \
+        --ignore-not-found --output=name) ||
+        die "cannot prove runtime CRD absent at the $stage/$suffix fence: $crd"
+      [[ -z $object_name ]] ||
+        die "runtime CRD appeared at the $stage/$suffix activation fence: $crd"
+    done
+  done
+  assert_cluster_network_lock_exact
+}
+
+check_committed_root_firewall() {
+  local output=$evidence_dir/committed-root-firewall.txt
+  local stderr=$evidence_dir/committed-root-firewall.stderr
+  if ! "$repo_root/scripts/rollout-fabric-root-firewall" --check \
+      >"$output" 2>"$stderr"; then
+    chmod 0600 -- "$output" "$stderr" 2>/dev/null || true
+    die 'committed root firewall contract is invalid'
+  fi
+  chmod 0600 -- "$output" "$stderr"
+}
+
+probe_fabric_api() {
+  local stage=$1 output=$evidence_dir/fabric-readyz-$1
+  if operator_kubectl get --raw=/readyz >"$output" 2>"$output.stderr" &&
+      [[ $(<"$output") == ok ]]; then
+    chmod 0600 -- "$output" "$output.stderr"
+    printf 'FABRIC_API_%s=ready\n' "$stage" >>"$evidence_dir/fence-api-state.txt"
+    return 0
+  fi
+  chmod 0600 -- "$output" "$output.stderr" 2>/dev/null || true
+  printf 'FABRIC_API_%s=unavailable\n' "$stage" >>"$evidence_dir/fence-api-state.txt"
+  return 1
+}
+
+try_acquire_fence_cluster_lock() {
+  local created current_holder
+  if created=$(operator_kubectl --namespace kube-system create configmap \
+      "$fabric_network_cluster_lock" \
+      --from-literal="holder=$cluster_lock_holder" --output=json \
+      2>"$evidence_dir/fence-cluster-lock-create.stderr"); then
+    chmod 0600 -- "$evidence_dir/fence-cluster-lock-create.stderr"
+    if ! jq -e --arg holder "$cluster_lock_holder" '
+        .apiVersion == "v1" and
+        .kind == "ConfigMap" and
+        .metadata.name == "fabric-maintenance-lock" and
+        .metadata.namespace == "kube-system" and
+        .metadata.deletionTimestamp == null and
+        (.metadata.uid | type == "string" and length > 0) and
+        (.metadata.resourceVersion | type == "string" and test("^[0-9]+$")) and
+        .data == {holder: $holder}
+      ' <<<"$created" >/dev/null; then
+      die 'created fence maintenance lock has an unexpected identity or shape'
+    fi
+    cluster_lock_uid=$(jq -er '.metadata.uid' <<<"$created") ||
+      die 'cannot record fence maintenance lock UID'
+    cluster_lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$created") ||
+      die 'cannot record fence maintenance lock resourceVersion'
+    cluster_lock_held=true
+    printf 'FENCE_CLUSTER_LOCK=acquired\n' \
+      >"$evidence_dir/fence-cluster-lock-state.txt"
+    return 0
+  fi
+  chmod 0600 -- "$evidence_dir/fence-cluster-lock-create.stderr" 2>/dev/null || true
+  current_holder=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
+    2>/dev/null || true)
+  [[ -n $current_holder ]] || current_holder=unavailable
+  printf 'FENCE_CLUSTER_LOCK=not-acquired\nEXISTING_HOLDER=%s\n' \
+    "$current_holder" >"$evidence_dir/fence-cluster-lock-state.txt"
+  chmod 0600 -- "$evidence_dir/fence-cluster-lock-state.txt"
+  cluster_lock_held=false
+  cluster_lock_uid=
+  cluster_lock_resource_version=
+  return 1
+}
+
+observer_verify() {
+  timeout --kill-after=2s 15s \
+    "$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+}
+
+prepare_router_ssh() {
+  local extra scanned_fingerprint scanned_host scanned_key scanned_type
+  if ! timeout --kill-after=2s 10s \
+      ip netns exec "$observer_namespace" ssh-keyscan -4 -T 5 -t ed25519 \
+      "$router_address" >"$router_known_hosts" 2>"$evidence_dir/router-keyscan.stderr"; then
+    die 'router ED25519 host-key scan failed'
+  fi
+  chmod 0600 -- "$router_known_hosts" "$evidence_dir/router-keyscan.stderr"
+  mapfile -t scanned_keys < <(grep -Ev '^[[:space:]]*(#|$)' "$router_known_hosts")
+  [[ ${#scanned_keys[@]} -eq 1 ]] || die 'router scan did not return exactly one ED25519 key'
+  read -r scanned_host scanned_type scanned_key extra <<<"${scanned_keys[0]}"
+  [[ $scanned_host == "$router_address" && $scanned_type == ssh-ed25519 &&
+     -n $scanned_key && -z ${extra:-} ]] || die 'router key scan returned an unexpected record'
+  scanned_fingerprint=$(ssh-keygen -E sha256 -lf "$router_known_hosts" |
+    awk 'NR == 1 { print $2 }')
+  [[ $scanned_fingerprint == "$serial_fingerprint" ]] ||
+    die 'router key scan does not match the attended serial fingerprint'
+
+  router_ssh_options=(
+    -F none
+    -o BatchMode=yes
+    -o StrictHostKeyChecking=yes
+    -o HostKeyAlgorithms=ssh-ed25519
+    -o UpdateHostKeys=no
+    -o AddressFamily=inet
+    -o GlobalKnownHostsFile=/dev/null
+    -o "UserKnownHostsFile=$router_known_hosts"
+    -o KnownHostsCommand=none
+    -o ForwardAgent=no
+    -o ClearAllForwardings=yes
+    -o ProxyCommand=none
+    -o ProxyJump=none
+    -o ControlMaster=no
+    -o ControlPath=none
+    -o IdentityAgent=none
+    -o IdentitiesOnly=yes
+    -o PasswordAuthentication=no
+    -o KbdInteractiveAuthentication=no
+    -o PreferredAuthentications=publickey
+    -o RequestTTY=no
+    -o PermitLocalCommand=no
+    -o ConnectTimeout=5
+    -o LogLevel=ERROR
+    -i "$identity"
+  )
+}
+
+router_ssh() {
+  timeout --kill-after=3s 30s \
+    ip netns exec "$observer_namespace" ssh "${router_ssh_options[@]}" \
+    "root@$router_address" "$@"
+}
+
+inspect_post_open_probe() {
+  local output=$evidence_dir/router-tables-$1.txt tables
+  router_ssh /usr/sbin/nft list tables >"$output" ||
+    die 'cannot enumerate router nftables tables while checking post-open observer residue'
+  chmod 0600 -- "$output"
+  tables=$(LC_ALL=C sort <"$output")
+  case $tables in
+    'table inet fw4')
+      post_open_probe_present=false
+      return 0
+      ;;
+    "table inet $post_open_probe_table
+table inet fw4")
+      ;;
+    *) die 'router has an unknown nftables table; refuse emergency cleanup' ;;
+  esac
+
+  router_ssh /bin/sh -s -- "$post_open_probe_table" \
+    >"$evidence_dir/post-open-probe-$1.txt" <<'REMOTE_VALIDATE_POST_OPEN_PROBE'
+set -eu
+table=$1
+
+fail() {
+  printf 'post-open observer residue validation failed: %s\n' "$*" >&2
+  exit 1
+}
+
+[ "$table" = fabric_etcd_post_open_probe ] || fail 'unexpected table name'
+live=$(nft -a list table inet "$table") || fail 'observer table is absent'
+[ "$(printf '%s\n' "$live" | awk 'NF { n++ } END { print n + 0 }')" -eq 11 ] ||
+  fail 'observer table contains an extra table-level object or line'
+[ "$(printf '%s\n' "$live" | sed -n '1{s/ # handle [0-9][0-9]*$//;p}')" = \
+  'table inet fabric_etcd_post_open_probe {' ] ||
+  fail 'observer table header is not exact'
+chains=$(printf '%s\n' "$live" |
+  sed -n 's/^[[:space:]]*chain \([^[:space:]]*\) {.*/\1/p')
+[ "$chains" = observe_forward ] || fail 'observer chain membership is not exact'
+base=$(printf '%s\n' "$live" | sed -n \
+  's/^[[:space:]]*\(type filter hook forward priority .*; policy accept;\).*$/\1/p')
+case $base in
+  'type filter hook forward priority -10; policy accept;'|'type filter hook forward priority filter - 10; policy accept;') ;;
+  *) fail 'observer base-chain hook or priority is not exact' ;;
+esac
+rules=$(printf '%s\n' "$live" | awk '
+  $1 == "chain" && $2 == "observe_forward" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print }
+')
+[ "$(printf '%s\n' "$rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 6 ] ||
+  fail 'observer rule membership is not exactly six'
+
+assert_rule() {
+  source=$1
+  port=$2
+  marker=$3
+  matches=$(printf '%s\n' "$rules" | grep -F "comment \"$marker\"") ||
+    fail "observer rule is absent: $marker"
+  [ "$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    fail "observer rule count is not one: $marker"
+  normalized=$(printf '%s\n' "$matches" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  destinations=$(printf '%s\n' "$normalized" |
+    sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p' | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  [ "$destinations" = '10.66.0.10,10.66.0.11,10.66.0.12' ] ||
+    fail "observer destinations are not exact: $marker"
+  shape=$(printf '%s\n' "$normalized" |
+    sed 's/ip daddr { [^}]* }/ip daddr { ROOTS }/')
+  [ "$shape" = "ip saddr $source ip daddr { ROOTS } tcp dport $port counter comment \"$marker\"" ] ||
+    fail "observer rule contains a verdict or unexpected expression: $marker"
+}
+
+assert_rule 10.66.1.10 2379 'observe svc1 etcd client; no verdict'
+assert_rule 10.66.1.10 2380 'observe svc1 etcd peer; no verdict'
+assert_rule 10.66.1.10 2381 'observe svc1 etcd metrics; no verdict'
+assert_rule 10.66.1.11 2379 'observe svc2 etcd client; no verdict'
+assert_rule 10.66.1.11 2380 'observe svc2 etcd peer; no verdict'
+assert_rule 10.66.1.11 2381 'observe svc2 etcd metrics; no verdict'
+printf 'POST_OPEN_PROBE_RESIDUE=exact-no-verdict\n'
+REMOTE_VALIDATE_POST_OPEN_PROBE
+  chmod 0600 -- "$evidence_dir/post-open-probe-$1.txt"
+  post_open_probe_present=true
+}
+
+remove_exact_post_open_probe() {
+  inspect_post_open_probe before-removal
+  if $post_open_probe_present; then
+    if ! router_ssh /usr/sbin/nft delete table inet "$post_open_probe_table"; then
+      inspect_post_open_probe removal-race
+      $post_open_probe_present &&
+        die 'cannot remove exact failed post-open observer after fencing'
+    fi
+    inspect_post_open_probe after-removal
+    $post_open_probe_present &&
+      die 'exact failed post-open observer survived attended removal'
+    note 'Removed or observed concurrent removal of the exact verdict-free failed post-open observer.'
+  fi
+}
+
+validate_committed_transition() {
+  local actual_hash allow_line api_line internal_line line
+  [[ -f $transition_file && ! -L $transition_file ]] ||
+    die 'committed router transition must be a regular, non-symlink file'
+  [[ $(stat -Lc '%a:%F:%h' -- "$transition_file") == '644:regular file:1' ]] ||
+    die 'committed router transition must be mode-0644 and single-link'
+  actual_hash=$(sha256sum -- "$transition_file" | awk '{print $1}')
+  [[ $actual_hash == "$transition_sha256" ]] ||
+    die 'committed router transition differs from the reviewed exact payload'
+  [[ $(wc -l <"$transition_file") -eq 28 ]] ||
+    die 'committed router transition has an unexpected command count'
+  [[ $(sed -n '1p' "$transition_file") == \
+      'delete firewall.fabric_flat_reject_services_etcd' ]] ||
+    die 'router transition must begin by deleting the exact legacy reject'
+  while IFS= read -r line; do
+    [[ -n $line ]] || die 'router transition contains a blank command'
+    if [[ $line == 'delete firewall.fabric_flat_reject_services_etcd' ]]; then
+      continue
+    fi
+    [[ $line == set\ firewall.* || $line == add_list\ firewall.* ]] ||
+      die 'router transition contains an operation outside the firewall package'
+    [[ $(grep -Fxc -- "$line" "$desired_overlay") -eq 1 ]] ||
+      die "router transition command is not unique in the desired overlay: $line"
+  done <"$transition_file"
+  ! grep -Fq 'firewall.fabric_flat_reject_services_etcd.' "$desired_overlay" ||
+    die 'desired router overlay still contains the legacy all-port reject'
+  allow_line=$(grep -nF \
+    "set firewall.fabric_flat_services_etcd_client='rule'" "$desired_overlay" |
+    awk -F: 'NR == 1 { print $1 }')
+  internal_line=$(grep -nF \
+    "set firewall.fabric_flat_reject_services_etcd_internal='rule'" "$desired_overlay" |
+    awk -F: 'NR == 1 { print $1 }')
+  api_line=$(grep -nF "set firewall.fabric_flat_services_api='rule'" "$desired_overlay" |
+    awk -F: 'NR == 1 { print $1 }')
+  [[ $allow_line =~ ^[0-9]+$ && $internal_line =~ ^[0-9]+$ && $api_line =~ ^[0-9]+$ &&
+     $allow_line -lt $internal_line && $internal_line -lt $api_line ]] ||
+    die 'desired router etcd allow/reject ordering is not exact'
+}
+
+validate_remote_phase() {
+  local phase=$1 output=$2 allow_probe=false
+  case $mode:$phase in
+    fence-*:open-live) allow_probe=true ;;
+  esac
+  router_ssh /bin/sh -s -- "$phase" "$fence_remote_guard" \
+    "$fence_guard_sha256" "$fence_remote_work" "$fence_remote_init" \
+    "$fence_remote_operation_lock" "$allow_probe" "$remote_work" "$remote_init" \
+    >"$output" <<'REMOTE_VALIDATE'
+set -eu
+
+phase=$1
+fence_guard=$2
+fence_guard_sha=$3
+fence_work=$4
+fence_init=$5
+fence_operation_lock=$6
+allow_post_open_probe=$7
+rollback_work=$8
+rollback_init=$9
+
+fail() {
+  printf 'remote router phase validation failed: %s\n' "$*" >&2
+  exit 1
+}
+
+[ "$fence_operation_lock" = /tmp/fabric-router-etcd-policy-fence.operation ] ||
+  fail 'router-local fence operation-lock path is not exact'
+
+assert_uci() {
+  key=$1
+  wanted=$2
+  actual=$(uci -q get "$key") || fail "missing UCI key $key"
+  [ "$actual" = "$wanted" ] || fail "unexpected UCI value for $key"
+}
+
+assert_uci_absent() {
+  key=$1
+  if uci -q get "$key" >/dev/null 2>&1; then
+    fail "UCI key must be absent: $key"
+  fi
+}
+
+assert_option_keys() {
+  section=$1
+  wanted=$2
+  actual=$(uci -q show firewall |
+    sed -n "s/^firewall\\.$section\\.\\([^=]*\\)=.*/\\1/p" |
+    LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  [ "$actual" = "$wanted" ] || fail "unexpected option keys for $section: $actual"
+}
+
+sections_of_type() {
+  uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)=$1$/\\1/p"
+}
+
+assert_target_section() {
+  section=$1
+  name=$2
+  ports=$3
+  target=$4
+  assert_uci "firewall.$section" rule
+  assert_option_keys "$section" 'dest dest_ip dest_port family name proto src src_ip target'
+  assert_uci "firewall.$section.name" "$name"
+  assert_uci "firewall.$section.src" lan
+  assert_uci "firewall.$section.dest" lan
+  assert_uci "firewall.$section.family" ipv4
+  assert_uci "firewall.$section.src_ip" '10.66.1.10/32 10.66.1.11/32'
+  assert_uci "firewall.$section.dest_ip" '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+  assert_uci "firewall.$section.proto" tcp
+  assert_uci "firewall.$section.dest_port" "$ports"
+  assert_uci "firewall.$section.target" "$target"
+}
+
+assert_live_rule() {
+  rule_name=$1
+  verdict=$2
+  require_zero=$3
+  marker="comment \"!fw4: $rule_name\""
+  matches=$(printf '%s\n' "$live_chain" | grep -F "$marker") ||
+    fail "live target rule is absent: $rule_name"
+  count=$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')
+  [ "$count" -eq 1 ] || fail "live target rule count is not one: $rule_name"
+  printf '%s\n' "$matches" | grep -F 'ip saddr' >/dev/null ||
+    fail "live target rule lacks source match: $rule_name"
+  printf '%s\n' "$matches" | grep -F 'ip daddr' >/dev/null ||
+    fail "live target rule lacks destination match: $rule_name"
+  printf '%s\n' "$matches" | grep -E 'counter packets [0-9]+ bytes [0-9]+' >/dev/null ||
+    fail "live target rule lacks an anonymous counter: $rule_name"
+  normalized=$(printf '%s\n' "$matches" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  case $normalized in
+    *" counter $verdict $marker") ;;
+    *) fail "live target rule has unexpected verdict: $rule_name" ;;
+  esac
+  packets=$(printf '%s\n' "$matches" |
+    sed -n 's/.*counter packets \([0-9][0-9]*\) bytes [0-9][0-9]*.*/\1/p')
+  bytes=$(printf '%s\n' "$matches" |
+    sed -n 's/.*counter packets [0-9][0-9]* bytes \([0-9][0-9]*\).*/\1/p')
+  [ -n "$packets" ] && [ -n "$bytes" ] || fail "cannot parse target counter: $rule_name"
+  if [ "$require_zero" = yes ]; then
+    [ "$packets" -eq 0 ] && [ "$bytes" -eq 0 ] ||
+      fail "new target rule saw traffic before acceptance: $rule_name"
+  fi
+  printf 'TARGET_COUNTER name=%s packets=%s bytes=%s\n' "$rule_name" "$packets" "$bytes"
+}
+
+assert_live_absent() {
+  rule_name=$1
+  if printf '%s\n' "$live_table" | grep -F "comment \"!fw4: $rule_name\"" >/dev/null; then
+    fail "obsolete live target rule is present: $rule_name"
+  fi
+}
+
+assert_fence_guard_absent() {
+  [ ! -e "$fence_guard" ] && [ ! -L "$fence_guard" ] ||
+    fail 'persistent fence guard is present outside the fenced phase'
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ -z "$share_nft_files" ] || fail 'unexpected automatic nftables include is present'
+  if printf '%s\n' "$live_table" |
+      grep -F 'comment "fabric etcd fence ' >/dev/null; then
+    fail 'live early fence rule is present outside the fenced phase'
+  fi
+}
+
+assert_stock_top_level_includes() {
+  etc_nft_files=$(find /etc/nftables.d -mindepth 1 -maxdepth 1 \
+    -name '*.nft' -print | LC_ALL=C sort)
+  [ "$etc_nft_files" = '/etc/nftables.d/10-custom-filter-chains.nft' ] ||
+    fail 'top-level nftables include membership is not the stock template only'
+  [ -f /etc/nftables.d/10-custom-filter-chains.nft ] &&
+    [ ! -L /etc/nftables.d/10-custom-filter-chains.nft ] ||
+    fail 'stock top-level nftables include is missing or unsafe'
+  active_etc_nft=$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+    /etc/nftables.d/10-custom-filter-chains.nft)
+  [ -z "$active_etc_nft" ] || fail 'stock top-level nftables include is executable'
+}
+
+assert_fence_artifacts_absent() {
+  [ ! -e "$fence_work" ] && [ ! -L "$fence_work" ] ||
+    fail 'persistent fence work path is present outside the fenced phase'
+  [ ! -e "$fence_work.staging" ] && [ ! -L "$fence_work.staging" ] ||
+    fail 'persistent fence staging path is present outside the fenced phase'
+  [ ! -e "$fence_init" ] && [ ! -L "$fence_init" ] ||
+    fail 'persistent fence init path is present outside the fenced phase'
+  [ ! -e "$fence_init.next" ] && [ ! -L "$fence_init.next" ] ||
+    fail 'persistent fence init staging path is present outside the fenced phase'
+  [ ! -e "$fence_operation_lock" ] && [ ! -L "$fence_operation_lock" ] ||
+    fail 'router-local fence operation lock is present outside the fenced phase'
+  if find /etc/rc.d -maxdepth 1 -type l \
+      -name '*fabric-router-etcd-policy-fence' | grep . >/dev/null; then
+    fail 'persistent fence service is enabled outside the fenced phase'
+  fi
+}
+
+assert_fence_guard_rule() {
+  marker=$1
+  port_field=$2
+  wanted_sources=$3
+  wanted_destinations=$4
+  matches=$(printf '%s\n' "$live_forward" | grep -F "comment \"$marker\"") ||
+    fail "live early fence rule is absent: $marker"
+  count=$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')
+  [ "$count" -eq 1 ] || fail "live early fence rule count is not one: $marker"
+  normalized=$(printf '%s\n' "$matches" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  source_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/^ip saddr { \([^}]*\) } ip daddr.*/\1/p')
+  destination_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p')
+  [ -n "$source_members" ] && [ -n "$destination_members" ] ||
+    fail "cannot parse live early fence endpoint sets: $marker"
+  source_members=$(printf '%s\n' "$source_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  destination_members=$(printf '%s\n' "$destination_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  [ "$source_members" = "$wanted_sources" ] ||
+    fail "live early fence source set is not exact: $marker"
+  [ "$destination_members" = "$wanted_destinations" ] ||
+    fail "live early fence destination set is not exact: $marker"
+  shape=$(printf '%s\n' "$normalized" | sed \
+    -e 's/ip saddr { [^}]* }/ip saddr { SOURCE }/' \
+    -e 's/ip daddr { [^}]* }/ip daddr { DESTINATION }/')
+  [ "$shape" = "ip saddr { SOURCE } ip daddr { DESTINATION } tcp $port_field 2379 counter drop comment \"$marker\"" ] ||
+    fail "live early fence rule shape or verdict is not exact: $marker"
+}
+
+assert_fence_guard() {
+  [ -f "$fence_guard" ] && [ ! -L "$fence_guard" ] ||
+    fail 'persistent fence guard is missing or unsafe'
+  [ "$(stat -c '%u:%g:%a:%h:%F' "$fence_guard")" = \
+    '0:0:600:1:regular file' ] || fail 'persistent fence guard metadata is unsafe'
+  [ "$(sha256sum "$fence_guard" | awk '{print $1}')" = "$fence_guard_sha" ] ||
+    fail 'persistent fence guard differs from the reviewed payload'
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ "$share_nft_files" = "$fence_guard" ] ||
+    fail 'automatic nftables include membership is not exactly the fence guard'
+  [ -d "$fence_work" ] && [ ! -L "$fence_work" ] ||
+    fail 'persistent fence work path is missing or unsafe'
+  [ ! -e "$fence_work.staging" ] && [ ! -L "$fence_work.staging" ] ||
+    fail 'persistent fence staging path survived promotion'
+  [ -f "$fence_init" ] && [ ! -L "$fence_init" ] ||
+    fail 'persistent fence init path is missing or unsafe'
+  [ ! -e "$fence_init.next" ] && [ ! -L "$fence_init.next" ] ||
+    fail 'persistent fence init staging path survived installation'
+  [ ! -e "$fence_operation_lock" ] && [ ! -L "$fence_operation_lock" ] ||
+    fail 'router-local fence operation lock survived staging'
+  live_fence_rules=$(printf '%s\n' "$live_table" |
+    grep -F 'comment "fabric etcd fence ' || true)
+  [ "$(printf '%s\n' "$live_fence_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 2 ] ||
+    fail 'live early fence rule membership is not exactly two'
+  service_members='10.66.1.10,10.66.1.11'
+  root_members='10.66.0.10,10.66.0.11,10.66.0.12'
+  assert_fence_guard_rule 'fabric etcd fence client requests' dport \
+    "$service_members" "$root_members"
+  assert_fence_guard_rule 'fabric etcd fence server replies' sport \
+    "$root_members" "$service_members"
+  request_line=$(printf '%s\n' "$live_forward" |
+    grep -nF 'comment "fabric etcd fence client requests"' | cut -d: -f1)
+  reply_line=$(printf '%s\n' "$live_forward" |
+    grep -nF 'comment "fabric etcd fence server replies"' | cut -d: -f1)
+  executable_lines=$(printf '%s\n' "$live_forward" | awk '
+    $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print NR ":" $0 }
+  ')
+  first_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '1s/:.*//p')
+  second_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '2s/:.*//p')
+  first_accept_line=$(printf '%s\n' "$executable_lines" |
+    grep 'accept.*# handle [0-9][0-9]*$' | sed -n '1s/:.*//p')
+  case "$request_line:$reply_line:$first_rule_line:$second_rule_line:$first_accept_line" in
+    *[!0-9:]*|*::*|:*|*:) fail 'cannot resolve exact early fence rule order' ;;
+  esac
+  [ "$request_line" -eq "$first_rule_line" ] &&
+    [ "$reply_line" -eq "$second_rule_line" ] ||
+    fail 'fence drops are not the first two executable forward rules'
+  [ "$request_line" -lt "$first_accept_line" ] &&
+    [ "$reply_line" -lt "$first_accept_line" ] ||
+    fail 'fence drops do not precede every forward accept'
+}
+
+assert_rollback_guard() {
+  [ -f "$fence_guard" ] && [ ! -L "$fence_guard" ] ||
+    fail 'rollback guard is missing or unsafe'
+  [ "$(stat -c '%u:%g:%a:%h:%F' "$fence_guard")" = \
+    '0:0:600:1:regular file' ] || fail 'rollback guard metadata is unsafe'
+  [ "$(sha256sum "$fence_guard" | awk '{print $1}')" = "$fence_guard_sha" ] ||
+    fail 'rollback guard differs from the reviewed payload'
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ "$share_nft_files" = "$fence_guard" ] ||
+    fail 'automatic nftables include membership is not exactly the rollback guard'
+  [ -d "$rollback_work" ] && [ ! -L "$rollback_work" ] ||
+    fail 'rollback work path is missing or unsafe'
+  [ -f "$rollback_init" ] && [ ! -L "$rollback_init" ] ||
+    fail 'rollback init path is missing or unsafe'
+  [ -f "$rollback_work/owner" ] && [ ! -L "$rollback_work/owner" ] &&
+    [ "$(cat "$rollback_work/owner")" = fabric-router-etcd-policy-rollout ] ||
+    fail 'rollback owner marker is unsafe'
+  [ -f "$rollback_work/expected-token" ] &&
+    [ -f "$rollback_work/armed" ] &&
+    [ "$(cat "$rollback_work/expected-token")" = \
+      "$(cat "$rollback_work/armed")" ] || fail 'rollback token is unsafe'
+  token=$(cat "$rollback_work/expected-token")
+  for marker in apply-started apply-finished; do
+    [ -f "$rollback_work/$marker" ] && [ ! -L "$rollback_work/$marker" ] &&
+      [ "$(cat "$rollback_work/$marker")" = "$token" ] ||
+      fail "rollback marker is unsafe: $marker"
+  done
+  [ ! -e "$rollback_work/terminal" ] && [ ! -L "$rollback_work/terminal" ] ||
+    fail 'rollback watchdog already chose a terminal state'
+  [ ! -e "$rollback_work/fenced" ] && [ ! -L "$rollback_work/fenced" ] ||
+    fail 'rollback watchdog already acknowledged a fence'
+  cmp -s "$rollback_work/early-guard.nft" "$fence_guard" ||
+    fail 'installed rollback guard differs from its staged source'
+  "$rollback_init" enabled || fail 'rollback watchdog is not enabled'
+  "$rollback_init" running || fail 'rollback watchdog is not running'
+  assert_fence_artifacts_absent
+  live_fence_rules=$(printf '%s\n' "$live_table" |
+    grep -F 'comment "fabric etcd fence ' || true)
+  [ "$(printf '%s\n' "$live_fence_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 2 ] ||
+    fail 'live rollback guard rule membership is not exactly two'
+  service_members='10.66.1.10,10.66.1.11'
+  root_members='10.66.0.10,10.66.0.11,10.66.0.12'
+  assert_fence_guard_rule 'fabric etcd fence client requests' dport \
+    "$service_members" "$root_members"
+  assert_fence_guard_rule 'fabric etcd fence server replies' sport \
+    "$root_members" "$service_members"
+  request_line=$(printf '%s\n' "$live_forward" |
+    grep -nF 'comment "fabric etcd fence client requests"' | cut -d: -f1)
+  reply_line=$(printf '%s\n' "$live_forward" |
+    grep -nF 'comment "fabric etcd fence server replies"' | cut -d: -f1)
+  executable_lines=$(printf '%s\n' "$live_forward" | awk '
+    $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print NR ":" $0 }
+  ')
+  first_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '1s/:.*//p')
+  second_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '2s/:.*//p')
+  first_accept_line=$(printf '%s\n' "$executable_lines" |
+    grep 'accept.*# handle [0-9][0-9]*$' | sed -n '1s/:.*//p')
+  case "$request_line:$reply_line:$first_rule_line:$second_rule_line:$first_accept_line" in
+    *[!0-9:]*|*::*|:*|*:) fail 'cannot resolve exact rollback guard rule order' ;;
+  esac
+  [ "$request_line" -eq "$first_rule_line" ] &&
+    [ "$reply_line" -eq "$second_rule_line" ] ||
+    fail 'rollback drops are not the first two executable forward rules'
+  [ "$request_line" -lt "$first_accept_line" ] &&
+    [ "$reply_line" -lt "$first_accept_line" ] ||
+    fail 'rollback drops do not precede every forward accept'
+}
+
+assert_exact_post_open_probe() {
+  probe=$(nft -a list table inet fabric_etcd_post_open_probe) ||
+    fail 'failed post-open observer disappeared during exact validation'
+  [ "$(printf '%s\n' "$probe" | awk 'NF { n++ } END { print n + 0 }')" -eq 11 ] ||
+    fail 'failed post-open observer has an extra table-level object or line'
+  [ "$(printf '%s\n' "$probe" |
+    sed -n '1{s/ # handle [0-9][0-9]*$//;p}')" = \
+    'table inet fabric_etcd_post_open_probe {' ] ||
+    fail 'failed post-open observer table header is not exact'
+  probe_chains=$(printf '%s\n' "$probe" |
+    sed -n 's/^[[:space:]]*chain \([^[:space:]]*\) {.*/\1/p')
+  [ "$probe_chains" = observe_forward ] ||
+    fail 'failed post-open observer chain membership is not exact'
+  probe_base=$(printf '%s\n' "$probe" | sed -n \
+    's/^[[:space:]]*\(type filter hook forward priority .*; policy accept;\).*$/\1/p')
+  case $probe_base in
+    'type filter hook forward priority -10; policy accept;'|'type filter hook forward priority filter - 10; policy accept;') ;;
+    *) fail 'failed post-open observer hook or priority is not exact' ;;
+  esac
+  probe_rules=$(printf '%s\n' "$probe" | awk '
+    $1 == "chain" && $2 == "observe_forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print }
+  ')
+  [ "$(printf '%s\n' "$probe_rules" |
+    awk 'NF { n++ } END { print n + 0 }')" -eq 6 ] ||
+    fail 'failed post-open observer rule membership is not exactly six'
+
+  assert_probe_rule() {
+    source=$1
+    port=$2
+    marker=$3
+    matches=$(printf '%s\n' "$probe_rules" | grep -F "comment \"$marker\"") ||
+      fail "failed post-open observer rule is absent: $marker"
+    [ "$(printf '%s\n' "$matches" |
+      awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+      fail "failed post-open observer rule count is not one: $marker"
+    normalized=$(printf '%s\n' "$matches" | sed \
+      -e 's/^[[:space:]]*//' \
+      -e 's/[[:space:]][[:space:]]*/ /g' \
+      -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+      -e 's/ # handle [0-9][0-9]*$//')
+    destinations=$(printf '%s\n' "$normalized" |
+      sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p' | tr ',' '\n' |
+      sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+      awk 'NF { value = value separator $0; separator = "," } END { print value }')
+    [ "$destinations" = '10.66.0.10,10.66.0.11,10.66.0.12' ] ||
+      fail "failed post-open observer destinations are not exact: $marker"
+    shape=$(printf '%s\n' "$normalized" |
+      sed 's/ip daddr { [^}]* }/ip daddr { ROOTS }/')
+    [ "$shape" = "ip saddr $source ip daddr { ROOTS } tcp dport $port counter comment \"$marker\"" ] ||
+      fail "failed post-open observer contains a verdict or unexpected expression: $marker"
+  }
+
+  assert_probe_rule 10.66.1.10 2379 'observe svc1 etcd client; no verdict'
+  assert_probe_rule 10.66.1.10 2380 'observe svc1 etcd peer; no verdict'
+  assert_probe_rule 10.66.1.10 2381 'observe svc1 etcd metrics; no verdict'
+  assert_probe_rule 10.66.1.11 2379 'observe svc2 etcd client; no verdict'
+  assert_probe_rule 10.66.1.11 2380 'observe svc2 etcd peer; no verdict'
+  assert_probe_rule 10.66.1.11 2381 'observe svc2 etcd metrics; no verdict'
+}
+
+pending=$(uci -q changes firewall || true)
+[ -z "$pending" ] || fail 'firewall has pending uncommitted UCI changes'
+fw4 check >/dev/null || fail 'fw4 rejects the current UCI configuration'
+assert_stock_top_level_includes
+live_tables=$(nft list tables | LC_ALL=C sort)
+if [ "$allow_post_open_probe" = true ] && [ "$phase" = open-live ]; then
+  case $live_tables in
+    'table inet fw4') ;;
+    'table inet fabric_etcd_post_open_probe
+table inet fw4') assert_exact_post_open_probe ;;
+    *) fail 'live nftables table membership is not exact' ;;
+  esac
+else
+  [ "$live_tables" = 'table inet fw4' ] ||
+    fail 'live nftables table membership is not exact'
+fi
+live_table=$(nft -a list table inet fw4) || fail 'live inet fw4 table is absent'
+live_chain=$(nft -a list chain inet fw4 forward_lan) || fail 'live forward_lan chain is absent'
+live_forward=$(nft -a list chain inet fw4 forward) || fail 'live forward chain is absent'
+
+common_prefix='fabric_wan_dhcp_reply
+fabric_reject_other_wan_input
+fabric_block_private
+fabric_root_egress
+fabric_services_egress
+fabric_reject_other_fabric_to_wan
+fabric_reject_wan_to_fabric'
+common_suffix='fabric_flat_services_api
+fabric_flat_services_vxlan
+fabric_flat_roots_vxlan
+fabric_flat_services_kubelet
+fabric_flat_roots_kubelet
+fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_reject_services_roots
+fabric_flat_reject_roots_services
+fabric_router_dns
+fabric_router_ntp
+fabric_router_http
+fabric_router_services_dns
+fabric_router_services_ntp
+fabric_router_services_http
+fabric_router_ssh
+fabric_reject_other_fabric_router_input'
+forward_prefix='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN'
+forward_suffix='Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+
+case $phase in
+  pre | fenced)
+    expected_rules="$common_prefix
+fabric_flat_reject_services_etcd
+$common_suffix"
+    expected_forward="$forward_prefix
+Reject-services-to-root-etcd
+$forward_suffix"
+    expected_rule_count=25
+    expected_chain_count=15
+    assert_target_section fabric_flat_reject_services_etcd \
+      Reject-services-to-root-etcd '2379 2380 2381' REJECT
+    assert_uci_absent firewall.fabric_flat_services_etcd_client
+    assert_uci_absent firewall.fabric_flat_reject_services_etcd_internal
+    assert_live_rule Reject-services-to-root-etcd 'jump reject_to_lan' no
+    assert_live_absent Allow-platform-to-root-etcd-client
+    assert_live_absent Reject-services-to-root-etcd-internal
+    ;;
+  post | guarded-post | open-live | open-staged)
+    expected_rules="$common_prefix
+fabric_flat_services_etcd_client
+fabric_flat_reject_services_etcd_internal
+$common_suffix"
+    expected_forward="$forward_prefix
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal
+$forward_suffix"
+    expected_rule_count=26
+    expected_chain_count=16
+    assert_target_section fabric_flat_services_etcd_client \
+      Allow-platform-to-root-etcd-client 2379 ACCEPT
+    assert_target_section fabric_flat_reject_services_etcd_internal \
+      Reject-services-to-root-etcd-internal '2380 2381' REJECT
+    assert_uci_absent firewall.fabric_flat_reject_services_etcd
+    if [ "$phase" = post ] || [ "$phase" = guarded-post ]; then
+      require_zero=yes
+    else
+      require_zero=no
+    fi
+    assert_live_rule Allow-platform-to-root-etcd-client 'jump accept_to_lan' "$require_zero"
+    assert_live_rule Reject-services-to-root-etcd-internal 'jump reject_to_lan' "$require_zero"
+    assert_live_absent Reject-services-to-root-etcd
+    ;;
+  *) fail 'unknown validation phase' ;;
+esac
+
+case $phase in
+  fenced)
+    assert_fence_guard
+    ;;
+  guarded-post)
+    assert_rollback_guard
+    ;;
+  open-staged)
+    assert_fence_guard_absent
+    ;;
+  pre | post | open-live)
+    assert_fence_guard_absent
+    assert_fence_artifacts_absent
+    ;;
+esac
+
+actual_rules=$(sections_of_type rule)
+[ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
+rule_count=$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')
+[ "$rule_count" -eq "$expected_rule_count" ] || fail 'firewall rule count is not exact'
+total_count=$(uci -q show firewall |
+  awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')
+[ "$total_count" -eq $((expected_rule_count + 3)) ] ||
+  fail 'firewall contains an unexpected non-rule section'
+
+actual_chain_count=$(printf '%s\n' "$live_chain" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { n++ }
+  END { print n + 0 }
+')
+[ "$actual_chain_count" -eq "$expected_chain_count" ] ||
+  fail 'live forward_lan rule count is not exact'
+actual_forward=$(printf '%s\n' "$live_chain" |
+  sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+[ "$actual_forward" = "$expected_forward" ] || fail 'live forward_lan rule order is not exact'
+terminal=$(printf '%s\n' "$live_chain" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { terminal = $0 }
+  END { print terminal }
+' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+  -e 's/ # handle [0-9][0-9]*$//')
+[ "$terminal" = 'jump reject_to_lan' ] || fail 'live forward_lan terminal verdict is not exact'
+
+printf 'ROUTER_ETCD_POLICY_PHASE=%s\n' "$phase"
+printf 'FIREWALL_RULE_COUNT=%s\n' "$rule_count"
+printf 'FORWARD_LAN_RULE_COUNT=%s\n' "$actual_chain_count"
+printf '%s\n' "$live_chain"
+REMOTE_VALIDATE
+}
+
+write_fence_transition() {
+  cat >"$1" <<'FENCE_TRANSITION'
+delete firewall.fabric_flat_services_etcd_client
+delete firewall.fabric_flat_reject_services_etcd_internal
+set firewall.fabric_flat_reject_services_etcd='rule'
+set firewall.fabric_flat_reject_services_etcd.name='Reject-services-to-root-etcd'
+set firewall.fabric_flat_reject_services_etcd.src='lan'
+set firewall.fabric_flat_reject_services_etcd.dest='lan'
+set firewall.fabric_flat_reject_services_etcd.family='ipv4'
+add_list firewall.fabric_flat_reject_services_etcd.src_ip='10.66.1.10/32'
+add_list firewall.fabric_flat_reject_services_etcd.src_ip='10.66.1.11/32'
+add_list firewall.fabric_flat_reject_services_etcd.dest_ip='10.66.0.10/32'
+add_list firewall.fabric_flat_reject_services_etcd.dest_ip='10.66.0.11/32'
+add_list firewall.fabric_flat_reject_services_etcd.dest_ip='10.66.0.12/32'
+set firewall.fabric_flat_reject_services_etcd.proto='tcp'
+add_list firewall.fabric_flat_reject_services_etcd.dest_port='2379'
+add_list firewall.fabric_flat_reject_services_etcd.dest_port='2380'
+add_list firewall.fabric_flat_reject_services_etcd.dest_port='2381'
+set firewall.fabric_flat_reject_services_etcd.target='REJECT'
+reorder firewall.fabric_flat_reject_services_etcd='7'
+FENCE_TRANSITION
+  chmod 0600 -- "$1"
+}
+
+validate_fence_transition() {
+  local payload=$1 actual_hash
+  actual_hash=$(sha256sum -- "$payload" | awk '{print $1}')
+  [[ $actual_hash == "$fence_transition_sha256" ]] ||
+    die 'embedded fence transition differs from the reviewed exact payload'
+  [[ $(wc -l <"$payload") -eq 18 ]] ||
+    die 'embedded fence transition has an unexpected command count'
+  [[ $(sed -n '1p' "$payload") == \
+      'delete firewall.fabric_flat_services_etcd_client' &&
+     $(sed -n '2p' "$payload") == \
+      'delete firewall.fabric_flat_reject_services_etcd_internal' ]] ||
+    die 'fence transition must first remove the two exact opened sections'
+  [[ $(sed -n '$p' "$payload") == \
+      "reorder firewall.fabric_flat_reject_services_etcd='7'" ]] ||
+    die 'fence transition must restore the reject at the reviewed rule position'
+  ! grep -Eq "target='(ACCEPT|DNAT|SNAT|MASQUERADE)'" "$payload" ||
+    die 'fence transition contains a packet-opening verdict'
+}
+
+validate_committed_fence_guard() {
+  local actual_hash actual_contract
+  [[ -f $fence_guard_file && ! -L $fence_guard_file ]] ||
+    die 'committed fence guard must be a regular, non-symlink file'
+  [[ $(stat -Lc '%a:%F:%h' -- "$fence_guard_file") == '644:regular file:1' ]] ||
+    die 'committed fence guard must be mode-0644 and single-link'
+  actual_hash=$(sha256sum -- "$fence_guard_file" | awk '{print $1}')
+  [[ $actual_hash == "$fence_guard_sha256" ]] ||
+    die 'committed fence guard differs from the reviewed exact payload'
+  [[ $(wc -l <"$fence_guard_file") -eq 2 ]] ||
+    die 'committed fence guard must contain exactly two rules'
+  [[ $(sed -n '1p' "$fence_guard_file") == \
+      'ip saddr { 10.66.1.10, 10.66.1.11 } ip daddr { 10.66.0.10, 10.66.0.11, 10.66.0.12 } tcp dport 2379 counter drop comment "fabric etcd fence client requests"' &&
+     $(sed -n '2p' "$fence_guard_file") == \
+      'ip saddr { 10.66.0.10, 10.66.0.11, 10.66.0.12 } ip daddr { 10.66.1.10, 10.66.1.11 } tcp sport 2379 counter drop comment "fabric etcd fence server replies"' ]] ||
+    die 'committed fence guard directions or endpoint sets are not exact'
+  actual_contract=$(printf 'uci:%s\nguard:%s\n' \
+    "$fence_transition_sha256" "$fence_guard_sha256" | sha256sum | awk '{print $1}')
+  [[ $actual_contract == "$fence_contract_sha256" ]] ||
+    die 'embedded fence contract digest does not bind the reviewed UCI and nft payloads'
+}
+
+normalize_root_guard() {
+  local input=$1 output=$2
+  sed -E \
+    -e 's/counter packets [0-9]+ bytes [0-9]+/counter/g' \
+    -e 's/[[:space:]]+# handle [0-9]+$//' \
+    -e 's/^[[:space:]]+//' \
+    -e 's/[[:space:]]+$//' \
+    -e '/^$/d' \
+    "$input" >"$output"
+  chmod 0600 -- "$output"
+}
+
+capture_exact_root_guards() {
+  local stage=$1 index node snapshot normalized compact service_elements live_rules
+  local json_snapshot live_forward_rules
+  local expected_live_rules expected_live_forward_rules
+  expected_live_rules='iifname "lo" counter accept comment "local host traffic"
+meta nfproto ipv6 counter drop comment "no physical IPv6 input"
+ct state invalid counter drop comment "invalid conntrack state"
+ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
+tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"
+ct state { established, related } counter accept comment "reply traffic"
+ip protocol icmp counter accept comment "IPv4 diagnostics and errors"
+ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root peer and API traffic"
+ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
+ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
+ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
+counter drop comment "deny all remaining input"'
+  expected_live_forward_rules='ct state invalid counter drop comment "invalid conntrack state"
+ct state { established, related } counter accept comment "forwarded replies"
+counter drop comment "deny all new forwarding"'
+
+  for index in "${!root_nodes[@]}"; do
+    node=${root_nodes[$index]}
+    snapshot=$evidence_dir/root-$((index + 1))-guard.$stage
+    normalized=$snapshot.normalized
+    json_snapshot=$snapshot.json
+    operator_root_ssh "$node" sudo --non-interactive /usr/sbin/nft -a \
+      list table inet fabric_guard >"$snapshot" ||
+      die "cannot read live fabric_guard on $node"
+    operator_root_ssh "$node" sudo --non-interactive /usr/sbin/nft -j \
+      list table inet fabric_guard >"$json_snapshot" ||
+      die "cannot read live fabric_guard JSON on $node"
+    chmod 0600 -- "$snapshot" "$json_snapshot"
+    jq -e '
+      ([.nftables[] | .table? |
+        select(.family == "inet" and .name == "fabric_guard")] | length) == 1 and
+      ([.nftables[] | .chain? |
+        select(.family == "inet" and .table == "fabric_guard") |
+        del(.handle)] | sort_by(.name)) == [
+          {family: "inet", table: "fabric_guard", name: "forward",
+           type: "filter", hook: "forward", prio: 10, policy: "drop"},
+          {family: "inet", table: "fabric_guard", name: "input",
+           type: "filter", hook: "input", prio: 10, policy: "drop"}
+        ] and
+      ([.nftables[] | .set? |
+        select(.family == "inet" and .table == "fabric_guard") |
+        del(.handle) |
+        .elem = (.elem // [])] | sort_by(.name)) == [
+          {family: "inet", name: "etcd_maintenance_v4", table: "fabric_guard",
+           type: "ipv4_addr", flags: ["timeout"], timeout: 900,
+           "gc-interval": 60, elem: []},
+          {family: "inet", name: "observer_v4", table: "fabric_guard",
+           type: "ipv4_addr", flags: ["constant"], elem: ["10.66.0.2"]},
+          {family: "inet", name: "root_nodes_v4", table: "fabric_guard",
+           type: "ipv4_addr", flags: ["constant"],
+           elem: ["10.66.0.10", "10.66.0.11", "10.66.0.12"]},
+          {family: "inet", name: "service_nodes_v4", table: "fabric_guard",
+           type: "ipv4_addr", flags: ["constant"],
+           elem: ["10.66.1.10", "10.66.1.11"]}
+        ]
+    ' "$json_snapshot" >/dev/null ||
+      die "$node fabric_guard base chains or identity sets are not exact"
+    normalize_root_guard "$snapshot" "$normalized"
+    compact=$(tr -d '[:space:]' <"$snapshot")
+    service_elements=$(sed -n 's/.*setservice_nodes_v4{[^}]*elements={\([^}]*\)}.*/\1/p' \
+      <<<"$compact")
+    [[ $service_elements == '10.66.1.10,10.66.1.11' ]] ||
+      die "$node service-node set is not exactly the two reviewed addresses"
+    live_rules=$(awk '
+      $0 == "chain input {" { inside = 1; next }
+      inside && $0 == "}" { inside = 0; next }
+      inside && $0 != "" && $0 !~ /^type filter hook input / { print }
+    ' "$normalized")
+    [[ $live_rules == "$expected_live_rules" ]] ||
+      die "$node live fabric_guard input chain differs from the exact reviewed policy"
+    live_forward_rules=$(awk '
+      $0 == "chain forward {" { inside = 1; next }
+      inside && $0 == "}" { inside = 0; next }
+      inside && $0 != "" && $0 !~ /^type filter hook forward / { print }
+    ' "$normalized")
+    [[ $live_forward_rules == "$expected_live_forward_rules" ]] ||
+      die "$node live fabric_guard forward chain differs from the exact deny policy"
+  done
+}
+
+mode=
+serial_fingerprint=
+identity=/var/home/sam/.ssh/id_ed25519
+confirm=
+
+while (($#)); do
+  case $1 in
+    --check|--run|--fence-check|--fence-run)
+      [[ -z $mode ]] ||
+        die 'choose exactly one of --check, --run, --fence-check, or --fence-run'
+      mode=${1#--}
+      shift
+      ;;
+    --serial-ed25519-fingerprint)
+      (($# >= 2)) || die '--serial-ed25519-fingerprint requires a value'
+      [[ -z $serial_fingerprint ]] || die 'serial fingerprint may be specified only once'
+      serial_fingerprint=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity requires a path'
+      identity=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      [[ -z $confirm ]] || die '--confirm may be specified only once'
+      confirm=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $mode ]] || {
+  usage >&2
+  exit 2
+}
+[[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
+case $mode in
+  check | fence-check) check_only=true ;;
+  run | fence-run) check_only=false ;;
+  *) die 'internal mode selection error' ;;
+esac
+if $check_only; then
+  [[ -z $confirm ]] || die '--confirm is invalid with --check'
+else
+  [[ -n $confirm ]] || die '--confirm is required with a live run'
+fi
+[[ $EUID -eq 0 ]] || die 'run this helper with sudo'
+require_root_namespace
+
+for command in awk base64 chmod cmp df dirname env flock getent git grep id ip \
+  jq kubectl mktemp readlink realpath rm sed sha256sum sort ssh ssh-keygen \
+  ssh-keyscan stat sudo timeout tr wc; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(realpath -- "$script_dir/..")
+transition_file=$repo_root/fabric/router/etcd-client-transition.uci
+desired_overlay=$repo_root/fabric/router/files/etc/uci-defaults/30-isolation
+fence_guard_file=$repo_root/fabric/router/etcd-client-fence.nft
+operator_user=sam
+operator_home=$(getent passwd "$operator_user" | awk -F: 'NR == 1 { print $6 }')
+[[ -n $operator_home && -d $operator_home ]] || die 'cannot resolve operator home directory'
+operator_uid=$(id -u "$operator_user") || die 'cannot resolve operator UID'
+operator_runtime=/run/user/$operator_uid
+[[ -d $operator_runtime && ! -L $operator_runtime ]] ||
+  die 'operator runtime directory is missing or unsafe'
+[[ $(stat -Lc '%u:%a' -- "$operator_runtime") == "$operator_uid:700" ]] ||
+  die 'operator runtime directory has unsafe ownership or mode'
+validate_identity
+validate_committed_transition
+validate_committed_fence_guard
+
+cd -- "$repo_root"
+[[ $(operator_git branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(operator_git status --porcelain) ]] || die 'worktree must be clean'
+operator_git fetch --quiet origin main
+head=$(operator_git rev-parse HEAD)
+[[ $head =~ ^[0-9a-f]{40}$ ]] || die 'cannot resolve one full Git revision'
+[[ $head == "$(operator_git rev-parse origin/main)" ]] ||
+  die 'HEAD must exactly match pushed origin/main'
+case $mode in
+  fence-check | fence-run)
+    expected_confirmation="$fence_confirmation_prefix:$head:$fence_contract_sha256"
+    ;;
+  check | run)
+    expected_confirmation="$confirmation_prefix:$head:$transition_sha256"
+    ;;
+esac
+if ! $check_only; then
+  [[ $confirm == "$expected_confirmation" ]] ||
+    die "exact --confirm '$expected_confirmation' is required"
+fi
+
+# shellcheck source=scripts/lib/fabric-secure-tempdir.sh
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+evidence_dir=$(fabric_secure_tmpdir fabric-router-etcd-policy-rollout 8388608) ||
+  die 'cannot create protected tmpfs evidence directory'
+chmod 0700 -- "$evidence_dir"
+router_known_hosts=$evidence_dir/router-known-hosts
+network_lock_fd=
+fence_transition_file=$evidence_dir/fence-transition.uci
+write_fence_transition "$fence_transition_file"
+validate_fence_transition "$fence_transition_file"
+fence_check=false
+post_open_probe_present=false
+
+run_fence() {
+  fence_check=false
+  [[ $mode == fence-check ]] && fence_check=true
+
+  cluster_lock_holder="$(hostname):$$:router-etcd-fence:$head:$fence_contract_sha256"
+  cluster_lock_held=false
+  cluster_lock_uid=
+  cluster_lock_resource_version=
+  fence_remote_staged=false
+  fence_armed=false
+  success=false
+
+  # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+  fence_cleanup() {
+    local status=$?
+    trap - EXIT HUP INT TERM
+    trap '' HUP INT TERM
+    set +e
+    if ! $fence_check && ! $success; then
+      if $fence_armed || $fence_remote_staged; then
+        if router_ssh /bin/sh -s -- "$fence_remote_work" "$fence_remote_init" \
+            "$fence_token" "$fence_remote_operation_lock" "$fence_operation_id" \
+            "$fence_transition_sha256" "$fence_guard_sha256" \
+            "$enforcer_sha" "$init_sha" \
+            >/dev/null 2>&1 <<'REMOTE_FORCE_FENCE'
+set -eu
+work=$1
+init=$2
+firewall=/etc/config/firewall
+guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+token=$3
+operation_lock=$4
+operation_id=$5
+payload_sha=$6
+guard_sha=$7
+enforcer_sha=$8
+init_sha=$9
+[ "$operation_lock" = /tmp/fabric-router-etcd-policy-fence.operation ]
+case $operation_id in ''|*[!0-9a-f]*) exit 1 ;; esac
+[ "$(printf '%s' "$operation_id" | wc -c)" -eq 64 ]
+case "$payload_sha:$guard_sha:$enforcer_sha:$init_sha" in
+  *[!0-9a-f:]*|'') exit 1 ;;
+esac
+[ -d /tmp ] && [ ! -L /tmp ]
+[ "$(stat -c '%u:%g:%a:%F' /tmp)" = '0:0:1777:directory' ]
+mkdir "$operation_lock"
+chmod 0700 "$operation_lock"
+printf '%s\n' "$operation_id" >"$operation_lock/owner"
+chmod 0600 "$operation_lock/owner"
+release_operation_lock() {
+  status=$?
+  entries=
+  trap - EXIT HUP INT TERM
+  if [ -d "$operation_lock" ] && [ ! -L "$operation_lock" ] &&
+      [ "$(stat -c '%u:%g:%a:%F' "$operation_lock")" = '0:0:700:directory' ] &&
+      [ -f "$operation_lock/owner" ] && [ ! -L "$operation_lock/owner" ] &&
+      [ "$(stat -c '%u:%g:%a:%h:%F' "$operation_lock/owner")" = \
+        '0:0:600:1:regular file' ] &&
+      [ "$(cat "$operation_lock/owner")" = "$operation_id" ]; then
+    entries=$(find "$operation_lock" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)
+    if [ "$entries" = "$operation_lock/owner" ]; then
+      rm -- "$operation_lock/owner" && rmdir -- "$operation_lock" || status=98
+    else
+      status=98
+    fi
+  else
+    status=98
+  fi
+  exit "$status"
+}
+trap release_operation_lock EXIT
+trap '' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ ! -e "$work" ] && [ ! -L "$work" ]; then
+  staging=$work.staging
+  [ -d "$staging" ] && [ ! -L "$staging" ]
+  [ "$(stat -c '%u:%g:%a:%F' "$staging")" = '0:0:700:directory' ]
+  [ -f "$staging/owner" ] && [ ! -L "$staging/owner" ]
+  [ "$(cat "$staging/owner")" = fabric-router-etcd-policy-fence ]
+  [ -f "$staging/expected-token" ] && [ ! -L "$staging/expected-token" ]
+  [ "$(cat "$staging/expected-token")" = "$token" ]
+  [ -f "$staging/operation-id" ] && [ ! -L "$staging/operation-id" ]
+  staging_operation_id=$(cat "$staging/operation-id")
+  case $staging_operation_id in ''|*[!0-9a-f]*) exit 1 ;; esac
+  [ "$(printf '%s' "$staging_operation_id" | wc -c)" -eq 64 ]
+  [ -f "$staging/armed" ] && [ ! -L "$staging/armed" ]
+  [ "$(cat "$staging/armed")" = "$token" ]
+  for manifest in firewall.fenced.sha256 early-guard.nft.sha256 enforce.sha256 \
+      init.sha256; do
+    [ -f "$staging/$manifest" ] && [ ! -L "$staging/$manifest" ]
+    (cd "$staging" && sha256sum -c "$manifest" >/dev/null)
+  done
+  [ "$(sha256sum "$staging/transition.uci" | awk '{print $1}')" = "$payload_sha" ]
+  [ "$(sha256sum "$staging/early-guard.nft" | awk '{print $1}')" = "$guard_sha" ]
+  [ "$(sha256sum "$staging/enforce" | awk '{print $1}')" = "$enforcer_sha" ]
+  [ "$(sha256sum "$staging/init" | awk '{print $1}')" = "$init_sha" ]
+  [ -f "$init" ] && [ ! -L "$init" ]
+  [ "$(stat -c '%u:%g:%a:%h:%F' "$init")" = '0:0:700:1:regular file' ]
+  cmp -s "$staging/init" "$init"
+  "$init" enable
+  if ! "$init" running >/dev/null 2>&1; then
+    "$init" start
+  fi
+  "$init" running
+fi
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-fence ]
+[ -f "$work/expected-token" ] && [ "$(cat "$work/expected-token")" = "$token" ]
+[ -f "$work/operation-id" ] && [ ! -L "$work/operation-id" ]
+work_operation_id=$(cat "$work/operation-id")
+case $work_operation_id in ''|*[!0-9a-f]*) exit 1 ;; esac
+[ "$(printf '%s' "$work_operation_id" | wc -c)" -eq 64 ]
+for manifest in firewall.fenced.sha256 early-guard.nft.sha256 enforce.sha256 \
+    init.sha256; do
+  [ -f "$work/$manifest" ] && [ ! -L "$work/$manifest" ]
+  (cd "$work" && sha256sum -c "$manifest" >/dev/null)
+done
+[ "$(sha256sum "$work/transition.uci" | awk '{print $1}')" = "$payload_sha" ]
+[ "$(sha256sum "$work/early-guard.nft" | awk '{print $1}')" = "$guard_sha" ]
+[ "$(sha256sum "$work/enforce" | awk '{print $1}')" = "$enforcer_sha" ]
+[ "$(sha256sum "$work/init" | awk '{print $1}')" = "$init_sha" ]
+[ -f "$init" ] && [ ! -L "$init" ]
+[ "$(stat -c '%u:%g:%a:%h:%F' "$init")" = '0:0:700:1:regular file' ]
+cmp -s "$work/init" "$init"
+if [ -e "$work/armed" ]; then
+  [ -f "$work/armed" ] && [ ! -L "$work/armed" ]
+  [ "$(cat "$work/armed")" = "$token" ]
+else
+  printf '%s\n' "$token" >"$work/armed.next"
+  chmod 0600 "$work/armed.next"
+  mv "$work/armed.next" "$work/armed"
+fi
+if [ -e "$work/disarmed" ]; then
+  [ -f "$work/disarmed" ] && [ ! -L "$work/disarmed" ]
+  [ "$(cat "$work/disarmed")" = "$token" ]
+  "$init" stop >/dev/null 2>&1 || true
+  rm -f "$work/disarmed"
+fi
+"$init" enable
+if ! "$init" running >/dev/null 2>&1; then
+  "$init" start
+fi
+"$init" running
+REMOTE_FORCE_FENCE
+        then
+          printf 'Fence verification stopped; exact completed staging was armed if necessary and the persistent router-local reject enforcer remains active. Inspect %s and %s over serial.\n' \
+            "$fence_remote_work" "$fence_remote_init" >&2
+        else
+          printf 'WARNING: fence verification stopped and exact staged router-local enforcement could not be validated and armed. Inspect the live router and %s/%s over serial immediately; the opened policy may still be live.\n' \
+            "$fence_remote_work" "$fence_remote_init" >&2
+        fi
+      fi
+      if $cluster_lock_held; then
+        printf 'Global Fabric maintenance lock remains held by %s for fenced-state inspection.\n' \
+          "$cluster_lock_holder" >&2
+      fi
+    fi
+    if $fence_check && ((status == 0)); then
+      rm -rf -- "$evidence_dir"
+    else
+      printf 'Protected router fence evidence: %s\n' "$evidence_dir" >&2
+    fi
+    exit "$status"
+  }
+  trap fence_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  "$repo_root/scripts/rollout-fabric-root-firewall" --check \
+    >"$evidence_dir/committed-root-firewall.txt" ||
+    die 'committed root firewall contract is invalid'
+  chmod 0600 -- "$evidence_dir/committed-root-firewall.txt"
+  observer_verify || die 'fabric observer isolation verification failed before fencing'
+  prepare_router_ssh
+  if ! probe_fabric_api preflight; then
+    note 'WARNING: Fabric API is unavailable; fence confirmation remains valid for break-glass containment.'
+  fi
+  inspect_post_open_probe preflight
+  validate_remote_phase open-live "$evidence_dir/router-open-preflight.txt"
+
+  if $fence_check; then
+    capture_exact_root_guards check
+    note 'Read-only fence preflight passed: the router is exactly open and all three root guards are exact.'
+    note "Fence UCI SHA-256: $fence_transition_sha256"
+    note "Fence early-drop SHA-256: $fence_guard_sha256"
+    note "Fence contract SHA-256: $fence_contract_sha256"
+    if $post_open_probe_present; then
+      note 'Exact verdict-free failed post-open observer is present and will be removed only by --fence-run.'
+    fi
+    note "Exact live confirmation: $expected_confirmation"
+    success=true
+    return 0
+  fi
+
+  acquire_network_lock
+  if probe_fabric_api before-lock; then
+    if ! try_acquire_fence_cluster_lock; then
+      note 'WARNING: global maintenance lock was not acquired; preserving its existing holder and proceeding with the persistent fence.'
+    fi
+  else
+    printf 'FENCE_CLUSTER_LOCK=skipped-api-unavailable\n' \
+      >"$evidence_dir/fence-cluster-lock-state.txt"
+    chmod 0600 -- "$evidence_dir/fence-cluster-lock-state.txt"
+    note 'WARNING: Fabric API remains unavailable; proceeding with the persistent fence under the host lock.'
+  fi
+  observer_verify || die 'fabric observer isolation changed before fencing'
+  validate_remote_phase open-live "$evidence_dir/router-open-before-fence.txt"
+
+  fence_token="$head:$fence_contract_sha256"
+  fence_operation_id=$(printf '%s\n' \
+    "$(hostname):$$:$evidence_dir:$fence_token:fence-operation" | \
+    sha256sum | awk '{print $1}')
+  payload_b64=$(base64 -w0 -- "$fence_transition_file")
+  guard_b64=$(base64 -w0 -- "$fence_guard_file")
+  read -r -d '' fence_enforcer <<'REMOTE_FENCE_ENFORCER' || true
+#!/bin/sh
+set -u
+umask 077
+
+work=/etc/fabric-router-etcd-policy-fence
+firewall=/etc/config/firewall
+candidate=$work/firewall.fenced
+guard_source=$work/early-guard.nft
+guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+
+safe_contract() {
+  [ -d "$work" ] && [ ! -L "$work" ] || return 1
+  for file in owner expected-token operation-id armed firewall.fenced firewall.fenced.sha256 \
+      early-guard.nft early-guard.nft.sha256 enforce enforce.sha256 init \
+      init.sha256; do
+    [ -f "$work/$file" ] && [ ! -L "$work/$file" ] || return 1
+  done
+  [ "$(cat "$work/owner")" = fabric-router-etcd-policy-fence ] || return 1
+  [ "$(cat "$work/armed")" = "$(cat "$work/expected-token")" ] || return 1
+  operation_id=$(cat "$work/operation-id")
+  case $operation_id in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "$(printf '%s' "$operation_id" | wc -c)" -eq 64 ] || return 1
+  (cd "$work" && sha256sum -c firewall.fenced.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c early-guard.nft.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c enforce.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c init.sha256 >/dev/null) || return 1
+  cmp -s "$work/init" /etc/init.d/fabric-router-etcd-policy-fence || return 1
+  [ -d /etc/config ] && [ ! -L /etc/config ] || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  [ -d /usr/share/nftables.d/chain-pre/forward ] || return 1
+  [ ! -L /usr/share/nftables.d/chain-pre ] || return 1
+  [ ! -L /usr/share/nftables.d/chain-pre/forward ] || return 1
+}
+
+guard_rule_exact() {
+  rule=$1
+  marker=$2
+  port_field=$3
+  wanted_sources=$4
+  wanted_destinations=$5
+  normalized=$(printf '%s\n' "$rule" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  source_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/^ip saddr { \([^}]*\) } ip daddr.*/\1/p')
+  destination_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p')
+  [ -n "$source_members" ] && [ -n "$destination_members" ] || return 1
+  source_members=$(printf '%s\n' "$source_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  destination_members=$(printf '%s\n' "$destination_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  [ "$source_members" = "$wanted_sources" ] || return 1
+  [ "$destination_members" = "$wanted_destinations" ] || return 1
+  shape=$(printf '%s\n' "$normalized" | sed \
+    -e 's/ip saddr { [^}]* }/ip saddr { SOURCE }/' \
+    -e 's/ip daddr { [^}]* }/ip daddr { DESTINATION }/')
+  [ "$shape" = "ip saddr { SOURCE } ip daddr { DESTINATION } tcp $port_field 2379 counter drop comment \"$marker\"" ]
+}
+
+guard_live() {
+  [ -f "$guard" ] && [ ! -L "$guard" ] || return 1
+  cmp -s "$guard_source" "$guard" || return 1
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ "$share_nft_files" = "$guard" ] || return 1
+  etc_nft_files=$(find /etc/nftables.d -mindepth 1 -maxdepth 1 \
+    -name '*.nft' -print | LC_ALL=C sort)
+  [ "$etc_nft_files" = '/etc/nftables.d/10-custom-filter-chains.nft' ] || return 1
+  [ -f /etc/nftables.d/10-custom-filter-chains.nft ] &&
+    [ ! -L /etc/nftables.d/10-custom-filter-chains.nft ] || return 1
+  active_etc_nft=$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+    /etc/nftables.d/10-custom-filter-chains.nft)
+  [ -z "$active_etc_nft" ] || return 1
+  live=$(nft -a list chain inet fw4 forward) || return 1
+  request=$(printf '%s\n' "$live" |
+    grep -F 'comment "fabric etcd fence client requests"' || true)
+  reply=$(printf '%s\n' "$live" |
+    grep -F 'comment "fabric etcd fence server replies"' || true)
+  [ "$(printf '%s\n' "$request" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    return 1
+  [ "$(printf '%s\n' "$reply" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    return 1
+  service_members='10.66.1.10,10.66.1.11'
+  root_members='10.66.0.10,10.66.0.11,10.66.0.12'
+  guard_rule_exact "$request" 'fabric etcd fence client requests' dport \
+    "$service_members" "$root_members" || return 1
+  guard_rule_exact "$reply" 'fabric etcd fence server replies' sport \
+    "$root_members" "$service_members" || return 1
+  request_line=$(printf '%s\n' "$live" |
+    grep -nF 'comment "fabric etcd fence client requests"' | cut -d: -f1)
+  reply_line=$(printf '%s\n' "$live" |
+    grep -nF 'comment "fabric etcd fence server replies"' | cut -d: -f1)
+  executable_lines=$(printf '%s\n' "$live" | awk '
+    $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print NR ":" $0 }
+  ')
+  first_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '1s/:.*//p')
+  second_rule_line=$(printf '%s\n' "$executable_lines" | sed -n '2s/:.*//p')
+  first_accept_line=$(printf '%s\n' "$executable_lines" |
+    grep 'accept.*# handle [0-9][0-9]*$' | sed -n '1s/:.*//p')
+  case "$request_line:$reply_line:$first_rule_line:$second_rule_line:$first_accept_line" in
+    *[!0-9:]*|*::*|:*|*:) return 1 ;;
+  esac
+  [ "$request_line" -eq "$first_rule_line" ] &&
+    [ "$reply_line" -eq "$second_rule_line" ] || return 1
+  [ "$request_line" -lt "$first_accept_line" ] &&
+    [ "$reply_line" -lt "$first_accept_line" ] || return 1
+}
+
+is_fenced() {
+  safe_contract || return 1
+  cmp -s "$candidate" "$firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  fw4 check >/dev/null || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.name)" = \
+    Reject-services-to-root-etcd ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
+    '2379 2380 2381' ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.target)" = REJECT ] || return 1
+  ! uci -q get firewall.fabric_flat_services_etcd_client >/dev/null 2>&1 || return 1
+  ! uci -q get firewall.fabric_flat_reject_services_etcd_internal >/dev/null 2>&1 || return 1
+  live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
+  [ "$(printf '%s\n' "$live_lan" | grep -Fc 'comment "!fw4: Reject-services-to-root-etcd"')" -eq 1 ] || return 1
+  ! printf '%s\n' "$live_lan" | grep -F 'comment "!fw4: Allow-platform-to-root-etcd-client"' >/dev/null || return 1
+  ! printf '%s\n' "$live_lan" | grep -F 'comment "!fw4: Reject-services-to-root-etcd-internal"' >/dev/null || return 1
+  guard_live
+}
+
+apply_fence() {
+  safe_contract || return 1
+  uci -q revert firewall || true
+  cp "$guard_source" "$guard.next" || return 1
+  chown 0:0 "$guard.next" || return 1
+  chmod 0600 "$guard.next" || return 1
+  mv "$guard.next" "$guard" || return 1
+  cp "$candidate" /etc/config/.firewall.fabric-etcd-fence.next || return 1
+  chown 0:0 /etc/config/.firewall.fabric-etcd-fence.next || return 1
+  chmod 0600 /etc/config/.firewall.fabric-etcd-fence.next || return 1
+  mv /etc/config/.firewall.fabric-etcd-fence.next "$firewall" || return 1
+  fw4 check >/dev/null || return 1
+  /etc/init.d/firewall reload >/dev/null || return 1
+  is_fenced
+}
+
+while :; do
+  if safe_contract && { is_fenced || apply_fence; }; then
+    token=$(cat "$work/expected-token")
+    printf '%s\n' "$token" >"$work/applied.next"
+    chmod 0600 "$work/applied.next"
+    mv "$work/applied.next" "$work/applied"
+  else
+    logger -t fabric-router-etcd-policy-fence \
+      'fence application failed; retrying without restoring the open policy'
+  fi
+  sleep 2
+done
+REMOTE_FENCE_ENFORCER
+
+  read -r -d '' fence_init <<'REMOTE_FENCE_INIT' || true
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=98
+STOP=01
+
+promote_staging() {
+  work=/etc/fabric-router-etcd-policy-fence
+  staging=$work.staging
+  if [ ! -e "$work" ] && [ ! -L "$work" ]; then
+    [ -d "$staging" ] && [ ! -L "$staging" ] || return 1
+    [ -f "$staging/owner" ] && [ ! -L "$staging/owner" ] &&
+      [ "$(cat "$staging/owner")" = fabric-router-etcd-policy-fence ] || return 1
+    [ -f "$staging/operation-id" ] && [ ! -L "$staging/operation-id" ] ||
+      return 1
+    operation_id=$(cat "$staging/operation-id")
+    case $operation_id in ''|*[!0-9a-f]*) return 1 ;; esac
+    [ "$(printf '%s' "$operation_id" | wc -c)" -eq 64 ] || return 1
+    [ -f "$staging/expected-token" ] && [ ! -L "$staging/expected-token" ] &&
+      [ -f "$staging/armed" ] && [ ! -L "$staging/armed" ] &&
+      [ "$(cat "$staging/expected-token")" = "$(cat "$staging/armed")" ] || return 1
+    for manifest in firewall.fenced.sha256 early-guard.nft.sha256 \
+        enforce.sha256 init.sha256; do
+      [ -f "$staging/$manifest" ] && [ ! -L "$staging/$manifest" ] || return 1
+      (cd "$staging" && sha256sum -c "$manifest" >/dev/null) || return 1
+    done
+    cmp -s "$staging/init" /etc/init.d/fabric-router-etcd-policy-fence ||
+      return 1
+    mv "$staging" "$work" || return 1
+  fi
+  [ -d "$work" ] && [ ! -L "$work" ] || return 1
+  [ ! -e "$staging" ] && [ ! -L "$staging" ] || return 1
+}
+
+start_service() {
+  promote_staging || return 1
+  procd_open_instance
+  procd_set_param command /bin/sh /etc/fabric-router-etcd-policy-fence/enforce
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_set_param term_timeout 5
+  procd_set_param respawn 3600 5 0
+  procd_close_instance
+}
+REMOTE_FENCE_INIT
+
+  enforcer_b64=$(printf '%s' "$fence_enforcer" | base64 -w0)
+  init_b64=$(printf '%s' "$fence_init" | base64 -w0)
+  enforcer_sha=$(printf '%s' "$fence_enforcer" | sha256sum | awk '{print $1}')
+  init_sha=$(printf '%s' "$fence_init" | sha256sum | awk '{print $1}')
+  fence_remote_staged=true
+  fence_armed=true
+  router_ssh /bin/sh -s -- \
+    "$fence_remote_work" "$fence_remote_init" "$fence_remote_guard" \
+    "$fence_transition_sha256" "$fence_guard_sha256" "$fence_token" \
+    "$payload_b64" "$guard_b64" "$enforcer_b64" "$init_b64" \
+    "$enforcer_sha" "$init_sha" "$fence_remote_operation_lock" \
+    "$fence_operation_id" >"$evidence_dir/router-fence-stage.txt" \
+    <<'REMOTE_FENCE_STAGE'
+set -eu
+umask 077
+trap '' HUP
+final_work=$1
+staging=$final_work.staging
+work=$staging
+init=$2
+guard=$3
+payload_sha=$4
+guard_sha=$5
+token=$6
+payload_b64=$7
+guard_b64=$8
+enforcer_b64=$9
+init_b64=${10}
+enforcer_sha=${11}
+init_sha=${12}
+operation_lock=${13}
+operation_id=${14}
+firewall=/etc/config/firewall
+
+fail() {
+  printf 'remote router fence staging failed: %s\n' "$*" >&2
+  exit 1
+}
+
+case "$payload_sha:$guard_sha:$enforcer_sha:$init_sha:$token" in
+  *[!0-9a-f:]*|'') fail 'fence hash or token has an invalid shape' ;;
+esac
+[ "$final_work" = /etc/fabric-router-etcd-policy-fence ] ||
+  fail 'fence work path is not exact'
+[ "$staging" = /etc/fabric-router-etcd-policy-fence.staging ] ||
+  fail 'fence staging path is not exact'
+[ "$init" = /etc/init.d/fabric-router-etcd-policy-fence ] ||
+  fail 'fence init path is not exact'
+[ "$operation_lock" = /tmp/fabric-router-etcd-policy-fence.operation ] ||
+  fail 'fence operation-lock path is not exact'
+case $operation_id in
+  ''|*[!0-9a-f]*) fail 'fence operation ID has an invalid shape' ;;
+esac
+[ "$(printf '%s' "$operation_id" | wc -c)" -eq 64 ] ||
+  fail 'fence operation ID is not 64 hexadecimal characters'
+[ -d /tmp ] && [ ! -L /tmp ] || fail '/tmp is unsafe'
+[ "$(stat -c '%u:%g:%a:%F' /tmp)" = '0:0:1777:directory' ] ||
+  fail '/tmp metadata is unsafe'
+if ! mkdir "$operation_lock"; then
+  existing_owner=unknown
+  if [ -d "$operation_lock" ] && [ ! -L "$operation_lock" ] &&
+      [ -f "$operation_lock/owner" ] && [ ! -L "$operation_lock/owner" ]; then
+    existing_owner=$(cat "$operation_lock/owner" 2>/dev/null || printf unknown)
+  fi
+  fail "another or stale router-local fence operation exists: $existing_owner"
+fi
+chmod 0700 "$operation_lock"
+printf '%s\n' "$operation_id" >"$operation_lock/owner"
+chmod 0600 "$operation_lock/owner"
+
+release_operation_lock() {
+  status=$?
+  entries=
+  trap - EXIT HUP INT TERM
+  if [ -d "$operation_lock" ] && [ ! -L "$operation_lock" ] &&
+      [ "$(stat -c '%u:%g:%a:%F' "$operation_lock")" = '0:0:700:directory' ] &&
+      [ -f "$operation_lock/owner" ] && [ ! -L "$operation_lock/owner" ] &&
+      [ "$(stat -c '%u:%g:%a:%h:%F' "$operation_lock/owner")" = \
+        '0:0:600:1:regular file' ] &&
+      [ "$(cat "$operation_lock/owner")" = "$operation_id" ]; then
+    entries=$(find "$operation_lock" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)
+    if [ "$entries" = "$operation_lock/owner" ]; then
+      rm -- "$operation_lock/owner" && rmdir -- "$operation_lock" || status=98
+    else
+      status=98
+    fi
+  else
+    status=98
+  fi
+  exit "$status"
+}
+trap release_operation_lock EXIT
+trap '' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+[ -f "$firewall" ] && [ ! -L "$firewall" ] || fail 'live firewall config is unsafe'
+[ "$(stat -c '%u:%g:%a:%h:%F' "$firewall")" = '0:0:600:1:regular file' ] ||
+  fail 'live firewall config metadata is unsafe'
+[ -d /etc/config ] && [ ! -L /etc/config ] || fail '/etc/config is unsafe'
+[ -d /usr/share/nftables.d ] && [ ! -L /usr/share/nftables.d ] ||
+  fail '/usr/share/nftables.d is unsafe'
+[ "$(stat -c '%u:%g:%a:%F' /usr/share/nftables.d)" = '0:0:755:directory' ] ||
+  fail '/usr/share/nftables.d metadata is unsafe'
+[ -z "$(find /usr/share/nftables.d -name '*.nft' -print)" ] ||
+  fail 'an automatic nftables include already exists'
+[ ! -e "$final_work" ] && [ ! -L "$final_work" ] ||
+  fail 'completed fence work path requires resume inspection'
+[ ! -e "$init" ] && [ ! -L "$init" ] || fail 'stale fence init path requires inspection'
+[ ! -e "$init.next" ] && [ ! -L "$init.next" ] ||
+  fail 'stale fence init staging path requires inspection'
+if find /etc/rc.d -maxdepth 1 -type l -name '*fabric-router-etcd-policy-fence' | grep . >/dev/null; then
+  fail 'stale enabled fence link requires inspection'
+fi
+
+for directory in /usr/share/nftables.d/chain-pre \
+    /usr/share/nftables.d/chain-pre/forward; do
+  if [ -e "$directory" ] || [ -L "$directory" ]; then
+    [ -d "$directory" ] && [ ! -L "$directory" ] ||
+      fail "fence include directory is unsafe: $directory"
+    [ "$(stat -c '%u:%g:%a:%F' "$directory")" = '0:0:755:directory' ] ||
+      fail "fence include directory metadata is unsafe: $directory"
+  else
+    mkdir "$directory"
+    chmod 0755 "$directory"
+  fi
+done
+[ "$guard" = /usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft ] ||
+  fail 'fence include path is not the reviewed chain-pre/forward path'
+[ ! -e "$guard" ] && [ ! -L "$guard" ] || fail 'stale fence guard requires inspection'
+
+if [ -e "$staging" ] || [ -L "$staging" ]; then
+  [ -d "$staging" ] && [ ! -L "$staging" ] ||
+    fail 'unpromoted fence staging path is unsafe'
+  [ "$(stat -c '%u:%g:%a:%F' "$staging")" = '0:0:700:directory' ] ||
+    fail 'unpromoted fence staging metadata is unsafe'
+  [ -f "$staging/owner" ] && [ ! -L "$staging/owner" ] &&
+    [ "$(cat "$staging/owner")" = fabric-router-etcd-policy-fence ] ||
+    fail 'unpromoted fence staging owner is unknown'
+  [ -f "$staging/expected-token" ] && [ ! -L "$staging/expected-token" ] &&
+    [ "$(cat "$staging/expected-token")" = "$token" ] ||
+    fail 'unpromoted fence staging token is unknown'
+  [ -f "$staging/operation-id" ] && [ ! -L "$staging/operation-id" ] ||
+    fail 'unpromoted fence staging operation ID is absent or unsafe'
+  stale_operation_id=$(cat "$staging/operation-id")
+  case $stale_operation_id in
+    ''|*[!0-9a-f]*) fail 'unpromoted fence staging operation ID is unknown' ;;
+  esac
+  [ "$(printf '%s' "$stale_operation_id" | wc -c)" -eq 64 ] ||
+    fail 'unpromoted fence staging operation ID is not exact'
+  staging_entries=$(find "$staging" -mindepth 1 -print | LC_ALL=C sort)
+  printf '%s\n' "$staging_entries" | while IFS= read -r staging_entry; do
+    relative=${staging_entry#"$staging/"}
+    case $relative in
+      candidate|candidate-save)
+        [ -d "$staging_entry" ] && [ ! -L "$staging_entry" ] &&
+          [ "$(stat -c '%u:%g:%a:%F' "$staging_entry")" = \
+            '0:0:700:directory' ] || exit 1
+        ;;
+      owner|expected-token|operation-id|transition.uci|early-guard.nft|\
+      firewall.open|firewall.fenced|firewall.open.sha256|\
+      firewall.fenced.sha256|early-guard.nft.sha256|enforce.sha256|\
+      init.sha256|armed|candidate/firewall|candidate-save/firewall)
+        [ -f "$staging_entry" ] && [ ! -L "$staging_entry" ] &&
+          [ "$(stat -c '%u:%g:%a:%h:%F' "$staging_entry")" = \
+            '0:0:600:1:regular file' ] || exit 1
+        ;;
+      enforce|init)
+        [ -f "$staging_entry" ] && [ ! -L "$staging_entry" ] &&
+          [ "$(stat -c '%u:%g:%a:%h:%F' "$staging_entry")" = \
+            '0:0:700:1:regular file' ] || exit 1
+        ;;
+      *) exit 1 ;;
+    esac
+  done || fail 'unpromoted fence staging contains an unknown or unsafe entry'
+  rm -rf -- "$staging"
+fi
+
+mkdir "$work"
+chmod 0700 "$work"
+printf '%s\n' fabric-router-etcd-policy-fence >"$work/owner"
+printf '%s\n' "$token" >"$work/expected-token"
+printf '%s\n' "$operation_id" >"$work/operation-id"
+printf '%s' "$payload_b64" | base64 -d >"$work/transition.uci"
+printf '%s' "$guard_b64" | base64 -d >"$work/early-guard.nft"
+printf '%s' "$enforcer_b64" | base64 -d >"$work/enforce"
+printf '%s' "$init_b64" | base64 -d >"$work/init"
+chmod 0600 "$work/owner" "$work/expected-token" "$work/operation-id" \
+  "$work/transition.uci" "$work/early-guard.nft"
+chmod 0700 "$work/enforce" "$work/init"
+[ "$(sha256sum "$work/transition.uci" | awk '{print $1}')" = "$payload_sha" ] ||
+  fail 'fence transition changed in transport'
+[ "$(sha256sum "$work/early-guard.nft" | awk '{print $1}')" = "$guard_sha" ] ||
+  fail 'fence early-drop payload changed in transport'
+[ "$(sha256sum "$work/enforce" | awk '{print $1}')" = "$enforcer_sha" ] ||
+  fail 'fence enforcer changed in transport'
+[ "$(sha256sum "$work/init" | awk '{print $1}')" = "$init_sha" ] ||
+  fail 'fence init changed in transport'
+
+mkdir "$work/candidate" "$work/candidate-save"
+chmod 0700 "$work/candidate" "$work/candidate-save"
+cp -p "$firewall" "$work/firewall.open"
+cp -p "$firewall" "$work/candidate/firewall"
+uci -q -c "$work/candidate" -t "$work/candidate-save" batch \
+  <"$work/transition.uci" || fail 'fenced candidate UCI batch failed'
+uci -q -c "$work/candidate" -t "$work/candidate-save" commit firewall ||
+  fail 'fenced candidate UCI commit failed'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.name)" = \
+  Reject-services-to-root-etcd ] || fail 'fenced candidate reject is absent'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
+  '2379 2380 2381' ] || fail 'fenced candidate reject ports are not exact'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd.target)" = \
+  REJECT ] || fail 'fenced candidate verdict is not REJECT'
+if uci -q -c "$work/candidate" -t "$work/candidate-save" \
+    get firewall.fabric_flat_services_etcd_client >/dev/null 2>&1 ||
+   uci -q -c "$work/candidate" -t "$work/candidate-save" \
+    get firewall.fabric_flat_reject_services_etcd_internal >/dev/null 2>&1; then
+  fail 'fenced candidate retained an opened etcd section'
+fi
+rules=$(uci -q -c "$work/candidate" -t "$work/candidate-save" show firewall |
+  sed -n "s/^firewall\.\([^.=]*\)='rule'$/\1/p")
+expected_rules='fabric_wan_dhcp_reply
+fabric_reject_other_wan_input
+fabric_block_private
+fabric_root_egress
+fabric_services_egress
+fabric_reject_other_fabric_to_wan
+fabric_reject_wan_to_fabric
+fabric_flat_reject_services_etcd
+fabric_flat_services_api
+fabric_flat_services_vxlan
+fabric_flat_roots_vxlan
+fabric_flat_services_kubelet
+fabric_flat_roots_kubelet
+fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_reject_services_roots
+fabric_flat_reject_roots_services
+fabric_router_dns
+fabric_router_ntp
+fabric_router_http
+fabric_router_services_dns
+fabric_router_services_ntp
+fabric_router_services_http
+fabric_router_ssh
+fabric_reject_other_fabric_router_input'
+[ "$rules" = "$expected_rules" ] || fail 'fenced candidate rule order is not exact'
+[ -z "$(uci -q changes firewall || true)" ] || fail 'candidate validation leaked a live UCI delta'
+
+cp "$work/candidate/firewall" "$work/firewall.fenced"
+chmod 0600 "$work/firewall.open" "$work/firewall.fenced"
+(cd "$work" && sha256sum firewall.open >firewall.open.sha256)
+(cd "$work" && sha256sum firewall.fenced >firewall.fenced.sha256)
+(cd "$work" && sha256sum early-guard.nft >early-guard.nft.sha256)
+(cd "$work" && sha256sum enforce >enforce.sha256)
+(cd "$work" && sha256sum init >init.sha256)
+printf '%s\n' "$token" >"$work/armed"
+chmod 0600 "$work/armed"
+cp "$work/init" "$init.next"
+chmod 0700 "$init.next"
+[ -f "$init.next" ] && [ ! -L "$init.next" ] || fail 'fence init staging is unsafe'
+cmp -s "$work/init" "$init.next" || fail 'fence init staging changed'
+mv "$init.next" "$init"
+[ -f "$init" ] && [ ! -L "$init" ] || fail 'fence init installation is unsafe'
+cmp -s "$work/init" "$init" || fail 'installed fence init changed'
+"$init" enable
+"$init" enabled
+"$init" start
+"$init" running
+[ -d "$final_work" ] && [ ! -L "$final_work" ] ||
+  fail 'fence staging was not atomically promoted'
+[ ! -e "$staging" ] && [ ! -L "$staging" ] ||
+  fail 'fence staging path survived atomic promotion'
+work=$final_work
+printf 'OPEN_SHA256=%s\n' "$(awk '{print $1}' "$work/firewall.open.sha256")"
+printf 'FENCED_SHA256=%s\n' "$(awk '{print $1}' "$work/firewall.fenced.sha256")"
+printf 'EARLY_GUARD_SHA256=%s\n' "$(awk '{print $1}' "$work/early-guard.nft.sha256")"
+printf 'FENCE_ENFORCER_ARMED=%s\n' "$token"
+REMOTE_FENCE_STAGE
+
+  fence_applied=false
+  for _attempt in {1..30}; do
+    applied=$(router_ssh /bin/sh -s -- "$fence_remote_work" "$fence_remote_init" \
+      "$fence_token" <<'REMOTE_FENCE_APPLIED' 2>/dev/null || true
+set -eu
+work=$1
+init=$2
+token=$3
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/applied" ] && [ ! -L "$work/applied" ]
+[ "$(cat "$work/applied")" = "$token" ]
+"$init" enabled
+"$init" running
+printf 'FENCE_APPLIED=%s\n' "$token"
+REMOTE_FENCE_APPLIED
+    )
+    if [[ $applied == "FENCE_APPLIED=$fence_token" ]]; then
+      fence_applied=true
+      break
+    fi
+    sleep 1
+  done
+  $fence_applied || die 'router-local enforcer did not acknowledge the fenced policy'
+
+  remove_exact_post_open_probe
+  validate_remote_phase fenced "$evidence_dir/router-fenced.txt"
+  observer_verify || die 'fabric observer isolation changed while fencing'
+  if ! probe_fabric_api fenced; then
+    note 'WARNING: Fabric API remains unavailable after containment; the fence proof continues independently.'
+  fi
+  capture_exact_root_guards fenced
+
+  router_ssh /bin/sh -s -- "$fence_remote_work" "$fence_remote_init" \
+    "$fence_remote_guard" "$fence_guard_sha256" "$fence_token" \
+    >"$evidence_dir/router-fence-persistence.txt" <<'REMOTE_FENCE_PERSISTENCE'
+set -eu
+work=$1
+init=$2
+guard=$3
+guard_sha=$4
+token=$5
+firewall=/etc/config/firewall
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-fence ]
+[ -f "$work/armed" ] && [ "$(cat "$work/armed")" = "$token" ]
+[ -f "$work/applied" ] && [ "$(cat "$work/applied")" = "$token" ]
+[ ! -e "$work/disarmed" ] && [ ! -L "$work/disarmed" ]
+"$init" enabled
+"$init" running
+(cd "$work" && sha256sum -c firewall.fenced.sha256 >/dev/null)
+(cd "$work" && sha256sum -c early-guard.nft.sha256 >/dev/null)
+cmp -s "$work/firewall.fenced" "$firewall"
+cmp -s "$work/early-guard.nft" "$guard"
+[ "$(sha256sum "$guard" | awk '{print $1}')" = "$guard_sha" ]
+[ "$(find /etc/rc.d -maxdepth 1 -type l \
+  -name '*fabric-router-etcd-policy-fence' | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ]
+printf 'FENCE_PERSISTENT=%s\n' "$token"
+REMOTE_FENCE_PERSISTENCE
+
+  validate_remote_phase fenced "$evidence_dir/router-fenced-final.txt"
+  capture_exact_root_guards final
+  for index in "${!root_nodes[@]}"; do
+    cmp -s -- "$evidence_dir/root-$((index + 1))-guard.fenced.normalized" \
+      "$evidence_dir/root-$((index + 1))-guard.final.normalized" ||
+      die "${root_nodes[$index]} fabric_guard semantics changed during persistent fence proof"
+  done
+  observer_verify || die 'fabric observer isolation changed during persistent fence proof'
+  api_ready_final=false
+  if probe_fabric_api final; then
+    api_ready_final=true
+  else
+    note 'WARNING: Fabric API remains unavailable at final fence proof.'
+  fi
+  if $cluster_lock_held; then
+    if $api_ready_final; then
+      release_cluster_network_lock
+    else
+      note "WARNING: acquired global maintenance lock remains held by $cluster_lock_holder because the API is unavailable."
+    fi
+  fi
+  success=true
+  note "FABRIC_ROUTER_ETCD_POLICY_FENCE=pass revision=$head contract=$fence_contract_sha256"
+  note "Persistent router fence remains enabled at $fence_remote_init"
+  note "Protected evidence retained at $evidence_dir"
+}
+
+case $mode in
+  fence-check | fence-run)
+    run_fence
+    exit 0
+    ;;
+esac
+
+cluster_lock_holder="$(hostname):$$:router-etcd-policy:$head:$transition_sha256"
+cluster_lock_held=false
+cluster_lock_uid=
+cluster_lock_resource_version=
+remote_staged=false
+rollback_armed=false
+rollback_accepted=false
+success=false
+
+cleanup() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  trap '' HUP INT TERM
+  set +e
+  if [[ $mode == run && $success == false ]]; then
+    if $rollback_accepted; then
+      printf 'Transition was terminally accepted before later bookkeeping failed; no rollback fence was requested. Inspect %s and %s over serial before retrying.\n' \
+        "$remote_work" "$remote_init" >&2
+    elif $rollback_armed; then
+      local force_result force_status
+      force_result=$(router_ssh /bin/sh -s -- "$remote_work" "$remote_init" \
+        2>/dev/null <<'REMOTE_FORCE_ROLLBACK'
+set -eu
+work=$1
+init=$2
+firewall=/etc/config/firewall
+guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-rollout ]
+[ -f "$work/armed" ] && [ ! -L "$work/armed" ]
+[ -f "$work/expected-token" ] &&
+  [ "$(cat "$work/armed")" = "$(cat "$work/expected-token")" ]
+token=$(cat "$work/expected-token")
+[ -f "$work/fence-state" ] && [ ! -L "$work/fence-state" ] &&
+  [ "$(cat "$work/fence-state")" = "fence:$token" ]
+[ -f "$work/accept-state" ] && [ ! -L "$work/accept-state" ] &&
+  [ "$(cat "$work/accept-state")" = "accept:$token" ]
+[ -f "$work/accepted-state" ] && [ ! -L "$work/accepted-state" ] &&
+  [ "$(cat "$work/accepted-state")" = "$token" ]
+terminal_state() {
+  if [ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]; then
+    printf 'none\n'
+  elif [ -f "$work/terminal" ] && [ ! -L "$work/terminal" ] &&
+      [ "$(cat "$work/terminal")" = "fence:$token" ] &&
+      [ "$(stat -c '%d:%i' "$work/terminal")" = \
+        "$(stat -c '%d:%i' "$work/fence-state")" ]; then
+    printf 'fence\n'
+  elif [ -f "$work/terminal" ] && [ ! -L "$work/terminal" ] &&
+      [ "$(cat "$work/terminal")" = "accept:$token" ] &&
+      [ "$(stat -c '%d:%i' "$work/terminal")" = \
+        "$(stat -c '%d:%i' "$work/accept-state")" ]; then
+    printf 'accept\n'
+  else
+    printf 'invalid\n'
+  fi
+}
+acceptance_state() {
+  if [ ! -e "$work/accepted" ] && [ ! -L "$work/accepted" ]; then
+    printf 'none\n'
+  elif [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+      [ "$(cat "$work/accepted")" = "$token" ] &&
+      [ "$(stat -c '%d:%i' "$work/accepted")" = \
+        "$(stat -c '%d:%i' "$work/accepted-state")" ]; then
+    printf 'accept\n'
+  elif [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+      [ "$(cat "$work/accepted")" = "fence:$token" ] &&
+      [ "$(stat -c '%d:%i' "$work/accepted")" = \
+        "$(stat -c '%d:%i' "$work/fence-state")" ]; then
+    printf 'fence\n'
+  else
+    printf 'invalid\n'
+  fi
+}
+accept_complete_exact() {
+  [ -f "$work/accept-complete" ] && [ ! -L "$work/accept-complete" ] &&
+    [ "$(cat "$work/accept-complete")" = "$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accept-complete")" = \
+      "$(stat -c '%d:%i' "$work/accepted-state")" ]
+}
+accepted_open_exact() {
+  [ "$(terminal_state)" = accept ] || return 1
+  [ "$(acceptance_state)" = accept ] || return 1
+  accept_complete_exact || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  cmp -s "$firewall" "$work/candidate/firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_etcd_client.name)" = \
+    Allow-platform-to-root-etcd-client ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
+    Reject-services-to-root-etcd-internal ] || return 1
+  ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
+    return 1
+  [ ! -e "$guard" ] && [ ! -L "$guard" ] || return 1
+  [ -z "$(find /usr/share/nftables.d -name '*.nft' -print)" ] || return 1
+  fw4 check >/dev/null || return 1
+  [ "$(nft list tables)" = 'table inet fw4' ] || return 1
+  live_table=$(nft -a list table inet fw4) || return 1
+  ! printf '%s\n' "$live_table" |
+    grep -F 'comment "fabric etcd fence ' >/dev/null || return 1
+  live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
+  expected_order='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+  actual_order=$(printf '%s\n' "$live_lan" |
+    sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+  [ "$actual_order" = "$expected_order" ] || return 1
+  [ "$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { n++ }
+    END { print n + 0 }
+  ')" -eq 16 ] || return 1
+  terminal_rule=$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { terminal = $0 }
+    END { print terminal }
+  ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  [ "$terminal_rule" = 'jump reject_to_lan' ]
+}
+needs_fence=true
+state=$(terminal_state)
+[ "$state" != invalid ]
+if [ "$state" = none ]; then
+  ln "$work/fence-state" "$work/terminal" 2>/dev/null || true
+  state=$(terminal_state)
+  [ "$state" != none ] && [ "$state" != invalid ]
+fi
+if [ "$state" = accept ]; then
+  acceptance=$(acceptance_state)
+  [ "$acceptance" != invalid ]
+  if [ "$acceptance" = none ]; then
+    ln "$work/fence-state" "$work/accepted" 2>/dev/null || true
+    acceptance=$(acceptance_state)
+    [ "$acceptance" != none ] && [ "$acceptance" != invalid ]
+  fi
+  if [ "$acceptance" = accept ]; then
+    needs_fence=false
+  else
+    [ "$acceptance" = fence ]
+  fi
+fi
+if [ "$needs_fence" = true ]; then
+  if [ -e "$work/force-rollback" ] || [ -L "$work/force-rollback" ]; then
+    [ -f "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ] &&
+      [ "$(cat "$work/force-rollback")" = "$token" ]
+  else
+    printf '%s\n' "$token" >"$work/force-rollback.next"
+    chmod 0600 "$work/force-rollback.next"
+    mv "$work/force-rollback.next" "$work/force-rollback"
+    sync
+  fi
+elif accepted_open_exact; then
+  sync
+  if accepted_open_exact; then
+    printf 'ROLLBACK_ACCEPTED=%s\n' "$token"
+    exit 0
+  fi
+fi
+"$init" enable
+if ! "$init" running >/dev/null 2>&1; then
+  "$init" start
+fi
+"$init" running
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  state=$(terminal_state)
+  acceptance=none
+  if [ "$state" = accept ]; then
+    acceptance=$(acceptance_state)
+    [ "$acceptance" != invalid ]
+    if [ "$acceptance" = accept ] && accepted_open_exact; then
+      sync
+      if accepted_open_exact; then
+        printf 'ROLLBACK_ACCEPTED=%s\n' "$token"
+        exit 0
+      fi
+    fi
+  fi
+  if { [ "$state" = fence ] ||
+       { [ "$state" = accept ] && [ "$acceptance" = fence ]; }; } &&
+      [ -f "$work/fenced" ] &&
+      [ ! -L "$work/fenced" ] && [ "$(cat "$work/fenced")" = "$token" ] &&
+      "$init" enabled >/dev/null 2>&1 && "$init" running >/dev/null 2>&1; then
+    printf 'ROLLBACK_FENCED=%s\n' "$token"
+    exit 0
+  fi
+  [ "$state" != invalid ]
+  attempt=$((attempt + 1))
+  sleep 1
+done
+exit 1
+REMOTE_FORCE_ROLLBACK
+      )
+      force_status=$?
+      if [[ $force_status -eq 0 && $force_result == "ROLLBACK_FENCED=$rollout_token" ]]; then
+        printf 'Transition stopped; the router acknowledged the persistent early-drop rollback fence. Inspect %s and %s over serial before retrying.\n' \
+          "$remote_work" "$remote_init" >&2
+      elif [[ $force_status -eq 0 && $force_result == "ROLLBACK_ACCEPTED=$rollout_token" ]]; then
+        rollback_accepted=true
+        printf 'Transition stopped after the router had terminally accepted the open state; no rollback fence was requested. Inspect %s and %s over serial before retrying.\n' \
+          "$remote_work" "$remote_init" >&2
+      else
+        printf 'WARNING: transition stopped and the persistent rollback fence was not acknowledged over SSH. The enabled watchdog will retry at its deadline and on reboot; inspect %s and %s over serial immediately.\n' \
+          "$remote_work" "$remote_init" >&2
+      fi
+    elif $remote_staged; then
+      router_ssh /bin/sh -s -- "$remote_work" "$remote_init" >/dev/null 2>&1 <<'REMOTE_UNSTAGED_CLEANUP' || true
+set -eu
+work=$1
+init=$2
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-rollout ]
+[ ! -L "$init" ]
+if [ -e "$init" ]; then
+  [ -f "$init" ]
+  if "$init" running >/dev/null 2>&1 || "$init" enabled >/dev/null 2>&1; then
+    exit 1
+  fi
+fi
+if find /etc/rc.d -maxdepth 1 -type l -name '*fabric-router-etcd-policy-rollback' | grep . >/dev/null; then
+  exit 1
+fi
+rm -f -- "$init"
+rm -rf -- "$work"
+REMOTE_UNSTAGED_CLEANUP
+    fi
+    if $cluster_lock_held; then
+      printf 'Global Fabric maintenance lock remains held by %s for inspection.\n' \
+        "$cluster_lock_holder" >&2
+    fi
+  fi
+  if [[ $mode == check && $status -eq 0 ]]; then
+    rm -rf -- "$evidence_dir"
+  else
+    printf 'Protected router transition evidence: %s\n' "$evidence_dir" >&2
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+check_committed_root_firewall
+verify_pre_open_contract preflight
+observer_verify || die 'fabric observer isolation verification failed'
+prepare_router_ssh
+operator_kubectl get --raw=/readyz >"$evidence_dir/fabric-readyz-before" ||
+  die 'Fabric Kubernetes API is not ready before router transition'
+[[ $(<"$evidence_dir/fabric-readyz-before") == ok ]] ||
+  die 'Fabric Kubernetes API returned an unexpected readiness response'
+validate_remote_phase pre "$evidence_dir/router-preflight.txt"
+capture_exact_root_guards preflight
+
+if [[ $mode == check ]]; then
+  note 'Read-only preflight passed: the pre-open contract, root guards, and old router reject phase are exact.'
+  note "Payload SHA-256: $transition_sha256"
+  note "Exact live confirmation: $expected_confirmation"
+  success=true
+  exit 0
+fi
+
+acquire_network_lock
+acquire_cluster_network_lock
+verify_pre_open_contract locked-before-source \
+  --expected-lock-holder "$cluster_lock_holder"
+qualify_pod_sources_under_parent_locks
+verify_pre_open_contract locked-after-source \
+  --expected-lock-holder "$cluster_lock_holder"
+capture_exact_root_guards locked
+for index in "${!root_nodes[@]}"; do
+  cmp -s -- "$evidence_dir/root-$((index + 1))-guard.preflight.normalized" \
+    "$evidence_dir/root-$((index + 1))-guard.locked.normalized" ||
+    die "${root_nodes[$index]} fabric_guard semantics changed after preflight"
+done
+observer_verify || die 'fabric observer isolation changed before router transition'
+operator_kubectl get --raw=/readyz >/dev/null ||
+  die 'Fabric Kubernetes API became unready before router transition'
+validate_remote_phase pre "$evidence_dir/router-before.txt"
+
+payload_b64=$(base64 -w0 -- "$transition_file")
+guard_b64=$(base64 -w0 -- "$fence_guard_file")
+read -r -d '' rollback_program <<'REMOTE_ROLLBACK' || true
+#!/bin/sh
+set -eu
+umask 077
+
+work=/etc/fabric-router-etcd-policy-rollback
+init=/etc/init.d/fabric-router-etcd-policy-rollback
+firewall=/etc/config/firewall
+guard_source=$work/early-guard.nft
+guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+boot_id_path=/proc/sys/kernel/random/boot_id
+expected_guard_sha=d5af6bff9ede7dc47bf13f41c9717a4af9886380a85a5b6b91e6e831f13f77f7
+
+fail() {
+  logger -t fabric-router-etcd-policy-rollback "ERROR: $*"
+  exit 1
+}
+
+contract_safe() {
+  [ -d "$work" ] && [ ! -L "$work" ] || return 1
+  for file in owner expected-token armed deadline armed-boot-id firewall.before \
+      firewall.before.sha256 candidate/firewall firewall.candidate.sha256 \
+      early-guard.nft early-guard.nft.sha256 \
+      rollback rollback.sha256 init init.sha256 fence-state accept-state \
+      accepted-state; do
+    [ -f "$work/$file" ] && [ ! -L "$work/$file" ] || return 1
+  done
+  token=$(cat "$work/expected-token") || return 1
+  [ "$(cat "$work/owner")" = fabric-router-etcd-policy-rollout ] || return 1
+  [ "$(cat "$work/armed")" = "$token" ] || return 1
+  [ "$(cat "$work/fence-state")" = "fence:$token" ] || return 1
+  [ "$(cat "$work/accept-state")" = "accept:$token" ] || return 1
+  [ "$(cat "$work/accepted-state")" = "$token" ] || return 1
+  (cd "$work" && sha256sum -c firewall.before.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c firewall.candidate.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c early-guard.nft.sha256 >/dev/null) || return 1
+  [ "$(sha256sum "$guard_source" | awk '{print $1}')" = "$expected_guard_sha" ] ||
+    return 1
+  (cd "$work" && sha256sum -c rollback.sha256 >/dev/null) || return 1
+  (cd "$work" && sha256sum -c init.sha256 >/dev/null) || return 1
+  [ -f "$init" ] && [ ! -L "$init" ] || return 1
+  cmp -s "$work/init" "$init" || return 1
+  deadline=$(cat "$work/deadline") || return 1
+  case $deadline in *[!0-9]*|'') return 1 ;; esac
+  armed_boot_id=$(cat "$work/armed-boot-id") || return 1
+  case $armed_boot_id in *[!0-9a-f-]*|'') return 1 ;; esac
+  [ "$(printf '%s' "$armed_boot_id" | wc -c)" -eq 36 ] || return 1
+}
+
+terminal_state() {
+  if [ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]; then
+    printf 'none\n'
+    return 0
+  fi
+  [ -f "$work/terminal" ] && [ ! -L "$work/terminal" ] || {
+    printf 'invalid\n'
+    return 0
+  }
+  value=$(cat "$work/terminal" 2>/dev/null || true)
+  terminal_inode=$(stat -c '%d:%i' "$work/terminal" 2>/dev/null || true)
+  if [ "$value" = "fence:$token" ] &&
+      [ "$terminal_inode" = "$(stat -c '%d:%i' "$work/fence-state")" ]; then
+    printf 'fence\n'
+  elif [ "$value" = "accept:$token" ] &&
+      [ "$terminal_inode" = "$(stat -c '%d:%i' "$work/accept-state")" ]; then
+    printf 'accept\n'
+  else
+    printf 'invalid\n'
+  fi
+}
+
+claim_fence() {
+  state=$(terminal_state)
+  if [ "$state" = none ]; then
+    ln "$work/fence-state" "$work/terminal" 2>/dev/null || true
+    state=$(terminal_state)
+  fi
+  [ "$state" = fence ]
+}
+
+accepted_exact() {
+  [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+    [ "$(cat "$work/accepted")" = "$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accepted")" = \
+      "$(stat -c '%d:%i' "$work/accepted-state")" ]
+}
+
+accept_window_valid() {
+  [ -f "$work/accept-boot-id" ] && [ ! -L "$work/accept-boot-id" ] || return 1
+  [ -f "$work/accept-deadline" ] && [ ! -L "$work/accept-deadline" ] || return 1
+  accept_boot_id=$(cat "$work/accept-boot-id") || return 1
+  current_boot_id=$(cat "$boot_id_path" 2>/dev/null || true)
+  [ "$accept_boot_id" = "$armed_boot_id" ] &&
+    [ "$current_boot_id" = "$armed_boot_id" ] || return 1
+  accept_deadline=$(cat "$work/accept-deadline") || return 1
+  now=$(date +%s)
+  case "$accept_deadline:$now" in *[!0-9:]*|*::*|:*|*:) return 1 ;; esac
+  [ "$accept_deadline" -lt "$deadline" ] || return 1
+  [ "$now" -lt "$accept_deadline" ] || return 1
+  [ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+}
+
+claim_acceptance_fence() {
+  ln "$work/fence-state" "$work/accepted" 2>/dev/null || true
+  accepted_exact && return 1
+  [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+    [ "$(cat "$work/accepted")" = "fence:$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accepted")" = \
+      "$(stat -c '%d:%i' "$work/fence-state")" ]
+}
+
+fence_obligation() {
+  state=$(terminal_state)
+  [ "$state" = fence ] || {
+    [ "$state" = accept ] && ! accepted_exact
+  }
+}
+
+ensure_guard_directory() {
+  [ -d /usr/share/nftables.d ] && [ ! -L /usr/share/nftables.d ] || return 1
+  [ "$(stat -c '%u:%g:%a:%F' /usr/share/nftables.d)" = \
+    '0:0:755:directory' ] || return 1
+  for directory in /usr/share/nftables.d/chain-pre \
+      /usr/share/nftables.d/chain-pre/forward; do
+    if [ -e "$directory" ] || [ -L "$directory" ]; then
+      [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+      [ "$(stat -c '%u:%g:%a:%F' "$directory")" = \
+        '0:0:755:directory' ] || return 1
+    else
+      mkdir "$directory" || return 1
+      chmod 0755 "$directory" || return 1
+    fi
+  done
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ -z "$share_nft_files" ] || [ "$share_nft_files" = "$guard" ]
+}
+
+install_guard_file() {
+  ensure_guard_directory || return 1
+  if [ -e "$guard.next" ] || [ -L "$guard.next" ]; then
+    [ -f "$guard.next" ] && [ ! -L "$guard.next" ] || return 1
+    rm -f "$guard.next" || return 1
+  fi
+  cp "$guard_source" "$guard.next" || return 1
+  chown 0:0 "$guard.next" || return 1
+  chmod 0600 "$guard.next" || return 1
+  mv "$guard.next" "$guard" || return 1
+  [ -f "$guard" ] && [ ! -L "$guard" ] || return 1
+  cmp -s "$guard_source" "$guard" || return 1
+  sync
+}
+
+insert_immediate_guard() {
+  nft list chain inet fw4 forward >/dev/null 2>&1 || return 0
+  {
+    printf 'insert rule inet fw4 forward '
+    sed -n '2p' "$guard_source"
+    printf 'insert rule inet fw4 forward '
+    sed -n '1p' "$guard_source"
+  } | nft -f - >/dev/null 2>&1
+}
+
+assert_closed_lan() {
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.name)" = \
+    Reject-services-to-root-etcd ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.dest_port)" = \
+    '2379 2380 2381' ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd.target)" = REJECT ] ||
+    return 1
+  ! uci -q get firewall.fabric_flat_services_etcd_client >/dev/null 2>&1 || return 1
+  ! uci -q get firewall.fabric_flat_reject_services_etcd_internal >/dev/null 2>&1 ||
+    return 1
+  live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
+  [ "$(printf '%s\n' "$live_lan" | grep -Fc 'comment "!fw4: Reject-services-to-root-etcd"')" -eq 1 ] ||
+    return 1
+  ! printf '%s\n' "$live_lan" | grep -F \
+    'comment "!fw4: Allow-platform-to-root-etcd-client"' >/dev/null || return 1
+  ! printf '%s\n' "$live_lan" | grep -F \
+    'comment "!fw4: Reject-services-to-root-etcd-internal"' >/dev/null || return 1
+  expected_order='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Reject-services-to-root-etcd
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+  actual_order=$(printf '%s\n' "$live_lan" |
+    sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+  [ "$actual_order" = "$expected_order" ] || return 1
+  rule_count=$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { n++ }
+    END { print n + 0 }
+  ')
+  [ "$rule_count" -eq 15 ] || return 1
+  terminal_rule=$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { terminal = $0 }
+    END { print terminal }
+  ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  [ "$terminal_rule" = 'jump reject_to_lan' ]
+}
+
+guard_rule_exact() {
+  rule=$1
+  marker=$2
+  port_field=$3
+  wanted_sources=$4
+  wanted_destinations=$5
+  normalized=$(printf '%s\n' "$rule" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  source_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/^ip saddr { \([^}]*\) } ip daddr.*/\1/p')
+  destination_members=$(printf '%s\n' "$normalized" |
+    sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p')
+  [ -n "$source_members" ] && [ -n "$destination_members" ] || return 1
+  source_members=$(printf '%s\n' "$source_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  destination_members=$(printf '%s\n' "$destination_members" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  [ "$source_members" = "$wanted_sources" ] || return 1
+  [ "$destination_members" = "$wanted_destinations" ] || return 1
+  shape=$(printf '%s\n' "$normalized" | sed \
+    -e 's/ip saddr { [^}]* }/ip saddr { SOURCE }/' \
+    -e 's/ip daddr { [^}]* }/ip daddr { DESTINATION }/')
+  [ "$shape" = "ip saddr { SOURCE } ip daddr { DESTINATION } tcp $port_field 2379 counter drop comment \"$marker\"" ]
+}
+
+guard_live() {
+  [ -f "$guard" ] && [ ! -L "$guard" ] || return 1
+  cmp -s "$guard_source" "$guard" || return 1
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ "$share_nft_files" = "$guard" ] || return 1
+  live_forward=$(nft -a list chain inet fw4 forward) || return 1
+  request=$(printf '%s\n' "$live_forward" |
+    grep -F 'comment "fabric etcd fence client requests"' || true)
+  reply=$(printf '%s\n' "$live_forward" |
+    grep -F 'comment "fabric etcd fence server replies"' || true)
+  [ "$(printf '%s\n' "$request" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    return 1
+  [ "$(printf '%s\n' "$reply" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    return 1
+  guard_rule_exact "$request" 'fabric etcd fence client requests' dport \
+    '10.66.1.10,10.66.1.11' '10.66.0.10,10.66.0.11,10.66.0.12' || return 1
+  guard_rule_exact "$reply" 'fabric etcd fence server replies' sport \
+    '10.66.0.10,10.66.0.11,10.66.0.12' '10.66.1.10,10.66.1.11' || return 1
+  executable=$(printf '%s\n' "$live_forward" | awk '
+    $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print }
+  ')
+  first=$(printf '%s\n' "$executable" | sed -n '1p')
+  second=$(printf '%s\n' "$executable" | sed -n '2p')
+  printf '%s\n' "$first" | grep -F \
+    'comment "fabric etcd fence client requests"' >/dev/null || return 1
+  printf '%s\n' "$second" | grep -F \
+    'comment "fabric etcd fence server replies"' >/dev/null || return 1
+  first_accept=$(printf '%s\n' "$executable" |
+    grep -n 'accept.*# handle [0-9][0-9]*$' | sed -n '1s/:.*//p')
+  case $first_accept in *[!0-9]*|'') return 1 ;; esac
+  [ "$first_accept" -gt 2 ]
+}
+
+accept_complete_exact() {
+  accepted_exact &&
+    [ -f "$work/accept-complete" ] && [ ! -L "$work/accept-complete" ] &&
+    [ "$(cat "$work/accept-complete")" = "$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accept-complete")" = \
+      "$(stat -c '%d:%i' "$work/accepted-state")" ]
+}
+
+assert_open_lan() {
+  [ "$(uci -q get firewall.fabric_flat_services_etcd_client.name)" = \
+    Allow-platform-to-root-etcd-client ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_etcd_client.dest_port)" = 2379 ] ||
+    return 1
+  [ "$(uci -q get firewall.fabric_flat_services_etcd_client.target)" = ACCEPT ] ||
+    return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
+    Reject-services-to-root-etcd-internal ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
+    '2380 2381' ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.target)" = \
+    REJECT ] || return 1
+  ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
+    return 1
+  live_lan=$(nft -a list chain inet fw4 forward_lan) || return 1
+  expected_order='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+  actual_order=$(printf '%s\n' "$live_lan" |
+    sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+  [ "$actual_order" = "$expected_order" ] || return 1
+  rule_count=$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { n++ }
+    END { print n + 0 }
+  ')
+  [ "$rule_count" -eq 16 ] || return 1
+  terminal_rule=$(printf '%s\n' "$live_lan" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { terminal = $0 }
+    END { print terminal }
+  ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  [ "$terminal_rule" = 'jump reject_to_lan' ]
+}
+
+acceptance_open_base() {
+  contract_safe || return 1
+  [ "$(terminal_state)" = accept ] || return 1
+  accepted_exact || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  cmp -s "$work/candidate/firewall" "$firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  [ ! -e "$guard" ] && [ ! -L "$guard" ] || return 1
+  [ -z "$(find /usr/share/nftables.d -name '*.nft' -print)" ] || return 1
+  fw4 check >/dev/null || return 1
+  [ "$(nft list tables)" = 'table inet fw4' ] || return 1
+  live_table=$(nft -a list table inet fw4) || return 1
+  ! printf '%s\n' "$live_table" |
+    grep -F 'comment "fabric etcd fence ' >/dev/null || return 1
+  assert_open_lan
+}
+
+acceptance_open() {
+  accept_complete_exact || return 1
+  acceptance_open_base
+}
+
+apply_acceptance() {
+  contract_safe || return 1
+  [ "$(terminal_state)" = accept ] || return 1
+  accepted_exact || return 1
+  sync
+  contract_safe || return 1
+  [ "$(terminal_state)" = accept ] || return 1
+  accepted_exact || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  cmp -s "$work/candidate/firewall" "$firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  if [ -e "$guard" ] || [ -L "$guard" ]; then
+    [ -f "$guard" ] && [ ! -L "$guard" ] || return 1
+    cmp -s "$guard_source" "$guard" || return 1
+  fi
+  share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+  [ -z "$share_nft_files" ] || [ "$share_nft_files" = "$guard" ] || return 1
+  rm -f -- "$guard" || return 1
+  sync
+  fw4 check >/dev/null || return 1
+  /etc/init.d/firewall reload >/dev/null || return 1
+  acceptance_open_base || return 1
+  ln "$work/accepted-state" "$work/accept-complete" 2>/dev/null || true
+  sync
+  accept_complete_exact || return 1
+  acceptance_open
+}
+
+hold_incomplete_acceptance_closed() {
+  contract_safe || return 1
+  [ "$(terminal_state)" = accept ] || return 1
+  accepted_exact || return 1
+  insert_immediate_guard || true
+  install_guard_file || return 1
+  fw4 check >/dev/null || return 1
+  /etc/init.d/firewall reload >/dev/null || return 1
+  guard_live
+}
+
+reconcile_acceptance_forever() {
+  while :; do
+    contract_safe || fail 'rollback contract changed after terminal acceptance'
+    [ "$(terminal_state)" = accept ] ||
+      fail 'terminal acceptance changed during reconciliation'
+    accepted_exact || fail 'accepted outcome changed during reconciliation'
+    if acceptance_open || apply_acceptance; then
+      logger -t fabric-router-etcd-policy-rollback \
+        'terminal acceptance is exact; continuing to guard against boot-time reload drift'
+    elif hold_incomplete_acceptance_closed; then
+      logger -t fabric-router-etcd-policy-rollback \
+        'terminal acceptance could not be made exact; holding persistent early drops before retry'
+    else
+      logger -t fabric-router-etcd-policy-rollback \
+        'terminal acceptance repair and fail-closed guard both failed; retrying'
+    fi
+    sleep 2
+  done
+}
+
+is_fenced() {
+  contract_safe || return 1
+  fence_obligation || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  cmp -s "$work/firewall.before" "$firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  fw4 check >/dev/null || return 1
+  [ "$(nft list tables)" = 'table inet fw4' ] || return 1
+  assert_closed_lan || return 1
+  guard_live
+}
+
+apply_fence() {
+  contract_safe || return 1
+  fence_obligation || return 1
+  insert_immediate_guard || logger -t fabric-router-etcd-policy-rollback \
+    'immediate live guard insertion failed; continuing with persistent guarded reload'
+  install_guard_file || return 1
+  uci -q revert firewall || true
+  if fw4 check >/dev/null 2>&1; then
+    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+  fi
+  if [ -e /etc/config/.firewall.fabric-etcd-rollback.next ] ||
+      [ -L /etc/config/.firewall.fabric-etcd-rollback.next ]; then
+    [ -f /etc/config/.firewall.fabric-etcd-rollback.next ] &&
+      [ ! -L /etc/config/.firewall.fabric-etcd-rollback.next ] || return 1
+    rm -f /etc/config/.firewall.fabric-etcd-rollback.next || return 1
+  fi
+  cp "$work/firewall.before" /etc/config/.firewall.fabric-etcd-rollback.next ||
+    return 1
+  chown 0:0 /etc/config/.firewall.fabric-etcd-rollback.next || return 1
+  chmod 0600 /etc/config/.firewall.fabric-etcd-rollback.next || return 1
+  mv /etc/config/.firewall.fabric-etcd-rollback.next "$firewall" || return 1
+  sync
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  fw4 check >/dev/null || return 1
+  /etc/init.d/firewall reload >/dev/null || return 1
+  is_fenced
+}
+
+ack_fenced() {
+  printf '%s\n' "$token" >"$work/fenced.next" || return 1
+  chmod 0600 "$work/fenced.next" || return 1
+  mv "$work/fenced.next" "$work/fenced" || return 1
+  sync
+}
+
+contract_safe || fail 'rollback contract is unsafe'
+state=$(terminal_state)
+while :; do
+  case $state in
+    accept)
+      accepted_exact && reconcile_acceptance_forever
+      if accept_window_valid; then
+        sleep 1
+        contract_safe || fail 'rollback contract changed during terminal acceptance'
+        state=$(terminal_state)
+        continue
+      fi
+      claim_acceptance_fence || {
+        accepted_exact && reconcile_acceptance_forever
+        fail 'cannot atomically close an incomplete terminal acceptance'
+      }
+      break
+      ;;
+    fence)
+      break
+      ;;
+    invalid)
+      fail 'terminal rollback state is invalid'
+      ;;
+    none)
+      current_boot_id=$(cat "$boot_id_path" 2>/dev/null || true)
+      trigger=false
+      [ "$current_boot_id" = "$armed_boot_id" ] || trigger=true
+      if [ -e "$work/force-rollback" ] || [ -L "$work/force-rollback" ]; then
+        trigger=true
+      fi
+      now=$(date +%s)
+      case $now in *[!0-9]*|'') trigger=true ;; esac
+      [ "$trigger" = true ] || [ "$now" -lt "$deadline" ] || trigger=true
+      if [ "$trigger" = true ]; then
+        claim_fence || true
+      else
+        sleep 1
+        contract_safe || fail 'rollback contract changed while armed'
+      fi
+      state=$(terminal_state)
+      ;;
+  esac
+done
+
+state=$(terminal_state)
+if [ "$state" = accept ]; then
+  accepted_exact && reconcile_acceptance_forever
+elif [ "$state" != fence ]; then
+  fail 'cannot establish a terminal rollback fence obligation'
+fi
+
+while :; do
+  if is_fenced || apply_fence; then
+    ack_fenced || logger -t fabric-router-etcd-policy-rollback \
+      'persistent fence is live but its acknowledgement could not be written'
+  else
+    logger -t fabric-router-etcd-policy-rollback \
+      'persistent rollback fence application failed; retrying without restoring open policy'
+  fi
+  sleep 2
+done
+REMOTE_ROLLBACK
+rollback_b64=$(printf '%s' "$rollback_program" | base64 -w0)
+
+read -r -d '' init_program <<'REMOTE_INIT' || true
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=15
+STOP=01
+
+start_service() {
+  procd_open_instance
+  procd_set_param command /bin/sh /etc/fabric-router-etcd-policy-rollback/rollback
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_set_param term_timeout 5
+  procd_set_param respawn 3600 5 0
+  procd_close_instance
+}
+REMOTE_INIT
+init_b64=$(printf '%s' "$init_program" | base64 -w0)
+rollback_sha=$(printf '%s' "$rollback_program" | sha256sum | awk '{print $1}')
+init_sha=$(printf '%s' "$init_program" | sha256sum | awk '{print $1}')
+rollout_token="$head:$transition_sha256"
+
+remote_staged=true
+router_ssh /bin/sh -s -- \
+  "$remote_work" "$remote_init" "$transition_sha256" "$rollout_token" \
+  "$payload_b64" "$rollback_b64" "$init_b64" "$rollback_sha" "$init_sha" \
+  "$guard_b64" "$fence_guard_sha256" \
+  >"$evidence_dir/router-stage.txt" <<'REMOTE_STAGE'
+set -eu
+umask 077
+
+work=$1
+init=$2
+payload_sha=$3
+token=$4
+payload_b64=$5
+rollback_b64=$6
+init_b64=$7
+rollback_sha=$8
+init_sha=$9
+guard_b64=${10}
+guard_sha=${11}
+firewall=/etc/config/firewall
+
+fail() {
+  printf 'remote router staging failed: %s\n' "$*" >&2
+  exit 1
+}
+
+case $payload_sha:$rollback_sha:$init_sha:$guard_sha in
+  *[!0-9a-f:]*|'') fail 'staged hash argument has an invalid shape' ;;
+esac
+case $token in *[!0-9a-f:]*) fail 'rollout token has an invalid shape' ;; esac
+[ -f "$firewall" ] && [ ! -L "$firewall" ] || fail 'live firewall config is unsafe'
+[ "$(stat -c '%u:%g:%a:%h:%F' "$firewall")" = '0:0:600:1:regular file' ] ||
+  fail 'live firewall config metadata is unsafe'
+[ ! -e "$work" ] && [ ! -L "$work" ] || fail 'stale rollback work path requires inspection'
+[ ! -e "$init" ] && [ ! -L "$init" ] || fail 'stale rollback init path requires inspection'
+if find /etc/rc.d -maxdepth 1 -type l -name '*fabric-router-etcd-policy-rollback' | grep . >/dev/null; then
+  fail 'stale enabled rollback link requires inspection'
+fi
+
+mkdir "$work"
+chmod 0700 "$work"
+printf '%s\n' fabric-router-etcd-policy-rollout >"$work/owner"
+printf '%s' "$payload_b64" | base64 -d >"$work/transition.uci"
+printf '%s' "$guard_b64" | base64 -d >"$work/early-guard.nft"
+printf '%s' "$rollback_b64" | base64 -d >"$work/rollback"
+printf '%s' "$init_b64" | base64 -d >"$work/init"
+printf 'fence:%s\n' "$token" >"$work/fence-state"
+printf 'accept:%s\n' "$token" >"$work/accept-state"
+printf '%s\n' "$token" >"$work/accepted-state"
+chmod 0600 "$work/owner" "$work/transition.uci" "$work/early-guard.nft" \
+  "$work/fence-state" "$work/accept-state" "$work/accepted-state"
+chmod 0700 "$work/rollback" "$work/init"
+[ "$(sha256sum "$work/transition.uci" | awk '{print $1}')" = "$payload_sha" ] ||
+  fail 'transition payload changed in transport'
+[ "$(sha256sum "$work/rollback" | awk '{print $1}')" = "$rollback_sha" ] ||
+  fail 'rollback program changed in transport'
+[ "$(sha256sum "$work/init" | awk '{print $1}')" = "$init_sha" ] ||
+  fail 'rollback init changed in transport'
+[ "$(sha256sum "$work/early-guard.nft" | awk '{print $1}')" = "$guard_sha" ] ||
+  fail 'rollback early-drop payload changed in transport'
+
+cp -p "$firewall" "$work/firewall.before"
+mkdir "$work/candidate"
+chmod 0700 "$work/candidate"
+mkdir "$work/candidate-save"
+chmod 0700 "$work/candidate-save"
+cp -p "$firewall" "$work/candidate/firewall"
+uci -q -c "$work/candidate" -t "$work/candidate-save" batch \
+  <"$work/transition.uci" || fail 'candidate UCI batch failed'
+uci -q -c "$work/candidate" -t "$work/candidate-save" commit firewall ||
+  fail 'candidate UCI commit failed'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_services_etcd_client.name)" = \
+  Allow-platform-to-root-etcd-client ] || fail 'candidate allow is absent'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_services_etcd_client.dest_port)" = 2379 ] ||
+  fail 'candidate allow port is not exact'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
+  Reject-services-to-root-etcd-internal ] || fail 'candidate internal reject is absent'
+[ "$(uci -q -c "$work/candidate" -t "$work/candidate-save" get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
+  '2380 2381' ] || fail 'candidate internal ports are not exact'
+if uci -q -c "$work/candidate" -t "$work/candidate-save" \
+    get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1; then
+  fail 'candidate retained the legacy reject'
+fi
+[ -z "$(uci -q changes firewall || true)" ] ||
+  fail 'candidate validation leaked a live UCI delta'
+
+cd "$work"
+sha256sum firewall.before >firewall.before.sha256
+sha256sum candidate/firewall >firewall.candidate.sha256
+sha256sum early-guard.nft >early-guard.nft.sha256
+sha256sum rollback >rollback.sha256
+sha256sum init >init.sha256
+chmod 0600 firewall.before firewall.before.sha256 firewall.candidate.sha256 \
+  early-guard.nft.sha256 rollback.sha256 init.sha256 candidate/firewall
+printf '%s\n' "$token" >expected-token
+chmod 0600 expected-token
+cp "$work/init" "$init"
+chmod 0700 "$init"
+[ -f "$init" ] && [ ! -L "$init" ] || fail 'rollback init installation is unsafe'
+cmp -s "$work/init" "$init" || fail 'installed rollback init changed'
+printf 'BACKUP_SHA256=%s\n' "$(awk '{print $1}' firewall.before.sha256)"
+printf 'CANDIDATE_SHA256=%s\n' "$(awk '{print $1}' firewall.candidate.sha256)"
+printf 'EARLY_GUARD_SHA256=%s\n' "$(awk '{print $1}' early-guard.nft.sha256)"
+REMOTE_STAGE
+
+validate_remote_phase pre "$evidence_dir/router-before-arm.txt"
+verify_pre_open_contract locked-final \
+  --expected-lock-holder "$cluster_lock_holder"
+verify_activation_fence before-arm
+validate_remote_phase pre "$evidence_dir/router-final-before-arm.txt"
+
+rollback_armed=true
+router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$rollout_token" \
+  "$rollback_seconds" >"$evidence_dir/router-arm.txt" <<'REMOTE_ARM'
+set -eu
+umask 077
+work=$1
+init=$2
+token=$3
+seconds=$4
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/expected-token" ] && [ "$(cat "$work/expected-token")" = "$token" ]
+[ -f "$work/fence-state" ] && [ ! -L "$work/fence-state" ] &&
+  [ "$(cat "$work/fence-state")" = "fence:$token" ]
+[ -f "$work/accept-state" ] && [ ! -L "$work/accept-state" ] &&
+  [ "$(cat "$work/accept-state")" = "accept:$token" ]
+[ -f "$work/accepted-state" ] && [ ! -L "$work/accepted-state" ] &&
+  [ "$(cat "$work/accepted-state")" = "$token" ]
+(cd "$work" && sha256sum -c firewall.before.sha256 >/dev/null)
+(cd "$work" && sha256sum -c early-guard.nft.sha256 >/dev/null)
+(cd "$work" && sha256sum -c rollback.sha256 >/dev/null)
+(cd "$work" && sha256sum -c init.sha256 >/dev/null)
+for marker in terminal force-rollback apply-started apply-finished fenced accepted \
+    accept-boot-id accept-deadline accept-complete; do
+  [ ! -e "$work/$marker" ] && [ ! -L "$work/$marker" ]
+done
+case $seconds in *[!0-9]*|'') exit 1 ;; esac
+deadline=$(( $(date +%s) + seconds ))
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+case $boot_id in *[!0-9a-f-]*|'') exit 1 ;; esac
+[ "$(printf '%s' "$boot_id" | wc -c)" -eq 36 ]
+printf '%s\n' "$deadline" >"$work/deadline"
+printf '%s\n' "$boot_id" >"$work/armed-boot-id.next"
+printf '%s\n' "$token" >"$work/armed.next"
+chmod 0600 "$work/deadline" "$work/armed-boot-id.next" "$work/armed.next"
+mv "$work/armed-boot-id.next" "$work/armed-boot-id"
+mv "$work/armed.next" "$work/armed"
+sync
+"$init" enable
+"$init" enabled
+"$init" start
+"$init" running
+printf 'ROLLBACK_DEADLINE_EPOCH=%s\n' "$deadline"
+REMOTE_ARM
+
+verify_activation_fence before-apply
+router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$rollout_token" \
+  "$fence_remote_guard" "$fence_guard_sha256" \
+  >"$evidence_dir/router-apply.txt" <<'REMOTE_APPLY'
+set -eu
+work=$1
+init=$2
+token=$3
+guard=$4
+guard_sha=$5
+firewall=/etc/config/firewall
+guard_source=$work/early-guard.nft
+[ -d "$work" ] && [ ! -L "$work" ]
+[ "$(cat "$work/armed")" = "$token" ]
+"$init" running
+cmp -s "$firewall" "$work/firewall.before"
+[ -z "$(uci -q changes firewall || true)" ]
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+[ ! -e "$work/apply-started" ] && [ ! -L "$work/apply-started" ]
+printf '%s\n' "$token" >"$work/apply-started.next"
+chmod 0600 "$work/apply-started.next"
+mv "$work/apply-started.next" "$work/apply-started"
+sync
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+[ "$guard" = /usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft ]
+[ "$(sha256sum "$guard_source" | awk '{print $1}')" = "$guard_sha" ]
+[ -d /usr/share/nftables.d ] && [ ! -L /usr/share/nftables.d ]
+[ "$(stat -c '%u:%g:%a:%F' /usr/share/nftables.d)" = '0:0:755:directory' ]
+for directory in /usr/share/nftables.d/chain-pre \
+    /usr/share/nftables.d/chain-pre/forward; do
+  if [ -e "$directory" ] || [ -L "$directory" ]; then
+    [ -d "$directory" ] && [ ! -L "$directory" ]
+    [ "$(stat -c '%u:%g:%a:%F' "$directory")" = '0:0:755:directory' ]
+  else
+    mkdir "$directory"
+    chmod 0755 "$directory"
+  fi
+done
+share_nft_files=$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)
+[ -z "$share_nft_files" ] || [ "$share_nft_files" = "$guard" ]
+if [ -e "$guard.apply-next" ] || [ -L "$guard.apply-next" ]; then
+  [ -f "$guard.apply-next" ] && [ ! -L "$guard.apply-next" ]
+  rm -f "$guard.apply-next"
+fi
+cp "$guard_source" "$guard.apply-next"
+chown 0:0 "$guard.apply-next"
+chmod 0600 "$guard.apply-next"
+mv "$guard.apply-next" "$guard"
+sync
+[ -f "$guard" ] && [ ! -L "$guard" ]
+[ "$(stat -c '%u:%g:%a:%h:%F' "$guard")" = '0:0:600:1:regular file' ]
+[ "$(sha256sum "$guard" | awk '{print $1}')" = "$guard_sha" ]
+fw4 check >/dev/null
+/etc/init.d/firewall reload
+live_forward=$(nft -a list chain inet fw4 forward)
+first=$(printf '%s\n' "$live_forward" | awk '
+  $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print; n++ }
+  n == 2 { exit }
+')
+printf '%s\n' "$first" | sed -n '1p' |
+  grep -F 'comment "fabric etcd fence client requests"' >/dev/null
+printf '%s\n' "$first" | sed -n '2p' |
+  grep -F 'comment "fabric etcd fence server replies"' >/dev/null
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+uci -q batch <"$work/transition.uci"
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ] || {
+  uci -q revert firewall || true
+  exit 1
+}
+uci -q commit firewall
+cmp -s "$firewall" "$work/candidate/firewall"
+[ "$(stat -c '%u:%g:%a:%h:%F' "$firewall")" = '0:0:600:1:regular file' ]
+fw4 check >/dev/null
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+/etc/init.d/firewall reload
+fw4 check >/dev/null
+"$init" running
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+printf '%s\n' "$token" >"$work/apply-finished.next"
+chmod 0600 "$work/apply-finished.next"
+mv "$work/apply-finished.next" "$work/apply-finished"
+sync
+printf 'INSTALLED_SHA256=%s\n' "$(sha256sum "$firewall" | awk '{print $1}')"
+REMOTE_APPLY
+
+validate_remote_phase guarded-post "$evidence_dir/router-after.txt"
+observer_verify || die 'fabric observer isolation changed after fw4 reload'
+operator_kubectl get --raw=/readyz >"$evidence_dir/fabric-readyz-after" ||
+  die 'Fabric Kubernetes API is not ready after router transition'
+[[ $(<"$evidence_dir/fabric-readyz-after") == ok ]] ||
+  die 'Fabric Kubernetes API returned an unexpected post-transition readiness response'
+
+validate_remote_phase guarded-post "$evidence_dir/router-final-before-accept.txt"
+router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$rollout_token" \
+  "$fence_remote_guard" "$fence_guard_sha256" \
+  >"$evidence_dir/router-accept.txt" <<'REMOTE_ACCEPT'
+set -eu
+umask 077
+work=$1
+init=$2
+token=$3
+guard=$4
+guard_sha=$5
+firewall=/etc/config/firewall
+boot_id_path=/proc/sys/kernel/random/boot_id
+accept_seconds=30
+accept_success=false
+
+restart_watchdog_on_failure() {
+  accept_status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$accept_success" != true ]; then
+    set +e
+    "$init" enable >/dev/null 2>&1
+    if ! "$init" running >/dev/null 2>&1; then
+      "$init" start >/dev/null 2>&1
+    fi
+    "$init" running >/dev/null 2>&1
+  fi
+  exit "$accept_status"
+}
+trap restart_watchdog_on_failure EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-rollout ]
+[ "$(cat "$work/armed")" = "$token" ]
+[ -f "$work/apply-started" ] && [ ! -L "$work/apply-started" ] &&
+  [ "$(cat "$work/apply-started")" = "$token" ]
+[ -f "$work/apply-finished" ] && [ ! -L "$work/apply-finished" ] &&
+  [ "$(cat "$work/apply-finished")" = "$token" ]
+[ -f "$work/accept-state" ] && [ ! -L "$work/accept-state" ] &&
+  [ "$(cat "$work/accept-state")" = "accept:$token" ]
+[ -f "$work/accepted-state" ] && [ ! -L "$work/accepted-state" ] &&
+  [ "$(cat "$work/accepted-state")" = "$token" ]
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+[ ! -e "$work/fenced" ] && [ ! -L "$work/fenced" ]
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+[ ! -e "$work/accepted" ] && [ ! -L "$work/accepted" ]
+[ ! -e "$work/accept-boot-id" ] && [ ! -L "$work/accept-boot-id" ]
+[ ! -e "$work/accept-deadline" ] && [ ! -L "$work/accept-deadline" ]
+"$init" enabled
+"$init" running
+[ -f "$firewall" ] && [ ! -L "$firewall" ]
+[ "$(stat -c '%u:%g:%a:%h:%F' "$firewall")" = '0:0:600:1:regular file' ]
+cmp -s "$firewall" "$work/candidate/firewall"
+[ -z "$(uci -q changes firewall || true)" ]
+fw4 check >/dev/null
+[ "$(uci -q get firewall.fabric_flat_services_etcd_client.name)" = \
+  Allow-platform-to-root-etcd-client ]
+[ "$(uci -q get firewall.fabric_flat_services_etcd_client.dest_port)" = 2379 ]
+[ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
+  Reject-services-to-root-etcd-internal ]
+[ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.dest_port)" = \
+  '2380 2381' ]
+if uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1; then
+  exit 1
+fi
+[ -f "$guard" ] && [ ! -L "$guard" ]
+[ "$(stat -c '%u:%g:%a:%h:%F' "$guard")" = '0:0:600:1:regular file' ]
+[ "$(sha256sum "$guard" | awk '{print $1}')" = "$guard_sha" ]
+cmp -s "$work/early-guard.nft" "$guard"
+[ "$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)" = "$guard" ]
+
+guard_rule_handle() {
+  gr_rule=$1
+  gr_marker=$2
+  gr_port_field=$3
+  gr_wanted_sources=$4
+  gr_wanted_destinations=$5
+  gr_normalized=$(printf '%s\n' "$gr_rule" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  gr_sources=$(printf '%s\n' "$gr_normalized" |
+    sed -n 's/^ip saddr { \([^}]*\) } ip daddr.*/\1/p')
+  gr_destinations=$(printf '%s\n' "$gr_normalized" |
+    sed -n 's/.* ip daddr { \([^}]*\) } tcp .*/\1/p')
+  [ -n "$gr_sources" ] && [ -n "$gr_destinations" ] || return 1
+  gr_sources=$(printf '%s\n' "$gr_sources" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  gr_destinations=$(printf '%s\n' "$gr_destinations" | tr ',' '\n' |
+    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | LC_ALL=C sort |
+    awk 'NF { value = value separator $0; separator = "," } END { print value }')
+  [ "$gr_sources" = "$gr_wanted_sources" ] || return 1
+  [ "$gr_destinations" = "$gr_wanted_destinations" ] || return 1
+  gr_shape=$(printf '%s\n' "$gr_normalized" | sed \
+    -e 's/ip saddr { [^}]* }/ip saddr { SOURCE }/' \
+    -e 's/ip daddr { [^}]* }/ip daddr { DESTINATION }/')
+  [ "$gr_shape" = "ip saddr { SOURCE } ip daddr { DESTINATION } tcp $gr_port_field 2379 counter drop comment \"$gr_marker\"" ] ||
+    return 1
+  gr_handle=$(printf '%s\n' "$gr_rule" |
+    sed -n 's/.* # handle \([0-9][0-9]*\)$/\1/p')
+  case $gr_handle in *[!0-9]*|'') return 1 ;; esac
+  printf '%s\n' "$gr_handle"
+}
+
+resolve_guard_handles() {
+  rg_live_table=$(nft -a list table inet fw4) || return 1
+  rg_guard_rules=$(printf '%s\n' "$rg_live_table" |
+    grep -F 'comment "fabric etcd fence ' || true)
+  [ "$(printf '%s\n' "$rg_guard_rules" |
+    awk 'NF { n++ } END { print n + 0 }')" -eq 2 ] || return 1
+  rg_live_forward=$(nft -a list chain inet fw4 forward) || return 1
+  rg_request=$(printf '%s\n' "$rg_live_forward" |
+    grep -F 'comment "fabric etcd fence client requests"' || true)
+  rg_reply=$(printf '%s\n' "$rg_live_forward" |
+    grep -F 'comment "fabric etcd fence server replies"' || true)
+  [ "$(printf '%s\n' "$rg_request" |
+    awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] || return 1
+  [ "$(printf '%s\n' "$rg_reply" |
+    awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] || return 1
+  rg_request_handle=$(guard_rule_handle "$rg_request" \
+    'fabric etcd fence client requests' dport \
+    '10.66.1.10,10.66.1.11' '10.66.0.10,10.66.0.11,10.66.0.12') || return 1
+  rg_reply_handle=$(guard_rule_handle "$rg_reply" \
+    'fabric etcd fence server replies' sport \
+    '10.66.0.10,10.66.0.11,10.66.0.12' '10.66.1.10,10.66.1.11') || return 1
+  [ "$rg_request_handle" != "$rg_reply_handle" ] || return 1
+  rg_executable=$(printf '%s\n' "$rg_live_forward" | awk '
+    $1 == "chain" && $2 == "forward" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && $0 !~ /^[[:space:]]*type / && /# handle [0-9]+$/ { print }
+  ')
+  [ "$(printf '%s\n' "$rg_executable" | sed -n '1p')" = "$rg_request" ] ||
+    return 1
+  [ "$(printf '%s\n' "$rg_executable" | sed -n '2p')" = "$rg_reply" ] ||
+    return 1
+  rg_first_accept=$(printf '%s\n' "$rg_executable" |
+    grep -n 'accept.*# handle [0-9][0-9]*$' | sed -n '1s/:.*//p')
+  case $rg_first_accept in *[!0-9]*|'') return 1 ;; esac
+  [ "$rg_first_accept" -gt 2 ] || return 1
+  printf '%s %s\n' "$rg_request_handle" "$rg_reply_handle"
+}
+
+[ "$(nft list tables)" = 'table inet fw4' ]
+live=$(nft -a list chain inet fw4 forward_lan)
+[ "$(printf '%s\n' "$live" | grep -Fc 'comment "!fw4: Allow-platform-to-root-etcd-client"')" -eq 1 ]
+[ "$(printf '%s\n' "$live" | grep -Fc 'comment "!fw4: Reject-services-to-root-etcd-internal"')" -eq 1 ]
+if printf '%s\n' "$live" |
+    grep -F 'comment "!fw4: Reject-services-to-root-etcd"' >/dev/null; then
+  exit 1
+fi
+expected_forward='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+actual_forward=$(printf '%s\n' "$live" |
+  sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+[ "$actual_forward" = "$expected_forward" ]
+actual_chain_count=$(printf '%s\n' "$live" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { n++ }
+  END { print n + 0 }
+')
+[ "$actual_chain_count" -eq 16 ]
+terminal_rule=$(printf '%s\n' "$live" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { terminal = $0 }
+  END { print terminal }
+' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+  -e 's/ # handle [0-9][0-9]*$//')
+[ "$terminal_rule" = 'jump reject_to_lan' ]
+guard_handles=$(resolve_guard_handles)
+request_handle=${guard_handles%% *}
+reply_handle=${guard_handles#* }
+case "$request_handle:$reply_handle" in
+  *[!0-9:]*|*::*|:*|*:) exit 1 ;;
+esac
+armed_boot_id=$(cat "$work/armed-boot-id")
+current_boot_id=$(cat "$boot_id_path")
+[ "$current_boot_id" = "$armed_boot_id" ]
+deadline=$(cat "$work/deadline")
+now=$(date +%s)
+case "$deadline:$now" in *[!0-9:]*|*::*|:*|*:) exit 1 ;; esac
+accept_deadline=$((now + accept_seconds))
+[ "$accept_deadline" -lt "$deadline" ]
+printf '%s\n' "$armed_boot_id" >"$work/accept-boot-id.next"
+printf '%s\n' "$accept_deadline" >"$work/accept-deadline.next"
+chmod 0600 "$work/accept-boot-id.next" "$work/accept-deadline.next"
+mv "$work/accept-boot-id.next" "$work/accept-boot-id"
+mv "$work/accept-deadline.next" "$work/accept-deadline"
+sync
+[ "$(stat -c '%u:%g:%a:%h:%F' "$work/accept-boot-id")" = \
+  '0:0:600:1:regular file' ]
+[ "$(stat -c '%u:%g:%a:%h:%F' "$work/accept-deadline")" = \
+  '0:0:600:1:regular file' ]
+[ "$(cat "$work/accept-boot-id")" = "$armed_boot_id" ]
+[ "$(cat "$work/accept-deadline")" = "$accept_deadline" ]
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+[ ! -e "$work/terminal" ] && [ ! -L "$work/terminal" ]
+current_boot_id=$(cat "$boot_id_path")
+now=$(date +%s)
+[ "$current_boot_id" = "$armed_boot_id" ]
+[ "$now" -lt "$accept_deadline" ]
+"$init" enabled
+"$init" running
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+current_boot_id=$(cat "$boot_id_path")
+now=$(date +%s)
+[ "$current_boot_id" = "$armed_boot_id" ]
+[ "$now" -lt "$accept_deadline" ]
+ln "$work/accept-state" "$work/terminal" 2>/dev/null || true
+[ -f "$work/terminal" ] && [ ! -L "$work/terminal" ] &&
+  [ "$(cat "$work/terminal")" = "accept:$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/terminal")" = \
+    "$(stat -c '%d:%i' "$work/accept-state")" ]
+sync
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+[ ! -e "$work/accepted" ] && [ ! -L "$work/accepted" ]
+[ -f "$guard" ] && [ ! -L "$guard" ]
+[ "$(sha256sum "$guard" | awk '{print $1}')" = "$guard_sha" ]
+[ "$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)" = "$guard" ]
+guard_handles=$(resolve_guard_handles)
+request_handle=${guard_handles%% *}
+reply_handle=${guard_handles#* }
+case "$request_handle:$reply_handle" in
+  *[!0-9:]*|*::*|:*|*:) exit 1 ;;
+esac
+current_boot_id=$(cat "$boot_id_path")
+now=$(date +%s)
+[ "$current_boot_id" = "$armed_boot_id" ]
+[ "$now" -lt "$accept_deadline" ]
+cmp -s "$firewall" "$work/candidate/firewall"
+[ -z "$(uci -q changes firewall || true)" ]
+[ -f "$guard" ] && [ ! -L "$guard" ]
+[ "$(sha256sum "$guard" | awk '{print $1}')" = "$guard_sha" ]
+[ "$(find /usr/share/nftables.d -name '*.nft' -print | LC_ALL=C sort)" = "$guard" ]
+fw4 check >/dev/null
+[ "$(nft list tables)" = 'table inet fw4' ]
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+"$init" enabled
+"$init" running
+[ ! -e "$work/force-rollback" ] && [ ! -L "$work/force-rollback" ]
+current_boot_id=$(cat "$boot_id_path")
+now=$(date +%s)
+[ "$current_boot_id" = "$armed_boot_id" ]
+[ "$now" -lt "$accept_deadline" ]
+ln "$work/accepted-state" "$work/accepted" 2>/dev/null || true
+[ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+  [ "$(cat "$work/accepted")" = "$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/accepted")" = \
+    "$(stat -c '%d:%i' "$work/accepted-state")" ]
+sync
+accepted_open_exact() {
+  [ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+    [ "$(cat "$work/accepted")" = "$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accepted")" = \
+      "$(stat -c '%d:%i' "$work/accepted-state")" ] || return 1
+  [ -f "$work/accept-complete" ] && [ ! -L "$work/accept-complete" ] &&
+    [ "$(cat "$work/accept-complete")" = "$token" ] &&
+    [ "$(stat -c '%d:%i' "$work/accept-complete")" = \
+      "$(stat -c '%d:%i' "$work/accepted-state")" ] || return 1
+  [ -f "$firewall" ] && [ ! -L "$firewall" ] || return 1
+  cmp -s "$firewall" "$work/candidate/firewall" || return 1
+  [ -z "$(uci -q changes firewall || true)" ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_services_etcd_client.name)" = \
+    Allow-platform-to-root-etcd-client ] || return 1
+  [ "$(uci -q get firewall.fabric_flat_reject_services_etcd_internal.name)" = \
+    Reject-services-to-root-etcd-internal ] || return 1
+  ! uci -q get firewall.fabric_flat_reject_services_etcd >/dev/null 2>&1 ||
+    return 1
+  [ ! -e "$guard" ] && [ ! -L "$guard" ] || return 1
+  [ -z "$(find /usr/share/nftables.d -name '*.nft' -print)" ] || return 1
+  fw4 check >/dev/null || return 1
+  [ "$(nft list tables)" = 'table inet fw4' ] || return 1
+  aoe_live_table=$(nft -a list table inet fw4) || return 1
+  ! printf '%s\n' "$aoe_live_table" |
+    grep -F 'comment "fabric etcd fence ' >/dev/null || return 1
+  aoe_live=$(nft -a list chain inet fw4 forward_lan) || return 1
+  aoe_actual_forward=$(printf '%s\n' "$aoe_live" |
+    sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+  [ "$aoe_actual_forward" = "$expected_forward" ] || return 1
+  [ "$(printf '%s\n' "$aoe_live" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { n++ }
+    END { print n + 0 }
+  ')" -eq 16 ] || return 1
+  aoe_terminal=$(printf '%s\n' "$aoe_live" | awk '
+    $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+    inside && $1 == "}" { inside = 0 }
+    inside && /# handle [0-9]+$/ { terminal = $0 }
+    END { print terminal }
+  ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  [ "$aoe_terminal" = 'jump reject_to_lan' ]
+}
+accepted_ready=false
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  if accepted_open_exact; then
+    accepted_ready=true
+    break
+  fi
+  "$init" enabled
+  "$init" running
+  attempt=$((attempt + 1))
+  sleep 1
+done
+[ "$accepted_ready" = true ]
+sync
+accepted_open_exact
+"$init" stop
+attempt=0
+while "$init" running >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 10 ] || exit 1
+  sleep 1
+done
+accepted_open_exact
+"$init" disable
+if "$init" enabled >/dev/null 2>&1; then
+  exit 1
+fi
+if find /etc/rc.d -maxdepth 1 -type l -name '*fabric-router-etcd-policy-rollback' | grep . >/dev/null; then
+  exit 1
+fi
+accepted_open_exact
+cmp -s "$firewall" "$work/candidate/firewall"
+[ ! -e "$guard" ] && [ ! -L "$guard" ]
+[ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+  [ "$(cat "$work/accepted")" = "$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/accepted")" = \
+    "$(stat -c '%d:%i' "$work/accepted-state")" ]
+[ -f "$work/accept-complete" ] && [ ! -L "$work/accept-complete" ] &&
+  [ "$(cat "$work/accept-complete")" = "$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/accept-complete")" = \
+    "$(stat -c '%d:%i' "$work/accepted-state")" ]
+accept_success=true
+printf 'ROLLBACK_ACCEPTED=%s\n' "$token"
+REMOTE_ACCEPT
+[[ $(<"$evidence_dir/router-accept.txt") == "ROLLBACK_ACCEPTED=$rollout_token" ]] ||
+  die 'router returned an unexpected terminal acceptance acknowledgement'
+rollback_accepted=true
+
+router_ssh /bin/sh -s -- "$remote_work" "$remote_init" "$rollout_token" \
+  >"$evidence_dir/router-rollback-cleanup.txt" <<'REMOTE_ROLLBACK_CLEANUP'
+set -eu
+work=$1
+init=$2
+token=$3
+guard=/usr/share/nftables.d/chain-pre/forward/10-fabric-etcd-fence.nft
+firewall=/etc/config/firewall
+[ -d "$work" ] && [ ! -L "$work" ]
+[ -f "$work/owner" ] && [ "$(cat "$work/owner")" = fabric-router-etcd-policy-rollout ]
+[ -f "$work/armed" ] && [ "$(cat "$work/armed")" = "$token" ]
+[ -f "$work/terminal" ] && [ ! -L "$work/terminal" ] &&
+  [ "$(cat "$work/terminal")" = "accept:$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/terminal")" = \
+    "$(stat -c '%d:%i' "$work/accept-state")" ]
+[ -f "$work/accepted" ] && [ ! -L "$work/accepted" ] &&
+  [ "$(cat "$work/accepted")" = "$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/accepted")" = \
+    "$(stat -c '%d:%i' "$work/accepted-state")" ]
+[ -f "$work/accept-complete" ] && [ ! -L "$work/accept-complete" ] &&
+  [ "$(cat "$work/accept-complete")" = "$token" ] &&
+  [ "$(stat -c '%d:%i' "$work/accept-complete")" = \
+    "$(stat -c '%d:%i' "$work/accepted-state")" ]
+[ ! -e "$guard" ] && [ ! -L "$guard" ]
+[ -z "$(find /usr/share/nftables.d -name '*.nft' -print)" ]
+cmp -s "$firewall" "$work/candidate/firewall"
+[ -z "$(uci -q changes firewall || true)" ]
+[ "$(nft list tables)" = 'table inet fw4' ]
+if nft -a list table inet fw4 |
+    grep -F 'comment "fabric etcd fence ' >/dev/null; then
+  exit 1
+fi
+if "$init" running >/dev/null 2>&1 || "$init" enabled >/dev/null 2>&1; then
+  exit 1
+fi
+if find /etc/rc.d -maxdepth 1 -type l -name '*fabric-router-etcd-policy-rollback' | grep . >/dev/null; then
+  exit 1
+fi
+rm -f -- "$init"
+rm -rf -- "$work"
+[ ! -e "$init" ] && [ ! -L "$init" ]
+[ ! -e "$work" ] && [ ! -L "$work" ]
+printf 'ROLLBACK_CLEANED=pass\n'
+REMOTE_ROLLBACK_CLEANUP
+[[ $(<"$evidence_dir/router-rollback-cleanup.txt") == ROLLBACK_CLEANED=pass ]] ||
+  die 'router returned an unexpected rollback cleanup acknowledgement'
+rollback_armed=false
+remote_staged=false
+
+release_cluster_network_lock
+success=true
+note "FABRIC_ROUTER_ETCD_POLICY_ROLLOUT=pass revision=$head payload=$transition_sha256"
+note "Protected evidence retained at $evidence_dir"

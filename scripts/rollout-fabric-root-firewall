@@ -5,6 +5,7 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 node=
 confirmation=
 check_only=false
+verify_live_all=false
 
 usage() {
   cat >&2 <<'EOF'
@@ -16,12 +17,17 @@ Usage:
 
   scripts/rollout-fabric-root-firewall --check
 
+  scripts/rollout-fabric-root-firewall --verify-live-all
+
 The network policy is the exact root nftables guard plus the exact routed-host
 sysctl payload. Run one member at a time and prove target-local plus
 cluster-wide API/etcd health before proceeding to the next. The helper
-acquires a cluster-wide lock, requires a clean pushed main branch, and arms a
-target-local five-minute rollback timer before replacing either policy. A
-failed run deliberately leaves the cluster lock for attended inspection.
+acquires the global Fabric maintenance ConfigMap lock, requires a clean
+pushed main branch, and arms a target-local, reboot-surviving five-minute
+rollback before replacing either policy. Acceptance proves the exact live
+nftables input semantics and uses an acknowledged two-phase disarm. A failed
+run deliberately leaves the global lock for attended inspection, blocking the
+delegated trust/admin, pre-open, router, and post-open operations.
 EOF
 }
 
@@ -46,6 +52,10 @@ while (($#)); do
       check_only=true
       shift
       ;;
+    --verify-live-all)
+      verify_live_all=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -56,8 +66,13 @@ while (($#)); do
   esac
 done
 
-if $check_only; then
+if $check_only && $verify_live_all; then
+  die 'choose exactly one of --check, --verify-live-all, or --node'
+elif $check_only; then
   [[ -z $node && -z $confirmation ]] || die '--check does not accept --node or --confirm'
+elif $verify_live_all; then
+  [[ -z $node && -z $confirmation ]] ||
+    die '--verify-live-all does not accept --node or --confirm'
 else
   case $node in
     cp1)
@@ -76,7 +91,7 @@ else
   esac
 fi
 
-commands=(awk sha256sum yq)
+commands=(awk grep sed sha256sum tr yq)
 if ! $check_only; then
   commands+=(git jq kubectl)
 fi
@@ -88,12 +103,44 @@ cd "$repo_root"
 
 firewall_path=/etc/nftables/fabric-guard.nft
 routing_path=/etc/sysctl.d/90-fabric-root-routing.conf
+guard_unit_path=/etc/systemd/system/fabric-guard.service
+etcd_guard_dropin_path=/etc/systemd/system/etcd.service.d/10-fabric-guard.conf
 # shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
 firewall_policy=$(TARGET_PATH="$firewall_path" yq -er \
   '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
   fabric/butane/firewall.yaml)
-[[ $firewall_policy == *'10.66.1.10, 10.66.1.11'* ]] ||
-  die 'committed firewall policy does not contain the exact two service-node addresses'
+service_set='elements = { 10.66.1.10, 10.66.1.11 }'
+service_etcd_allow='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
+etcd_catchall='tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"'
+expected_etcd_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
+[[ $(grep -Fc "$service_set" <<<"$firewall_policy") -eq 1 ]] ||
+  die 'committed firewall policy lacks one exact two-address service set'
+[[ $(grep -Fc "$service_etcd_allow" <<<"$firewall_policy") -eq 1 ]] ||
+  die 'committed firewall policy lacks one exact service-node TCP/2379 allow'
+[[ $(grep -Fc "$etcd_catchall" <<<"$firewall_policy") -eq 1 ]] ||
+  die 'committed firewall policy lacks one TCP/2379 catch-all drop'
+service_etcd_allow_line=$(grep -nF "$service_etcd_allow" <<<"$firewall_policy" |
+  awk -F: 'NR == 1 { print $1 }')
+etcd_catchall_line=$(grep -nF "$etcd_catchall" <<<"$firewall_policy" |
+  awk -F: 'NR == 1 { print $1 }')
+[[ $service_etcd_allow_line =~ ^[0-9]+$ && $etcd_catchall_line =~ ^[0-9]+$ &&
+   $service_etcd_allow_line -lt $etcd_catchall_line ]] ||
+  die 'service-node TCP/2379 allow must precede the later catch-all boundary'
+actual_etcd_accepts=$(awk '
+  /tcp dport 2379 counter accept comment/ {
+    sub(/^[[:space:]]+/, "")
+    sub(/[[:space:]]+$/, "")
+    print
+  }
+' <<<"$firewall_policy")
+[[ $actual_etcd_accepts == "$expected_etcd_accepts" ]] ||
+  die 'committed TCP/2379 accepts are not exactly root, maintenance, and service identities'
+if grep -Eq '10\.66\.1\.0/24|10\.42\.[0-9]|@service_nodes_v4 tcp dport.*(2380|2381)' \
+    <<<"$firewall_policy"; then
+  die 'committed root etcd policy broadens service access to a subnet, PodCIDR, or internal port'
+fi
 # shellcheck disable=SC2016 # strenv() belongs to yq, not the shell.
 routing_policy=$(TARGET_PATH="$routing_path" yq -er \
   '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
@@ -136,6 +183,33 @@ routing_metadata=$(TARGET_PATH="$routing_path" yq -er '
 [[ $routing_metadata == $'true\t420' ]] ||
   die 'committed routed-host sysctl payload must overwrite a mode-0644 file'
 
+[[ $(yq -er \
+  '[.systemd.units[] | select(.name == "fabric-guard.service")] | length' \
+  fabric/butane/firewall.yaml) == 1 &&
+   $(yq -er \
+  '.systemd.units[] | select(.name == "fabric-guard.service") | .enabled' \
+  fabric/butane/firewall.yaml) == true ]] ||
+  die 'committed firewall profile lacks one enabled fabric-guard.service'
+guard_unit=$(yq -er \
+  '.systemd.units[] | select(.name == "fabric-guard.service") | .contents' \
+  fabric/butane/firewall.yaml) ||
+  die 'cannot extract the committed fabric-guard.service'
+[[ $(yq -er \
+  '[.systemd.units[] | select(.name == "etcd.service") | .dropins[] | select(.name == "10-fabric-guard.conf")] | length' \
+  fabric/butane/firewall.yaml) == 1 ]] ||
+  die 'committed firewall profile lacks one etcd fabric-guard drop-in'
+etcd_guard_dropin=$(yq -er \
+  '.systemd.units[] | select(.name == "etcd.service") | .dropins[] | select(.name == "10-fabric-guard.conf") | .contents' \
+  fabric/butane/firewall.yaml) ||
+  die 'cannot extract the committed etcd fabric-guard drop-in'
+expected_guard_dropin='[Unit]
+Requires=fabric-guard.service
+After=fabric-guard.service'
+[[ $etcd_guard_dropin == "$expected_guard_dropin" ]] ||
+  die 'committed etcd fabric-guard drop-in differs from the exact dependency contract'
+guard_unit_hash=$(printf '%s\n' "$guard_unit" | sha256sum | awk '{print $1}')
+etcd_guard_dropin_hash=$(printf '%s\n' "$etcd_guard_dropin" | sha256sum | awk '{print $1}')
+
 policy_hash=$(
   {
     printf '%s\0%s\0' "$firewall_path" "$firewall_policy"
@@ -151,39 +225,396 @@ fi
 [[ $(git branch --show-current) == main ]] || die 'run only from main'
 [[ -z $(git status --porcelain) ]] || die 'worktree must be clean'
 git fetch --quiet origin main
-[[ $(git rev-parse HEAD) == "$(git rev-parse origin/main)" ]] ||
+head_commit=$(git rev-parse HEAD)
+[[ $head_commit == "$(git rev-parse origin/main)" ]] ||
   die 'HEAD must exactly match pushed origin/main'
 
-expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:$full_node:$policy_hash"
-[[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
+if ! $verify_live_all; then
+  expected="ROLLOUT-FABRIC-ROOT-NETWORK-POLICY:$full_node:$policy_hash"
+  [[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
+fi
 
 ik=("$repo_root/scripts/ik" --context=fabric)
-ssh=("$repo_root/scripts/fabric-ssh" "$node")
-lock_name=fabric-root-network-policy-rollout-lock
-lock_holder="$(hostname):$$:$node:$policy_hash"
-success=false
-service_probe=10.66.1.10
+ssh=()
+if ! $verify_live_all; then
+  ssh=("$repo_root/scripts/fabric-ssh" "$node")
+  lock_name=fabric-maintenance-lock
+  lock_holder="$(hostname):$$:root-network-policy:$node:$policy_hash"
+  success=false
+  rollback_armed=false
+  rollback_disarmed=false
+fi
+service_probes=(10.66.1.10 10.66.1.11)
 
 route_interface=
 validate_service_route() {
-  local evidence destination gateway interface source address_evidence
+  local address_evidence destination evidence expected_interface='' gateway
+  local interface service_probe source
 
-  evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o route get "$service_probe") ||
-    die "$full_node cannot resolve the service-plane route"
-  [[ $evidence != *$'\n'* ]] || die "$full_node returned an ambiguous service-plane route"
-  destination=${evidence%% *}
-  gateway=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "via") print $(i + 1) }' <<<"$evidence")
-  interface=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1) }' <<<"$evidence")
-  source=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }' <<<"$evidence")
-  [[ $destination == "$service_probe" && $gateway == 10.66.0.1 && -n $interface &&
-      $interface != lo && $interface != flannel.1 && $source == "$root_ip" ]] ||
-    die "$full_node service-plane route is not $root_ip -> 10.66.0.1 on a physical NIC: $evidence"
-  address_evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o address show dev "$interface" scope global) ||
-    die "cannot inspect $full_node routed interface $interface"
-  grep -Eq "(^|[[:space:]])inet ${root_ip//./\\.}/24([[:space:]]|$)" <<<"$address_evidence" ||
-    die "$full_node routed interface $interface does not carry $root_ip/24"
-  route_interface=$interface
+  for service_probe in "${service_probes[@]}"; do
+    evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o route get "$service_probe") ||
+      die "$full_node cannot resolve the route to $service_probe"
+    [[ $evidence != *$'\n'* ]] ||
+      die "$full_node returned an ambiguous route to $service_probe"
+    destination=${evidence%% *}
+    gateway=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "via") print $(i + 1) }' <<<"$evidence")
+    interface=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1) }' <<<"$evidence")
+    source=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }' <<<"$evidence")
+    [[ $destination == "$service_probe" && $gateway == 10.66.0.1 && -n $interface &&
+        $interface != lo && $interface != flannel.1 && $source == "$root_ip" ]] ||
+      die "$full_node route to $service_probe is not $root_ip -> 10.66.0.1 on a physical NIC: $evidence"
+    if [[ -z $expected_interface ]]; then
+      expected_interface=$interface
+    elif [[ $interface != "$expected_interface" ]]; then
+      die "$full_node service-node routes use different physical interfaces"
+    fi
+    address_evidence=$("${ssh[@]}" /usr/sbin/ip -4 -o address show \
+      dev "$interface" scope global) ||
+      die "cannot inspect $full_node routed interface $interface"
+    grep -Eq "(^|[[:space:]])inet ${root_ip//./\\.}/24([[:space:]]|$)" \
+      <<<"$address_evidence" ||
+      die "$full_node routed interface $interface does not carry $root_ip/24"
+  done
+  [[ -n $expected_interface ]] || die "$full_node service-node route set is empty"
+  route_interface=$expected_interface
 }
+
+assert_live_etcd_input_policy() {
+  local live_set compact_set service_elements live_input normalized_input
+  local live_table_json live_forward normalized_forward live_forward_rules
+  local live_rules expected_live_rules live_etcd_rules expected_live_etcd_rules
+  local live_service_accepts expected_live_service_accepts
+  local expected_live_forward_rules
+  local allow_line catchall_line
+
+  live_table_json=$("${ssh[@]}" sudo --non-interactive /usr/sbin/nft -j \
+    list table inet fabric_guard) ||
+    die "$full_node live fabric_guard table cannot be read as JSON"
+  jq -e '
+    ([.nftables[] | .table? |
+      select(.family == "inet" and .name == "fabric_guard")] | length) == 1 and
+    ([.nftables[] | .chain? |
+      select(.family == "inet" and .table == "fabric_guard") |
+      del(.handle)] | sort_by(.name)) == [
+        {family: "inet", table: "fabric_guard", name: "forward",
+         type: "filter", hook: "forward", prio: 10, policy: "drop"},
+        {family: "inet", table: "fabric_guard", name: "input",
+         type: "filter", hook: "input", prio: 10, policy: "drop"}
+      ] and
+    ([.nftables[] | .set? |
+      select(.family == "inet" and .table == "fabric_guard") |
+      del(.handle) |
+      .elem = (.elem // [])] | sort_by(.name)) == [
+        {family: "inet", name: "etcd_maintenance_v4", table: "fabric_guard",
+         type: "ipv4_addr", flags: ["timeout"], timeout: 900,
+         "gc-interval": 60, elem: []},
+        {family: "inet", name: "observer_v4", table: "fabric_guard",
+         type: "ipv4_addr", flags: ["constant"], elem: ["10.66.0.2"]},
+        {family: "inet", name: "root_nodes_v4", table: "fabric_guard",
+         type: "ipv4_addr", flags: ["constant"],
+         elem: ["10.66.0.10", "10.66.0.11", "10.66.0.12"]},
+        {family: "inet", name: "service_nodes_v4", table: "fabric_guard",
+         type: "ipv4_addr", flags: ["constant"],
+         elem: ["10.66.1.10", "10.66.1.11"]}
+      ]
+  ' <<<"$live_table_json" >/dev/null ||
+    die "$full_node live fabric_guard base chains or identity sets are not exact"
+
+  live_set=$("${ssh[@]}" sudo --non-interactive /usr/sbin/nft \
+    list set inet fabric_guard service_nodes_v4) ||
+    die "$full_node live service-node set cannot be read"
+  compact_set=$(tr -d '[:space:]' <<<"$live_set")
+  service_elements=$(sed -n 's/.*elements={\([^}]*\)}.*/\1/p' <<<"$compact_set")
+  [[ $service_elements == '10.66.1.10,10.66.1.11' ]] ||
+    die "$full_node live service-node set is not exactly the two reviewed addresses"
+
+  live_input=$("${ssh[@]}" sudo --non-interactive /usr/sbin/nft -a \
+    list chain inet fabric_guard input) ||
+    die "$full_node live fabric_guard input chain cannot be read"
+  normalized_input=$(sed -E \
+    -e 's/counter packets [0-9]+ bytes [0-9]+/counter/g' \
+    -e 's/[[:space:]]+# handle [0-9]+$//' \
+    -e 's/^[[:space:]]+//' \
+    -e 's/[[:space:]]+$//' \
+    <<<"$live_input")
+  live_rules=$(awk '
+    $0 == "chain input {" { inside = 1; next }
+    inside && $0 == "}" { inside = 0; next }
+    inside && $0 != "" && $0 !~ /^type filter hook input / { print }
+  ' <<<"$normalized_input")
+  expected_live_rules='iifname "lo" counter accept comment "local host traffic"
+meta nfproto ipv6 counter drop comment "no physical IPv6 input"
+ct state invalid counter drop comment "invalid conntrack state"
+ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
+tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"
+ct state { established, related } counter accept comment "reply traffic"
+ip protocol icmp counter accept comment "IPv4 diagnostics and errors"
+ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root peer and API traffic"
+ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
+ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
+ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
+counter drop comment "deny all remaining input"'
+  [[ $live_rules == "$expected_live_rules" ]] ||
+    die "$full_node live fabric_guard input rule set differs from the exact reviewed policy"
+  live_service_accepts=$(awk \
+    '/ip saddr @service_nodes_v4/ && / accept comment / { print }' \
+    <<<"$normalized_input")
+  expected_live_service_accepts='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
+ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
+ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"'
+  [[ $live_service_accepts == "$expected_live_service_accepts" ]] ||
+    die "$full_node live service-source accepts are not exactly TCP/2379, API/kubelet, and VXLAN"
+  live_etcd_rules=$(awk '/tcp dport 2379/ && /comment/ { print }' \
+    <<<"$normalized_input")
+  expected_live_etcd_rules='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
+tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"'
+  [[ $live_etcd_rules == "$expected_live_etcd_rules" ]] ||
+    die "$full_node live TCP/2379 input semantics or order differ from the exact policy"
+  allow_line=$(grep -nFx "$service_etcd_allow" <<<"$normalized_input" | awk -F: '{print $1}')
+  catchall_line=$(grep -nFx "$etcd_catchall" <<<"$normalized_input" | awk -F: '{print $1}')
+  [[ $allow_line =~ ^[0-9]+$ && $catchall_line =~ ^[0-9]+$ &&
+     $allow_line -lt $catchall_line ]] ||
+    die "$full_node live service TCP/2379 allow does not precede its catch-all drop"
+
+  live_forward=$("${ssh[@]}" sudo --non-interactive /usr/sbin/nft -a \
+    list chain inet fabric_guard forward) ||
+    die "$full_node live fabric_guard forward chain cannot be read"
+  normalized_forward=$(sed -E \
+    -e 's/counter packets [0-9]+ bytes [0-9]+/counter/g' \
+    -e 's/[[:space:]]+# handle [0-9]+$//' \
+    -e 's/^[[:space:]]+//' \
+    -e 's/[[:space:]]+$//' \
+    <<<"$live_forward")
+  live_forward_rules=$(awk '
+    $0 == "chain forward {" { inside = 1; next }
+    inside && $0 == "}" { inside = 0; next }
+    inside && $0 != "" && $0 !~ /^type filter hook forward / { print }
+  ' <<<"$normalized_forward")
+  expected_live_forward_rules='ct state invalid counter drop comment "invalid conntrack state"
+ct state { established, related } counter accept comment "forwarded replies"
+counter drop comment "deny all new forwarding"'
+  [[ $live_forward_rules == "$expected_live_forward_rules" ]] ||
+    die "$full_node live fabric_guard forward rule set differs from the exact deny policy"
+}
+
+assert_maintenance_window_closed() {
+  local live_set_json
+  live_set_json=$("${ssh[@]}" sudo --non-interactive /usr/sbin/nft -j \
+    list set inet fabric_guard etcd_maintenance_v4) ||
+    die "$full_node live etcd maintenance set cannot be read"
+  jq -e '
+    [.nftables[] | .set? |
+      select(.family == "inet" and .table == "fabric_guard" and
+             .name == "etcd_maintenance_v4") |
+      del(.handle) | .elem = (.elem // [])] == [
+        {family: "inet", table: "fabric_guard", name: "etcd_maintenance_v4",
+         type: "ipv4_addr", flags: ["timeout"], timeout: 900,
+         "gc-interval": 60, elem: []}
+      ]
+  ' <<<"$live_set_json" >/dev/null ||
+    die "$full_node etcd maintenance window is not exactly closed"
+}
+
+assert_firewall_loader_provenance() {
+  local fragment dropins metadata loaded_unit exec_reload expected_exec_reload
+  local installed_hash
+  fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=FragmentPath --value fabric-guard.service) ||
+    die "$full_node fabric-guard fragment cannot be resolved"
+  [[ $fragment == /etc/systemd/system/fabric-guard.service ]] ||
+    die "$full_node fabric-guard loads an unexpected fragment: $fragment"
+  dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=DropInPaths --value fabric-guard.service) ||
+    die "$full_node fabric-guard drop-ins cannot be resolved"
+  [[ -z $dropins ]] || die "$full_node fabric-guard has unreviewed drop-ins: $dropins"
+  metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$fragment") ||
+    die "$full_node fabric-guard fragment metadata cannot be read"
+  [[ $metadata == '0:0:644:1:regular file' ]] ||
+    die "$full_node fabric-guard fragment metadata is unsafe: $metadata"
+  installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$guard_unit_path" | awk '{print $1}') ||
+    die "$full_node fabric-guard fragment cannot be hashed"
+  [[ $installed_hash == "$guard_unit_hash" ]] ||
+    die "$full_node fabric-guard service differs from the exact committed unit"
+  loaded_unit=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl cat \
+    fabric-guard.service) || die "$full_node fabric-guard unit cannot be read"
+  exec_reload=$(awk '/^ExecReload=/ { print }' <<<"$loaded_unit")
+  expected_exec_reload='ExecReload=/usr/sbin/nft --check --file /etc/nftables/fabric-guard.nft
+ExecReload=/usr/sbin/nft --file /etc/nftables/fabric-guard.nft'
+  [[ $exec_reload == "$expected_exec_reload" ]] ||
+    die "$full_node fabric-guard ExecReload vector does not load the exact installed policy"
+
+  dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=DropInPaths --value etcd.service) ||
+    die "$full_node etcd drop-in provenance cannot be resolved"
+  [[ $dropins == "$etcd_guard_dropin_path" ]] ||
+    die "$full_node etcd does not load exactly the reviewed fabric-guard drop-in: $dropins"
+  metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$etcd_guard_dropin_path") ||
+    die "$full_node etcd fabric-guard drop-in metadata cannot be read"
+  [[ $metadata == '0:0:644:1:regular file' ]] ||
+    die "$full_node etcd fabric-guard drop-in metadata is unsafe: $metadata"
+  installed_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$etcd_guard_dropin_path" | awk '{print $1}') ||
+    die "$full_node etcd fabric-guard drop-in cannot be hashed"
+  [[ $installed_hash == "$etcd_guard_dropin_hash" ]] ||
+    die "$full_node etcd fabric-guard drop-in differs from the exact committed dependency"
+}
+
+assert_rollback_residue_absent() {
+  local active_state job load_state path unit unit_file_state
+  for path in \
+    /var/lib/fabric-root-network-policy-rollback \
+    /run/fabric-root-network-policy-rollback \
+    /etc/nftables/fabric-guard.nft.fabric-rollout.next \
+    /etc/nftables/fabric-guard.nft.fabric-rollback.next \
+    /etc/sysctl.d/90-fabric-root-routing.conf.fabric-rollout.next \
+    /etc/sysctl.d/90-fabric-root-routing.conf.fabric-rollback.next \
+    /etc/systemd/system/fabric-root-network-policy-rollback.service \
+    /etc/systemd/system/fabric-root-network-policy-rollback.service.d \
+    /etc/systemd/system/fabric-root-network-policy-rollback.timer \
+    /etc/systemd/system/fabric-root-network-policy-rollback.timer.d \
+    /etc/systemd/system/fabric-guard-rollback.service \
+    /etc/systemd/system/fabric-guard-rollback.service.d \
+    /etc/systemd/system/fabric-guard-rollback.timer \
+    /etc/systemd/system/fabric-guard-rollback.timer.d; do
+    "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$path" ||
+      die "$full_node retains stale root-policy rollback state: $path"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$path" ||
+      die "$full_node has an unsafe root-policy rollback symlink: $path"
+  done
+  for unit in fabric-root-network-policy-rollback.timer \
+      fabric-root-network-policy-rollback.service \
+      fabric-guard-rollback.timer fabric-guard-rollback.service; do
+    load_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=LoadState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback LoadState: $unit"
+    active_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=ActiveState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback ActiveState: $unit"
+    unit_file_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=UnitFileState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback UnitFileState: $unit"
+    job=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=Job --value "$unit") ||
+      die "$full_node cannot inspect stale rollback Job: $unit"
+    [[ $load_state == not-found && $active_state == inactive && -z $job ]] ||
+      die "$full_node retains loaded, active, or queued rollback state: $unit"
+    [[ -z $unit_file_state || $unit_file_state == disabled ]] ||
+      die "$full_node rollback unit-file state is not absent or disabled: $unit ($unit_file_state)"
+    if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+        "$unit" 2>/dev/null; then
+      die "$full_node retains an enabled rollback unit: $unit"
+    fi
+  done
+}
+
+if $verify_live_all; then
+  committed_firewall_hash=$(printf '%s' "$firewall_policy" | sha256sum | awk '{print $1}')
+  committed_routing_hash=$(printf '%s' "$routing_policy" | sha256sum | awk '{print $1}')
+  for node_contract in \
+    cp1:fabric-az1-cp1:10.66.0.10 \
+    cp2:fabric-az1-cp2:10.66.0.11 \
+    cp3:fabric-az1-cp3:10.66.0.12; do
+    IFS=: read -r node full_node root_ip <<<"$node_contract"
+    ssh=("$repo_root/scripts/fabric-ssh" "$node")
+
+    assert_rollback_residue_absent
+    assert_firewall_loader_provenance
+    "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+      fabric-guard.service || die "$full_node fabric-guard service is not enabled"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+      fabric-guard.service || die "$full_node fabric-guard service is not active"
+    [[ $("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=Result --value fabric-guard.service) == success ]] ||
+      die "$full_node fabric-guard service did not last complete successfully"
+
+    installed_firewall_hash=$("${ssh[@]}" sudo --non-interactive \
+      /usr/bin/sha256sum "$firewall_path" | awk '{print $1}')
+    [[ $installed_firewall_hash == "$committed_firewall_hash" ]] ||
+      die "$full_node installed firewall policy differs from Git"
+    firewall_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+      --format='%u:%g:%a:%h:%F' "$firewall_path")
+    [[ $firewall_metadata == '0:0:644:1:regular file' ]] ||
+      die "$full_node installed firewall policy metadata is unsafe: $firewall_metadata"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+      "$firewall_path" >/dev/null ||
+      die "$full_node installed firewall policy has the wrong security context"
+
+    installed_routing_hash=$("${ssh[@]}" sudo --non-interactive \
+      /usr/bin/sha256sum "$routing_path" | awk '{print $1}')
+    [[ $installed_routing_hash == "$committed_routing_hash" ]] ||
+      die "$full_node installed routed-host policy differs from Git"
+    routing_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+      --format='%u:%g:%a:%h:%F' "$routing_path")
+    [[ $routing_metadata == '0:0:644:1:regular file' ]] ||
+      die "$full_node installed routed-host policy metadata is unsafe: $routing_metadata"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+      "$routing_path" >/dev/null ||
+      die "$full_node installed routed-host policy has the wrong security context"
+
+    assert_live_etcd_input_policy
+    validate_service_route
+    # shellcheck disable=SC2016 # Literal remote program; variables expand on the root.
+    printf '%s' '#!/usr/bin/env bash
+set -euo pipefail
+[[ $(/usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]]
+for directory in /proc/sys/net/ipv4/conf/*; do
+  scope=${directory##*/}
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    [[ $(/usr/sbin/sysctl -n "net/ipv4/conf/$scope/$knob") == 0 ]]
+  done
+done
+for directory in /proc/sys/net/ipv6/conf/*; do
+  scope=${directory##*/}
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_redirects") == 0 ]]
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_source_route") == -1 ]]
+done
+' | "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s ||
+      die "$full_node live routed-host sysctls differ from the exact policy"
+
+    for stale_path in \
+      /var/lib/fabric-root-network-policy-rollback \
+      /run/fabric-root-network-policy-rollback \
+      /run/fabric-guard.nft.next \
+      /run/fabric-root-routing.conf.next; do
+      "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$stale_path" ||
+        die "$full_node retains stale root-policy rollout state: $stale_path"
+      "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$stale_path" ||
+        die "$full_node has an unsafe root-policy rollout symlink: $stale_path"
+    done
+
+    node_json=$("${ik[@]}" get node "$full_node" --output=json) ||
+      die "cannot read Fabric root node $full_node"
+    jq -e --arg ip "$root_ip" '
+      .metadata.deletionTimestamp == null and
+      .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+      ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+      any(.status.conditions[]?; .type == "Ready" and .status == "True")
+    ' <<<"$node_json" >/dev/null ||
+      die "$full_node is not the exact Ready root identity at $root_ip"
+    assert_rollback_residue_absent
+  done
+
+  "${ik[@]}" get --raw='/readyz?verbose' | grep -Fxq 'readyz check passed' ||
+    die 'Fabric API is not fully ready after all-root policy verification'
+  echo "FABRIC_ROOT_NETWORK_POLICY_LIVE=pass revision=$head_commit payload=$policy_hash"
+  exit 0
+fi
+
+assert_firewall_loader_provenance
+assert_maintenance_window_closed
+firewall_file_metadata_before=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%h:%F' "$firewall_path") ||
+  die "$full_node installed firewall policy metadata cannot be read"
+[[ $firewall_file_metadata_before == '0:0:644:1:regular file' ]] ||
+  die "$full_node installed firewall policy metadata is unsafe before rollout: $firewall_file_metadata_before"
 
 "${ik[@]}" get --raw=/readyz >/dev/null || die 'fabric API is not ready before rollout'
 "${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
@@ -200,52 +631,180 @@ if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
   --from-literal="holder=$lock_holder" >/dev/null; then
   current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
     -o jsonpath='{.data.holder}' 2>/dev/null || true)
-  die "another or stale root-network-policy rollout lock exists: ${current_holder:-unknown}"
+  die "another or stale global Fabric maintenance lock exists: ${current_holder:-unknown}"
 fi
 
+rollback_work=/var/lib/fabric-root-network-policy-rollback
+firewall_next=$rollback_work/firewall.next
+firewall_previous=$rollback_work/firewall.previous
+routing_next=$rollback_work/routing.next
+routing_previous=$rollback_work/routing.previous
+routing_previous_absent=$rollback_work/routing.previous-absent
+routing_live_previous=$rollback_work/routing-live.previous
+firewall_live_previous=$rollback_work/firewall-live.previous
+firewall_live_accepted=$rollback_work/firewall-live.accepted
+rollback_program_path=$rollback_work/rollback
+rollback_unit=fabric-root-network-policy-rollback
+rollback_service_path=/etc/systemd/system/$rollback_unit.service
+rollback_timer_path=/etc/systemd/system/$rollback_unit.timer
+rollout_token="$head_commit:$policy_hash:$full_node"
+
 cleanup() {
+  local status=$? current_holder
+  trap - EXIT HUP INT TERM
+  trap '' HUP INT TERM
+  set +e
+  if ! $success && $rollback_armed; then
+    # A failed or unacknowledged disarm is unsafe. Re-enable both persistent
+    # triggers and atomically convert even accepted state into rollback-required.
+    # shellcheck disable=SC2016 # Literal target-local recovery program.
+force_rollback_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+state=$(<"$state_path")
+systemctl daemon-reload
+systemctl enable "$timer" "${service##*/}" >/dev/null
+sync --file-system /etc/systemd/system
+case $state in
+  "armed:$token"|"accepted:$token") write_state rollback-required ;;
+  "rollback-required:$token"|"rolling-back:$token"|"rolled-back:$token") ;;
+  *) exit 1 ;;
+esac
+printf "%s\n" "$token" >"$work/force-rollback.next"
+chmod 0600 "$work/force-rollback.next"
+mv "$work/force-rollback.next" "$work/force-rollback"
+sync --file-system "$work"
+flock --unlock "$state_fd"
+exec {state_fd}>&-
+systemctl start --no-block "${service##*/}"
+for ((attempt = 0; attempt < 120; attempt++)); do
+  if [[ $(<"$state_path") == "rolled-back:$token" &&
+        -f $work/rolled-back && ! -L $work/rolled-back &&
+        $(<"$work/rolled-back") == "$token" &&
+        $(systemctl show --property=ActiveState --value "${service##*/}") == inactive &&
+        -z $(systemctl show --property=Job --value "${service##*/}") ]]; then
+    printf "ROLLBACK_FORCED=%s\n" "$token"
+    exit 0
+  fi
+  sleep 1
+done
+exit 1
+'
+    force_rollback_result=$(printf '%s' "$force_rollback_program" |
+      "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+        "$rollback_work" "$rollback_service_path" "$rollback_timer_path" \
+        "$rollout_token" 2>/dev/null)
+    if [[ $force_rollback_result == "ROLLBACK_FORCED=$rollout_token" ]]; then
+      echo "rollout stopped; immediate target-local rollback was requested and $lock_name remains held by $lock_holder" >&2
+    else
+      echo "WARNING: rollout stopped and remote rollback acknowledgement failed; persistent rollback evidence and $lock_name remain for attended inspection" >&2
+    fi
+  elif ! $success && $rollback_disarmed; then
+    echo "rollout stopped after rollback disarm; persistent evidence and $lock_name remain held for attended inspection" >&2
+  elif ! $success; then
+    echo "rollout stopped before rollback was armed; $lock_name remains held by $lock_holder for inspection" >&2
+  fi
   if $success; then
     current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
       -o jsonpath='{.data.holder}' 2>/dev/null || true)
-    [[ $current_holder != "$lock_holder" ]] ||
-      "${ik[@]}" -n kube-system delete configmap "$lock_name" --wait=true >/dev/null || true
-  else
-    echo "rollout stopped; target-local rollback remains armed and $lock_name remains held by $lock_holder" >&2
+    if [[ $current_holder != "$lock_holder" ]]; then
+      echo "root network policy passed but shared lock ownership changed; refuse to delete it" >&2
+      status=1
+    elif ! "${ik[@]}" -n kube-system delete configmap "$lock_name" \
+        --wait=true >/dev/null; then
+      echo "root network policy passed but shared lock could not be released" >&2
+      status=1
+    fi
   fi
+  exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-firewall_next=/run/fabric-guard.nft.next
-firewall_previous=/run/fabric-guard.nft.previous
-routing_next=/run/fabric-root-routing.conf.next
-routing_previous=/run/fabric-root-routing.conf.previous
-routing_previous_absent=/run/fabric-root-routing.conf.previous-absent
-routing_live_previous=/run/fabric-root-routing.live.previous
-rollback_program_path=/run/fabric-root-network-policy-rollback
-rollback_unit=fabric-root-network-policy-rollback
+# Revalidate every preflight that protects the mutation after acquiring the
+# global lock; an earlier probe may have overlapped a just-finishing operation.
+"${ik[@]}" get --raw=/readyz >/dev/null ||
+  die 'fabric API became unready after acquiring the global lock'
+"${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
+  die 'fabric API lost its etcd check after acquiring the global lock'
+assert_firewall_loader_provenance
+assert_maintenance_window_closed
+validate_service_route
+route_interface_before=$route_interface
+[[ $("${ssh[@]}" /usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]] ||
+  die "$full_node lost the K3s-required IPv4 forwarding state under the global lock"
+lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+  -o jsonpath='{.spec.renewTime}')
+[[ -n $lease_before ]] ||
+  die "cannot refresh $full_node heartbeat Lease under the global lock"
 
-for remote_path in \
-  "$firewall_next" \
-  "$firewall_previous" \
-  "$routing_next" \
-  "$routing_previous" \
-  "$routing_previous_absent" \
-  "$routing_live_previous" \
-  "$rollback_program_path"; do
+assert_rollback_residue_absent
+for remote_path in "$rollback_work" \
+  "$rollback_service_path" "$rollback_service_path.d" \
+  "$rollback_timer_path" "$rollback_timer_path.d" \
+  /run/fabric-guard.nft.next \
+  /run/fabric-guard.nft.previous \
+  /run/fabric-root-routing.conf.next \
+  /run/fabric-root-routing.conf.previous \
+  /run/fabric-root-routing.conf.previous-absent \
+  /run/fabric-root-routing.live.previous \
+  "$firewall_path.fabric-rollout.next" \
+  "$firewall_path.fabric-rollback.next" \
+  "$routing_path.fabric-rollout.next" \
+  "$routing_path.fabric-rollback.next" \
+  /run/fabric-root-network-policy-rollback; do
   "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$remote_path" ||
     die "stale remote rollout artifact requires inspection: $remote_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$remote_path" ||
+    die "unsafe remote rollout symlink requires inspection: $remote_path"
 done
-if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
-  "$rollback_unit.timer" "$rollback_unit.service" \
-  fabric-guard-rollback.timer fabric-guard-rollback.service; then
-  die 'a target-local root network-policy rollback is already active'
-fi
+for remote_unit in "$rollback_unit.timer" "$rollback_unit.service" \
+  fabric-guard-rollback.timer fabric-guard-rollback.service; do
+  load_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=LoadState --value "$remote_unit" 2>/dev/null || true)
+  [[ -z $load_state || $load_state == not-found ]] ||
+    die "a stale target-local rollback unit requires inspection: $remote_unit ($load_state)"
+  if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+    "$remote_unit" 2>/dev/null; then
+    die "a stale enabled target-local rollback unit requires inspection: $remote_unit"
+  fi
+done
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -d /var/lib
+"${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L /var/lib
 "${ssh[@]}" sudo --non-interactive /usr/bin/test -d /etc/sysctl.d
 "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L /etc/sysctl.d
 sysctl_dir_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
   --format='%u:%g:%a:%F' /etc/sysctl.d)
 [[ $sysctl_dir_metadata == 0:0:755:directory ]] ||
   die "unsafe routed-host sysctl directory on $full_node: $sysctl_dir_metadata"
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/flock
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/cmp
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/restorecon
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/matchpathcon
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/sync
+"${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+  "$firewall_path" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/mkdir --mode=0700 "$rollback_work"
 
 printf '%s' "$firewall_policy" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$firewall_next" >/dev/null
@@ -255,8 +814,36 @@ remote_firewall_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
 local_firewall_hash=$(printf '%s' "$firewall_policy" | sha256sum | awk '{print $1}')
 [[ $remote_firewall_hash == "$local_firewall_hash" ]] || die 'firewall candidate changed in transport'
 "${ssh[@]}" sudo --non-interactive /usr/sbin/nft --check --file "$firewall_next"
-"${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
+firewall_previous_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%h:%F:%C' "$firewall_path")
+"${ssh[@]}" sudo --non-interactive /usr/bin/cp \
+  --preserve=mode,ownership,timestamps,context,xattr -- \
   "$firewall_path" "$firewall_previous"
+[[ $("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%h:%F:%C' "$firewall_previous") == \
+  "$firewall_previous_metadata" ]] ||
+  die 'firewall rollback backup did not preserve exact metadata and security context'
+printf '%s\n' "$firewall_previous_metadata" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/firewall.previous.metadata" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/firewall.previous.metadata"
+firewall_previous_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$firewall_previous" | awk '{print $1}')
+firewall_previous_metadata_hash=$("${ssh[@]}" sudo --non-interactive \
+  /usr/bin/sha256sum "$rollback_work/firewall.previous.metadata" | awk '{print $1}')
+[[ $firewall_previous_hash =~ ^[0-9a-f]{64}$ ]] ||
+  die 'cannot hash the previous firewall policy'
+[[ $firewall_previous_metadata_hash =~ ^[0-9a-f]{64}$ ]] ||
+  die 'cannot hash the previous firewall metadata'
+{
+  printf '%s  firewall.previous\n' "$firewall_previous_hash"
+  printf '%s  firewall.previous.metadata\n' "$firewall_previous_metadata_hash"
+} |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/firewall.previous.sha256" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/firewall.previous.sha256"
 
 printf '%s' "$routing_policy" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$routing_next" >/dev/null
@@ -269,12 +856,75 @@ local_routing_hash=$(printf '%s' "$routing_policy" | sha256sum | awk '{print $1}
 if "${ssh[@]}" sudo --non-interactive /usr/bin/test -e "$routing_path"; then
   "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$routing_path"
   "${ssh[@]}" sudo --non-interactive /usr/bin/test -f "$routing_path"
-  "${ssh[@]}" sudo --non-interactive /usr/bin/cp --preserve=mode,ownership,timestamps \
+  "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+    "$routing_path" >/dev/null
+  routing_previous_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F:%C' "$routing_path")
+  "${ssh[@]}" sudo --non-interactive /usr/bin/cp \
+    --preserve=mode,ownership,timestamps,context,xattr -- \
     "$routing_path" "$routing_previous"
+  [[ $("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F:%C' "$routing_previous") == \
+    "$routing_previous_metadata" ]] ||
+    die 'routed-host rollback backup did not preserve exact metadata and security context'
+  printf '%s\n' "$routing_previous_metadata" |
+    "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+      "$rollback_work/routing.previous.metadata" >/dev/null
+  "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+    "$rollback_work/routing.previous.metadata"
+  routing_previous_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$routing_previous" | awk '{print $1}')
+  routing_previous_metadata_hash=$("${ssh[@]}" sudo --non-interactive \
+    /usr/bin/sha256sum "$rollback_work/routing.previous.metadata" | awk '{print $1}')
+  [[ $routing_previous_hash =~ ^[0-9a-f]{64}$ ]] ||
+    die 'cannot hash the previous routed-host sysctl policy'
+  [[ $routing_previous_metadata_hash =~ ^[0-9a-f]{64}$ ]] ||
+    die 'cannot hash the previous routed-host sysctl metadata'
+  {
+    printf '%s  routing.previous\n' "$routing_previous_hash"
+    printf '%s  routing.previous.metadata\n' "$routing_previous_metadata_hash"
+  } |
+    "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+      "$rollback_work/routing.previous.sha256" >/dev/null
+  "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+    "$rollback_work/routing.previous.sha256"
 else
   "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$routing_path"
   "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$routing_previous_absent"
 fi
+
+# Normalize counters and runtime-assigned handles so the rollback program can
+# prove that restarting the previous file recreated the exact pre-rollout
+# table, rather than merely proving that nft accepted the source file.
+# shellcheck disable=SC2016 # This is a literal remote program.
+capture_firewall_program='#!/usr/bin/env bash
+set -euo pipefail
+output=$1
+/usr/sbin/nft -a list table inet fabric_guard |
+  /usr/bin/sed -E \
+    -e "s/counter packets [0-9]+ bytes [0-9]+/counter/g" \
+    -e "s/[[:space:]]+# handle [0-9]+$//" \
+    -e "s/^[[:space:]]+//" \
+    -e "s/[[:space:]]+$//" >"$output"
+[[ -s $output && -f $output && ! -L $output ]]
+chmod 0600 "$output"
+'
+capture_remote_firewall() {
+  local output=$1
+  printf '%s' "$capture_firewall_program" |
+    "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- "$output"
+}
+
+capture_remote_firewall "$firewall_live_previous"
+firewall_live_previous_hash=$("${ssh[@]}" sudo --non-interactive \
+  /usr/bin/sha256sum "$firewall_live_previous" | awk '{print $1}')
+[[ $firewall_live_previous_hash =~ ^[0-9a-f]{64}$ ]] ||
+  die 'cannot hash the previous live firewall state'
+printf '%s  firewall-live.previous\n' "$firewall_live_previous_hash" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/firewall-live.previous.sha256" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/firewall-live.previous.sha256"
 
 # shellcheck disable=SC2016 # This is a literal remote program.
 capture_live_program='#!/usr/bin/env bash
@@ -301,54 +951,305 @@ done
 '
 printf '%s' "$capture_live_program" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- "$routing_live_previous"
+routing_live_previous_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+  "$routing_live_previous" | awk '{print $1}')
+[[ $routing_live_previous_hash =~ ^[0-9a-f]{64}$ ]] ||
+  die 'cannot hash the previous live routed-host sysctl state'
+printf '%s  routing-live.previous\n' "$routing_live_previous_hash" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/routing-live.previous.sha256" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/routing-live.previous.sha256"
+printf '%s\n' fabric-root-network-policy-rollout |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_work/owner" >/dev/null
+printf '%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/expected-token" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/owner" "$rollback_work/expected-token"
+"${ssh[@]}" sudo --non-interactive /usr/bin/touch "$rollback_work/state.lock"
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$rollback_work/state.lock"
 
 # shellcheck disable=SC2016 # This is a literal remote program.
 rollback_program='#!/usr/bin/env bash
 set -euo pipefail
-firewall_path=$1
-firewall_previous=$2
-routing_path=$3
-routing_previous=$4
-routing_previous_absent=$5
-routing_live_previous=$6
-if [[ -e $routing_previous_absent ]]; then
-  rm --force "$routing_path"
-else
-  cp --preserve=mode,ownership,timestamps "$routing_previous" "$routing_path"
+umask 077
+work=/var/lib/fabric-root-network-policy-rollback
+timer=fabric-root-network-policy-rollback.timer
+service=fabric-root-network-policy-rollback.service
+state_path=$work/state
+state_lock=$work/state.lock
+firewall_path=/etc/nftables/fabric-guard.nft
+firewall_previous=$work/firewall.previous
+routing_path=/etc/sysctl.d/90-fabric-root-routing.conf
+routing_previous=$work/routing.previous
+routing_previous_absent=$work/routing.previous-absent
+routing_live_previous=$work/routing-live.previous
+firewall_live_previous=$work/firewall-live.previous
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+for marker in owner expected-token armed deadline; do
+  [[ -f $work/$marker && ! -L $work/$marker ]]
+done
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/armed") == "$(<"$work/expected-token")" ]]
+token=$(<"$work/expected-token")
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+state=$(<"$state_path")
+case $state in
+  "accepted:$token"|"rolled-back:$token")
+    systemctl disable "$timer" "$service" >/dev/null 2>&1 || exit 1
+    sync --file-system /etc/systemd/system
+    exit 0
+    ;;
+  "armed:$token"|"rollback-required:$token"|"rolling-back:$token") ;;
+  *) exit 1 ;;
+esac
+deadline=$(<"$work/deadline")
+[[ $deadline =~ ^[0-9]+$ ]]
+now=$(date +%s)
+if [[ $state == "armed:$token" ]]; then
+  [[ -e $work/force-rollback || $now -ge $deadline ]]
 fi
-/usr/sbin/sysctl -e --load "$routing_live_previous" >/dev/null
+write_state rolling-back
+(cd "$work" && sha256sum --check firewall.previous.sha256 >/dev/null)
+remove_staging() {
+  local path=$1
+  if [[ -e $path || -L $path ]]; then
+    [[ -f $path && ! -L $path ]]
+    rm --force -- "$path"
+  fi
+}
+restore_file() {
+  local target=$1 previous=$2 directory metadata metadata_file next rollout_next
+  directory=${target%/*}
+  metadata_file=$previous.metadata
+  next=$target.fabric-rollback.next
+  rollout_next=$target.fabric-rollout.next
+  [[ -f $metadata_file && ! -L $metadata_file ]]
+  metadata=$(<"$metadata_file")
+  [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$previous") == "$metadata" ]]
+  remove_staging "$next"
+  remove_staging "$rollout_next"
+  cp --preserve=mode,ownership,timestamps,context,xattr -- "$previous" "$next"
+  [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$next") == "$metadata" ]]
+  sync --file-system "$next"
+  mv --force -- "$next" "$target"
+  sync --file-system "$directory"
+  cmp --silent "$previous" "$target"
+  [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$target") == "$metadata" ]]
+  /usr/bin/matchpathcon -V "$target" >/dev/null
+}
+restore_file "$firewall_path" "$firewall_previous"
+sync --file-system /etc
+systemctl restart fabric-guard.service
+systemctl is-active --quiet fabric-guard.service
+(cd "$work" && sha256sum --check firewall-live.previous.sha256 >/dev/null)
+cmp --silent "$firewall_live_previous" <(
+  /usr/sbin/nft -a list table inet fabric_guard |
+    /usr/bin/sed -E \
+      -e "s/counter packets [0-9]+ bytes [0-9]+/counter/g" \
+      -e "s/[[:space:]]+# handle [0-9]+$//" \
+      -e "s/^[[:space:]]+//" \
+      -e "s/[[:space:]]+$//"
+)
+
+if [[ -e $routing_previous_absent ]]; then
+  [[ -f $routing_previous_absent && ! -L $routing_previous_absent ]]
+  remove_staging "$routing_path.fabric-rollback.next"
+  remove_staging "$routing_path.fabric-rollout.next"
+  if [[ -e $routing_path || -L $routing_path ]]; then
+    [[ -f $routing_path && ! -L $routing_path ]]
+    rm --force -- "$routing_path"
+  fi
+  sync --file-system "${routing_path%/*}"
+  [[ ! -e $routing_path && ! -L $routing_path ]]
+else
+  (cd "$work" && sha256sum --check routing.previous.sha256 >/dev/null)
+  restore_file "$routing_path" "$routing_previous"
+fi
+sync --file-system /etc
+(cd "$work" && sha256sum --check routing-live.previous.sha256 >/dev/null)
+declare -A previous_sysctl=()
 while IFS=" =" read -r key expected; do
   [[ -n $key && -n $expected ]] || continue
-  current=$(/usr/sbin/sysctl -n "$key" 2>/dev/null) || continue
-  [[ $current == "$expected" ]]
+  previous_sysctl["$key"]=$expected
 done <"$routing_live_previous"
-install --mode=0644 "$firewall_previous" "$firewall_path"
-systemctl reload fabric-guard.service
+expected=${previous_sysctl[net/ipv4/ip_forward]-}
+[[ -n $expected ]]
+/usr/sbin/sysctl -q -w "net/ipv4/ip_forward=$expected"
+[[ $(/usr/sbin/sysctl -n net/ipv4/ip_forward) == "$expected" ]]
+restore_scope() {
+  local family=$1 scope=$2 key default_key expected knob
+  shift 2
+  for knob in "$@"; do
+    key=net/$family/conf/$scope/$knob
+    default_key=net/$family/conf/default/$knob
+    expected=${previous_sysctl[$key]-}
+    if [[ -z $expected ]]; then
+      expected=${previous_sysctl[$default_key]-}
+    fi
+    [[ -n $expected ]]
+    /usr/sbin/sysctl -q -w "$key=$expected"
+    [[ $(/usr/sbin/sysctl -n "$key") == "$expected" ]]
+  done
+}
+restore_scope ipv4 all \
+  accept_redirects secure_redirects send_redirects accept_source_route
+restore_scope ipv4 default \
+  accept_redirects secure_redirects send_redirects accept_source_route
+for directory in /proc/sys/net/ipv4/conf/*; do
+  scope=${directory##*/}
+  [[ $scope != all && $scope != default ]] || continue
+  restore_scope ipv4 "$scope" \
+    accept_redirects secure_redirects send_redirects accept_source_route
+done
+restore_scope ipv6 all accept_redirects accept_source_route
+restore_scope ipv6 default accept_redirects accept_source_route
+for directory in /proc/sys/net/ipv6/conf/*; do
+  scope=${directory##*/}
+  [[ $scope != all && $scope != default ]] || continue
+  restore_scope ipv6 "$scope" accept_redirects accept_source_route
+done
+sync --file-system /etc
+printf "%s\n" "$token" >"$work/rolled-back.next"
+chmod 0600 "$work/rolled-back.next"
+mv "$work/rolled-back.next" "$work/rolled-back"
+sync --file-system "$work"
+write_state rolled-back
+systemctl disable "$timer" "$service" >/dev/null
+sync --file-system /etc/systemd/system
 '
 printf '%s' "$rollback_program" |
   "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_program_path" >/dev/null
 "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0700 "$rollback_program_path"
-"${ssh[@]}" sudo --non-interactive /usr/bin/systemd-run \
-  --quiet \
-  --collect \
-  --unit="$rollback_unit" \
-  --on-active=5m \
-  --timer-property=AccuracySec=1s \
-  "$rollback_program_path" \
-  "$firewall_path" \
-  "$firewall_previous" \
-  "$routing_path" \
-  "$routing_previous" \
-  "$routing_previous_absent" \
-  "$routing_live_previous"
+remote_now=$("${ssh[@]}" /usr/bin/date +%s)
+[[ $remote_now =~ ^[0-9]+$ ]] || die 'target returned an invalid rollback clock'
+deadline_epoch=$((remote_now + 300))
+deadline_calendar=$("${ssh[@]}" /usr/bin/date --utc --date="@$deadline_epoch" \
+  '+%Y-%m-%d %H:%M:%S UTC')
+[[ -n $deadline_calendar && $deadline_calendar != *$'\n'* ]] ||
+  die 'target returned an invalid rollback calendar deadline'
+printf '%s\n' "$deadline_epoch" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_work/deadline" >/dev/null
+printf '%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/armed.next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/deadline" "$rollback_work/armed.next"
+"${ssh[@]}" sudo --non-interactive /usr/bin/mv \
+  "$rollback_work/armed.next" "$rollback_work/armed"
+printf 'armed:%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/state.next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$rollback_work/state.next"
+"${ssh[@]}" sudo --non-interactive /usr/bin/mv \
+  "$rollback_work/state.next" "$rollback_work/state"
+"${ssh[@]}" sudo --non-interactive /usr/bin/sync --file-system "$rollback_work"
+rollback_service="[Unit]
+Description=Rollback an unaccepted Fabric root network-policy change
+After=local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash $rollback_program_path
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+"
+rollback_timer="[Unit]
+Description=Five-minute rollback deadline for Fabric root network policy
+
+[Timer]
+OnCalendar=$deadline_calendar
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=$rollback_unit.service
+
+[Install]
+WantedBy=timers.target
+"
+printf '%s' "$rollback_service" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_service_path" >/dev/null
+printf '%s' "$rollback_timer" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_timer_path" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0644 \
+  "$rollback_service_path" "$rollback_timer_path"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemd-analyze verify \
+  "$rollback_service_path" "$rollback_timer_path" >/dev/null
+rollback_armed=true
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl daemon-reload
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl enable \
+  "$rollback_unit.service" "$rollback_unit.timer" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/sync --file-system \
+  /etc/systemd/system
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl start \
+  "$rollback_unit.timer"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.service"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.timer"
 "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
   "$rollback_unit.timer"
 
-"${ssh[@]}" sudo --non-interactive /usr/bin/install --mode=0644 \
-  "$routing_next" "$routing_path"
-# shellcheck disable=SC2016 # This is a literal remote program.
-apply_live_program='#!/usr/bin/env bash
+# The deadline service and this candidate writer serialize on the same lock.
+# Once this program releases it, the outer helper performs only observations
+# until the separately locked disarm transition.
+# shellcheck disable=SC2016 # This is a literal target-local program.
+apply_candidate_program='#!/usr/bin/env bash
 set -euo pipefail
+umask 077
+work=$1
+token=$2
+routing_path=$3
+firewall_path=$4
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+[[ -f $work/deadline && ! -L $work/deadline ]]
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $work/routing.next && ! -L $work/routing.next ]]
+[[ -f $work/firewall.next && ! -L $work/firewall.next ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+install_atomic() {
+  local source=$1 target=$2 mode=$3 next directory metadata expected_mode
+  next=$target.fabric-rollout.next
+  directory=${target%/*}
+  expected_mode=${mode#0}
+  [[ ! -e $next && ! -L $next ]]
+  install --owner=root --group=root --mode="$mode" "$source" "$next"
+  metadata=$(stat --format="%u:%g:%a:%h:%F" "$next")
+  [[ $metadata == "0:0:$expected_mode:1:regular file" ]]
+  cmp --silent "$source" "$next"
+  sync --file-system "$next"
+  mv --force -- "$next" "$target"
+  /usr/bin/restorecon --force "$target"
+  /usr/bin/matchpathcon -V "$target" >/dev/null
+  sync --file-system "$directory"
+  cmp --silent "$source" "$target"
+  [[ $(stat --format="%u:%g:%a:%h:%F" "$target") == "$metadata" ]]
+}
+install_atomic "$work/routing.next" "$routing_path" 0644
 [[ $(/usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]]
 for directory in /proc/sys/net/ipv4/conf/*; do
   scope=${directory##*/}
@@ -361,16 +1262,20 @@ for directory in /proc/sys/net/ipv6/conf/*; do
   /usr/sbin/sysctl -q -w "net/ipv6/conf/$scope/accept_redirects=0"
   /usr/sbin/sysctl -q -w "net/ipv6/conf/$scope/accept_source_route=-1"
 done
+install_atomic "$work/firewall.next" "$firewall_path" 0644
+systemctl reload fabric-guard.service
+systemctl is-active --quiet fabric-guard.service
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+printf "ROLLOUT_APPLIED=%s\n" "$token"
 '
-printf '%s' "$apply_live_program" |
-  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s
-
-"${ssh[@]}" sudo --non-interactive /usr/bin/install --mode=0644 \
-  "$firewall_next" "$firewall_path"
-"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl reload fabric-guard.service
-"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet fabric-guard.service
-"${ssh[@]}" sudo --non-interactive /usr/sbin/nft list set inet fabric_guard service_nodes_v4 |
-  grep -Fq '10.66.1.10, 10.66.1.11'
+apply_candidate_result=$(printf '%s' "$apply_candidate_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$rollback_work" "$rollout_token" "$routing_path" "$firewall_path")
+[[ $apply_candidate_result == "ROLLOUT_APPLIED=$rollout_token" ]] ||
+  die 'target-local root policy candidate acknowledgement was not exact'
+assert_firewall_loader_provenance
+assert_live_etcd_input_policy
 
 installed_routing_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
   "$routing_path" | awk '{print $1}')
@@ -441,27 +1346,231 @@ for _attempt in {1..30}; do
 done
 $heartbeat_advanced || die "$full_node did not publish a fresh Ready heartbeat after reload"
 
-"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl stop "$rollback_unit.timer"
-if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
-  "$rollback_unit.timer" "$rollback_unit.service"; then
-  die 'target-local root network-policy rollback could not be disarmed'
-fi
+# These are the final pre-disarm gates. Prove loader provenance, the entire
+# live input chain, and both installed payloads while rollback is still armed.
+assert_firewall_loader_provenance
+assert_live_etcd_input_policy
 installed_firewall_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
   "$firewall_path" | awk '{print $1}')
 [[ $installed_firewall_hash == "$local_firewall_hash" ]] ||
   die 'installed firewall policy changed or rolled back before acceptance'
+firewall_file_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+  --format='%u:%g:%a:%h:%F' "$firewall_path")
+[[ $firewall_file_metadata == '0:0:644:1:regular file' ]] ||
+  die "installed firewall policy metadata is unsafe: $firewall_file_metadata"
 installed_routing_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
   "$routing_path" | awk '{print $1}')
 [[ $installed_routing_hash == "$local_routing_hash" ]] ||
   die 'installed routed-host sysctl policy changed or rolled back before acceptance'
+capture_remote_firewall "$firewall_live_accepted"
+firewall_live_accepted_hash=$("${ssh[@]}" sudo --non-interactive \
+  /usr/bin/sha256sum "$firewall_live_accepted" | awk '{print $1}')
+[[ $firewall_live_accepted_hash =~ ^[0-9a-f]{64}$ ]] ||
+  die 'cannot hash the exact accepted live firewall state'
+printf '%s  firewall-live.accepted\n' "$firewall_live_accepted_hash" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$rollback_work/firewall-live.accepted.sha256" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$rollback_work/firewall-live.accepted.sha256"
+"${ssh[@]}" sudo --non-interactive /usr/bin/sync --file-system "$rollback_work"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.timer"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.service"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  "$rollback_unit.timer"
 
-"${ssh[@]}" sudo --non-interactive /usr/bin/rm --force \
-  "$firewall_next" \
-  "$firewall_previous" \
-  "$routing_next" \
-  "$routing_previous" \
-  "$routing_previous_absent" \
-  "$routing_live_previous" \
-  "$rollback_program_path"
+# shellcheck disable=SC2016 # Literal target-local acknowledgement program.
+disarm_ready_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+systemctl is-enabled --quiet "${timer##*/}"
+systemctl is-enabled --quiet "${service##*/}"
+systemctl is-active --quiet "${timer##*/}"
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+[[ $(systemctl show --property=FragmentPath --value "${service##*/}") == "$service" ]]
+[[ $(systemctl show --property=FragmentPath --value "${timer##*/}") == "$timer" ]]
+[[ -z $(systemctl show --property=DropInPaths --value "${service##*/}") ]]
+[[ -z $(systemctl show --property=DropInPaths --value "${timer##*/}") ]]
+[[ -f $work/deadline && ! -L $work/deadline ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+printf "ROLLBACK_DISARM_READY=%s\n" "$token"
+'
+disarm_ready=$(printf '%s' "$disarm_ready_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$rollback_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $disarm_ready == "ROLLBACK_DISARM_READY=$rollout_token" ]] ||
+  die 'target-local rollback readiness acknowledgement was not exact'
+
+# shellcheck disable=SC2016 # Literal target-local disarm program.
+disarm_program='set -euo pipefail
+umask 077
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+cmp --silent "$work/firewall.next" /etc/nftables/fabric-guard.nft
+cmp --silent "$work/routing.next" /etc/sysctl.d/90-fabric-root-routing.conf
+[[ $(stat --format="%u:%g:%a:%h:%F" /etc/nftables/fabric-guard.nft) == "0:0:644:1:regular file" ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /etc/sysctl.d/90-fabric-root-routing.conf) == "0:0:644:1:regular file" ]]
+/usr/bin/matchpathcon -V /etc/nftables/fabric-guard.nft >/dev/null
+/usr/bin/matchpathcon -V /etc/sysctl.d/90-fabric-root-routing.conf >/dev/null
+(cd "$work" && sha256sum --check firewall-live.accepted.sha256 >/dev/null)
+cmp --silent "$work/firewall-live.accepted" <(
+  /usr/sbin/nft -a list table inet fabric_guard |
+    /usr/bin/sed -E \
+      -e "s/counter packets [0-9]+ bytes [0-9]+/counter/g" \
+      -e "s/[[:space:]]+# handle [0-9]+$//" \
+      -e "s/^[[:space:]]+//" \
+      -e "s/[[:space:]]+$//"
+)
+[[ $(/usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]]
+for directory in /proc/sys/net/ipv4/conf/*; do
+  scope=${directory##*/}
+  for knob in accept_redirects secure_redirects send_redirects accept_source_route; do
+    [[ $(/usr/sbin/sysctl -n "net/ipv4/conf/$scope/$knob") == 0 ]]
+  done
+done
+for directory in /proc/sys/net/ipv6/conf/*; do
+  scope=${directory##*/}
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_redirects") == 0 ]]
+  [[ $(/usr/sbin/sysctl -n "net/ipv6/conf/$scope/accept_source_route") == -1 ]]
+done
+systemctl is-active --quiet fabric-guard.service
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+sync --file-system /etc
+[[ -f $work/deadline && ! -L $work/deadline ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+write_state accepted
+systemctl disable "${timer##*/}" "${service##*/}" >/dev/null
+sync --file-system /etc/systemd/system
+flock --unlock "$state_fd"
+exec {state_fd}>&-
+systemctl stop "${timer##*/}"
+for ((attempt = 0; attempt < 30; attempt++)); do
+  timer_active=$(systemctl show --property=ActiveState --value "${timer##*/}")
+  service_active=$(systemctl show --property=ActiveState --value "${service##*/}")
+  timer_job=$(systemctl show --property=Job --value "${timer##*/}")
+  service_job=$(systemctl show --property=Job --value "${service##*/}")
+  if [[ $timer_active == inactive && $service_active == inactive &&
+        -z $timer_job && -z $service_job ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ $(<"$state_path") == "accepted:$token" ]]
+if systemctl is-active --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${service##*/}"; then exit 1; fi
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+printf "ROLLBACK_DISARMED=%s\n" "$token"
+'
+disarm_result=$(printf '%s' "$disarm_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$rollback_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $disarm_result == "ROLLBACK_DISARMED=$rollout_token" ]] ||
+  die 'target-local rollback disarm acknowledgement was not exact'
+rollback_disarmed=true
+
+# shellcheck disable=SC2016 # Literal target-local cleanup program.
+rollback_cleanup_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-root-network-policy-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "accepted:$token" ]]
+if systemctl is-active --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+rm --force -- "$timer" "$service"
+sync --file-system /etc/systemd/system
+systemctl daemon-reload
+systemctl reset-failed "${timer##*/}" "${service##*/}" >/dev/null 2>&1 || true
+[[ $(systemctl show --property=LoadState --value "${timer##*/}") == not-found ]]
+[[ $(systemctl show --property=LoadState --value "${service##*/}") == not-found ]]
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${service##*/}"; then exit 1; fi
+rm --recursive --force -- "$work"
+sync --file-system /var/lib
+[[ ! -e $work && ! -L $work && ! -e $service && ! -L $service && ! -e $timer && ! -L $timer ]]
+[[ $(systemctl show --property=LoadState --value "${timer##*/}") == not-found ]]
+[[ $(systemctl show --property=LoadState --value "${service##*/}") == not-found ]]
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+printf "ROLLBACK_CLEANED=%s\n" "$token"
+'
+rollback_cleanup=$(printf '%s' "$rollback_cleanup_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$rollback_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $rollback_cleanup == "ROLLBACK_CLEANED=$rollout_token" ]] ||
+  die 'target-local rollback cleanup acknowledgement was not exact'
+rollback_armed=false
 success=true
 echo "$node now runs combined root network policy $policy_hash on $route_interface"

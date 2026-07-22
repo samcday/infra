@@ -12,8 +12,30 @@ spec:
         name: infra
         namespace: flux-system
   interval: 1h
+  # Upgrade gate: the currently deployed image predates durable external
+  # provenance and retains the old destructive deletion behavior. Keep this
+  # release frozen while the shared CRDs/chart change. Resume only after the
+  # hardened image is pinned by digest and every live legacy tenant namespace
+  # is inventoried and added to runtime/artifact scope below. The Hub's pinned
+  # etcd 3.6.4 is not supported by the hardened controller; an attended etcd
+  # upgrade and 3.6.13 qualification are also mandatory before resume. This
+  # suspension does not stop the old Pod: immediately before eventual resume,
+  # an attended operation must scale its Deployment to zero and prove the
+  # pre-Lease controller is gone so it cannot overlap the hardened replicas.
+  # Prove the generated HelmChart artifact is already at the exact hardened
+  # Git revision, pin its digest, and set legacyClusterWideCoreWatches=false
+  # before removing this gate; the old chart ignores digest values.
   suspend: true
   values:
+    allowedNamespaces:
+      # Provisional until the required live pre-resume inventory proves the
+      # complete set previously covered by the cluster-wide legacy controller.
+      - etcdetcetc
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
-      tag: "2026072008" # {"$imagepolicy": "flux-system:etcdetcetc:tag"}
+      tag: "2026072008"
+    # Required only while the installed pre-hardening Pod remains. Change this
+    # to false in the reviewed hardened-artifact resume revision.
+    legacyClusterWideCoreWatches: true
+    managedNamespaces:
+      - etcdetcetc

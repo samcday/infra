@@ -25,9 +25,9 @@ storage:
         inline: |
           # Consensus-root policy. The services plane is routed even during
           # the temporary shared-L2 phase; only the two declared, trusted
-          # platform agents receive the narrow API, kubelet, and Flannel
-          # admissions below. Source allow-lists are not anti-spoofing until
-          # the managed-switch VLAN boundary lands.
+          # platform agents receive the narrow API, kubelet, Flannel, and
+          # etcdetcetc client admissions below. Source allow-lists are not
+          # anti-spoofing until the managed-switch VLAN boundary lands.
           # Recreate only this owned table; never flush the host ruleset or
           # modify tables and chains managed by K3s or kube-proxy.
           destroy table inet fabric_guard
@@ -81,6 +81,11 @@ storage:
                   # timeout indefinitely through conntrack.
                   ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
                   ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+                  # Transitional flat-L2 exception for the two physically
+                  # trusted service agents. The router and Kubernetes policy
+                  # independently constrain the controller path; 2380/2381
+                  # remain root/observer-only below.
+                  ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
                   tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"
 
                   ct state { established, related } counter accept comment "reply traffic"

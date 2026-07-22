@@ -8,7 +8,12 @@ rules:
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["etcdetcetc.samcday.com"]
     resources: ["etcdclusters/status", "etcdtenants/status"]
-    verbs: ["patch"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  {{- if .Values.legacyClusterWideCoreWatches }}
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
-    verbs: ["get", "list", "watch", "create", "patch"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}

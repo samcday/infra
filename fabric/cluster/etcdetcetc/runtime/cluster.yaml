@@ -1,0 +1,21 @@
+apiVersion: etcdetcetc.samcday.com/v1alpha1
+kind: EtcdCluster
+metadata:
+  name: fabric-etcd
+  namespace: etcdetcetc
+spec:
+  allowedNamespaces:
+    - etcdetcetc-smoke
+  authSecretRef:
+    name: fabric-etcdetcetc-admin
+  endpoints:
+    - https://fabric-az1-cp1.fabric.internal:2379
+    - https://fabric-az1-cp2.fabric.internal:2379
+    - https://fabric-az1-cp3.fabric.internal:2379
+  serverCAConfigMapRef:
+    key: ca.crt
+    name: fabric-etcd-server-ca
+  tenantTls:
+    issuerRef:
+      kind: ClusterIssuer
+      name: fabric-etcd-client-v1

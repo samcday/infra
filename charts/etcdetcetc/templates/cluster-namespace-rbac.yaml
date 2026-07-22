@@ -1,0 +1,31 @@
+{{- range .Values.clusterNamespaces }}
+{{- if ne . $.Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: etcdetcetc-cluster-artifacts
+  namespace: {{ . }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: etcdetcetc-cluster-artifacts
+  namespace: {{ . }}
+subjects:
+  - kind: ServiceAccount
+    name: etcdetcetc
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: etcdetcetc-cluster-artifacts
+{{- end }}
+{{- end }}

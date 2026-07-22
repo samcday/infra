@@ -1,0 +1,1993 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+readonly namespace=etcdetcetc-smoke
+readonly cluster_namespace=etcdetcetc
+readonly cluster_name=fabric-etcd
+readonly tenant_name=fabric-smoke
+readonly secret_name=fabric-smoke-etcd
+readonly configmap_name=fabric-smoke-etcd
+readonly network_policy_name=fabric-etcd-post-open
+readonly router_address=10.66.0.1
+readonly router_service_address=10.66.1.1
+readonly observer_namespace=fabric-observer
+readonly router_probe_table=fabric_etcd_post_open_probe
+readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
+readonly fabric_network_cluster_lock=fabric-maintenance-lock
+readonly confirmation_prefix=QUALIFY-FABRIC-ETCD-POST-OPEN
+readonly probe_image='docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
+readonly probe_amd64_manifest_sha256=sha256:7a3ebe5bfd1a4a19797d20b0c0bb39d44393e9a03fd852c0865b0f540d868df0
+readonly probe_amd64_config_sha256=sha256:db287cb6be81219cd18c1d82b70908f5d33eb028568b456f78eedff2ff2930e4
+readonly etcd_archive=etcd-v3.6.13-linux-amd64.tar.gz
+readonly etcd_archive_sha256=b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465
+readonly etcd_version=3.6.13
+readonly endpoints='https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379'
+readonly -a service_nodes=(fabric-az1-svc1 fabric-az1-svc2)
+readonly -a service_addresses=(10.66.1.10 10.66.1.11)
+readonly -a service_suffixes=(svc1 svc2)
+readonly -a root_nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3)
+readonly -a root_addresses=(10.66.0.10 10.66.0.11 10.66.0.12)
+
+usage() {
+  cat <<EOF
+Accept the opened Fabric etcdetcetc path with the permanent smoke identity.
+
+Read-only preflight (prints the exact revision-bound confirmation):
+  sudo scripts/qualify-fabric-etcd-post-open \
+    --check \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519
+
+Attended acceptance:
+  sudo scripts/qualify-fabric-etcd-post-open \
+    --run \
+    --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --identity /var/home/sam/.ssh/id_ed25519 \
+    --confirm '$confirmation_prefix:<pushed-main-commit>'
+
+Both modes require a clean main checkout freshly matched to origin/main. They
+accept only the exact final router and three-root host-firewall policy, current
+Ready Flux/controller/runtime objects, exactly one physical EtcdCluster and
+one smoke EtcdTenant, and the permanent Ready smoke Tenant's UID-pinned Secret
+and ConfigMap contract. They also require the exact ten fail-closed signer
+admission policies and bindings, current API-server type checking with zero CEL
+warnings, an allowed admin-Certificate dry-run, and an expected unauthorized
+signer denial.
+
+The run creates one restricted, ordinary Pod on each exact service node and a
+temporary label-scoped egress NetworkPolicy in $namespace. No Namespace and no
+credential copy are created. Each Pod mounts only Secret $secret_name, fetches
+the checksum-pinned etcdctl $etcd_version archive from the service-side router
+address $router_service_address into a
+memory emptyDir, and emits fixed non-secret result markers. It proves all roots
+on TCP/2379, rejects TCP/2380-2381 and clients without a certificate, then
+proves in-prefix put/get/delete and exact outside-prefix PermissionDenied.
+Short-TTL leases bound every possible probe write.
+
+The helper holds both Fabric network-operation locks. Its signal-safe cleanup
+UID-checks every temporary Kubernetes object, removes its verdict-free router
+observer table, proves the existing default-deny was unchanged, and leaves the
+shared ConfigMap lock in place after any failed run for attended inspection.
+Successful --check removes its tmpfs evidence; --run retains non-secret
+evidence and never writes Secret data to disk or invokes an admin credential.
+EOF
+}
+
+die() {
+  printf 'qualify-fabric-etcd-post-open: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*"
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+valid_fingerprint() {
+  [[ $1 =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]
+}
+
+require_root_namespace() {
+  local current initial
+  current=$(readlink -- /proc/self/ns/net) || die 'cannot identify current network namespace'
+  initial=$(readlink -- /proc/1/ns/net) || die 'cannot identify initial network namespace'
+  [[ $current == "$initial" ]] || die 'run from the initial/root network namespace'
+}
+
+validate_identity() {
+  local metadata
+  [[ -f $identity && ! -L $identity && -r $identity ]] ||
+    die 'SSH identity must be a readable regular, non-symlink file'
+  identity=$(realpath -e -- "$identity") || die 'cannot resolve SSH identity'
+  metadata=$(stat -Lc '%u:%a:%F:%h' -- "$identity") ||
+    die 'cannot inspect SSH identity'
+  [[ $metadata == "$operator_uid:600:regular file:1" ]] ||
+    die 'SSH identity must be operator-owned mode-0600 single-link file'
+}
+
+operator_git() {
+  sudo --non-interactive --user "$operator_user" --
+    env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
+      git -C "$repo_root" "$@"
+}
+
+operator_kubectl() {
+  sudo --non-interactive --user "$operator_user" --
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      XDG_RUNTIME_DIR="$operator_runtime" \
+      FABRIC_INFRA_ROOT="$repo_root" \
+      "$repo_root/scripts/ik" --context=fabric --request-timeout=10s "$@"
+}
+
+operator_root_ssh() {
+  local node=$1
+  shift
+  sudo --non-interactive --user "$operator_user" --
+    env \
+      HOME="$operator_home" \
+      USER="$operator_user" \
+      LOGNAME="$operator_user" \
+      FABRIC_SSH_IDENTITY="$identity" \
+      "$repo_root/scripts/fabric-ssh" "$node" "$@"
+}
+
+acquire_network_lock() {
+  local metadata parent_metadata resolved
+  parent_metadata=$(stat -Lc '%F:%u:%g:%a' -- /run/lock) ||
+    die 'cannot inspect Fabric network lock directory'
+  [[ $parent_metadata == 'directory:0:0:755' ]] ||
+    die 'Fabric network lock directory has unsafe ownership or mode'
+  [[ ! -L $fabric_network_lock ]] || die 'Fabric network lock is a symlink'
+  if [[ -e $fabric_network_lock ]]; then
+    [[ -f $fabric_network_lock ]] || die 'Fabric network lock is not a regular file'
+    metadata=$(stat -Lc '%u:%g:%a:%h' -- "$fabric_network_lock") ||
+      die 'cannot inspect Fabric network lock'
+    [[ $metadata == '0:0:600:1' ]] ||
+      die 'Fabric network lock has unsafe ownership or mode'
+  fi
+  exec {network_lock_fd}>>"$fabric_network_lock" || die 'cannot open Fabric network lock'
+  chmod 0600 -- "/proc/self/fd/$network_lock_fd"
+  resolved=$(readlink -e -- "/proc/self/fd/$network_lock_fd") ||
+    die 'cannot resolve opened Fabric network lock'
+  [[ $resolved == "$fabric_network_lock" ]] ||
+    die 'opened an unexpected Fabric network lock'
+  metadata=$(stat -Lc '%u:%g:%a:%h' -- "/proc/self/fd/$network_lock_fd") ||
+    die 'cannot inspect opened Fabric network lock'
+  [[ $metadata == '0:0:600:1' ]] ||
+    die 'opened Fabric network lock has unsafe ownership or mode'
+  flock --exclusive --nonblock "$network_lock_fd" ||
+    die 'another Fabric network operation is active'
+}
+
+acquire_cluster_network_lock() {
+  local current_holder
+  if ! operator_kubectl --namespace kube-system create configmap \
+      "$fabric_network_cluster_lock" \
+      --from-literal="holder=$cluster_lock_holder" >/dev/null; then
+    current_holder=$(operator_kubectl --namespace kube-system get configmap \
+      "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
+      2>/dev/null || true)
+    die "another or stale global Fabric maintenance lock exists: ${current_holder:-unknown}"
+  fi
+  cluster_lock_held=true
+}
+
+release_cluster_network_lock() {
+  local current_holder
+  current_holder=$(operator_kubectl --namespace kube-system get configmap \
+    "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}') ||
+    die 'cannot verify global Fabric maintenance lock ownership before release'
+  [[ $current_holder == "$cluster_lock_holder" ]] ||
+    die 'global Fabric maintenance lock ownership changed; refuse to delete it'
+  operator_kubectl --namespace kube-system delete configmap \
+    "$fabric_network_cluster_lock" --wait=true >/dev/null ||
+    die 'global Fabric maintenance lock could not be released'
+  cluster_lock_held=false
+}
+
+observer_verify() {
+  timeout --kill-after=2s 15s \
+    "$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+}
+
+prepare_router_ssh() {
+  local extra scanned_fingerprint scanned_host scanned_key scanned_type
+  if ! timeout --kill-after=2s 10s \
+      ip netns exec "$observer_namespace" ssh-keyscan -4 -T 5 -t ed25519 \
+      "$router_address" >"$router_known_hosts" 2>"$evidence_dir/router-keyscan.stderr"; then
+    die 'router ED25519 host-key scan failed'
+  fi
+  chmod 0600 -- "$router_known_hosts" "$evidence_dir/router-keyscan.stderr"
+  mapfile -t scanned_keys < <(grep -Ev '^[[:space:]]*(#|$)' "$router_known_hosts")
+  [[ ${#scanned_keys[@]} -eq 1 ]] ||
+    die 'router scan did not return exactly one ED25519 key'
+  read -r scanned_host scanned_type scanned_key extra <<<"${scanned_keys[0]}"
+  [[ $scanned_host == "$router_address" && $scanned_type == ssh-ed25519 &&
+     -n $scanned_key && -z ${extra:-} ]] ||
+    die 'router key scan returned an unexpected record'
+  scanned_fingerprint=$(ssh-keygen -E sha256 -lf "$router_known_hosts" |
+    awk 'NR == 1 { print $2 }')
+  [[ $scanned_fingerprint == "$serial_fingerprint" ]] ||
+    die 'router key scan does not match the attended serial fingerprint'
+
+  router_ssh_options=(
+    -F none
+    -o BatchMode=yes
+    -o StrictHostKeyChecking=yes
+    -o HostKeyAlgorithms=ssh-ed25519
+    -o UpdateHostKeys=no
+    -o AddressFamily=inet
+    -o GlobalKnownHostsFile=/dev/null
+    -o "UserKnownHostsFile=$router_known_hosts"
+    -o KnownHostsCommand=none
+    -o ForwardAgent=no
+    -o ClearAllForwardings=yes
+    -o ProxyCommand=none
+    -o ProxyJump=none
+    -o ControlMaster=no
+    -o ControlPath=none
+    -o IdentityAgent=none
+    -o IdentitiesOnly=yes
+    -o PasswordAuthentication=no
+    -o KbdInteractiveAuthentication=no
+    -o PreferredAuthentications=publickey
+    -o RequestTTY=no
+    -o PermitLocalCommand=no
+    -o ConnectTimeout=5
+    -o LogLevel=ERROR
+    -i "$identity"
+  )
+}
+
+router_ssh() {
+  timeout --kill-after=3s 30s \
+    ip netns exec "$observer_namespace" ssh "${router_ssh_options[@]}" \
+    "root@$router_address" "$@"
+}
+
+router_tables() {
+  router_ssh /usr/sbin/nft list tables
+}
+
+assert_router_probe_table_absent() {
+  local tables
+  tables=$(router_tables) || die 'cannot enumerate router nftables tables'
+  ! grep -Fxq "table inet $router_probe_table" <<<"$tables" ||
+    die "router already has nftables table $router_probe_table; refuse to adopt it"
+}
+
+router_snapshot() {
+  local output=$1
+  router_ssh /usr/sbin/nft -j list table inet fw4 >"$output"
+  chmod 0600 -- "$output"
+  jq -e '.nftables | type == "array"' "$output" >/dev/null ||
+    die 'router fw4 snapshot is not valid nftables JSON'
+}
+
+normalize_router_fw4() {
+  local input=$1 output=$2
+  jq -S '
+    walk(
+      if type == "object" then
+        del(.handle)
+        | if has("counter") and (.counter | type) == "object" then
+            .counter |= del(.packets, .bytes)
+          else . end
+      else . end
+    )
+  ' "$input" >"$output" || die 'cannot normalize the live fw4 semantic snapshot'
+  chmod 0600 -- "$output"
+}
+
+validate_router_post_phase() {
+  local output=$1
+  router_ssh /bin/sh -s >"$output" <<'REMOTE_ROUTER_POST'
+set -eu
+
+fail() {
+  printf 'remote router post-open validation failed: %s\n' "$*" >&2
+  exit 1
+}
+
+assert_uci() {
+  key=$1
+  wanted=$2
+  actual=$(uci -q get "$key") || fail "missing UCI key $key"
+  [ "$actual" = "$wanted" ] || fail "unexpected UCI value for $key"
+}
+
+assert_uci_absent() {
+  if uci -q get "$1" >/dev/null 2>&1; then
+    fail "UCI key must be absent: $1"
+  fi
+}
+
+assert_option_keys() {
+  section=$1
+  wanted=$2
+  actual=$(uci -q show firewall |
+    sed -n "s/^firewall\\.$section\\.\\([^=]*\\)=.*/\\1/p" |
+    LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  [ "$actual" = "$wanted" ] || fail "unexpected option keys for $section"
+}
+
+assert_target_section() {
+  section=$1
+  name=$2
+  ports=$3
+  target=$4
+  assert_uci "firewall.$section" rule
+  assert_option_keys "$section" 'dest dest_ip dest_port family name proto src src_ip target'
+  assert_uci "firewall.$section.name" "$name"
+  assert_uci "firewall.$section.src" lan
+  assert_uci "firewall.$section.dest" lan
+  assert_uci "firewall.$section.family" ipv4
+  assert_uci "firewall.$section.src_ip" '10.66.1.10/32 10.66.1.11/32'
+  assert_uci "firewall.$section.dest_ip" '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+  assert_uci "firewall.$section.proto" tcp
+  assert_uci "firewall.$section.dest_port" "$ports"
+  assert_uci "firewall.$section.target" "$target"
+}
+
+assert_live_rule() {
+  name=$1
+  verdict=$2
+  marker="comment \"!fw4: $name\""
+  matches=$(printf '%s\n' "$live_chain" | grep -F "$marker") ||
+    fail "live rule is absent: $name"
+  [ "$(printf '%s\n' "$matches" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+    fail "live rule count is not one: $name"
+  printf '%s\n' "$matches" | grep -F 'ip saddr' >/dev/null || fail "$name lacks source match"
+  printf '%s\n' "$matches" | grep -F 'ip daddr' >/dev/null || fail "$name lacks destination match"
+  printf '%s\n' "$matches" | grep -E 'counter packets [0-9]+ bytes [0-9]+' >/dev/null ||
+    fail "$name lacks one anonymous counter"
+  normalized=$(printf '%s\n' "$matches" | sed \
+    -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]][[:space:]]*/ /g' \
+    -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+    -e 's/ # handle [0-9][0-9]*$//')
+  case $normalized in
+    *" counter $verdict $marker") ;;
+    *) fail "live rule has an unexpected verdict: $name" ;;
+  esac
+}
+
+pending=$(uci -q changes firewall || true)
+[ -z "$pending" ] || fail 'firewall has pending uncommitted UCI changes'
+fw4 check >/dev/null || fail 'fw4 rejects the current UCI configuration'
+[ "$(nft list tables)" = 'table inet fw4' ] || fail 'nftables table membership is not exact'
+live_table=$(nft -a list table inet fw4) || fail 'live inet fw4 table is absent'
+live_chain=$(nft -a list chain inet fw4 forward_lan) || fail 'live forward_lan chain is absent'
+live_input=$(nft -a list chain inet fw4 input_lan) || fail 'live input_lan chain is absent'
+
+assert_target_section fabric_flat_services_etcd_client \
+  Allow-platform-to-root-etcd-client 2379 ACCEPT
+assert_target_section fabric_flat_reject_services_etcd_internal \
+  Reject-services-to-root-etcd-internal '2380 2381' REJECT
+assert_uci_absent firewall.fabric_flat_reject_services_etcd
+assert_uci firewall.fabric_router_services_http rule
+assert_option_keys fabric_router_services_http 'dest_ip dest_port family name proto src src_ip target'
+assert_uci firewall.fabric_router_services_http.name Allow-services-router-HTTP
+assert_uci firewall.fabric_router_services_http.src lan
+assert_uci firewall.fabric_router_services_http.family ipv4
+assert_uci firewall.fabric_router_services_http.src_ip '10.66.1.10/32 10.66.1.11/32'
+assert_uci firewall.fabric_router_services_http.dest_ip '10.66.1.1/32'
+assert_uci firewall.fabric_router_services_http.proto tcp
+assert_uci firewall.fabric_router_services_http.dest_port 80
+assert_uci firewall.fabric_router_services_http.target ACCEPT
+assert_live_rule Allow-platform-to-root-etcd-client 'jump accept_to_lan'
+assert_live_rule Reject-services-to-root-etcd-internal 'jump reject_to_lan'
+if printf '%s\n' "$live_table" | grep -F 'comment "!fw4: Reject-services-to-root-etcd"' >/dev/null; then
+  fail 'obsolete live all-port etcd reject is present'
+fi
+http_matches=$(printf '%s\n' "$live_input" |
+  grep -F 'comment "!fw4: Allow-services-router-HTTP"') ||
+  fail 'live service-side router HTTP rule is absent'
+[ "$(printf '%s\n' "$http_matches" | awk 'NF { n++ } END { print n + 0 }')" -eq 1 ] ||
+  fail 'live service-side router HTTP rule count is not one'
+printf '%s\n' "$http_matches" | grep -F 'ip saddr' >/dev/null ||
+  fail 'live service-side router HTTP rule lacks source match'
+printf '%s\n' "$http_matches" | grep -F 'ip daddr' >/dev/null ||
+  fail 'live service-side router HTTP rule lacks destination match'
+normalized_http=$(printf '%s\n' "$http_matches" | sed \
+  -e 's/^[[:space:]]*//' \
+  -e 's/[[:space:]][[:space:]]*/ /g' \
+  -e 's/counter packets [0-9][0-9]* bytes [0-9][0-9]*/counter/' \
+  -e 's/ # handle [0-9][0-9]*$//')
+case $normalized_http in
+  *' counter accept comment "!fw4: Allow-services-router-HTTP"') ;;
+  *) fail 'live service-side router HTTP verdict is not exact' ;;
+esac
+
+expected_rules='fabric_wan_dhcp_reply
+fabric_reject_other_wan_input
+fabric_block_private
+fabric_root_egress
+fabric_services_egress
+fabric_reject_other_fabric_to_wan
+fabric_reject_wan_to_fabric
+fabric_flat_services_etcd_client
+fabric_flat_reject_services_etcd_internal
+fabric_flat_services_api
+fabric_flat_services_vxlan
+fabric_flat_roots_vxlan
+fabric_flat_services_kubelet
+fabric_flat_roots_kubelet
+fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_reject_services_roots
+fabric_flat_reject_roots_services
+fabric_router_dns
+fabric_router_ntp
+fabric_router_http
+fabric_router_services_dns
+fabric_router_services_ntp
+fabric_router_services_http
+fabric_router_ssh
+fabric_reject_other_fabric_router_input'
+actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)='rule'$/\\1/p")
+[ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
+[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 26 ] ||
+  fail 'firewall rule count is not exact'
+[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 29 ] ||
+  fail 'firewall contains an unexpected non-rule section'
+
+expected_forward='Block-fabric-to-private-WAN
+Allow-roots-to-public-WAN
+Allow-services-to-public-Web
+Reject-other-fabric-to-WAN
+Allow-platform-to-root-etcd-client
+Reject-services-to-root-etcd-internal
+Allow-services-to-fabric-API
+Allow-services-to-root-VXLAN
+Allow-roots-to-services-VXLAN
+Allow-services-to-root-kubelets
+Allow-roots-to-service-kubelets
+Allow-observer-to-services-SSH
+Allow-services-to-Bootie-rootfs
+Reject-other-services-to-roots
+Reject-other-roots-to-services'
+actual_forward=$(printf '%s\n' "$live_chain" |
+  sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+[ "$actual_forward" = "$expected_forward" ] || fail 'live forward_lan rule order is not exact'
+actual_chain_count=$(printf '%s\n' "$live_chain" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { n++ }
+  END { print n + 0 }
+')
+[ "$actual_chain_count" -eq 16 ] || fail 'live forward_lan rule count is not exact'
+terminal=$(printf '%s\n' "$live_chain" | awk '
+  $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { terminal = $0 }
+  END { print terminal }
+' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+  -e 's/ # handle [0-9][0-9]*$//')
+[ "$terminal" = 'jump reject_to_lan' ] || fail 'live forward_lan terminal verdict is not exact'
+expected_input='Allow-fabric-router-DNS
+Allow-fabric-router-DNS
+Allow-fabric-router-NTP
+Allow-fabric-router-HTTP
+Allow-services-router-DNS
+Allow-services-router-DNS
+Allow-services-router-NTP
+Allow-services-router-HTTP
+Allow-observer-to-fabric-router-SSH
+Reject-other-fabric-router-input'
+actual_input=$(printf '%s\n' "$live_input" |
+  sed -n 's/.*comment "!fw4: \([^"]*\)".*/\1/p')
+[ "$actual_input" = "$expected_input" ] || fail 'live input_lan rule order is not exact'
+input_count=$(printf '%s\n' "$live_input" | awk '
+  $1 == "chain" && $2 == "input_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { n++ }
+  END { print n + 0 }
+')
+[ "$input_count" -eq 11 ] || fail 'live input_lan rule count is not exact'
+input_terminal=$(printf '%s\n' "$live_input" | awk '
+  $1 == "chain" && $2 == "input_lan" && $3 == "{" { inside = 1; next }
+  inside && $1 == "}" { inside = 0 }
+  inside && /# handle [0-9]+$/ { terminal = $0 }
+  END { print terminal }
+' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+  -e 's/ # handle [0-9][0-9]*$//')
+[ "$input_terminal" = 'jump reject_from_lan' ] || fail 'live input_lan terminal verdict is not exact'
+printf 'ROUTER_ETCD_POST_OPEN_POLICY=pass\n'
+REMOTE_ROUTER_POST
+  chmod 0600 -- "$output"
+  [[ $(<"$output") == ROUTER_ETCD_POST_OPEN_POLICY=pass ]] ||
+    die 'router did not return the exact post-open policy marker'
+}
+
+normalize_nft_text() {
+  local input=$1 output=$2
+  sed -E \
+    -e 's/counter packets [0-9]+ bytes [0-9]+/counter/g' \
+    -e 's/ # handle [0-9]+//g' \
+    -e 's/^[[:space:]]+//' \
+    -e 's/[[:space:]]+/ /g' \
+    -e '/^$/d' \
+    "$input" >"$output"
+  chmod 0600 -- "$output"
+}
+
+root_guard_snapshot() {
+  local index=$1 output=$2
+  operator_root_ssh "${root_nodes[$index]}" \
+    sudo --non-interactive /usr/sbin/nft -a list table inet fabric_guard >"$output" ||
+    die "cannot read fabric_guard on ${root_nodes[$index]}"
+  chmod 0600 -- "$output"
+}
+
+validate_root_guard() {
+  local index=$1 input=$2 normalized expected_accepts actual_accepts
+  normalized=$evidence_dir/root-$((index + 1))-guard.normalized.current
+  normalize_nft_text "$input" "$normalized"
+  grep -Fxq 'elements = { 10.66.1.10, 10.66.1.11 }' "$normalized" ||
+    die "${root_nodes[$index]} service-node set is not exact"
+  [[ $(grep -Fxc 'ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"' "$normalized") -eq 1 ]] ||
+    die "${root_nodes[$index]} lacks one exact service-node TCP/2379 admission"
+  [[ $(grep -Fxc 'tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"' "$normalized") -eq 1 ]] ||
+    die "${root_nodes[$index]} lacks the exact TCP/2379 catch-all"
+  ! grep -Eq '@service_nodes_v4 tcp dport.*(2380|2381)' "$normalized" ||
+    die "${root_nodes[$index]} admits service nodes to an etcd internal port"
+  expected_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
+ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
+ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
+  actual_accepts=$(grep -F 'tcp dport 2379 counter accept comment' "$normalized")
+  [[ $actual_accepts == "$expected_accepts" ]] ||
+    die "${root_nodes[$index]} TCP/2379 accept set is not exact"
+}
+
+root_counter_value() {
+  local input=$1 field=$2 line
+  line=$(grep -F 'comment "trusted platform etcd clients"' "$input") || return 1
+  [[ $line != *$'\n'* ]] || return 1
+  case $field in
+    packets) sed -n 's/.*counter packets \([0-9][0-9]*\) bytes [0-9][0-9]*.*/\1/p' <<<"$line" ;;
+    bytes) sed -n 's/.*counter packets [0-9][0-9]* bytes \([0-9][0-9]*\).*/\1/p' <<<"$line" ;;
+    *) return 1 ;;
+  esac
+}
+
+compare_root_guards() {
+  local index before after before_semantic after_semantic old_packets new_packets old_bytes new_bytes
+  for index in "${!root_nodes[@]}"; do
+    before=$evidence_dir/root-$((index + 1))-guard.before
+    after=$evidence_dir/root-$((index + 1))-guard.after
+    before_semantic=$evidence_dir/root-$((index + 1))-guard.before.semantic
+    after_semantic=$evidence_dir/root-$((index + 1))-guard.after.semantic
+    normalize_nft_text "$before" "$before_semantic"
+    normalize_nft_text "$after" "$after_semantic"
+    cmp -s -- "$before_semantic" "$after_semantic" ||
+      die "${root_nodes[$index]} fabric_guard semantics changed during acceptance"
+    old_packets=$(root_counter_value "$before" packets) || die 'cannot read root allow packet counter'
+    new_packets=$(root_counter_value "$after" packets) || die 'cannot read root allow packet counter'
+    old_bytes=$(root_counter_value "$before" bytes) || die 'cannot read root allow byte counter'
+    new_bytes=$(root_counter_value "$after" bytes) || die 'cannot read root allow byte counter'
+    [[ $old_packets =~ ^[0-9]+$ && $new_packets =~ ^[0-9]+$ &&
+       $old_bytes =~ ^[0-9]+$ && $new_bytes =~ ^[0-9]+$ ]] ||
+      die "${root_nodes[$index]} returned malformed counters"
+    ((new_packets - old_packets >= 2 && new_bytes - old_bytes > 0)) ||
+      die "${root_nodes[$index]} service-node etcd allow did not see both probe sources"
+    root_packet_deltas[index]=$((new_packets - old_packets))
+  done
+}
+
+verify_fabric_root_continuity() {
+  local stage=$1 index output
+  for index in "${!root_nodes[@]}"; do
+    output=$evidence_dir/root-$((index + 1))-$stage-continuity.txt
+    operator_root_ssh "${root_nodes[$index]}" \
+      sudo --non-interactive /usr/bin/bash -s >"$output" <<'REMOTE_ROOT_CONTINUITY'
+set -euo pipefail
+readonly endpoints='https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379'
+readonly cacert=/var/lib/rancher/k3s/server/etcd-ca.pem
+readonly cert=/var/lib/rancher/k3s/server/etcd-client.pem
+readonly key=/var/lib/rancher/k3s/server/etcd-client-key.pem
+readonly ctl=/usr/local/bin/etcdctl
+version=$($ctl version)
+[[ $(awk '/^etcdctl version:/ { print $3; exit }' <<<"$version") == 3.6.13 ]]
+grep -Fxq 'API version: 3.6' <<<"$version"
+IFS=, read -r -a endpoint_list <<<"$endpoints"
+[[ ${#endpoint_list[@]} -eq 3 ]]
+for endpoint in "${endpoint_list[@]}"; do
+  count=$($ctl --endpoints="$endpoint" --cacert="$cacert" --cert="$cert" --key="$key" \
+    --dial-timeout=3s --command-timeout=5s get /fabric-root/ --prefix --limit=1 --count-only)
+  [[ $count =~ ^[0-9]+$ && $count -gt 0 ]]
+done
+printf 'FABRIC_ROOT_CONTINUITY=pass\n'
+REMOTE_ROOT_CONTINUITY
+    chmod 0600 -- "$output"
+    [[ $(<"$output") == FABRIC_ROOT_CONTINUITY=pass ]] ||
+      die "${root_nodes[$index]} did not prove Fabric etcd continuity"
+  done
+}
+
+verify_api_health() {
+  local stage=$1 output
+  output=$evidence_dir/fabric-readyz-$stage.txt
+  operator_kubectl get --raw='/readyz?verbose' >"$output" ||
+    die "Fabric Kubernetes API readiness failed at $stage"
+  chmod 0600 -- "$output"
+  grep -Fxq '[+]etcd ok' "$output" || die "Fabric API etcd check failed at $stage"
+  grep -Fxq 'readyz check passed' "$output" || die "Fabric API is not fully ready at $stage"
+}
+
+validate_service_nodes() {
+  local nodes
+  nodes=$(operator_kubectl get nodes "${service_nodes[@]}" -o json) ||
+    die 'cannot read the two Fabric service nodes'
+  jq -e \
+    --arg svc1 "${service_nodes[0]}" \
+    --arg svc2 "${service_nodes[1]}" \
+    --arg ip1 "${service_addresses[0]}" \
+    --arg ip2 "${service_addresses[1]}" '
+      def expected_ip($name): if $name == $svc1 then $ip1 elif $name == $svc2 then $ip2 else null end;
+      (.items | length) == 2 and
+      ([.items[].metadata.name] | sort) == ([$svc1, $svc2] | sort) and
+      all(.items[];
+        .metadata.deletionTimestamp == null and
+        .metadata.labels["fabric.samcday.com/platform"] == "true" and
+        .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+        .metadata.labels["kubernetes.io/arch"] == "amd64" and
+        .metadata.labels["kubernetes.io/os"] == "linux" and
+        (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
+        (.spec.unschedulable // false) == false and
+        (.spec.taints // []) == [{
+          effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+        }] and
+        ([.status.addresses[]? | select(.type == "InternalIP") | .address] ==
+          [expected_ip(.metadata.name)]) and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True")
+      )
+    ' <<<"$nodes" >/dev/null ||
+    die 'service nodes are not the exact Ready platform identities at 10.66.1.10/.11'
+}
+
+validate_flux_runtime() {
+  local expected_revision="main@sha1:$head" kustomization state release deployment controller_pods desired_image leader_lease
+  for kustomization in \
+    fabric-etcdetcetc-config \
+    fabric-etcdetcetc-controller \
+    fabric-etcdetcetc-runtime; do
+    state=$(operator_kubectl --namespace flux-system get kustomization \
+      "$kustomization" --output=json) || die "cannot read Flux Kustomization $kustomization"
+    jq -e --arg revision "$expected_revision" '
+      .metadata.generation as $generation |
+      (.spec.suspend // false) == false and
+      .status.observedGeneration == $generation and
+      .status.lastAppliedRevision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and .observedGeneration == $generation
+      )
+    ' <<<"$state" >/dev/null ||
+      die "Flux Kustomization $kustomization is not Ready on $expected_revision"
+  done
+
+  release=$(operator_kubectl --namespace "$cluster_namespace" get helmrelease \
+    etcdetcetc --output=json) || die 'cannot read the etcdetcetc HelmRelease'
+  jq -e '
+    .metadata.generation as $generation |
+    (.spec.suspend // false) == false and
+    .status.observedGeneration == $generation and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and .observedGeneration == $generation
+    )
+  ' <<<"$release" >/dev/null || die 'etcdetcetc HelmRelease is not current and Ready'
+
+  desired_image=$(yq -er '
+    select(.kind == "HelmRelease" and .metadata.name == "etcdetcetc") |
+    .spec.values.image.repository + ":" + .spec.values.image.tag + "@" + .spec.values.image.digest
+  ' "$repo_root/fabric/cluster/etcdetcetc-controller/release.yaml") ||
+    die 'cannot resolve committed etcdetcetc image'
+  [[ $desired_image =~ ^ghcr\.io/samcday/infra-etcdetcetc:[0-9]{10}(\.[0-9]+)?@sha256:[0-9a-f]{64}$ ]] ||
+    die 'committed etcdetcetc image is not tag-and-digest pinned'
+  deployment=$(operator_kubectl --namespace "$cluster_namespace" get deployment \
+    etcdetcetc --output=json) || die 'cannot read etcdetcetc Deployment'
+  jq -e --arg image "$desired_image" '
+      .metadata.generation == .status.observedGeneration and
+      .spec.replicas == 2 and .status.readyReplicas == 2 and .status.availableReplicas == 2 and
+      .spec.strategy == {type: "RollingUpdate", rollingUpdate: {maxSurge: 0, maxUnavailable: 1}} and
+      .spec.template.spec.nodeSelector == {
+        "fabric.samcday.com/platform": "true", "kubernetes.io/os": "linux"
+      } and
+      [.spec.template.spec.containers[] | select(.name == "controller") | .image] == [$image]
+    ' <<<"$deployment" >/dev/null || die 'etcdetcetc Deployment is not the exact Ready pinned release'
+  controller_pods=$(operator_kubectl --namespace "$cluster_namespace" get pods \
+    --selector=app=etcdetcetc --output=json) || die 'cannot read etcdetcetc controller Pod'
+  jq -e --arg svc1 "${service_nodes[0]}" --arg svc2 "${service_nodes[1]}" \
+    --arg image "$desired_image" '
+      (.items | length) == 2 and
+      ([.items[].spec.nodeName] | sort) == ([$svc1, $svc2] | sort) and
+      all(.items[];
+        .metadata.deletionTimestamp == null and
+        (.spec.nodeName == $svc1 or .spec.nodeName == $svc2) and
+        [.spec.containers[] | select(.name == "controller") | .image] == [$image] and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True")
+      )
+    ' <<<"$controller_pods" >/dev/null ||
+    die 'etcdetcetc controller is not two separated Ready pinned Pods on svc1/svc2'
+
+  leader_lease=$(operator_kubectl --namespace "$cluster_namespace" get lease \
+    etcdetcetc-leader --output=json) || die 'cannot read etcdetcetc leader-election Lease'
+  jq -e --argjson pods "$controller_pods" '
+      .metadata.deletionTimestamp == null and
+      .spec.leaseDurationSeconds == 30 and
+      (.spec.leaseTransitions >= 0) and
+      (.spec.acquireTime | type) == "string" and
+      (.spec.renewTime | type) == "string" and
+      ((.spec.renewTime | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $renew |
+        $renew >= (now - 10) and $renew <= (now + 5)) and
+      (.spec.holderIdentity | capture("^(?<uid>[0-9a-f-]{36})_(?<nonce>[0-9a-f]{32})$") as $identity |
+        any($pods.items[]; .metadata.uid == $identity.uid))
+    ' <<<"$leader_lease" >/dev/null ||
+    die 'etcdetcetc Lease does not identify exactly one current controller Pod'
+}
+
+validate_admission_contract() {
+  local admin_certificate bindings negative_certificate policies
+  policies=$(operator_kubectl get validatingadmissionpolicies.admissionregistration.k8s.io \
+    --output=json) || die 'cannot read Fabric signer admission policies'
+  bindings=$(operator_kubectl get \
+    validatingadmissionpolicybindings.admissionregistration.k8s.io \
+    --output=json) || die 'cannot read Fabric signer admission policy bindings'
+  printf '%s\n' "$policies" >"$evidence_dir/admission-policies.json"
+  printf '%s\n' "$bindings" >"$evidence_dir/admission-policy-bindings.json"
+  chmod 0600 -- "$evidence_dir/admission-policies.json" \
+    "$evidence_dir/admission-policy-bindings.json"
+
+  jq -e '
+    def ours:
+      .metadata.name |
+      startswith("fabric-control-plane-") or startswith("fabric-etcd-client-v1-");
+    ([.items[] | select(ours) | .metadata.name] | sort) == [
+      "fabric-control-plane-bootstrap-certificates",
+      "fabric-control-plane-bootstrap-namespace",
+      "fabric-control-plane-bootstrap-requests",
+      "fabric-control-plane-ca-issuers",
+      "fabric-control-plane-leaf-certificates",
+      "fabric-control-plane-leaf-requests",
+      "fabric-control-plane-selfsigned-issuer",
+      "fabric-etcd-client-v1-certificates",
+      "fabric-etcd-client-v1-clusterissuer",
+      "fabric-etcd-client-v1-requests"
+    ] and
+    all(.items[] | select(ours);
+      .metadata.deletionTimestamp == null and
+      .spec.failurePolicy == "Fail" and
+      .status.observedGeneration == .metadata.generation and
+      (.status.typeChecking.expressionWarnings // []) == []
+    )
+  ' <<<"$policies" >/dev/null ||
+    die 'Fabric signer admission policies are incomplete, stale, or have CEL warnings'
+  jq -e '
+    def ours:
+      .metadata.name |
+      startswith("fabric-control-plane-") or startswith("fabric-etcd-client-v1-");
+    ([.items[] | select(ours) | .metadata.name] | sort) == [
+      "fabric-control-plane-bootstrap-certificates",
+      "fabric-control-plane-bootstrap-namespace",
+      "fabric-control-plane-bootstrap-requests",
+      "fabric-control-plane-ca-issuers",
+      "fabric-control-plane-leaf-certificates",
+      "fabric-control-plane-leaf-requests",
+      "fabric-control-plane-selfsigned-issuer",
+      "fabric-etcd-client-v1-certificates",
+      "fabric-etcd-client-v1-clusterissuer",
+      "fabric-etcd-client-v1-requests"
+    ] and
+    all(.items[] | select(ours);
+      .metadata.deletionTimestamp == null and
+      .spec.policyName == .metadata.name and
+      .spec.validationActions == ["Deny"]
+    )
+  ' <<<"$bindings" >/dev/null ||
+    die 'Fabric signer admission policy bindings are not the exact Deny set'
+
+  admin_certificate=$(operator_kubectl --namespace "$cluster_namespace" get \
+    certificate.cert-manager.io fabric-etcdetcetc-admin --output=json) ||
+    die 'cannot read the Fabric controller admin Certificate'
+  printf '%s\n' "$admin_certificate" |
+    operator_kubectl \
+      --as=system:serviceaccount:flux-system:kustomize-controller \
+      --namespace "$cluster_namespace" replace --dry-run=server --output=name -f - \
+      >"$evidence_dir/admission-positive.txt" 2>"$evidence_dir/admission-positive.stderr" ||
+    die 'admission rejected the exact Flux-owned Fabric admin Certificate'
+  chmod 0600 -- "$evidence_dir/admission-positive.txt" \
+    "$evidence_dir/admission-positive.stderr"
+
+  negative_certificate=$(jq '
+    del(
+      .metadata.annotations,
+      .metadata.creationTimestamp,
+      .metadata.finalizers,
+      .metadata.generation,
+      .metadata.managedFields,
+      .metadata.ownerReferences,
+      .metadata.resourceVersion,
+      .metadata.uid,
+      .status
+    ) |
+    .metadata.name = "fabric-etcd-client-v1-negative" |
+    .spec.secretName = "fabric-etcd-client-v1-negative"
+  ' <<<"$admin_certificate") || die 'cannot construct signer denial probe'
+  if printf '%s\n' "$negative_certificate" |
+      operator_kubectl \
+        --as=system:serviceaccount:flux-system:kustomize-controller \
+        --namespace "$cluster_namespace" create --dry-run=server --output=name -f - \
+        >"$evidence_dir/admission-negative.txt" \
+        2>"$evidence_dir/admission-negative.stderr"; then
+    die 'Fabric client signer admitted an unauthorized Certificate'
+  fi
+  chmod 0600 -- "$evidence_dir/admission-negative.txt" \
+    "$evidence_dir/admission-negative.stderr"
+  grep -Fq 'fabric-etcd-client-v1-certificates' \
+    "$evidence_dir/admission-negative.stderr" ||
+    die 'unauthorized Certificate was not denied by the expected signer policy'
+}
+
+validate_etcd_resources() {
+  local stage=$1 cluster cluster_inventory tenant tenant_inventory configmap secret_json username
+  local cert_subject client_certificate_revision secret_server_ca_revision server_ca_revision
+  cluster=$(operator_kubectl --namespace "$cluster_namespace" get etcdcluster \
+    "$cluster_name" --output=json) || die 'cannot read permanent Fabric EtcdCluster'
+  tenant=$(operator_kubectl --namespace "$namespace" get etcdtenant \
+    "$tenant_name" --output=json) || die 'cannot read permanent smoke EtcdTenant'
+  cluster_inventory=$(operator_kubectl get etcdclusters --all-namespaces --output=json) ||
+    die 'cannot inventory Fabric EtcdClusters'
+  tenant_inventory=$(operator_kubectl get etcdtenants --all-namespaces --output=json) ||
+    die 'cannot inventory Fabric EtcdTenants'
+  configmap=$(operator_kubectl --namespace "$namespace" get configmap \
+    "$configmap_name" --output=json) || die 'cannot read permanent smoke ConfigMap'
+  server_ca_revision=sha256:$(
+    jq -er '.data["ca.crt"] | @base64' <<<"$configmap" | base64 -d | sha256sum | cut -d' ' -f1
+  ) || die 'cannot hash the mirrored physical server CA'
+  secret_json=$(operator_kubectl --namespace "$namespace" get secret \
+    "$secret_name" --output=json) || die 'cannot read permanent smoke Secret'
+  client_certificate_revision=sha256:$(
+    jq -er '.data["tls.crt"]' <<<"$secret_json" | base64 -d | sha256sum | cut -d' ' -f1
+  ) || die 'cannot hash the published smoke client certificate'
+  secret_server_ca_revision=sha256:$(
+    jq -er '.data["ca.crt"]' <<<"$secret_json" | base64 -d | sha256sum | cut -d' ' -f1
+  ) || die 'cannot hash the smoke Secret physical server CA'
+
+  printf '%s\n' "$cluster" >"$evidence_dir/etcdcluster-$stage.json"
+  printf '%s\n' "$tenant" >"$evidence_dir/etcdtenant-$stage.json"
+  printf '%s\n' "$cluster_inventory" >"$evidence_dir/etcdcluster-inventory-$stage.json"
+  printf '%s\n' "$tenant_inventory" >"$evidence_dir/etcdtenant-inventory-$stage.json"
+  printf '%s\n' "$configmap" >"$evidence_dir/smoke-configmap-$stage.json"
+  chmod 0600 -- "$evidence_dir/etcdcluster-$stage.json" \
+    "$evidence_dir/etcdtenant-$stage.json" \
+    "$evidence_dir/etcdcluster-inventory-$stage.json" \
+    "$evidence_dir/etcdtenant-inventory-$stage.json" \
+    "$evidence_dir/smoke-configmap-$stage.json"
+
+  jq -e '
+    .metadata.name == "fabric-etcd" and .metadata.namespace == "etcdetcetc" and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | test("^[0-9a-f-]{36}$"))
+  ' <<<"$cluster" >/dev/null || die 'Fabric EtcdCluster identity is invalid'
+  cluster_uid=$(jq -er '.metadata.uid' <<<"$cluster")
+  cluster_generation=$(jq -er '.metadata.generation' <<<"$cluster")
+  jq -e --argjson generation "$cluster_generation" '
+    .metadata.finalizers == ["etcdetcetc.samcday.com/cluster"] and
+    .spec == {
+      allowedNamespaces: ["etcdetcetc-smoke"],
+      authSecretRef: {name: "fabric-etcdetcetc-admin"},
+      endpoints: [
+        "https://fabric-az1-cp1.fabric.internal:2379",
+        "https://fabric-az1-cp2.fabric.internal:2379",
+        "https://fabric-az1-cp3.fabric.internal:2379"
+      ],
+      serverCAConfigMapRef: {key: "ca.crt", name: "fabric-etcd-server-ca"},
+      tenantTls: {issuerRef: {kind: "ClusterIssuer", name: "fabric-etcd-client-v1"}}
+    } and
+    .status.connected == true and .status.authEnabled == true and
+    (.status.clusterId | test("^[0-9a-f]{16}$")) and
+    .status.version == "3.6.13" and
+    (.status.alarms // []) == [] and
+    (.status.dbSize | type == "string" and length > 0) and
+    (.status.leader == "fabric-az1-cp1" or .status.leader == "fabric-az1-cp2" or
+      .status.leader == "fabric-az1-cp3") and
+    ([.status.members[].name] | sort) == ["fabric-az1-cp1", "fabric-az1-cp2", "fabric-az1-cp3"] and
+    ([.status.members[].endpoint] | sort) == ([
+      "https://fabric-az1-cp1.fabric.internal:2379",
+      "https://fabric-az1-cp2.fabric.internal:2379",
+      "https://fabric-az1-cp3.fabric.internal:2379"
+    ] | sort) and
+    all(.status.members[]; .isLearner == false) and
+    (.status.conditions | length) == 1 and
+    .status.conditions[0].type == "Ready" and
+    .status.conditions[0].status == "True" and
+    .status.conditions[0].reason == "Connected" and
+    .status.conditions[0].observedGeneration == $generation
+  ' <<<"$cluster" >/dev/null || die 'Fabric EtcdCluster is not the exact healthy three-member contract'
+
+  tenant_uid=$(jq -er '.metadata.uid | select(test("^[0-9a-f-]{36}$"))' <<<"$tenant") ||
+    die 'smoke EtcdTenant UID is invalid'
+  tenant_generation=$(jq -er '.metadata.generation' <<<"$tenant")
+  tenant_prefix=/$namespace:$tenant_name/
+  expected_user=etcdtenant:$tenant_uid
+  expected_role=etcdtenant-role:$tenant_uid
+  expected_certificate=etcdtenant-$tenant_uid
+  expected_staging=$expected_certificate-tls
+
+  jq -e --arg uid "$cluster_uid" '
+    (.items | length) == 1 and
+    .items[0].metadata.namespace == "etcdetcetc" and
+    .items[0].metadata.name == "fabric-etcd" and
+    .items[0].metadata.uid == $uid
+  ' <<<"$cluster_inventory" >/dev/null ||
+    die 'Fabric must contain exactly the one qualified physical EtcdCluster'
+  jq -e --arg uid "$tenant_uid" '
+    (.items | length) == 1 and
+    .items[0].metadata.namespace == "etcdetcetc-smoke" and
+    .items[0].metadata.name == "fabric-smoke" and
+    .items[0].metadata.uid == $uid
+  ' <<<"$tenant_inventory" >/dev/null ||
+    die 'Fabric must contain exactly the one permanent smoke EtcdTenant during foundation acceptance'
+
+  jq -e \
+    --arg cluster_uid "$cluster_uid" \
+    --arg tenant_uid "$tenant_uid" \
+    --arg prefix "$tenant_prefix" \
+    --arg user "$expected_user" \
+    --arg role "$expected_role" \
+    --arg certificate "$expected_certificate" \
+    --arg staging "$expected_staging" \
+    --argjson generation "$tenant_generation" '
+      .metadata.name == "fabric-smoke" and .metadata.namespace == "etcdetcetc-smoke" and
+      .metadata.uid == $tenant_uid and .metadata.deletionTimestamp == null and
+      .metadata.finalizers == ["etcdetcetc.samcday.com/tenant"] and
+      .spec == {
+        clusterRef: {name: "fabric-etcd", namespace: "etcdetcetc"},
+        credentialMode: "TLS", secretName: "fabric-smoke-etcd"
+      } and
+      (.status.conditions | length) == 1 and
+      .status.conditions[0].type == "Ready" and .status.conditions[0].status == "True" and
+      .status.conditions[0].reason == "Provisioned" and
+      .status.conditions[0].observedGeneration == $generation and
+      .status.externalAccessState == "Provisioned" and
+      .status.externalIdentity == {
+        clusterRef: {name: "fabric-etcd", namespace: "etcdetcetc", uid: $cluster_uid},
+        credentialMode: "TLS", etcdUser: $user, etcdRole: $role, prefix: $prefix,
+        outputSecretName: "fabric-smoke-etcd", configMapName: "fabric-smoke-etcd",
+        certificateName: $certificate, stagingSecretName: $staging
+      }
+  ' <<<"$tenant" >/dev/null || die 'smoke EtcdTenant is not the exact Ready UID-pinned TLS contract'
+
+  jq -e --arg uid "$tenant_uid" --arg prefix "$tenant_prefix" --arg endpoints "$endpoints" \
+    --arg client_certificate_revision "$client_certificate_revision" \
+    --arg server_ca_revision "$server_ca_revision" '
+    .metadata.name == "fabric-smoke-etcd" and .metadata.namespace == "etcdetcetc-smoke" and
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["reconcile.fluxcd.io/watch"] == "Enabled" and
+    .metadata.ownerReferences == [{
+      apiVersion: "etcdetcetc.samcday.com/v1alpha1", blockOwnerDeletion: false,
+      controller: true, kind: "EtcdTenant", name: "fabric-smoke", uid: $uid
+    }] and
+    (.data | keys | sort) == ["ca.crt", "endpoints", "prefix", "values.yaml"] and
+    .data.endpoints == $endpoints and .data.prefix == $prefix and (.data["ca.crt"] | length > 0) and
+    (.data["values.yaml"] | fromjson) == {
+      etcd: {
+        clientCertificateRevision: $client_certificate_revision,
+        clientSecret: {create: false, name: "fabric-smoke-etcd"},
+        endpoints: [
+          "https://fabric-az1-cp1.fabric.internal:2379",
+          "https://fabric-az1-cp2.fabric.internal:2379",
+          "https://fabric-az1-cp3.fabric.internal:2379"
+        ],
+        externalSecretRevisionsRequired: true,
+        prefix: $prefix,
+        serverCATrustRevision: $server_ca_revision
+      }
+    }
+  ' <<<"$configmap" >/dev/null || die 'smoke ConfigMap does not match its exact owner/data contract'
+
+  jq -e --arg uid "$tenant_uid" '
+    .metadata.name == "fabric-smoke-etcd" and .metadata.namespace == "etcdetcetc-smoke" and
+    .metadata.deletionTimestamp == null and .type == "kubernetes.io/tls" and
+    .metadata.ownerReferences == [{
+      apiVersion: "etcdetcetc.samcday.com/v1alpha1", blockOwnerDeletion: false,
+      controller: true, kind: "EtcdTenant", name: "fabric-smoke", uid: $uid
+    }] and
+    (.data | keys | sort) == ["ca.crt", "tls.crt", "tls.key", "username"] and
+    all(.data["ca.crt"], .data["tls.crt"], .data["tls.key"], .data.username;
+      type == "string" and length > 0)
+  ' <<<"$secret_json" >/dev/null || die 'smoke Secret does not match its exact owner/key contract'
+  username=$(jq -er '.data.username | @base64d' <<<"$secret_json") ||
+    die 'smoke Secret username is not valid base64 text'
+  [[ $username == "$expected_user" ]] || die 'smoke Secret username differs from the UID identity'
+  [[ $secret_server_ca_revision == "$server_ca_revision" ]] ||
+    die 'smoke Secret physical server CA differs from the mirrored ConfigMap CA'
+  jq -er '.data["tls.crt"]' <<<"$secret_json" | base64 -d |
+    openssl x509 -checkend 3600 -noout >/dev/null ||
+    die 'smoke TLS certificate is invalid or expires within one hour'
+  cert_subject=$(jq -er '.data["tls.crt"]' <<<"$secret_json" | base64 -d |
+    openssl x509 -noout -subject -nameopt RFC2253) ||
+    die 'cannot inspect smoke TLS certificate subject'
+  [[ $cert_subject == "subject=CN=$expected_user" ]] ||
+    die 'smoke TLS certificate commonName differs from the UID identity'
+  jq -er '.data["tls.crt"]' <<<"$secret_json" | base64 -d |
+    openssl verify -CAfile "$repo_root/fabric/pki/etcdetcetc/client-ca.pem" /dev/stdin \
+      >/dev/null || die 'smoke TLS certificate is not signed by the committed delegated CA'
+
+  jq -n \
+    --arg stage "$stage" --arg tenantUid "$tenant_uid" --arg clusterUid "$cluster_uid" \
+    --arg prefix "$tenant_prefix" --arg subject "$cert_subject" \
+    --arg clientCertificateRevision "$client_certificate_revision" \
+    --arg serverCARevision "$server_ca_revision" '
+      {stage: $stage, clusterUid: $clusterUid, tenantUid: $tenantUid, prefix: $prefix,
+       secret: {name: "fabric-smoke-etcd", type: "kubernetes.io/tls",
+         keys: ["ca.crt", "tls.crt", "tls.key", "username"], certificateSubject: $subject},
+       configMap: {name: "fabric-smoke-etcd",
+         keys: ["ca.crt", "endpoints", "prefix", "values.yaml"],
+         clientCertificateRevision: $clientCertificateRevision,
+         serverCATrustRevision: $serverCARevision}}
+    ' >"$evidence_dir/smoke-contract-$stage.json"
+  chmod 0600 -- "$evidence_dir/smoke-contract-$stage.json"
+  unset secret_json username
+
+  if [[ $stage == before ]]; then
+    initial_cluster_uid=$cluster_uid
+    initial_cluster_generation=$cluster_generation
+    initial_tenant_uid=$tenant_uid
+    initial_tenant_generation=$tenant_generation
+  else
+    [[ $cluster_uid == "$initial_cluster_uid" &&
+       $cluster_generation == "$initial_cluster_generation" ]] ||
+      die 'EtcdCluster identity or generation changed during acceptance'
+    [[ $tenant_uid == "$initial_tenant_uid" &&
+       $tenant_generation == "$initial_tenant_generation" ]] ||
+      die 'EtcdTenant identity or generation changed during acceptance'
+  fi
+}
+
+object_state() {
+  local resource=$1 name=$2 stderr=$3 output status uid
+  if output=$(operator_kubectl --namespace "$namespace" get "$resource" "$name" \
+      --output=json 2>"$stderr"); then
+    uid=$(jq -er '.metadata.uid | select(test("^[0-9a-f-]{36}$"))' <<<"$output") || return 2
+    printf 'present:%s\n' "$uid"
+    return 0
+  else
+    status=$?
+  fi
+  if [[ $status -eq 1 ]] &&
+      grep -Eiq '(^|[[:space:]])\(?(NotFound|not found)\)?([[:space:]:]|$)' "$stderr"; then
+    printf 'absent\n'
+    return 0
+  fi
+  return 2
+}
+
+assert_ephemeral_absent() {
+  local index name state
+  state=$(object_state networkpolicy "$network_policy_name" \
+    "$evidence_dir/networkpolicy-get.stderr") || die 'cannot inspect temporary NetworkPolicy'
+  [[ $state == absent ]] || die "$namespace/$network_policy_name already exists; refuse to adopt it"
+  for index in "${!service_nodes[@]}"; do
+    name="fabric-etcd-post-open-${service_suffixes[$index]}"
+    state=$(object_state pod "$name" "$evidence_dir/$name-get.stderr") ||
+      die "cannot inspect temporary Pod $name"
+    [[ $state == absent ]] || die "$namespace/$name already exists; refuse to adopt it"
+  done
+}
+
+capture_default_deny() {
+  local output=$1
+  operator_kubectl --namespace "$namespace" get networkpolicy default-deny \
+    --output=json | jq -S 'del(.metadata.managedFields)' >"$output" ||
+    die 'cannot capture the permanent smoke default-deny NetworkPolicy'
+  chmod 0600 -- "$output"
+  jq -e '
+    .metadata.name == "default-deny" and .metadata.namespace == "etcdetcetc-smoke" and
+    .metadata.deletionTimestamp == null and
+    .spec == {podSelector: {}, policyTypes: ["Egress", "Ingress"]}
+  ' "$output" >/dev/null || die 'permanent smoke default-deny is not exact'
+}
+
+network_policy_manifest() {
+  jq -n --arg revision "$head" --arg name "$network_policy_name" '{
+    apiVersion: "networking.k8s.io/v1", kind: "NetworkPolicy",
+    metadata: {
+      namespace: "etcdetcetc-smoke", name: $name,
+      labels: {
+        "fabric.samcday.com/purpose": "etcd-post-open-acceptance",
+        "fabric.samcday.com/revision": $revision
+      }
+    },
+    spec: {
+      podSelector: {matchLabels: {
+        "fabric.samcday.com/purpose": "etcd-post-open-acceptance",
+        "fabric.samcday.com/revision": $revision
+      }},
+      policyTypes: ["Egress"],
+      egress: [
+        {
+          to: [{ipBlock: {cidr: "10.66.1.1/32"}}],
+          ports: [{port: 80, protocol: "TCP"}]
+        },
+        {
+          to: [
+            {ipBlock: {cidr: "10.66.0.10/32"}},
+            {ipBlock: {cidr: "10.66.0.11/32"}},
+            {ipBlock: {cidr: "10.66.0.12/32"}}
+          ],
+          ports: [
+            {port: 2379, protocol: "TCP"},
+            {port: 2380, protocol: "TCP"},
+            {port: 2381, protocol: "TCP"}
+          ]
+        }
+      ]
+    }
+  }'
+}
+
+create_network_policy() {
+  local created
+  network_policy_creation_attempted=true
+  trap '' HUP INT TERM
+  created=$(network_policy_manifest | operator_kubectl create --filename=- --output=json) ||
+    die 'could not create temporary post-open NetworkPolicy'
+  network_policy_uid=$(jq -er '.metadata.uid | select(test("^[0-9a-f-]{36}$"))' <<<"$created") ||
+    die 'created NetworkPolicy did not return a valid UID'
+  network_policy_created=true
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "$network_policy_uid" >"$evidence_dir/networkpolicy.uid"
+  chmod 0600 -- "$evidence_dir/networkpolicy.uid"
+}
+
+validate_network_policy() {
+  local current desired
+  current=$(operator_kubectl --namespace "$namespace" get networkpolicy \
+    "$network_policy_name" --output=json) || die 'cannot read temporary post-open NetworkPolicy'
+  desired=$(network_policy_manifest)
+  jq -e --arg uid "$network_policy_uid" --argjson desired "$desired" '
+    .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    .metadata.name == $desired.metadata.name and
+    .metadata.namespace == $desired.metadata.namespace and
+    .metadata.labels == $desired.metadata.labels and .spec == $desired.spec
+  ' <<<"$current" >/dev/null ||
+    die 'temporary NetworkPolicy differs from the exact label-scoped egress contract'
+  printf '%s\n' "$current" >"$evidence_dir/networkpolicy.json"
+  chmod 0600 -- "$evidence_dir/networkpolicy.json"
+}
+
+probe_manifest() {
+  local index=$1 name node address inside_key outside_key value
+  name="fabric-etcd-post-open-${service_suffixes[$index]}"
+  node=${service_nodes[$index]}
+  address=${service_addresses[$index]}
+  inside_key="$tenant_prefix.post-open/$head/${service_suffixes[$index]}"
+  outside_key="/etcdetcetc-post-open-deny/$initial_tenant_uid/${service_suffixes[$index]}"
+  value="fabric-etcd-post-open:$head:${service_suffixes[$index]}"
+  jq -n \
+    --arg namespace "$namespace" --arg name "$name" --arg node "$node" \
+    --arg address "$address" --arg revision "$head" --arg image "$probe_image" \
+    --arg secret "$secret_name" --arg script "$probe_script" \
+    --arg inside "$inside_key" --arg outside "$outside_key" --arg value "$value" '{
+      apiVersion: "v1", kind: "Pod",
+      metadata: {
+        namespace: $namespace, name: $name,
+        labels: {
+          "fabric.samcday.com/purpose": "etcd-post-open-acceptance",
+          "fabric.samcday.com/revision": $revision
+        }
+      },
+      spec: {
+        activeDeadlineSeconds: 240,
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        hostNetwork: false,
+        nodeName: $node,
+        restartPolicy: "Never",
+        terminationGracePeriodSeconds: 1,
+        tolerations: [{
+          effect: "NoSchedule", key: "fabric.samcday.com/platform",
+          operator: "Equal", value: "true"
+        }],
+        hostAliases: [
+          {ip: "10.66.0.10", hostnames: ["fabric-az1-cp1.fabric.internal"]},
+          {ip: "10.66.0.11", hostnames: ["fabric-az1-cp2.fabric.internal"]},
+          {ip: "10.66.0.12", hostnames: ["fabric-az1-cp3.fabric.internal"]}
+        ],
+        securityContext: {
+          runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, fsGroup: 65534,
+          fsGroupChangePolicy: "OnRootMismatch", seccompProfile: {type: "RuntimeDefault"}
+        },
+        containers: [{
+          name: "probe", image: $image, imagePullPolicy: "IfNotPresent",
+          command: ["/bin/sh", "-ec"],
+          args: [$script, "probe", $node, $address, $inside, $outside, $value],
+          env: [
+            {name: "HOME", value: "/work"},
+            {name: "TMPDIR", value: "/work"},
+            {name: "ETCDCTL_API", value: "3"}
+          ],
+          resources: {
+            requests: {cpu: "10m", memory: "32Mi", "ephemeral-storage": "1Mi"},
+            limits: {cpu: "250m", memory: "192Mi", "ephemeral-storage": "8Mi"}
+          },
+          securityContext: {
+            allowPrivilegeEscalation: false,
+            capabilities: {drop: ["ALL"]},
+            readOnlyRootFilesystem: true
+          },
+          volumeMounts: [
+            {name: "credential", mountPath: "/credential", readOnly: true},
+            {name: "work", mountPath: "/work"}
+          ]
+        }],
+        volumes: [
+          {name: "credential", secret: {
+            secretName: $secret, optional: false, defaultMode: 288,
+            items: [
+              {key: "ca.crt", path: "ca.crt", mode: 288},
+              {key: "tls.crt", path: "tls.crt", mode: 288},
+              {key: "tls.key", path: "tls.key", mode: 288}
+            ]
+          }},
+          {name: "work", emptyDir: {medium: "Memory", sizeLimit: "128Mi"}}
+        ]
+      }
+    }'
+}
+
+create_probe_pod() {
+  local index=$1 created name uid
+  name="fabric-etcd-post-open-${service_suffixes[$index]}"
+  pod_creation_attempted[index]=true
+  trap '' HUP INT TERM
+  created=$(probe_manifest "$index" | operator_kubectl create --filename=- --output=json) ||
+    die "could not create post-open probe Pod on ${service_nodes[$index]}"
+  uid=$(jq -er '.metadata.uid | select(test("^[0-9a-f-]{36}$"))' <<<"$created") ||
+    die "created probe Pod $name did not return a valid UID"
+  pod_uids[index]=$uid
+  pod_created[index]=true
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "$uid" >"$evidence_dir/$name.uid"
+  chmod 0600 -- "$evidence_dir/$name.uid"
+}
+
+wait_probe_pod() {
+  local index=$1 name node address phase='' pod pod_ip expected_log inside_key outside_key value
+  name="fabric-etcd-post-open-${service_suffixes[$index]}"
+  node=${service_nodes[$index]}
+  address=${service_addresses[$index]}
+  inside_key="$tenant_prefix.post-open/$head/${service_suffixes[$index]}"
+  outside_key="/etcdetcetc-post-open-deny/$initial_tenant_uid/${service_suffixes[$index]}"
+  value="fabric-etcd-post-open:$head:${service_suffixes[$index]}"
+  for _attempt in {1..240}; do
+    pod=$(operator_kubectl --namespace "$namespace" get pod "$name" --output=json) ||
+      die "cannot read probe Pod $name"
+    phase=$(jq -r '.status.phase // ""' <<<"$pod")
+    case $phase in
+      Succeeded) break ;;
+      Failed)
+        operator_kubectl --namespace "$namespace" logs "$name" \
+          >"$evidence_dir/$name.log" 2>&1 || true
+        die "probe Pod $name failed"
+        ;;
+    esac
+    sleep 1
+  done
+  [[ $phase == Succeeded ]] || die "probe Pod $name did not complete within 240 seconds"
+  pod_ip=$(jq -er '.status.podIP' <<<"$pod") || die "probe Pod $name has no Pod IP"
+  jq -e \
+    --arg name "$name" --arg node "$node" --arg hostIp "$address" \
+    --arg podIp "$pod_ip" --arg uid "${pod_uids[$index]}" \
+    --arg image "$probe_image" --arg revision "$head" --arg secret "$secret_name" \
+    --arg imageManifest "$probe_amd64_manifest_sha256" \
+    --arg imageConfig "$probe_amd64_config_sha256" '
+      .metadata.name == $name and .metadata.namespace == "etcdetcetc-smoke" and
+      .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+      .metadata.labels == {
+        "fabric.samcday.com/purpose": "etcd-post-open-acceptance",
+        "fabric.samcday.com/revision": $revision
+      } and
+      .spec.nodeName == $node and .spec.hostNetwork == false and
+      .spec.automountServiceAccountToken == false and
+      .status.phase == "Succeeded" and .status.hostIP == $hostIp and
+      .status.podIP == $podIp and $podIp != $hostIp and
+      [.spec.volumes[] | select(has("secret")) | .secret.secretName] == [$secret] and
+      ([.spec.volumes[] | select(has("configMap"))] | length) == 0 and
+      [.spec.containers[] | select(.name == "probe") | .image] == [$image] and
+      any(.status.containerStatuses[]?;
+        .name == "probe" and .state.terminated.reason == "Completed" and
+        .state.terminated.exitCode == 0 and
+        ((.imageID | endswith("@" + $imageManifest)) or
+         (.imageID | endswith("@" + $imageConfig)) or .imageID == $imageConfig)
+      )
+    ' <<<"$pod" >/dev/null ||
+    die "probe Pod $name was not the exact ordinary successful Pod on $node/$address"
+  jq -e \
+    --arg script "$probe_script" --arg node "$node" --arg address "$address" \
+    --arg inside "$inside_key" --arg outside "$outside_key" --arg value "$value" \
+    --arg image "$probe_image" --arg secret "$secret_name" '
+      def platform_toleration:
+        . == {effect: "NoSchedule", key: "fabric.samcday.com/platform",
+          operator: "Equal", value: "true"};
+      def default_toleration:
+        (.effect == "NoExecute" and .operator == "Exists" and .tolerationSeconds == 300 and
+          (.key == "node.kubernetes.io/not-ready" or .key == "node.kubernetes.io/unreachable") and
+          ((keys | sort) == ["effect", "key", "operator", "tolerationSeconds"]));
+      .spec.activeDeadlineSeconds == 240 and
+      .spec.automountServiceAccountToken == false and .spec.enableServiceLinks == false and
+      .spec.hostNetwork == false and (.spec.hostPID // false) == false and
+      (.spec.hostIPC // false) == false and (.spec.shareProcessNamespace // false) == false and
+      .spec.nodeName == $node and .spec.restartPolicy == "Never" and
+      .spec.terminationGracePeriodSeconds == 1 and .spec.serviceAccountName == "default" and
+      .spec.dnsPolicy == "ClusterFirst" and (.spec.dnsConfig // null) == null and
+      (.spec.initContainers // []) == [] and (.spec.ephemeralContainers // []) == [] and
+      .spec.hostAliases == [
+        {ip: "10.66.0.10", hostnames: ["fabric-az1-cp1.fabric.internal"]},
+        {ip: "10.66.0.11", hostnames: ["fabric-az1-cp2.fabric.internal"]},
+        {ip: "10.66.0.12", hostnames: ["fabric-az1-cp3.fabric.internal"]}
+      ] and
+      .spec.securityContext == {
+        fsGroup: 65534, fsGroupChangePolicy: "OnRootMismatch", runAsGroup: 65534,
+        runAsNonRoot: true, runAsUser: 65534, seccompProfile: {type: "RuntimeDefault"}
+      } and
+      ([.spec.tolerations[] | select(platform_toleration)] | length) == 1 and
+      all(.spec.tolerations[]; platform_toleration or default_toleration) and
+      (.spec.containers | length) == 1 and .spec.containers[0].name == "probe" and
+      .spec.containers[0].image == $image and
+      .spec.containers[0].imagePullPolicy == "IfNotPresent" and
+      .spec.containers[0].command == ["/bin/sh", "-ec"] and
+      .spec.containers[0].args == [$script, "probe", $node, $address, $inside, $outside, $value] and
+      .spec.containers[0].env == [
+        {name: "HOME", value: "/work"}, {name: "TMPDIR", value: "/work"},
+        {name: "ETCDCTL_API", value: "3"}
+      ] and
+      (.spec.containers[0].envFrom // []) == [] and (.spec.containers[0].ports // []) == [] and
+      (.spec.containers[0].lifecycle // null) == null and
+      (.spec.containers[0].livenessProbe // null) == null and
+      (.spec.containers[0].readinessProbe // null) == null and
+      (.spec.containers[0].startupProbe // null) == null and
+      .spec.containers[0].resources == {
+        limits: {cpu: "250m", memory: "192Mi", "ephemeral-storage": "8Mi"},
+        requests: {cpu: "10m", memory: "32Mi", "ephemeral-storage": "1Mi"}
+      } and
+      .spec.containers[0].securityContext == {
+        allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]},
+        readOnlyRootFilesystem: true
+      } and
+      .spec.containers[0].volumeMounts == [
+        {mountPath: "/credential", name: "credential", readOnly: true},
+        {mountPath: "/work", name: "work"}
+      ] and
+      .spec.volumes == [
+        {name: "credential", secret: {
+          defaultMode: 288,
+          items: [
+            {key: "ca.crt", mode: 288, path: "ca.crt"},
+            {key: "tls.crt", mode: 288, path: "tls.crt"},
+            {key: "tls.key", mode: 288, path: "tls.key"}
+          ], optional: false, secretName: $secret
+        }},
+        {emptyDir: {medium: "Memory", sizeLimit: "128Mi"}, name: "work"}
+      ]
+    ' <<<"$pod" >/dev/null ||
+    die "probe Pod $name command, security, resource, or volume contract was mutated"
+  printf '%s\n' "$pod" >"$evidence_dir/$name.json"
+  operator_kubectl --namespace "$namespace" logs "$name" >"$evidence_dir/$name.log"
+  chmod 0600 -- "$evidence_dir/$name.json" "$evidence_dir/$name.log"
+  expected_log="ETCDCTL_PIN=pass node=$node version=3.6.13
+TCP_BOUNDARY=pass node=$node roots=3 client=reachable internal=blocked
+MTLS_BOUNDARY=pass node=$node roots=3 no_client_cert=rejected tenant_client=accepted
+TENANT_PREFIX=pass node=$node inside=put,get,delete outside=read-denied,write-denied ttl_cleanup=armed"
+  [[ $(<"$evidence_dir/$name.log") == "$expected_log" ]] ||
+    die "probe Pod $name did not emit only the exact non-secret acceptance markers"
+  note "POD_ACCEPTANCE_PASS node=$node host_ip=$address pod_ip=$pod_ip"
+}
+
+write_counter_spec() {
+  cat >"$counter_spec" <<'EOF'
+{
+  "version": 1,
+  "rules": {
+    "etcd_client_allow": {
+      "family": "inet", "table": "fw4", "chain": "forward_lan",
+      "comment": "!fw4: Allow-platform-to-root-etcd-client", "expected_matches": 1
+    },
+    "etcd_internal_reject": {
+      "family": "inet", "table": "fw4", "chain": "forward_lan",
+      "comment": "!fw4: Reject-services-to-root-etcd-internal", "expected_matches": 1
+    }
+  },
+  "require_increase": ["etcd_client_allow", "etcd_internal_reject"],
+  "require_unchanged": []
+}
+EOF
+  chmod 0600 -- "$counter_spec"
+}
+
+install_router_probe_table() {
+  local payload
+  read -r -d '' payload <<EOF || true
+table inet $router_probe_table {
+  chain observe_forward {
+    type filter hook forward priority -10
+    ip saddr ${service_addresses[0]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2379 counter comment "observe svc1 etcd client; no verdict"
+    ip saddr ${service_addresses[0]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2380 counter comment "observe svc1 etcd peer; no verdict"
+    ip saddr ${service_addresses[0]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2381 counter comment "observe svc1 etcd metrics; no verdict"
+    ip saddr ${service_addresses[1]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2379 counter comment "observe svc2 etcd client; no verdict"
+    ip saddr ${service_addresses[1]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2380 counter comment "observe svc2 etcd peer; no verdict"
+    ip saddr ${service_addresses[1]} ip daddr { ${root_addresses[0]}, ${root_addresses[1]}, ${root_addresses[2]} } tcp dport 2381 counter comment "observe svc2 etcd metrics; no verdict"
+  }
+}
+EOF
+  router_table_owned=true
+  trap '' HUP INT TERM
+  printf '%s\n' "$payload" | router_ssh /usr/sbin/nft --file -
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  router_ssh /usr/sbin/nft -j list table inet "$router_probe_table" \
+    >"$evidence_dir/router-probe-installed.json"
+  chmod 0600 -- "$evidence_dir/router-probe-installed.json"
+  jq -e --arg table "$router_probe_table" '
+    ([.nftables[] | .table? | select(.family == "inet" and .name == $table)] | length) == 1 and
+    ([.nftables[] | .chain? | select(.table == $table and .name == "observe_forward")] | length) == 1 and
+    ([.nftables[] | .rule? | select(.table == $table and .chain == "observe_forward")] | length) == 6
+  ' "$evidence_dir/router-probe-installed.json" >/dev/null ||
+    die 'temporary router observer does not have its exact table/chain/rule shape'
+}
+
+validate_router_probe_counters() {
+  local snapshot=$evidence_dir/router-probe-after.json
+  router_ssh /usr/sbin/nft -j list table inet "$router_probe_table" >"$snapshot"
+  chmod 0600 -- "$snapshot"
+  jq -e --arg table "$router_probe_table" '
+    def selected:
+      [.nftables[] | .rule? | select(.family == "inet" and .table == $table and .chain == "observe_forward")];
+    def counter:
+      [.expr[]? | .counter? | select(type == "object")][0];
+    (selected | length) == 6 and
+    ([selected[].comment] | sort) == ([
+      "observe svc1 etcd client; no verdict", "observe svc1 etcd peer; no verdict",
+      "observe svc1 etcd metrics; no verdict", "observe svc2 etcd client; no verdict",
+      "observe svc2 etcd peer; no verdict", "observe svc2 etcd metrics; no verdict"
+    ] | sort) and
+    all(selected[]; (counter.packets >= 3) and (counter.bytes > 0))
+  ' "$snapshot" >/dev/null ||
+    die 'router observer did not see every exact service-source/root-port probe tuple'
+}
+
+remove_router_probe_table() {
+  local tables
+  if $router_table_owned; then
+    tables=$(router_tables) || die 'cannot enumerate router tables during observer cleanup'
+    if grep -Fxq "table inet $router_probe_table" <<<"$tables"; then
+      trap '' HUP INT TERM
+      router_ssh /usr/sbin/nft delete table inet "$router_probe_table" ||
+        die 'cannot remove owned router observer table'
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+    fi
+    tables=$(router_tables) || die 'cannot verify router observer cleanup'
+    ! grep -Fxq "table inet $router_probe_table" <<<"$tables" ||
+      die 'owned router observer table remains after deletion'
+    router_table_owned=false
+  fi
+}
+
+remove_owned_object() {
+  local resource=$1 name=$2 expected_uid=$3 state current_uid
+  state=$(object_state "$resource" "$name" "$evidence_dir/$name-cleanup-get.stderr") ||
+    return 1
+  if [[ $state == absent ]]; then
+    return 0
+  fi
+  current_uid=${state#present:}
+  [[ -n $expected_uid && $current_uid == "$expected_uid" ]] || return 1
+  operator_kubectl --namespace "$namespace" delete "$resource" "$name" \
+    --wait=true --timeout=60s >/dev/null || return 1
+  state=$(object_state "$resource" "$name" "$evidence_dir/$name-cleanup-after.stderr") ||
+    return 1
+  [[ $state == absent ]]
+}
+
+remove_ephemeral_objects() {
+  local index name
+  for index in "${!service_nodes[@]}"; do
+    name="fabric-etcd-post-open-${service_suffixes[$index]}"
+    if ${pod_created[$index]} || ${pod_creation_attempted[$index]}; then
+      remove_owned_object pod "$name" "${pod_uids[$index]}" ||
+        die "UID-aware cleanup failed for probe Pod $name"
+      pod_created[index]=false
+      pod_creation_attempted[index]=false
+    fi
+  done
+  if $network_policy_created || $network_policy_creation_attempted; then
+    remove_owned_object networkpolicy "$network_policy_name" "$network_policy_uid" ||
+      die 'UID-aware cleanup failed for temporary NetworkPolicy'
+    network_policy_created=false
+    network_policy_creation_attempted=false
+  fi
+  remove_router_probe_table
+  assert_ephemeral_absent
+  assert_router_probe_table_absent
+}
+
+validate_committed_inputs() {
+  local archive_contract
+  archive_contract=$(awk -v name="$etcd_archive" '
+    $0 == name { print; getline; print; getline; print; exit }
+  ' "$repo_root/fabric/router/data-files.txt")
+  [[ $archive_contract == "$etcd_archive
+https://github.com/etcd-io/etcd/releases/download/v3.6.13/$etcd_archive
+$etcd_archive_sha256" ]] || die 'checksum-pinned etcdctl archive contract changed'
+  "$repo_root/scripts/rollout-fabric-root-firewall" --check \
+    >"$evidence_dir/committed-root-firewall.txt" ||
+    die 'committed root firewall contract is invalid'
+  chmod 0600 -- "$evidence_dir/committed-root-firewall.txt"
+}
+
+mode=
+serial_fingerprint=
+identity=/var/home/sam/.ssh/id_ed25519
+confirm=
+
+while (($#)); do
+  case $1 in
+    --check|--run)
+      [[ -z $mode ]] || die 'choose exactly one of --check or --run'
+      mode=${1#--}
+      shift
+      ;;
+    --serial-ed25519-fingerprint)
+      (($# >= 2)) || die '--serial-ed25519-fingerprint requires a value'
+      [[ -z $serial_fingerprint ]] || die 'serial fingerprint may be specified only once'
+      serial_fingerprint=$2
+      shift 2
+      ;;
+    --identity)
+      (($# >= 2)) || die '--identity requires a path'
+      identity=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      [[ -z $confirm ]] || die '--confirm may be specified only once'
+      confirm=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n $mode ]] || {
+  usage >&2
+  exit 2
+}
+[[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
+if [[ $mode == check ]]; then
+  [[ -z $confirm ]] || die '--confirm is invalid with --check'
+else
+  [[ -n $confirm ]] || die '--confirm is required with --run'
+fi
+[[ $EUID -eq 0 ]] || die 'run this helper with sudo'
+require_root_namespace
+
+for command in awk base64 chmod cmp cut df dirname env flock getent git grep hostname id ip \
+  jq kubectl mktemp openssl readlink realpath rm sed sha256sum sleep sort ssh \
+  ssh-keygen ssh-keyscan stat sudo timeout tr yq; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(realpath -- "$script_dir/..")
+operator_user=sam
+operator_home=$(getent passwd "$operator_user" | awk -F: 'NR == 1 { print $6 }')
+[[ -n $operator_home && -d $operator_home ]] || die 'cannot resolve operator home directory'
+operator_uid=$(id -u "$operator_user") || die 'cannot resolve operator UID'
+operator_runtime=/run/user/$operator_uid
+[[ -d $operator_runtime && ! -L $operator_runtime ]] ||
+  die 'operator runtime directory is missing or unsafe'
+[[ $(stat -Lc '%u:%a' -- "$operator_runtime") == "$operator_uid:700" ]] ||
+  die 'operator runtime directory has unsafe ownership or mode'
+validate_identity
+
+cd -- "$repo_root"
+[[ $(operator_git branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(operator_git status --porcelain) ]] || die 'worktree must be clean'
+operator_git fetch --quiet origin main
+head=$(operator_git rev-parse HEAD)
+[[ $head =~ ^[0-9a-f]{40}$ ]] || die 'cannot resolve one full Git revision'
+[[ $head == "$(operator_git rev-parse origin/main)" ]] ||
+  die 'HEAD must exactly match freshly fetched origin/main'
+expected_confirmation="$confirmation_prefix:$head"
+if [[ $mode == run ]]; then
+  [[ $confirm == "$expected_confirmation" ]] ||
+    die "exact --confirm '$expected_confirmation' is required"
+fi
+
+# shellcheck source=scripts/lib/fabric-secure-tempdir.sh
+source "$repo_root/scripts/lib/fabric-secure-tempdir.sh"
+evidence_dir=$(fabric_secure_tmpdir fabric-etcd-post-open 8388608) ||
+  die 'cannot create protected tmpfs evidence directory'
+chmod 0700 -- "$evidence_dir"
+router_known_hosts=$evidence_dir/router-known-hosts
+router_before=$evidence_dir/router-fw4-before.json
+router_after=$evidence_dir/router-fw4-after.json
+router_before_semantic=$evidence_dir/router-fw4-before.semantic.json
+router_after_semantic=$evidence_dir/router-fw4-after.semantic.json
+counter_spec=$evidence_dir/router-counter-spec.json
+counter_result=$evidence_dir/router-counter-result.json
+default_deny_before=$evidence_dir/default-deny-before.json
+default_deny_after=$evidence_dir/default-deny-after.json
+network_lock_fd=
+cluster_lock_holder="$(hostname):$$:etcd-post-open:$head"
+cluster_lock_held=false
+network_policy_uid=
+network_policy_creation_attempted=false
+network_policy_created=false
+router_table_owned=false
+declare -a pod_uids=("" "")
+declare -a pod_creation_attempted=(false false)
+declare -a pod_created=(false false)
+declare -a root_packet_deltas=(0 0 0)
+initial_cluster_uid=
+initial_cluster_generation=
+initial_tenant_uid=
+initial_tenant_generation=
+tenant_prefix=
+complete=false
+
+read -r -d '' probe_script <<'PROBE_SCRIPT' || true
+set -eu
+umask 077
+
+node=$1
+expected_host_ip=$2
+inside_key=$3
+outside_key=$4
+value=$5
+archive=/work/etcd-v3.6.13-linux-amd64.tar.gz
+ctl=/work/etcd-v3.6.13-linux-amd64/etcdctl
+endpoints='https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379'
+lease_id=
+
+case "$node:$expected_host_ip" in
+  fabric-az1-svc1:10.66.1.10|fabric-az1-svc2:10.66.1.11) ;;
+  *) exit 19 ;;
+esac
+
+tenant_ctl() {
+  "$ctl" --endpoints="$endpoints" \
+    --cacert=/credential/ca.crt --cert=/credential/tls.crt --key=/credential/tls.key \
+    --dial-timeout=3s --command-timeout=5s "$@"
+}
+
+cleanup_lease() {
+  if [ -n "$lease_id" ]; then
+    tenant_ctl lease revoke "$lease_id" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_lease EXIT HUP INT TERM
+
+wget -q -T 15 -O "$archive" \
+  http://10.66.1.1/static/etcd-v3.6.13-linux-amd64.tar.gz
+printf '%s  %s\n' b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465 "$archive" |
+  sha256sum -c - >/dev/null
+tar -xzf "$archive" -C /work etcd-v3.6.13-linux-amd64/etcdctl
+version_output=$($ctl version)
+[ "$(printf '%s\n' "$version_output" | sed -n '1p')" = 'etcdctl version: 3.6.13' ]
+[ "$(printf '%s\n' "$version_output" | sed -n '2p')" = 'API version: 3.6' ]
+[ "$(printf '%s\n' "$version_output" | awk 'NF { n++ } END { print n + 0 }')" -eq 2 ]
+printf 'ETCDCTL_PIN=pass node=%s version=3.6.13\n' "$node"
+
+for address in 10.66.0.10 10.66.0.11 10.66.0.12; do
+  nc -n -z -w 3 "$address" 2379 >/dev/null 2>&1
+  for port in 2380 2381; do
+    if nc -n -z -w 3 "$address" "$port" >/dev/null 2>&1; then
+      exit 20
+    fi
+  done
+done
+printf 'TCP_BOUNDARY=pass node=%s roots=3 client=reachable internal=blocked\n' "$node"
+
+for endpoint in \
+  https://fabric-az1-cp1.fabric.internal:2379 \
+  https://fabric-az1-cp2.fabric.internal:2379 \
+  https://fabric-az1-cp3.fabric.internal:2379; do
+  set +e
+  "$ctl" --endpoints="$endpoint" --cacert=/credential/ca.crt \
+    --dial-timeout=3s --command-timeout=5s get "$inside_key" --limit=1 \
+    >/work/no-client-cert.stdout 2>/work/no-client-cert.stderr
+  no_cert_status=$?
+  set -e
+  [ "$no_cert_status" -ne 0 ]
+  if grep -Fiq 'permission denied' /work/no-client-cert.stderr; then
+    exit 21
+  fi
+  "$ctl" --endpoints="$endpoint" \
+    --cacert=/credential/ca.crt --cert=/credential/tls.crt --key=/credential/tls.key \
+    --dial-timeout=3s --command-timeout=5s get "$inside_key" --limit=1 \
+    >/work/tenant-health.stdout 2>/work/tenant-health.stderr
+done
+printf 'MTLS_BOUNDARY=pass node=%s roots=3 no_client_cert=rejected tenant_client=accepted\n' "$node"
+
+lease_output=$(tenant_ctl lease grant 30 2>/work/lease-grant.stderr)
+case $lease_output in
+  'lease '*' granted with TTL(30s)') ;;
+  *) exit 22 ;;
+esac
+lease_id=$(printf '%s\n' "$lease_output" | awk '{print $2}')
+case $lease_id in ''|*[!0-9a-f]*) exit 22 ;; esac
+
+tenant_ctl put "$inside_key" "$value" --lease="$lease_id" >/work/inside-put.stdout 2>/work/inside-put.stderr
+[ "$(tenant_ctl get "$inside_key" --print-value-only 2>/work/inside-get.stderr)" = "$value" ]
+[ "$(tenant_ctl del "$inside_key" 2>/work/inside-delete.stderr)" = 1 ]
+[ -z "$(tenant_ctl get "$inside_key" --print-value-only 2>/work/inside-after-delete.stderr)" ]
+
+set +e
+tenant_ctl get "$outside_key" >/work/outside-read.stdout 2>/work/outside-read.stderr
+outside_read_status=$?
+set -e
+[ "$outside_read_status" -ne 0 ]
+grep -Fq 'etcdserver: permission denied' /work/outside-read.stderr
+
+set +e
+tenant_ctl put "$outside_key" "$value" --lease="$lease_id" \
+  >/work/outside-write.stdout 2>/work/outside-write.stderr
+outside_write_status=$?
+set -e
+[ "$outside_write_status" -ne 0 ]
+grep -Fq 'etcdserver: permission denied' /work/outside-write.stderr
+
+tenant_ctl lease revoke "$lease_id" >/work/lease-revoke.stdout 2>/work/lease-revoke.stderr
+lease_id=
+trap - EXIT HUP INT TERM
+printf 'TENANT_PREFIX=pass node=%s inside=put,get,delete outside=read-denied,write-denied ttl_cleanup=armed\n' "$node"
+PROBE_SCRIPT
+
+cleanup() {
+  local status=$? index name state current_holder cleanup_failed=false tables
+  trap - EXIT HUP INT TERM
+  trap '' HUP INT TERM
+  set +e
+
+  if [[ $mode == run ]]; then
+    for index in "${!service_nodes[@]}"; do
+      name="fabric-etcd-post-open-${service_suffixes[$index]}"
+      if ${pod_created[$index]} || ${pod_creation_attempted[$index]}; then
+        if remove_owned_object pod "$name" "${pod_uids[$index]}"; then
+          pod_created[index]=false
+          pod_creation_attempted[index]=false
+        else
+          cleanup_failed=true
+          printf 'ERROR: UID-aware cleanup failed for Pod %s\n' "$name" >&2
+        fi
+      fi
+    done
+    if $network_policy_created || $network_policy_creation_attempted; then
+      if remove_owned_object networkpolicy "$network_policy_name" "$network_policy_uid"; then
+        network_policy_created=false
+        network_policy_creation_attempted=false
+      else
+        cleanup_failed=true
+        printf 'ERROR: UID-aware cleanup failed for NetworkPolicy %s\n' \
+          "$network_policy_name" >&2
+      fi
+    fi
+    if $router_table_owned; then
+      tables=$(router_tables 2>/dev/null)
+      if grep -Fxq "table inet $router_probe_table" <<<"${tables:-}"; then
+        router_ssh /usr/sbin/nft delete table inet "$router_probe_table" \
+          >/dev/null 2>&1 || cleanup_failed=true
+      fi
+      tables=$(router_tables 2>/dev/null) || cleanup_failed=true
+      if grep -Fxq "table inet $router_probe_table" <<<"${tables:-}"; then
+        cleanup_failed=true
+      else
+        router_table_owned=false
+      fi
+    fi
+    if ! state=$(object_state networkpolicy "$network_policy_name" \
+        "$evidence_dir/networkpolicy-final-get.stderr") || [[ $state != absent ]]; then
+      cleanup_failed=true
+    fi
+    for index in "${!service_nodes[@]}"; do
+      name="fabric-etcd-post-open-${service_suffixes[$index]}"
+      if ! state=$(object_state pod "$name" "$evidence_dir/$name-final-get.stderr") ||
+          [[ $state != absent ]]; then
+        cleanup_failed=true
+      fi
+    done
+    observer_verify >"$evidence_dir/restoration-observer.txt" 2>&1 || cleanup_failed=true
+
+    if $cluster_lock_held; then
+      if $complete && ((status == 0)) && ! $cleanup_failed; then
+        current_holder=$(operator_kubectl --namespace kube-system get configmap \
+          "$fabric_network_cluster_lock" --output=jsonpath='{.data.holder}' \
+          2>/dev/null || true)
+        if [[ $current_holder != "$cluster_lock_holder" ]]; then
+          cleanup_failed=true
+          printf 'ERROR: global Fabric maintenance lock ownership changed\n' >&2
+        elif operator_kubectl --namespace kube-system delete configmap \
+            "$fabric_network_cluster_lock" --wait=true >/dev/null 2>&1; then
+          cluster_lock_held=false
+        else
+          cleanup_failed=true
+          printf 'ERROR: global Fabric maintenance lock could not be released\n' >&2
+        fi
+      else
+        printf 'Global Fabric maintenance lock remains held by %s for inspection\n' \
+          "$cluster_lock_holder" >&2
+      fi
+    fi
+  fi
+
+  if $cleanup_failed; then
+    status=1
+    printf 'ERROR: post-open ephemeral cleanup did not verify\n' >&2
+  fi
+  if [[ $mode == check && $status -eq 0 ]]; then
+    rm -rf -- "$evidence_dir"
+  elif $complete && ((status == 0)); then
+    printf 'FABRIC_ETCD_POST_OPEN_QUALIFICATION=pass\n'
+    printf 'EVIDENCE_DIR=%s\n' "$evidence_dir"
+  else
+    printf 'Post-open qualification did not complete; protected evidence remains at %s\n' \
+      "$evidence_dir" >&2
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+validate_committed_inputs
+prepare_router_ssh
+observer_verify || die 'Fabric observer isolation verification failed'
+assert_router_probe_table_absent
+validate_router_post_phase "$evidence_dir/router-preflight.txt"
+verify_api_health preflight
+verify_fabric_root_continuity preflight
+for index in "${!root_nodes[@]}"; do
+  root_guard_snapshot "$index" "$evidence_dir/root-$((index + 1))-guard.preflight"
+  validate_root_guard "$index" "$evidence_dir/root-$((index + 1))-guard.preflight"
+done
+validate_service_nodes
+validate_flux_runtime
+validate_admission_contract
+validate_etcd_resources before
+assert_ephemeral_absent
+capture_default_deny "$default_deny_before"
+
+if [[ $mode == check ]]; then
+  note 'Read-only preflight passed: Fabric etcdetcetc is Ready behind the exact opened boundary.'
+  note "Probe image: $probe_image"
+  note "Checksum-pinned etcdctl: $etcd_version ($etcd_archive_sha256)"
+  note "Exact live confirmation: $expected_confirmation"
+  complete=true
+  exit 0
+fi
+
+acquire_network_lock
+acquire_cluster_network_lock
+observer_verify || die 'Fabric observer isolation changed after lock acquisition'
+assert_router_probe_table_absent
+validate_router_post_phase "$evidence_dir/router-before.txt"
+verify_api_health before
+verify_fabric_root_continuity before
+validate_service_nodes
+validate_flux_runtime
+validate_admission_contract
+validate_etcd_resources before-locked
+[[ $tenant_uid == "$initial_tenant_uid" && $cluster_uid == "$initial_cluster_uid" ]] ||
+  die 'permanent etcdetcetc identities changed while acquiring locks'
+assert_ephemeral_absent
+capture_default_deny "$default_deny_before"
+
+router_snapshot "$router_before"
+normalize_router_fw4 "$router_before" "$router_before_semantic"
+write_counter_spec
+for index in "${!root_nodes[@]}"; do
+  root_guard_snapshot "$index" "$evidence_dir/root-$((index + 1))-guard.before"
+  validate_root_guard "$index" "$evidence_dir/root-$((index + 1))-guard.before"
+done
+install_router_probe_table
+create_network_policy
+validate_network_policy
+for index in "${!service_nodes[@]}"; do
+  create_probe_pod "$index"
+done
+for index in "${!service_nodes[@]}"; do
+  wait_probe_pod "$index"
+done
+
+validate_router_probe_counters
+router_snapshot "$router_after"
+normalize_router_fw4 "$router_after" "$router_after_semantic"
+cmp -s -- "$router_before_semantic" "$router_after_semantic" ||
+  die 'live router fw4 semantics changed during post-open acceptance'
+"$repo_root/scripts/compare-fabric-nft-counters" \
+  --before "$router_before" --after "$router_after" --spec "$counter_spec" \
+  >"$counter_result"
+allow_delta=$(jq -er \
+  '.results[] | select(.logical_name == "etcd_client_allow") | .delta.packets' \
+  "$counter_result") || die 'router result lacks etcd client allow delta'
+reject_delta=$(jq -er \
+  '.results[] | select(.logical_name == "etcd_internal_reject") | .delta.packets' \
+  "$counter_result") || die 'router result lacks etcd internal reject delta'
+[[ $allow_delta =~ ^[0-9]+$ && $allow_delta -ge 6 ]] ||
+  die "router etcd client allow saw only $allow_delta packets; expected at least six"
+[[ $reject_delta =~ ^[0-9]+$ && $reject_delta -ge 12 ]] ||
+  die "router internal-port reject saw only $reject_delta packets; expected at least twelve"
+
+for index in "${!root_nodes[@]}"; do
+  root_guard_snapshot "$index" "$evidence_dir/root-$((index + 1))-guard.after"
+  validate_root_guard "$index" "$evidence_dir/root-$((index + 1))-guard.after"
+done
+compare_root_guards
+
+remove_ephemeral_objects
+capture_default_deny "$default_deny_after"
+cmp -s -- "$default_deny_before" "$default_deny_after" ||
+  die 'permanent smoke default-deny changed during post-open acceptance'
+validate_router_post_phase "$evidence_dir/router-final.txt"
+observer_verify || die 'Fabric observer isolation changed during acceptance cleanup'
+verify_api_health after
+verify_fabric_root_continuity after
+validate_flux_runtime
+validate_admission_contract
+validate_etcd_resources after
+
+jq -n \
+  --arg revision "$head" --arg image "$probe_image" \
+  --arg archiveSha256 "$etcd_archive_sha256" --arg tenantUid "$initial_tenant_uid" \
+  --arg prefix "$tenant_prefix" --argjson routerAllowDelta "$allow_delta" \
+  --argjson routerRejectDelta "$reject_delta" \
+  --argjson cp1Packets "${root_packet_deltas[0]}" \
+  --argjson cp2Packets "${root_packet_deltas[1]}" \
+  --argjson cp3Packets "${root_packet_deltas[2]}" '
+    {
+      version: 1, result: "pass", revision: $revision,
+      scope: "fabric-etcdetcetc-post-open",
+      probeImage: $image,
+      etcdctl: {version: "3.6.13", archiveSha256: $archiveSha256},
+      tenant: {namespace: "etcdetcetc-smoke", name: "fabric-smoke", uid: $tenantUid,
+        prefix: $prefix, credentialCopy: false},
+      probes: {"fabric-az1-svc1": "pass", "fabric-az1-svc2": "pass"},
+      boundary: {
+        clientPort: "reachable", internalPorts: "blocked", noClientCertificate: "rejected",
+        routerAllowPacketsDelta: $routerAllowDelta,
+        routerRejectPacketsDelta: $routerRejectDelta,
+        rootAllowPacketsDelta: {cp1: $cp1Packets, cp2: $cp2Packets, cp3: $cp3Packets}
+      },
+      rbac: {inside: "put-get-delete", outsideRead: "PermissionDenied",
+        outsideWrite: "PermissionDenied", ambiguousWriteCleanup: "ttl-lease"},
+      ephemeralCleanup: "uid-verified", namespaceCreated: false,
+      defaultDeny: "unchanged", fabricRootContinuity: "pass"
+    }
+  ' >"$evidence_dir/result.json"
+chmod 0600 -- "$evidence_dir/result.json"
+
+complete=true

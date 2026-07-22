@@ -135,17 +135,18 @@ observer `10.66.0.2` SSH to the two exact service addresses. The direct API
 destinations are required because the K3s supervisor advertises its individual
 server endpoints after an agent initially joins through the VIP. During one
 attended install, those two service addresses may also fetch the live rootfs
-from Bootie at exactly `10.66.0.2:80`. An explicit earlier rule rejects
-service access to root TCP/2379, TCP/2380, and TCP/2381, followed by
-per-direction cross-prefix catch-all rejects. IPv4 ICMP redirects are disabled
-so ordinary hosts retain the router path. Same-subnet traffic still bypasses
-the router and is constrained separately by the FCOS root and services host
+from Bootie at exactly `10.66.0.2:80`. The etcdetcetc foundation exception adds
+one earlier exact-source/exact-destination TCP/2379 client allow for only those
+two service nodes and three roots, immediately followed by an exact reject for
+the same endpoints on internal TCP/2380 and TCP/2381. Per-direction
+cross-prefix catch-all rejects follow. IPv4 ICMP redirects are disabled so
+ordinary hosts retain the router path. Same-subnet traffic still bypasses the
+router and is constrained separately by the FCOS root and services host
 tables. These rules admit or reject new routed flows: fw4's global
-established/related path
-runs before `forward_lan`, and a reload does not retroactively evict conntrack.
-The root `fabric_guard` host policy is the enforcement layer that kills stale
-etcd flows; bring-up and incident gates must not treat the router's explicit
-etcd reject as session teardown.
+established/related path runs before `forward_lan`, and a reload does not
+retroactively evict conntrack. The root `fabric_guard` host policy is the
+enforcement layer that kills stale etcd flows; bring-up and incident gates must
+not treat a router reload as session teardown.
 
 The marker in `/etc/config/fabric` names this
 `unmanaged-switch-flat-l2` profile and its
@@ -324,38 +325,276 @@ client isolation; otherwise use a separately administered upstream WLAN
 station. Before accepting a WAN denial, prove with a router-side capture or the
 named firewall-counter delta that the probe actually reached `radio0`.
 
-Before arming the first service-node installer, the narrower guarded helper
-`scripts/qualify-fabric-service-sources` can qualify the immediately required
-fabric-source subset without claiming the complete matrix. Its read-only
-`--check` pins the dedicated desktop USB NIC by interface, USB serial, and
-permanent MAC and prints the exact attended confirmation. Its `--run` places
-only that NIC in a trap-restored namespace, exercises both admitted services
-addresses against the VIP and every direct K3s server API, then exercises the
-same four destinations from one unauthorized services-prefix address. It
-requires matching router and per-root host nftables counter deltas. It never
-starts Bootie, issues a credential, arms an installer, or writes a candidate
-disk.
-This narrow gate leaves the already-isolated operator observer active so it
-can capture authenticated router and root evidence; that does not satisfy the
-full matrix's stricter observer-absence condition.
-The full observer, root, inventory, service, WAN, egress, and reboot matrix
-above remains a separate commissioning obligation.
+The historical pre-install helper `scripts/qualify-fabric-service-sources` is
+retired now that both service nodes are admitted. It simulated the service
+addresses from a desktop NIC and required all three etcd ports to be rejected;
+that result is phase-invalid once the desired policy admits exact-node
+TCP/2379. The executable remains only as a fail-closed pointer to its
+replacement and cannot emit a passing result.
 
-The dedicated probe NIC must not remain eligible for desktop auto-DHCP. Pin
-the exact reviewed interface/USB-serial/permanent-MAC identity first, then make
-that device persistently unmanaged without deleting its dormant connection
-profile:
+Before installing the router and root TCP/2379 exceptions, run the guarded
+replacement while the live router still carries the exact
+`Reject-services-to-root-etcd` rule:
+
+```sh
+sudo scripts/qualify-fabric-etcd-pod-sources \
+  --check \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519
+
+# Copy the commit-bound confirmation printed by --check exactly.
+sudo scripts/qualify-fabric-etcd-pod-sources \
+  --run \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519 \
+  --confirm 'QUALIFY-FABRIC-ETCD-POD-SOURCES:<pushed-main-commit>:svc1=10.66.1.10:svc2=10.66.1.11'
+```
+
+The replacement creates two restricted, non-hostNetwork Pods in one temporary
+namespace and binds one to each exact service node. Each Pod targets all three
+exact roots on TCP/2379, and all six attempts must still fail. A temporary
+nftables base chain at an earlier hook priority records the source address
+independently for every service-node/root pair and has no packet verdict, so
+the existing fw4 reject remains authoritative.
+The router forward hook sees these packets only after Flannel/K3s has applied
+service-node egress SNAT, which makes the recorded address the value the
+router and root allow-lists will actually enforce. The named reject counter
+must increase without any semantic fw4 change. Only `svc1=10.66.1.10` and
+`svc2=10.66.1.11` pass;
+any Pod address, different SNAT result, missing observation, or successful
+connection stops the rollout. Never respond by adding a PodCIDR to either
+router or root policy.
+
+The helper owns both the host-local Fabric network-operation lock and the
+cross-workstation `kube-system/fabric-maintenance-lock` ConfigMap and
+refuses pre-existing objects. The global lock serializes it with delegated
+trust/admin, root-policy, router, and post-open maintenance; a failed live run
+retains that lock for inspection. Its EXIT trap UID-checks and removes the
+Kubernetes namespace,
+deletes the complete temporary nftables table, rechecks both absences, and
+verifies the observer namespace before it can report `PASS`. It also normalizes
+the before and after fw4 JSON by removing only rule handles and counter values;
+every remaining semantic byte must match, and the exact old UCI/live rule is
+checked again after the probes. A successful read-only `--check` removes its
+temporary evidence; keep the protected evidence from the attended run with the
+rollout record. This narrow check proves only the ordinary-Pod source
+translation needed for the etcdetcetc exception; the full observer, root,
+inventory, service, WAN, egress, and reboot matrix above remains a separate
+commissioning obligation.
+
+That standalone run is an early discovery gate, not a durable attestation.
+The final router `--run` repeats the same two-Pod proof through a hidden
+parent-only entry point while the router process continuously owns both locks.
+The child proves the inherited flock descriptor plus the exact ConfigMap
+holder, UID, and resourceVersion, performs and cleans the probes, and returns
+those same identities in its protected result. It cannot acquire or release
+the parent locks. The router then revalidates the result and both locks before
+it can stage any packet-opening change.
+
+The live router does not consume a later `uci-defaults` edit. After the
+Pod-source qualification above passes, stage the config child with the
+controller still doubly suspended, roll delegated client trust through `cp1`,
+`cp2`, and `cp3`, provision the exact admin user, and roll the combined root
+host policy one member at a time. Keep the router's old reject throughout all
+of those steps. Only then perform the final network-open transition:
+
+```sh
+sudo scripts/rollout-fabric-router-etcd-policy \
+  --check \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519
+
+# Copy the revision-and-payload confirmation printed by --check exactly.
+sudo scripts/rollout-fabric-router-etcd-policy \
+  --run \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519 \
+  --confirm 'ROLLOUT-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<payload-sha256>'
+```
+
+Both modes require a clean checkout exactly at fetched `origin/main`, run the
+complete read-only `verify-fabric-etcd-pre-open` contract, prove the committed
+and live root guards, verify observer isolation, pin the first SSH connection
+to the ED25519 fingerprint read over serial, and require the exact legacy UCI
+and live-fw4 rule. That pre-open contract requires the exact Flux revision and
+config-active suspension phase, a registry- and source-tree-bound hardened
+image, current dedicated issuers/admin leaf and fail-closed admission policy,
+all three legacy releases suspended, exact delegated trust and root policy on
+all voters, and the exact delegated etcd admin/fabric-root authorization
+state. The run also owns `/run/lock/fabric-network-operation.lock` and the same
+`kube-system/fabric-maintenance-lock` used by the pre-open, root-policy,
+post-open, delegated-trust, and admin helpers. A stale shared lock is a hard
+stop, including when it was left by a failed operation on another workstation.
+Under both locks it reruns the complete pre-open contract before and after the
+fresh Pod-source proof and compares all three normalized root guards with the
+preflight snapshots. The ConfigMap lock is bound continuously to the exact UID
+and resourceVersion returned by creation and is released only with Kubernetes
+DELETE preconditions, so a same-name or same-holder replacement can neither be
+adopted nor deleted. Only then does the helper derive a byte-exact UCI candidate
+from `etcd-client-transition.uci` and rejects any pending UCI delta. After that
+non-live candidate and rollback program are safely staged, it repeats the full
+pre-open proof again. Immediately before arming and again immediately before
+the packet-opening apply, a narrow activation fence freshly fetches
+`origin/main`, requires both `HEAD` and the remote-tracking ref to remain the
+confirmation-bound revision, rechecks the exact Flux source and all seven
+activation Kustomizations, and proves the controller HelmRelease, CRDs, Pods,
+and every standard Pod-producing workload kind remain absent. It stores the
+exact old config in a root-only persistent directory, installs the reviewed
+bidirectional TCP/2379 early-drop guard as the sole automatic nftables include,
+and enables a reboot-surviving procd watchdog before any opening UCI mutation.
+The guard remains effective through commit, reload, all remote proofs, SSH
+loss, and reboot. Deadline or force atomically chooses a fenced terminal state;
+the watchdog then retains or reloads the guard and restores the old reject. It
+never opens packets merely because the main SSH process stopped.
+
+Treat the attended transition as a short repository write freeze: from the
+final `--check` through the `--run` result, no operator or automation may push
+`main`, move the local checkout, or reconcile an activation override. The
+helper detects every such change it can observe before apply, but no distributed
+check can prevent a push in the final instant after its last fetch.
+
+Acceptance requires the installed config to match the staged candidate
+byte-for-byte, `fw4 check`, exact target section and complete `forward_lan`
+ordering, one anonymous counter on each new rule with no packet observed before
+acceptance, a healthy Fabric API, and unchanged observer isolation. The main
+process then creates the token-bound accepted terminal state while the guard is
+still exact and persistent. The watchdog is the sole packet-opening writer: it
+revalidates the contract, removes the persistent guard, reloads the candidate,
+proves exact open state, records `accept-complete`, and continuously reconciles
+that exact state until the caller obtains fresh proofs, stops it, disables it,
+and proves exact open state again. Only then are the watchdog, backup, include,
+and work directory removed. A crash cannot make open policy durable before
+accepted authorization and exact-open completion. On failure, stop: use serial
+to inspect `/etc/fabric-router-etcd-policy-rollback`,
+`/etc/init.d/fabric-router-etcd-policy-rollback`, the live UCI sections, and
+the live `forward_lan` chain. Do not delete stale evidence merely to retry.
+After a pass, rerun the serial-pinned commissioning verifier; its desired
+policy now requires the TCP/2379 allow followed immediately by the
+TCP/2380-2381 reject.
+
+This router operation is the final network-open gate. It does not issue a
+certificate or activate the controller. Keep both controller suspension gates
+closed until the staged delegated certificate and admin-user ceremony in
+`fabric/cluster/etcdetcetc/README.md` is complete. After the controller installs
+its CRDs and the separate runtime child activates the EtcdCluster and smoke
+Tenant, `scripts/qualify-fabric-etcd-post-open` is the acceptance gate for the
+real service-Pod, port, mTLS, and prefix-RBAC path; a static router pass is not
+a substitute.
+
+The post-open helper repeats the serial-pinned exact UCI/full-`forward_lan`
+inspection before and after its probes and compares normalized fw4 semantics.
+It installs a temporary verdict-free observer to distinguish both service-node
+sources across TCP/2379, 2380, and 2381, then requires the exact named allow and
+reject counter deltas. Its two restricted Pods live directly in
+`etcdetcetc-smoke`: no temporary Namespace and no credential copy exist. Their
+only temporary egress is router service address `10.66.1.1:80` for the
+checksum-pinned etcdctl 3.6.13 archive and the three root /32s on TCP/2379-2381.
+The attended `--run` confirmation is
+`QUALIFY-FABRIC-ETCD-POST-OPEN:<pushed-main-commit>`; begin with `--check` and
+the serial ED25519 fingerprint exactly as shown in the activation runbook.
+
+### Persistent post-open etcd fence
+
+Any controller, runtime, or post-open failure after the network-open gate
+requires immediate containment before diagnosis. Do not rely on replacing the
+TCP/2379 UCI allow with the old 'forward_lan' reject alone: fw4 accepts
+established/related traffic earlier, so an existing etcd gRPC connection would
+survive that reload. Start with the read-only check and copy its exact
+revision-and-contract confirmation:
+
+~~~sh
+sudo scripts/rollout-fabric-router-etcd-policy \
+  --fence-check \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519
+
+sudo scripts/rollout-fabric-router-etcd-policy \
+  --fence-run \
+  --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --identity /var/home/sam/.ssh/id_ed25519 \
+  --confirm 'FENCE-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<fence-contract-sha256>'
+~~~
+
+The fence accepts only the exact opened state. It restores the canonical
+'Reject-services-to-root-etcd' UCI rule and installs the reviewed
+'etcd-client-fence.nft' as the sole '/usr/share/nftables.d' include at
+'chain-pre/forward'. Its request drop covers exactly svc1/svc2 to
+cp1/cp2/cp3 TCP destination port 2379; its reverse drop covers the same
+endpoints at TCP source port 2379. Acceptance proves both normalized live
+expressions exactly, proves they are the first two executable 'forward' rules
+and precede every accept, then re-proves the complete canonical
+'forward_lan', all three exact root host guards, and observer isolation. API
+readiness is captured as evidence but is intentionally advisory for emergency
+containment: an unavailable control plane cannot be allowed to block its own
+network fence.
+
+The FENCE confirmation explicitly authorizes proceeding when the Fabric API is
+unavailable or `kube-system/fabric-maintenance-lock` already has any holder. If
+the API is ready, the helper attempts to create that lock; on conflict it
+records and preserves the holder without deleting, replacing, or adopting it.
+If the API is down it skips the ConfigMap operation. In both cases the host lock
+still serializes local helpers, while the atomic router-local
+`/tmp/fabric-router-etcd-policy-fence.operation` lock serializes actual router
+staging across workstations. A second fence refuses while that exact-owner lock
+exists. `/tmp` makes an untrapped stale lock reboot-volatile; never remove it by
+hand while the router is running.
+
+Payloads are built only under the root-owned `.staging` directory. The enabled
+init script validates its exact owner, token, operation ID, payload manifests,
+and installed bytes before atomically renaming `.staging` to the final work
+path. An exact incomplete staging tree can be discarded and rebuilt only after
+the router-local lock proves no other operation is active. An unknown tree,
+completed work path, installed init residue, or modified marker is preserved
+and requires serial inspection. The EXIT recovery path likewise validates all
+completed staging hashes and the installed init before it can promote or arm
+the enforcer; it never executes an unvalidated staged init.
+
+A failed post-open qualifier can leave its exact six-rule, verdict-free
+`fabric_etcd_post_open_probe` table. Fence pre-arm validation accepts that table
+only in its complete exact shape, even if it appears between the initial table
+inspection and the same remote validation. Once the persistent enforcer has
+acknowledged the fence, the helper removes that exact table and proves absence.
+Any extra table, rule, verdict, endpoint, port, or table-level object is a hard
+stop and is preserved for inspection.
+
+This is persistent containment, not a timed rollback. The enabled procd
+enforcer checks the source hashes, sole-include provenance, exact live rule
+expressions/order, and fenced UCI config on every loop and reapplies the
+reviewed state after drift, firewall reload, or reboot. On a successful fence
+the enforcer, include, work directory, and non-secret evidence deliberately
+remain. On failure, any safely completed staging/enforcer artifacts and any
+global lock acquired by this run remain for serial inspection; a run blocked
+before staging may have no router artifact, and an API-down run acquires no
+ConfigMap lock. A conflicting pre-existing holder always remains untouched.
+Never delete, disable, or hand-edit containment artifacts to regain service.
+The ordinary open '--check' and '--run' reject any fence residue, so they cannot
+report an open policy while the earlier drops still exist.
+
+There is intentionally no in-place unfence mode. First fix forward and restore
+the config/controller/runtime suspension gates through Git; suspension does
+not terminate an already-running Pod, which is why the network fence comes
+first. Recovery then requires a separately reviewed serial procedure or a
+closed-policy router reprovision, followed by the full commissioning,
+network-open, and post-open gates from a state with no controller Pods. Never
+roll hardened CRDs, chart state, or controller provenance back to the bootstrap
+image as a recovery shortcut.
+
+For the still-open full source-role matrix, the dedicated physical probe NIC
+must not remain eligible for desktop auto-DHCP. Pin the exact reviewed
+interface/USB-serial/permanent-MAC identity first, then make that device
+persistently unmanaged without deleting its dormant connection profile:
 
 ```sh
 sudo nmcli device set enp9s0u1u2 managed --permanent no
 ```
 
-The helper requires effective `GENERAL.NM-MANAGED=no`, NetworkManager state
-`unmanaged`, and no active connection before and after its trap-restored run.
-Its read-only check does not raise an administratively-down NIC merely to test
-carrier; the confirmed live run raises it only after moving it into the probe
-namespace, then requires physical carrier before assigning a source address.
-The attended rollback, after the probe cable is removed, is
+Any implementation of that physical matrix must require effective
+`GENERAL.NM-MANAGED=no`, NetworkManager state `unmanaged`, and no active
+connection before and after its trap-restored run. Its read-only check must not
+raise an administratively-down NIC merely to test carrier; a confirmed live
+run may raise it only after moving it into the probe namespace and must then
+require physical carrier before assigning a source address. The attended
+rollback, after the probe cable is removed, is
 `sudo nmcli device set enp9s0u1u2 managed --permanent reset`; revalidate the
 desktop default route immediately afterward.
 

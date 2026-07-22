@@ -1,0 +1,1451 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+profile=$repo_root/fabric/butane/etcd.yaml
+firewall_profile=$repo_root/fabric/butane/firewall.yaml
+canonical_delegated_ca=$repo_root/fabric/pki/etcdetcetc/client-ca.pem
+node=
+confirmation=
+check_only=false
+verify_live_all=false
+
+readonly delegated_ca_path=/etc/etcd/pki/etcdetcetc-client-ca.pem
+readonly renderer_path=/usr/local/sbin/render-fabric-etcd-client-trust
+readonly trust_unit_name=fabric-etcd-client-trust.service
+readonly trust_unit_path=/etc/systemd/system/fabric-etcd-client-trust.service
+readonly etcd_unit_path=/etc/systemd/system/etcd.service
+readonly etcd_firewall_dropin_path=/etc/systemd/system/etcd.service.d/10-fabric-guard.conf
+readonly runtime_bundle=/run/fabric-etcd-client-trust/client-ca-bundle.pem
+readonly endpoints=https://10.66.0.10:2379,https://10.66.0.11:2379,https://10.66.0.12:2379
+
+usage() {
+  cat >&2 <<'EOF'
+Roll the committed delegated client-CA trust policy onto one Fabric etcd member.
+
+Usage:
+  scripts/rollout-fabric-etcd-client-trust --check
+
+  scripts/rollout-fabric-etcd-client-trust --verify-live-all
+
+  scripts/rollout-fabric-etcd-client-trust --node <cp1|cp2|cp3> \
+    --confirm ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:<full-node>:<payload-sha256>
+
+The helper installs only public CA/policy material. It requires a clean pushed
+main branch, serializes every Fabric foundation operation with the global
+maintenance lock, and arms a target-local,
+reboot-surviving five-minute rollback before restarting one etcd member. Run
+cp1, cp2, and cp3 sequentially; never start the next member until the prior
+invocation succeeds. Acceptance uses an acknowledged two-phase disarm. A
+failed invocation deliberately leaves its cluster lock and rollback evidence
+for attended inspection.
+
+The live-all verification is strictly read-only: it takes no maintenance lock,
+accepts no confirmation, and proves the exact installed trust payload plus a
+stable healthy three-voter consensus view from cp1, cp2, and cp3.
+EOF
+}
+
+die() {
+  echo "rollout-fabric-etcd-client-trust: $*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --node)
+      (($# >= 2)) || die '--node requires a value'
+      node=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    --check)
+      check_only=true
+      shift
+      ;;
+    --verify-live-all)
+      verify_live_all=true
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+if $check_only && $verify_live_all; then
+  die '--check and --verify-live-all are mutually exclusive'
+elif $check_only; then
+  [[ -z $node && -z $confirmation ]] || die '--check does not accept --node or --confirm'
+elif $verify_live_all; then
+  [[ -z $node && -z $confirmation ]] ||
+    die '--verify-live-all does not accept --node or --confirm'
+else
+  case $node in
+    cp1)
+      full_node=fabric-az1-cp1
+      ;;
+    cp2)
+      full_node=fabric-az1-cp2
+      ;;
+    cp3)
+      full_node=fabric-az1-cp3
+      ;;
+    *) die '--node must be cp1, cp2, or cp3' ;;
+  esac
+fi
+
+commands=(awk cmp git grep jq mktemp openssl sha256sum tr yq)
+if ! $check_only && ! $verify_live_all; then
+  commands+=(kubectl)
+fi
+for command in "${commands[@]}"; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+[[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
+  die 'script is not inside the expected Git worktree'
+[[ -f $profile && ! -L $profile ]] || die 'Fabric etcd Butane profile is absent or unsafe'
+[[ -f $firewall_profile && ! -L $firewall_profile ]] ||
+  die 'Fabric firewall Butane profile is absent or unsafe'
+[[ -f $canonical_delegated_ca && ! -L $canonical_delegated_ca ]] ||
+  die 'canonical delegated client CA is absent or unsafe'
+
+work=$(mktemp --directory --tmpdir rollout-fabric-etcd-client-trust.XXXXXXXX)
+trap 'rm -rf -- "$work"' EXIT
+
+extract_file() {
+  local source_path=$1 output=$2 expected_mode=$3 metadata
+
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(TARGET_PATH="$source_path" yq -er \
+    '[.storage.files[] | select(.path == strenv(TARGET_PATH))] | length' \
+    "$profile") == 1 ]] || die "Butane must define exactly one $source_path"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  TARGET_PATH="$source_path" yq -er -0 \
+    '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' \
+    "$profile" | tr -d '\000' >"$output"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  metadata=$(TARGET_PATH="$source_path" yq -er '
+    .storage.files[]
+    | select(.path == strenv(TARGET_PATH))
+    | [.overwrite, .mode]
+    | @tsv
+  ' "$profile")
+  [[ $metadata == $'true\t'"$expected_mode" ]] ||
+    die "$source_path must overwrite with decimal mode $expected_mode"
+}
+
+extract_unit() {
+  local unit_name=$1 output=$2 enabled
+
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" yq -er \
+    '[.systemd.units[] | select(.name == strenv(UNIT_NAME))] | length' \
+    "$profile") == 1 ]] || die "Butane must define exactly one $unit_name"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  UNIT_NAME="$unit_name" yq -er -0 \
+    '.systemd.units[] | select(.name == strenv(UNIT_NAME)) | .contents' \
+    "$profile" | tr -d '\000' >"$output"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  enabled=$(UNIT_NAME="$unit_name" yq -er \
+    '.systemd.units[] | select(.name == strenv(UNIT_NAME)) | .enabled' \
+    "$profile")
+  [[ $enabled == true ]] || die "$unit_name must be enabled in Butane"
+}
+
+extract_dropin() {
+  local unit_name=$1 dropin_name=$2 output=$3
+
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" yq -er \
+    '[.systemd.units[] | select(.name == strenv(UNIT_NAME))] | length' \
+    "$firewall_profile") == 1 ]] ||
+    die "firewall Butane must define exactly one $unit_name"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" yq -er \
+    '.systemd.units[] | select(.name == strenv(UNIT_NAME)) | (.dropins // []) | length' \
+    "$firewall_profile") == 1 ]] ||
+    die "firewall Butane must define exactly one $unit_name drop-in"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  [[ $(UNIT_NAME="$unit_name" DROPIN_NAME="$dropin_name" yq -er '
+    [.systemd.units[]
+     | select(.name == strenv(UNIT_NAME))
+     | .dropins[]
+     | select(.name == strenv(DROPIN_NAME))] | length
+  ' "$firewall_profile") == 1 ]] ||
+    die "firewall Butane must define exactly one $unit_name.d/$dropin_name"
+  # shellcheck disable=SC2016 # strenv() belongs to yq.
+  UNIT_NAME="$unit_name" DROPIN_NAME="$dropin_name" yq -er -0 '
+    .systemd.units[]
+    | select(.name == strenv(UNIT_NAME))
+    | .dropins[]
+    | select(.name == strenv(DROPIN_NAME))
+    | .contents
+  ' "$firewall_profile" | tr -d '\000' >"$output"
+}
+
+extract_file "$delegated_ca_path" "$work/delegated-ca.pem" 420
+extract_file "$renderer_path" "$work/render-client-trust" 493
+extract_unit "$trust_unit_name" "$work/client-trust.service"
+extract_unit etcd.service "$work/etcd.service"
+extract_dropin etcd.service 10-fabric-guard.conf "$work/etcd-firewall-dropin.conf"
+bash -n "$work/render-client-trust" ||
+  die 'embedded client-trust renderer is not valid Bash'
+cmp -s "$work/etcd-firewall-dropin.conf" <(printf '%s' \
+  $'[Unit]\nRequires=fabric-guard.service\nAfter=fabric-guard.service\n') ||
+  die 'committed etcd firewall drop-in has unexpected contents'
+
+cmp -s "$canonical_delegated_ca" "$work/delegated-ca.pem" ||
+  die 'Butane delegated CA differs from its canonical public artifact'
+[[ $(grep -c '^-----BEGIN CERTIFICATE-----$' "$work/delegated-ca.pem") == 1 &&
+   $(grep -c '^-----END CERTIFICATE-----$' "$work/delegated-ca.pem") == 1 ]] ||
+  die 'delegated CA payload is not exactly one PEM certificate'
+! grep -Eq -- '-----BEGIN [^-]*PRIVATE KEY-----' \
+  "$work/delegated-ca.pem" "$work/render-client-trust" \
+  "$work/client-trust.service" "$work/etcd.service" ||
+  die 'rollout payload contains plaintext private-key material'
+
+delegated_subject=$(openssl x509 -in "$work/delegated-ca.pem" -noout -subject -nameopt RFC2253)
+[[ $delegated_subject == 'subject=CN=fabric-etcdetcetc-client-ca' ]] ||
+  die "delegated CA has unexpected subject: $delegated_subject"
+delegated_text=$(openssl x509 -in "$work/delegated-ca.pem" -noout -text)
+grep -Fq 'CA:TRUE, pathlen:0' <<<"$delegated_text" ||
+  die 'delegated client CA is not pathlen:0'
+grep -Fq 'TLS Web Client Authentication' <<<"$delegated_text" ||
+  die 'delegated CA lacks its client-auth constraint'
+openssl x509 -in "$work/delegated-ca.pem" -noout -checkend 604800 >/dev/null ||
+  die 'delegated CA expires in less than seven days'
+delegated_fingerprint=$(openssl x509 -in "$work/delegated-ca.pem" \
+  -noout -fingerprint -sha256 | sed 's/^sha256 Fingerprint=//')
+grep -Fq "readonly delegated_fingerprint=$delegated_fingerprint" \
+  "$work/render-client-trust" || die 'renderer does not pin the canonical delegated CA fingerprint'
+physical_fingerprint=$(awk -F= '/^readonly physical_fingerprint=/ { print $2 }' \
+  "$work/render-client-trust")
+[[ $physical_fingerprint =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]] ||
+  die 'renderer does not contain one exact SHA-256 physical CA fingerprint'
+grep -Fq 'readonly output=/run/fabric-etcd-client-trust/client-ca-bundle.pem' \
+  "$work/render-client-trust" || die 'renderer writes an unexpected trust-bundle path'
+# shellcheck disable=SC2016 # These are literal variables in the embedded renderer.
+grep -Fq 'cat "$physical_ca" "$delegated_ca" >"$candidate"' \
+  "$work/render-client-trust" || die 'renderer does not preserve physical-then-delegated CA ordering'
+grep -Fq 'RuntimeDirectory=fabric-etcd-client-trust' "$work/client-trust.service" ||
+  die 'trust service lacks its private runtime directory'
+grep -Fq 'ExecStart=/usr/local/sbin/render-fabric-etcd-client-trust' \
+  "$work/client-trust.service" || die 'trust service runs an unexpected renderer'
+grep -Fq 'Requires=fabric-etcd-client-trust.service install-etcd-binaries.service verify-k3s-selinux.service' \
+  "$work/etcd.service" || die 'etcd does not require the trust renderer'
+grep -Fq 'After=network-online.target fabric-etcd-client-trust.service install-etcd-binaries.service verify-k3s-selinux.service' \
+  "$work/etcd.service" || die 'etcd does not start after the trust renderer'
+[[ $(grep -c -- '--trusted-ca-file=/run/fabric-etcd-client-trust/client-ca-bundle.pem' \
+  "$work/etcd.service") == 1 ]] || die 'etcd client trust path is not exact'
+[[ $(grep -c -- '--peer-trusted-ca-file=/etc/etcd/pki/ca.pem' \
+  "$work/etcd.service") == 1 ]] || die 'etcd peer trust is not pinned to the physical CA'
+! grep -Fq -- '--peer-trusted-ca-file=/run/fabric-etcd-client-trust/' \
+  "$work/etcd.service" || die 'delegated client CA leaked into peer trust'
+
+payload_hash=$(
+  {
+    printf '%s\0%s\0' "$delegated_ca_path" 0644
+    cat "$work/delegated-ca.pem"
+    printf '\0%s\0%s\0' "$renderer_path" 0755
+    cat "$work/render-client-trust"
+    printf '\0%s\0%s\0' "$trust_unit_path" 0644
+    cat "$work/client-trust.service"
+    printf '\0%s\0%s\0' "$etcd_unit_path" 0644
+    cat "$work/etcd.service"
+    printf '\0'
+  } | sha256sum | awk '{print $1}'
+)
+
+if $check_only; then
+  echo "validated Fabric etcd client-trust rollout payload $payload_hash"
+  exit 0
+fi
+
+[[ $(git -C "$repo_root" branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(git -C "$repo_root" status --porcelain) ]] || die 'worktree must be clean'
+git -C "$repo_root" fetch --quiet origin main
+head_commit=$(git -C "$repo_root" rev-parse HEAD)
+origin_main=$(git -C "$repo_root" rev-parse refs/remotes/origin/main)
+[[ $head_commit == "$origin_main" ]] ||
+  die 'HEAD must exactly match freshly fetched origin/main'
+
+set_node_context() {
+  local selected_node=$1
+
+  case $selected_node in
+    cp1)
+      full_node=fabric-az1-cp1
+      ;;
+    cp2)
+      full_node=fabric-az1-cp2
+      ;;
+    cp3)
+      full_node=fabric-az1-cp3
+      ;;
+    *) die 'internal node selector must be cp1, cp2, or cp3' ;;
+  esac
+  node=$selected_node
+  ssh=("$repo_root/scripts/fabric-ssh" "$node")
+  remote_ctl=(
+    sudo --non-interactive /usr/local/bin/etcdctl
+    "--endpoints=$endpoints"
+    --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem
+    --cert=/var/lib/rancher/k3s/server/etcd-client.pem
+    --key=/var/lib/rancher/k3s/server/etcd-client-key.pem
+    --dial-timeout=5s
+    --command-timeout=15s
+  )
+}
+
+etcd_member_contract=
+assert_etcd_health() {
+  local health_json status_json member_json alarm_json contract
+
+  health_json=$("${ssh[@]}" "${remote_ctl[@]}" --write-out=json endpoint health) ||
+    die 'three-endpoint etcd health query failed'
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].endpoint] | sort) == [
+      "https://10.66.0.10:2379",
+      "https://10.66.0.11:2379",
+      "https://10.66.0.12:2379"
+    ] and all(.health == true)
+  ' <<<"$health_json" >/dev/null || die 'not all three exact etcd endpoints are healthy'
+
+  status_json=$("${ssh[@]}" "${remote_ctl[@]}" --write-out=json endpoint status) ||
+    die 'three-endpoint etcd status query failed'
+  jq -e '
+    type == "array" and length == 3 and
+    ([.[].Endpoint] | sort) == [
+      "https://10.66.0.10:2379",
+      "https://10.66.0.11:2379",
+      "https://10.66.0.12:2379"
+    ] and
+    ([.[].Status.header.cluster_id] | unique | length) == 1 and
+    ([.[].Status.header.member_id] | unique | length) == 3 and
+    ([.[].Status.leader] | unique | length) == 1 and
+    all(.Status.version == "3.6.13") and
+    all(.Status.header.cluster_id > 0) and
+    all(.Status.header.member_id > 0) and
+    all(.Status.header.revision > 0) and
+    all(.Status.leader > 0) and
+    all(.Status.raftAppliedIndex <= .Status.raftIndex) and
+    all((.Status.isLearner // false) == false)
+  ' <<<"$status_json" >/dev/null || die 'etcd quorum status is inconsistent or degraded'
+
+  member_json=$("${ssh[@]}" "${remote_ctl[@]}" member list --write-out=json) ||
+    die 'three-voter etcd member-list query failed'
+  jq -e --argjson status "$status_json" '
+    . as $listing
+    | [
+        {
+          endpoint: "https://10.66.0.10:2379",
+          name: "fabric-az1-cp1",
+          peer_url: "https://fabric-az1-cp1.fabric.internal:2380",
+          client_url: "https://fabric-az1-cp1.fabric.internal:2379"
+        },
+        {
+          endpoint: "https://10.66.0.11:2379",
+          name: "fabric-az1-cp2",
+          peer_url: "https://fabric-az1-cp2.fabric.internal:2380",
+          client_url: "https://fabric-az1-cp2.fabric.internal:2379"
+        },
+        {
+          endpoint: "https://10.66.0.12:2379",
+          name: "fabric-az1-cp3",
+          peer_url: "https://fabric-az1-cp3.fabric.internal:2380",
+          client_url: "https://fabric-az1-cp3.fabric.internal:2379"
+        }
+      ] as $reviewed
+    | ($listing | type) == "object" and
+      ($listing.header.cluster_id | type) == "number" and
+      (($listing.header.cluster_id | tostring) ==
+       ($status[0].Status.header.cluster_id | tostring)) and
+      ($listing.members | type) == "array" and
+      ($listing.members | length) == 3 and
+      (([$listing.members[].name] | sort) ==
+       ([$reviewed[].name] | sort)) and
+      (([$listing.members[].ID | tostring] | unique | length) == 3) and
+      all($listing.members[];
+        (.ID | type) == "number" and (.ID > 0) and
+        (.peerURLs | type) == "array" and
+        (.clientURLs | type) == "array" and
+        (.isLearner // false) == false
+      ) and
+      all($reviewed[];
+        . as $identity
+        | ([
+             $listing.members[]
+             | select(.name == $identity.name)
+             | select(.peerURLs == [$identity.peer_url])
+             | select(.clientURLs == [$identity.client_url])
+           ] | length) == 1 and
+          (([
+              $listing.members[]
+              | select(.name == $identity.name)
+              | .ID
+              | tostring
+            ][0]) ==
+           ([
+              $status[]
+              | select(.Endpoint == $identity.endpoint)
+              | .Status.header.member_id
+              | tostring
+            ][0]))
+      )
+  ' <<<"$member_json" >/dev/null ||
+    die 'etcd membership differs from the reviewed three-voter topology'
+
+  # Normalize the reviewed endpoint/name/ID/URL binding once and require the
+  # same contract from every root before and after trust verification.
+  contract=$(jq -cnS \
+    --argjson status "$status_json" --argjson listing "$member_json" '
+    [
+      {endpoint: "https://10.66.0.10:2379", name: "fabric-az1-cp1"},
+      {endpoint: "https://10.66.0.11:2379", name: "fabric-az1-cp2"},
+      {endpoint: "https://10.66.0.12:2379", name: "fabric-az1-cp3"}
+    ] as $reviewed
+    | {
+        cluster_id: ($listing.header.cluster_id | tostring),
+        members: [
+          $reviewed[]
+          | . as $identity
+          | ($listing.members[] | select(.name == $identity.name)) as $member
+          | ($status[] | select(.Endpoint == $identity.endpoint)) as $endpoint_status
+          | {
+              endpoint: $identity.endpoint,
+              name: $identity.name,
+              member_id: ($member.ID | tostring),
+              status_member_id: ($endpoint_status.Status.header.member_id | tostring),
+              peer_urls: $member.peerURLs,
+              client_urls: $member.clientURLs,
+              is_learner: ($member.isLearner // false)
+            }
+        ]
+      }
+  ')
+  if [[ -z $etcd_member_contract ]]; then
+    etcd_member_contract=$contract
+  else
+    [[ $contract == "$etcd_member_contract" ]] ||
+      die 'etcd cluster or member identity changed during client-trust verification'
+  fi
+
+  alarm_json=$("${ssh[@]}" "${remote_ctl[@]}" --write-out=json alarm list) ||
+    die 'etcd alarm query failed'
+  jq -e '((.alarms // []) | type) == "array" and ((.alarms // []) | length) == 0' \
+    <<<"$alarm_json" >/dev/null || die 'etcd reports an active alarm'
+}
+
+verify_remote_etcdctl_version() {
+  local remote_etcdctl_version
+
+  remote_etcdctl_version=$("${ssh[@]}" sudo --non-interactive \
+    /usr/local/bin/etcdctl version)
+  [[ $(awk '/^etcdctl version:/ { print $3; exit }' \
+    <<<"$remote_etcdctl_version") == 3.6.13 ]] ||
+    die "$full_node does not run etcdctl 3.6.13"
+  grep -Fxq 'API version: 3.6' <<<"$remote_etcdctl_version" ||
+    die "$full_node etcdctl does not report API 3.6"
+}
+
+verify_installed_file() {
+  local target=$1 source=$2 expected_mode=$3 expected_hash actual_hash metadata
+  expected_hash=$(sha256sum "$source" | awk '{print $1}')
+  actual_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum "$target" | awk '{print $1}')
+  [[ $actual_hash == "$expected_hash" ]] || die "installed payload differs from Git: $target"
+  metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$target")
+  [[ $metadata == "0:0:$expected_mode:1:regular file" ]] ||
+    die "installed payload has unsafe metadata: $target ($metadata)"
+}
+
+assert_rollback_residue_absent() {
+  local active_state job load_state path unit unit_file_state
+  for path in \
+    /var/lib/fabric-etcd-client-trust-rollback \
+    /run/fabric-etcd-client-trust-rollout \
+    /etc/etcd/pki/etcdetcetc-client-ca.pem.fabric-rollout.next \
+    /etc/etcd/pki/etcdetcetc-client-ca.pem.fabric-rollback.next \
+    /usr/local/sbin/render-fabric-etcd-client-trust.fabric-rollout.next \
+    /usr/local/sbin/render-fabric-etcd-client-trust.fabric-rollback.next \
+    /etc/systemd/system/fabric-etcd-client-trust.service.fabric-rollout.next \
+    /etc/systemd/system/fabric-etcd-client-trust.service.fabric-rollback.next \
+    /etc/systemd/system/etcd.service.fabric-rollout.next \
+    /etc/systemd/system/etcd.service.fabric-rollback.next \
+    /etc/systemd/system/fabric-etcd-client-trust-rollback.service \
+    /etc/systemd/system/fabric-etcd-client-trust-rollback.service.d \
+    /etc/systemd/system/fabric-etcd-client-trust-rollback.timer \
+    /etc/systemd/system/fabric-etcd-client-trust-rollback.timer.d; do
+    "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$path" ||
+      die "$full_node retains stale client-trust rollback state: $path"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$path" ||
+      die "$full_node has an unsafe client-trust rollback symlink: $path"
+  done
+  for unit in fabric-etcd-client-trust-rollback.timer \
+      fabric-etcd-client-trust-rollback.service; do
+    load_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=LoadState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback LoadState: $unit"
+    active_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=ActiveState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback ActiveState: $unit"
+    unit_file_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=UnitFileState --value "$unit") ||
+      die "$full_node cannot inspect stale rollback UnitFileState: $unit"
+    job=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+      --property=Job --value "$unit") ||
+      die "$full_node cannot inspect stale rollback Job: $unit"
+    [[ $load_state == not-found && $active_state == inactive && -z $job ]] ||
+      die "$full_node retains loaded, active, or queued rollback state: $unit"
+    [[ -z $unit_file_state || $unit_file_state == disabled ]] ||
+      die "$full_node rollback unit-file state is not absent or disabled: $unit ($unit_file_state)"
+    if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+        "$unit" 2>/dev/null; then
+      die "$full_node retains an enabled rollback unit: $unit"
+    fi
+  done
+}
+
+assert_exact_etcd_flag() {
+  local argv=$1 flag_prefix=$2 reviewed_value=$3 prefix_count exact_count
+
+  prefix_count=$(awk -v prefix="$flag_prefix" '
+    index($0, prefix) == 1 { count++ }
+    END { print count + 0 }
+  ' <<<"$argv")
+  exact_count=$(awk -v reviewed="$reviewed_value" '
+    $0 == reviewed { count++ }
+    END { print count + 0 }
+  ' <<<"$argv")
+  [[ $prefix_count == 1 && $exact_count == 1 ]] ||
+    die "live etcd process does not use exactly one reviewed $flag_prefix flag"
+}
+
+verify_live_trust() {
+  local runtime_cert_count runtime_end_count runtime_hash expected_runtime_hash
+  local runtime_metadata remote_physical_fingerprint remote_delegated_fingerprint
+  local etcd_pid etcd_argv trust_fragment trust_dropins etcd_fragment etcd_dropins
+  local persistent_target
+
+  verify_installed_file "$delegated_ca_path" "$work/delegated-ca.pem" 644
+  verify_installed_file "$renderer_path" "$work/render-client-trust" 755
+  verify_installed_file "$trust_unit_path" "$work/client-trust.service" 644
+  verify_installed_file "$etcd_unit_path" "$work/etcd.service" 644
+  for persistent_target in "$delegated_ca_path" "$renderer_path" \
+    "$trust_unit_path" "$etcd_unit_path"; do
+    "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+      "$persistent_target" >/dev/null ||
+      die "installed payload has the wrong security context: $persistent_target"
+  done
+  verify_installed_file "$etcd_firewall_dropin_path" \
+    "$work/etcd-firewall-dropin.conf" 644
+  "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet "$trust_unit_name"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet "$trust_unit_name"
+  [[ $("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=Result --value "$trust_unit_name") == success ]] ||
+    die 'trust renderer service did not complete successfully'
+
+  trust_fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=FragmentPath --value "$trust_unit_name")
+  [[ $trust_fragment == "$trust_unit_path" ]] ||
+    die "$trust_unit_name loads an unexpected fragment: $trust_fragment"
+  trust_dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=DropInPaths --value "$trust_unit_name")
+  [[ -z $trust_dropins ]] ||
+    die "$trust_unit_name has unreviewed drop-ins: $trust_dropins"
+
+  etcd_fragment=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=FragmentPath --value etcd.service)
+  [[ $etcd_fragment == "$etcd_unit_path" ]] ||
+    die "etcd.service loads an unexpected fragment: $etcd_fragment"
+  etcd_dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=DropInPaths --value etcd.service)
+  [[ $etcd_dropins == "$etcd_firewall_dropin_path" ]] ||
+    die "etcd.service does not load exactly the committed firewall drop-in: $etcd_dropins"
+
+  runtime_cert_count=$("${ssh[@]}" sudo --non-interactive /usr/bin/grep \
+    -c '^-----BEGIN CERTIFICATE-----$' "$runtime_bundle")
+  runtime_end_count=$("${ssh[@]}" sudo --non-interactive /usr/bin/grep \
+    -c '^-----END CERTIFICATE-----$' "$runtime_bundle")
+  [[ $runtime_cert_count == 2 && $runtime_end_count == 2 ]] ||
+    die 'runtime client trust bundle does not contain exactly two certificates'
+  runtime_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$runtime_bundle" | awk '{print $1}')
+  expected_runtime_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/bash -c \
+    'cat /etc/etcd/pki/ca.pem /etc/etcd/pki/etcdetcetc-client-ca.pem | sha256sum' |
+    awk '{print $1}')
+  [[ $runtime_hash == "$expected_runtime_hash" ]] ||
+    die 'runtime client trust bundle is not the exact physical-plus-delegated concatenation'
+  runtime_metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+    --format='%u:%g:%a:%h:%F' "$runtime_bundle")
+  [[ $runtime_metadata == '0:0:444:1:regular file' ]] ||
+    die "runtime client trust bundle has unsafe metadata: $runtime_metadata"
+  remote_physical_fingerprint=$("${ssh[@]}" sudo --non-interactive /usr/bin/openssl x509 \
+    -in /etc/etcd/pki/ca.pem -noout -fingerprint -sha256 | sed 's/^sha256 Fingerprint=//')
+  [[ $remote_physical_fingerprint == "$physical_fingerprint" ]] ||
+    die 'live physical CA differs from the renderer pin'
+  remote_delegated_fingerprint=$("${ssh[@]}" sudo --non-interactive /usr/bin/openssl x509 \
+    -in "$delegated_ca_path" -noout -fingerprint -sha256 | sed 's/^sha256 Fingerprint=//')
+  [[ $remote_delegated_fingerprint == "$delegated_fingerprint" ]] ||
+    die 'live delegated CA differs from the reviewed Git certificate'
+
+  etcd_pid=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=MainPID --value etcd.service)
+  [[ $etcd_pid =~ ^[1-9][0-9]*$ ]] || die 'etcd has no live main process'
+  etcd_argv=$("${ssh[@]}" sudo --non-interactive /usr/bin/cat \
+    "/proc/$etcd_pid/cmdline" | tr '\0' '\n')
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--client-cert-auth=' '--client-cert-auth=true'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--peer-client-cert-auth=' '--peer-client-cert-auth=true'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--cert-file=' '--cert-file=/etc/etcd/pki/peer.pem'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--key-file=' '--key-file=/etc/etcd/pki/peer-key.pem'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--trusted-ca-file=' \
+    '--trusted-ca-file=/run/fabric-etcd-client-trust/client-ca-bundle.pem'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--peer-cert-file=' '--peer-cert-file=/etc/etcd/pki/peer.pem'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--peer-key-file=' '--peer-key-file=/etc/etcd/pki/peer-key.pem'
+  assert_exact_etcd_flag "$etcd_argv" \
+    '--peer-trusted-ca-file=' '--peer-trusted-ca-file=/etc/etcd/pki/ca.pem'
+}
+
+if $verify_live_all; then
+  readonly verification_nodes=(cp1 cp2 cp3)
+  for verification_node in "${verification_nodes[@]}"; do
+    set_node_context "$verification_node"
+    assert_rollback_residue_absent
+    verify_remote_etcdctl_version
+    assert_etcd_health
+  done
+  for verification_node in "${verification_nodes[@]}"; do
+    set_node_context "$verification_node"
+    verify_live_trust
+  done
+  for verification_node in "${verification_nodes[@]}"; do
+    set_node_context "$verification_node"
+    verify_remote_etcdctl_version
+    assert_etcd_health
+    assert_rollback_residue_absent
+  done
+  printf 'FABRIC_ETCD_CLIENT_TRUST_LIVE_ALL=PASS revision=%s payload_sha256=%s\n' \
+    "$head_commit" "$payload_hash"
+  exit 0
+fi
+
+expected="ROLLOUT-FABRIC-ETCD-CLIENT-TRUST:$full_node:$payload_hash"
+[[ $confirmation == "$expected" ]] || die "exact --confirm $expected is required"
+
+ik=("$repo_root/scripts/ik" --context=fabric)
+set_node_context "$node"
+readonly lock_name=fabric-maintenance-lock
+lock_holder="$(hostname):$$:$full_node:$payload_hash"
+success=false
+rollback_armed=false
+rollback_disarmed=false
+
+assert_api_health() {
+  "${ik[@]}" get --raw=/readyz >/dev/null || die 'Fabric API is not ready'
+  "${ik[@]}" get --raw='/readyz?verbose' | grep -Fq '[+]etcd ok' ||
+    die 'Fabric API does not report a healthy etcd check'
+  "${ssh[@]}" sudo --non-interactive /usr/local/bin/k3s kubectl get \
+    --raw='/readyz?verbose' | grep -Fq 'readyz check passed' ||
+    die "$full_node local API readiness failed"
+}
+
+verify_remote_etcdctl_version
+assert_etcd_health
+assert_api_health
+lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+  -o jsonpath='{.spec.renewTime}')
+[[ -n $lease_before ]] || die "cannot read $full_node heartbeat Lease"
+[[ $("${ik[@]}" get node "$full_node" \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}') == True ]] ||
+  die "$full_node is not Ready before rollout"
+
+if ! "${ik[@]}" -n kube-system create configmap "$lock_name" \
+  --from-literal="holder=$lock_holder" >/dev/null; then
+  current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+    -o jsonpath='{.data.holder}' 2>/dev/null || true)
+  die "another or stale client-trust rollout lock exists: ${current_holder:-unknown}"
+fi
+
+cleanup() {
+  local status=$? current_holder
+  trap - EXIT HUP INT TERM
+  trap '' HUP INT TERM
+  set +e
+  if ! $success && $rollback_armed; then
+    # If acknowledgement was lost after a remote disarm, re-enable both
+    # persistent triggers and atomically convert accepted to rollback-required.
+    # shellcheck disable=SC2016 # Literal target-local recovery program.
+force_rollback_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+state=$(<"$state_path")
+systemctl daemon-reload
+systemctl enable "$timer" "${service##*/}" >/dev/null
+sync --file-system /etc/systemd/system
+case $state in
+  "armed:$token"|"accepted:$token") write_state rollback-required ;;
+  "rollback-required:$token"|"rolling-back:$token"|"rolled-back:$token") ;;
+  *) exit 1 ;;
+esac
+printf "%s\n" "$token" >"$work/force-rollback.next"
+chmod 0600 "$work/force-rollback.next"
+mv "$work/force-rollback.next" "$work/force-rollback"
+sync --file-system "$work"
+flock --unlock "$state_fd"
+exec {state_fd}>&-
+systemctl start --no-block "${service##*/}"
+for ((attempt = 0; attempt < 120; attempt++)); do
+  if [[ $(<"$state_path") == "rolled-back:$token" &&
+        -f $work/rolled-back && ! -L $work/rolled-back &&
+        $(<"$work/rolled-back") == "$token" &&
+        $(systemctl show --property=ActiveState --value "${service##*/}") == inactive &&
+        -z $(systemctl show --property=Job --value "${service##*/}") ]]; then
+    printf "ROLLBACK_FORCED=%s\n" "$token"
+    exit 0
+  fi
+  sleep 1
+done
+exit 1
+'
+    force_rollback_result=$(printf '%s' "$force_rollback_program" |
+      "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+        "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
+        "$rollout_token" 2>/dev/null)
+    if [[ $force_rollback_result == "ROLLBACK_FORCED=$rollout_token" ]]; then
+      echo "rollout stopped; immediate target-local rollback was requested and $lock_name remains held by $lock_holder" >&2
+    else
+      echo "WARNING: rollout stopped and remote rollback acknowledgement failed; persistent rollback evidence and $lock_name remain for attended inspection" >&2
+    fi
+  elif ! $success && $rollback_disarmed; then
+    echo "rollout stopped after rollback disarm; persistent evidence and $lock_name remain held for attended inspection" >&2
+  elif ! $success; then
+    echo "rollout stopped before rollback was armed; $lock_name remains held by $lock_holder for inspection" >&2
+  fi
+  rm -rf -- "$work"
+  if $success; then
+    current_holder=$("${ik[@]}" -n kube-system get configmap "$lock_name" \
+      -o jsonpath='{.data.holder}' 2>/dev/null || true)
+    if [[ $current_holder != "$lock_holder" ]]; then
+      echo "client-trust rollout passed but global lock ownership changed; refuse to delete it" >&2
+      status=1
+    elif ! "${ik[@]}" -n kube-system delete configmap "$lock_name" \
+        --wait=true >/dev/null; then
+      echo "client-trust rollout passed but global lock could not be released" >&2
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+remote_work=/var/lib/fabric-etcd-client-trust-rollback
+rollback_unit=fabric-etcd-client-trust-rollback
+rollback_service_path=/etc/systemd/system/$rollback_unit.service
+rollback_timer_path=/etc/systemd/system/$rollback_unit.timer
+rollout_token="$head_commit:$payload_hash:$full_node"
+
+# Revalidate the complete live contract after acquiring the global lock. The
+# earlier probes may have overlapped a just-finishing attended operation.
+assert_etcd_health
+assert_api_health
+lease_before=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+  -o jsonpath='{.spec.renewTime}')
+[[ -n $lease_before ]] || die "cannot refresh $full_node heartbeat Lease under the global lock"
+[[ $("${ik[@]}" get node "$full_node" \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}') == True ]] ||
+  die "$full_node is not Ready after acquiring the global lock"
+
+assert_rollback_residue_absent
+for transient in "$rollback_unit.timer" "$rollback_unit.service"; do
+  load_state=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
+    --property=LoadState --value "$transient" 2>/dev/null || true)
+  [[ -z $load_state || $load_state == not-found ]] ||
+    die "stale target-local rollback unit requires inspection: $transient ($load_state)"
+  if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+    "$transient" 2>/dev/null; then
+    die "stale enabled target-local rollback unit requires inspection: $transient"
+  fi
+done
+for work_path in "$remote_work" /run/fabric-etcd-client-trust-rollout \
+  "$delegated_ca_path.fabric-rollout.next" \
+  "$delegated_ca_path.fabric-rollback.next" \
+  "$renderer_path.fabric-rollout.next" \
+  "$renderer_path.fabric-rollback.next" \
+  "$trust_unit_path.fabric-rollout.next" \
+  "$trust_unit_path.fabric-rollback.next" \
+  "$etcd_unit_path.fabric-rollout.next" \
+  "$etcd_unit_path.fabric-rollback.next"; do
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$work_path" ||
+    die "stale target-local rollout directory requires inspection: $work_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$work_path" ||
+    die "unsafe target-local rollout symlink requires inspection: $work_path"
+done
+for unit_path in "$rollback_service_path" "$rollback_service_path.d" \
+  "$rollback_timer_path" "$rollback_timer_path.d"; do
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -e "$unit_path" ||
+    die "stale persistent rollback unit requires inspection: $unit_path"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$unit_path" ||
+    die "unsafe persistent rollback unit symlink requires inspection: $unit_path"
+done
+
+for directory in /etc/etcd/pki /usr/local/sbin /etc/systemd/system /var/lib; do
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test -d "$directory"
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$directory"
+done
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/flock
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/cmp
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/restorecon
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/matchpathcon
+"${ssh[@]}" sudo --non-interactive /usr/bin/test -x /usr/bin/sync
+"${ssh[@]}" sudo --non-interactive /usr/bin/mkdir --mode=0700 "$remote_work"
+
+stage_public_file() {
+  local source=$1 remote_name=$2 expected_hash remote_hash
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$remote_work/$remote_name" <"$source" >/dev/null
+  "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$remote_work/$remote_name"
+  expected_hash=$(sha256sum "$source" | awk '{print $1}')
+  remote_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+    "$remote_work/$remote_name" | awk '{print $1}')
+  [[ $remote_hash == "$expected_hash" ]] || die "$remote_name changed in transport"
+}
+
+stage_public_file "$work/delegated-ca.pem" delegated-ca.next
+stage_public_file "$work/render-client-trust" renderer.next
+stage_public_file "$work/client-trust.service" fabric-etcd-client-trust.service
+stage_public_file "$work/etcd.service" etcd.service
+
+"${ssh[@]}" sudo --non-interactive /usr/bin/openssl x509 \
+  -in "$remote_work/delegated-ca.next" -noout >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/bash -n "$remote_work/renderer.next"
+
+backup_remote_file() {
+  local target=$1 name=$2 backup_hash metadata metadata_hash
+  "${ssh[@]}" sudo --non-interactive /usr/bin/test ! -L "$target" ||
+    die "refusing to replace symlink: $target"
+  if "${ssh[@]}" sudo --non-interactive /usr/bin/test -e "$target"; then
+    "${ssh[@]}" sudo --non-interactive /usr/bin/test -f "$target" ||
+      die "existing target is not a regular file: $target"
+    "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V \
+      "$target" >/dev/null ||
+      die "existing target has the wrong security context: $target"
+    metadata=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+      --format='%u:%g:%a:%h:%F:%C' "$target")
+    "${ssh[@]}" sudo --non-interactive /usr/bin/cp \
+      --preserve=mode,ownership,timestamps,context,xattr -- "$target" \
+      "$remote_work/$name.previous"
+    [[ $("${ssh[@]}" sudo --non-interactive /usr/bin/stat \
+      --format='%u:%g:%a:%h:%F:%C' "$remote_work/$name.previous") == \
+      "$metadata" ]] ||
+      die "rollback backup did not preserve exact metadata and security context: $target"
+    printf '%s\n' "$metadata" |
+      "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+        "$remote_work/$name.previous.metadata" >/dev/null
+    "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+      "$remote_work/$name.previous.metadata"
+    backup_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+      "$remote_work/$name.previous" | awk '{print $1}')
+    metadata_hash=$("${ssh[@]}" sudo --non-interactive /usr/bin/sha256sum \
+      "$remote_work/$name.previous.metadata" | awk '{print $1}')
+    [[ $backup_hash =~ ^[0-9a-f]{64}$ ]] || die "cannot hash rollback backup: $target"
+    [[ $metadata_hash =~ ^[0-9a-f]{64}$ ]] ||
+      die "cannot hash rollback metadata: $target"
+    {
+      printf '%s  %s.previous\n' "$backup_hash" "$name"
+      printf '%s  %s.previous.metadata\n' "$metadata_hash" "$name"
+    } |
+      "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+        "$remote_work/$name.previous.sha256" >/dev/null
+    "${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+      "$remote_work/$name.previous.sha256"
+  else
+    "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/$name.absent"
+  fi
+}
+
+backup_remote_file "$delegated_ca_path" delegated-ca
+backup_remote_file "$renderer_path" renderer
+backup_remote_file "$trust_unit_path" client-trust.service
+backup_remote_file "$etcd_unit_path" etcd.service
+if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$trust_unit_name" 2>/dev/null; then
+  "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/trust.previously-enabled"
+else
+  "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/trust.previously-disabled"
+fi
+if "${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  "$trust_unit_name" 2>/dev/null; then
+  "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/trust.previously-active"
+else
+  "${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/trust.previously-inactive"
+fi
+
+printf '%s\n' fabric-etcd-client-trust-rollout |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$remote_work/owner" >/dev/null
+printf '%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$remote_work/expected-token" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$remote_work/owner" "$remote_work/expected-token"
+"${ssh[@]}" sudo --non-interactive /usr/bin/touch "$remote_work/state.lock"
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$remote_work/state.lock"
+
+# shellcheck disable=SC2016 # This is a literal target-local rollback program.
+rollback_program='#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+work=/var/lib/fabric-etcd-client-trust-rollback
+timer=fabric-etcd-client-trust-rollback.timer
+service=fabric-etcd-client-trust-rollback.service
+state_path=$work/state
+state_lock=$work/state.lock
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+for marker in owner expected-token armed deadline; do
+  [[ -f $work/$marker && ! -L $work/$marker ]]
+done
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/armed") == "$(<"$work/expected-token")" ]]
+token=$(<"$work/expected-token")
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+state=$(<"$state_path")
+case $state in
+  "accepted:$token"|"rolled-back:$token")
+    systemctl disable "$timer" "$service" >/dev/null 2>&1 || exit 1
+    sync --file-system /etc/systemd/system
+    exit 0
+    ;;
+  "armed:$token"|"rollback-required:$token"|"rolling-back:$token") ;;
+  *) exit 1 ;;
+esac
+deadline=$(<"$work/deadline")
+[[ $deadline =~ ^[0-9]+$ ]]
+now=$(date +%s)
+if [[ $state == "armed:$token" ]]; then
+  [[ -e $work/force-rollback || $now -ge $deadline ]]
+fi
+write_state rolling-back
+systemctl stop fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+remove_staging() {
+  local path=$1
+  if [[ -e $path || -L $path ]]; then
+    [[ -f $path && ! -L $path ]]
+    rm --force -- "$path"
+  fi
+}
+restore() {
+  local target=$1 name=$2 directory metadata metadata_file next rollout_next
+  directory=${target%/*}
+  metadata_file=$work/$name.previous.metadata
+  next=$target.fabric-rollback.next
+  rollout_next=$target.fabric-rollout.next
+  remove_staging "$next"
+  remove_staging "$rollout_next"
+  if [[ -e $work/$name.absent ]]; then
+    [[ -f $work/$name.absent && ! -L $work/$name.absent ]]
+    if [[ -e $target || -L $target ]]; then
+      [[ -f $target && ! -L $target ]]
+      rm --force -- "$target"
+    fi
+    sync --file-system "$directory"
+    [[ ! -e $target && ! -L $target ]]
+  else
+    (cd "$work" && sha256sum --check "$name.previous.sha256" >/dev/null)
+    [[ -f $metadata_file && ! -L $metadata_file ]]
+    metadata=$(<"$metadata_file")
+    [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$work/$name.previous") == "$metadata" ]]
+    cp --preserve=mode,ownership,timestamps,context,xattr -- \
+      "$work/$name.previous" "$next"
+    [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$next") == "$metadata" ]]
+    sync --file-system "$next"
+    mv --force -- "$next" "$target"
+    sync --file-system "$directory"
+    cmp --silent "$work/$name.previous" "$target"
+    [[ $(stat --format="%u:%g:%a:%h:%F:%C" "$target") == "$metadata" ]]
+    /usr/bin/matchpathcon -V "$target" >/dev/null
+  fi
+}
+restore /etc/etcd/pki/etcdetcetc-client-ca.pem delegated-ca
+restore /usr/local/sbin/render-fabric-etcd-client-trust renderer
+restore /etc/systemd/system/fabric-etcd-client-trust.service client-trust.service
+restore /etc/systemd/system/etcd.service etcd.service
+sync --file-system /etc
+sync --file-system /usr/local
+systemctl daemon-reload
+if [[ -e $work/trust.previously-enabled ]]; then
+  systemctl enable fabric-etcd-client-trust.service >/dev/null
+else
+  systemctl disable fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+fi
+if [[ -e $work/trust.previously-active ]]; then
+  systemctl restart fabric-etcd-client-trust.service
+else
+  systemctl stop fabric-etcd-client-trust.service >/dev/null 2>&1 || true
+fi
+systemctl restart etcd.service
+if [[ -e $work/trust.previously-enabled ]]; then
+  systemctl is-enabled --quiet fabric-etcd-client-trust.service
+else
+  if systemctl is-enabled --quiet fabric-etcd-client-trust.service; then exit 1; fi
+fi
+if [[ -e $work/trust.previously-active ]]; then
+  systemctl is-active --quiet fabric-etcd-client-trust.service
+else
+  if systemctl is-active --quiet fabric-etcd-client-trust.service; then exit 1; fi
+  [[ $(systemctl show --property=ActiveState --value fabric-etcd-client-trust.service) == inactive ]]
+  [[ -z $(systemctl show --property=Job --value fabric-etcd-client-trust.service) ]]
+fi
+systemctl is-active --quiet etcd.service
+/usr/local/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
+  --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
+  --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+  --dial-timeout=2s --command-timeout=3s endpoint health >/dev/null
+sync --file-system /etc
+sync --file-system /usr/local
+printf "%s\n" "$token" >"$work/rolled-back.next"
+chmod 0600 "$work/rolled-back.next"
+mv "$work/rolled-back.next" "$work/rolled-back"
+sync --file-system "$work"
+write_state rolled-back
+systemctl disable "$timer" "$service" >/dev/null
+sync --file-system /etc/systemd/system
+'
+printf '%s' "$rollback_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$remote_work/rollback" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0700 "$remote_work/rollback"
+remote_now=$("${ssh[@]}" /usr/bin/date +%s)
+[[ $remote_now =~ ^[0-9]+$ ]] || die 'target returned an invalid rollback clock'
+deadline_epoch=$((remote_now + 300))
+deadline_calendar=$("${ssh[@]}" /usr/bin/date --utc --date="@$deadline_epoch" \
+  '+%Y-%m-%d %H:%M:%S UTC')
+[[ -n $deadline_calendar && $deadline_calendar != *$'\n'* ]] ||
+  die 'target returned an invalid rollback calendar deadline'
+printf '%s\n' "$deadline_epoch" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$remote_work/deadline" >/dev/null
+printf '%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$remote_work/armed.next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 \
+  "$remote_work/deadline" "$remote_work/armed.next"
+"${ssh[@]}" sudo --non-interactive /usr/bin/mv \
+  "$remote_work/armed.next" "$remote_work/armed"
+printf 'armed:%s\n' "$rollout_token" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee \
+    "$remote_work/state.next" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0600 "$remote_work/state.next"
+"${ssh[@]}" sudo --non-interactive /usr/bin/mv \
+  "$remote_work/state.next" "$remote_work/state"
+"${ssh[@]}" sudo --non-interactive /usr/bin/sync --file-system "$remote_work"
+rollback_service="[Unit]
+Description=Rollback an unaccepted Fabric etcd client-trust change
+After=local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash $remote_work/rollback
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+"
+rollback_timer="[Unit]
+Description=Five-minute rollback deadline for Fabric etcd client trust
+
+[Timer]
+OnCalendar=$deadline_calendar
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=$rollback_unit.service
+
+[Install]
+WantedBy=timers.target
+"
+printf '%s' "$rollback_service" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_service_path" >/dev/null
+printf '%s' "$rollback_timer" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/tee "$rollback_timer_path" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/chmod 0644 \
+  "$rollback_service_path" "$rollback_timer_path"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemd-analyze verify \
+  "$rollback_service_path" "$rollback_timer_path" >/dev/null
+rollback_armed=true
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl daemon-reload
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl enable \
+  "$rollback_unit.service" "$rollback_unit.timer" >/dev/null
+"${ssh[@]}" sudo --non-interactive /usr/bin/sync --file-system \
+  /etc/systemd/system
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl start \
+  "$rollback_unit.timer"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.service"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.timer"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  "$rollback_unit.timer"
+
+# The candidate writer and deadline rollback share one state lock. No payload,
+# unit-state, or service mutation occurs after this critical section releases.
+# shellcheck disable=SC2016 # This is a literal target-local program.
+apply_candidate_program='#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+work=$1
+token=$2
+delegated_ca_path=$3
+renderer_path=$4
+trust_unit_path=$5
+etcd_unit_path=$6
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+[[ -f $work/deadline && ! -L $work/deadline ]]
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+for candidate in delegated-ca.next renderer.next fabric-etcd-client-trust.service etcd.service; do
+  [[ -f $work/$candidate && ! -L $work/$candidate ]]
+done
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+install_atomic() {
+  local source=$1 target=$2 mode=$3 next directory metadata expected_mode
+  next=$target.fabric-rollout.next
+  directory=${target%/*}
+  expected_mode=${mode#0}
+  [[ ! -e $next && ! -L $next ]]
+  install --owner=root --group=root --mode="$mode" "$source" "$next"
+  metadata=$(stat --format="%u:%g:%a:%h:%F" "$next")
+  [[ $metadata == "0:0:$expected_mode:1:regular file" ]]
+  cmp --silent "$source" "$next"
+  sync --file-system "$next"
+  mv --force -- "$next" "$target"
+  /usr/bin/restorecon --force "$target"
+  /usr/bin/matchpathcon -V "$target" >/dev/null
+  sync --file-system "$directory"
+  cmp --silent "$source" "$target"
+  [[ $(stat --format="%u:%g:%a:%h:%F" "$target") == "$metadata" ]]
+}
+install_atomic "$work/delegated-ca.next" "$delegated_ca_path" 0644
+install_atomic "$work/renderer.next" "$renderer_path" 0755
+install_atomic "$work/fabric-etcd-client-trust.service" "$trust_unit_path" 0644
+install_atomic "$work/etcd.service" "$etcd_unit_path" 0644
+systemd-analyze verify "$trust_unit_path" "$etcd_unit_path" >/dev/null
+systemctl daemon-reload
+systemctl enable fabric-etcd-client-trust.service >/dev/null
+systemctl restart fabric-etcd-client-trust.service
+systemctl is-active --quiet fabric-etcd-client-trust.service
+systemctl restart etcd.service
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+printf "ROLLOUT_APPLIED=%s\n" "$token"
+'
+apply_candidate_result=$(printf '%s' "$apply_candidate_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$remote_work" "$rollout_token" "$delegated_ca_path" "$renderer_path" \
+    "$trust_unit_path" "$etcd_unit_path")
+[[ $apply_candidate_result == "ROLLOUT_APPLIED=$rollout_token" ]] ||
+  die 'target-local client-trust candidate acknowledgement was not exact'
+
+target_healthy=false
+for _attempt in {1..20}; do
+  if "${ssh[@]}" sudo --non-interactive /usr/local/bin/etcdctl \
+    --endpoints=https://127.0.0.1:2379 \
+    --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
+    --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
+    --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+    --dial-timeout=2s --command-timeout=3s --write-out=json endpoint health |
+    jq -e 'type == "array" and length == 1 and .[0].health == true' >/dev/null 2>&1; then
+    target_healthy=true
+    break
+  fi
+  sleep 2
+done
+$target_healthy || die "$full_node etcd did not become healthy before rollback"
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet etcd.service
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-enabled --quiet \
+  "$rollback_unit.service" || die 'boot rollback recovery was disabled before acceptance'
+"${ssh[@]}" sudo --non-interactive /usr/bin/systemctl is-active --quiet \
+  "$rollback_unit.timer" || die 'target-local rollback fired before acceptance'
+
+verify_live_trust
+
+# The proof order is intentional: consensus first, then target-local API, then
+# VIP API and a fresh node heartbeat. Do not collapse it into one weak probe.
+assert_etcd_health
+assert_api_health
+heartbeat_advanced=false
+for _attempt in {1..30}; do
+  lease_after=$("${ik[@]}" -n kube-node-lease get lease "$full_node" \
+    -o jsonpath='{.spec.renewTime}')
+  ready=$("${ik[@]}" get node "$full_node" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  if [[ $lease_after != "$lease_before" && $ready == True ]]; then
+    heartbeat_advanced=true
+    break
+  fi
+  sleep 2
+done
+$heartbeat_advanced || die "$full_node did not publish a fresh Ready heartbeat after etcd restart"
+
+# Phase one proves a fresh, locked readiness snapshot while rollback remains
+# armed. Phase two re-proves payload, live state, durability, and deadline under
+# the same lock before persisting accepted and stopping both boot triggers. If
+# either acknowledgement is lost, EXIT cleanup forces rollback from any state.
+# shellcheck disable=SC2016 # Literal target-local acknowledgement program.
+disarm_ready_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+systemctl is-enabled --quiet "${timer##*/}"
+systemctl is-enabled --quiet "${service##*/}"
+systemctl is-active --quiet "${timer##*/}"
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+[[ $(systemctl show --property=FragmentPath --value "${service##*/}") == "$service" ]]
+[[ $(systemctl show --property=FragmentPath --value "${timer##*/}") == "$timer" ]]
+[[ -z $(systemctl show --property=DropInPaths --value "${service##*/}") ]]
+[[ -z $(systemctl show --property=DropInPaths --value "${timer##*/}") ]]
+[[ -f $work/deadline && ! -L $work/deadline ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+printf "ROLLBACK_DISARM_READY=%s\n" "$token"
+'
+disarm_ready=$(printf '%s' "$disarm_ready_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $disarm_ready == "ROLLBACK_DISARM_READY=$rollout_token" ]] ||
+  die 'target-local rollback readiness acknowledgement was not exact'
+
+# shellcheck disable=SC2016 # Literal target-local disarm program.
+disarm_program='set -euo pipefail
+umask 077
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+write_state() {
+  printf "%s:%s\n" "$1" "$token" >"$work/state.next"
+  chmod 0600 "$work/state.next"
+  mv "$work/state.next" "$state_path"
+  sync --file-system "$work"
+}
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "armed:$token" ]]
+[[ ! -e $work/force-rollback && ! -L $work/force-rollback ]]
+cmp --silent "$work/delegated-ca.next" /etc/etcd/pki/etcdetcetc-client-ca.pem
+cmp --silent "$work/renderer.next" /usr/local/sbin/render-fabric-etcd-client-trust
+cmp --silent "$work/fabric-etcd-client-trust.service" /etc/systemd/system/fabric-etcd-client-trust.service
+cmp --silent "$work/etcd.service" /etc/systemd/system/etcd.service
+[[ $(stat --format="%u:%g:%a:%h:%F" /etc/etcd/pki/etcdetcetc-client-ca.pem) == "0:0:644:1:regular file" ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /usr/local/sbin/render-fabric-etcd-client-trust) == "0:0:755:1:regular file" ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /etc/systemd/system/fabric-etcd-client-trust.service) == "0:0:644:1:regular file" ]]
+[[ $(stat --format="%u:%g:%a:%h:%F" /etc/systemd/system/etcd.service) == "0:0:644:1:regular file" ]]
+for target in /etc/etcd/pki/etcdetcetc-client-ca.pem \
+  /usr/local/sbin/render-fabric-etcd-client-trust \
+  /etc/systemd/system/fabric-etcd-client-trust.service \
+  /etc/systemd/system/etcd.service; do
+  /usr/bin/matchpathcon -V "$target" >/dev/null
+done
+systemctl is-active --quiet fabric-etcd-client-trust.service
+systemctl is-active --quiet etcd.service
+[[ $(systemctl show --property=FragmentPath --value fabric-etcd-client-trust.service) == /etc/systemd/system/fabric-etcd-client-trust.service ]]
+[[ -z $(systemctl show --property=DropInPaths --value fabric-etcd-client-trust.service) ]]
+[[ $(systemctl show --property=FragmentPath --value etcd.service) == /etc/systemd/system/etcd.service ]]
+[[ $(systemctl show --property=DropInPaths --value etcd.service) == /etc/systemd/system/etcd.service.d/10-fabric-guard.conf ]]
+cmp --silent /run/fabric-etcd-client-trust/client-ca-bundle.pem <(
+  cat /etc/etcd/pki/ca.pem /etc/etcd/pki/etcdetcetc-client-ca.pem
+)
+[[ $(stat --format="%u:%g:%a:%h:%F" /run/fabric-etcd-client-trust/client-ca-bundle.pem) == "0:0:444:1:regular file" ]]
+etcd_pid=$(systemctl show --property=MainPID --value etcd.service)
+[[ $etcd_pid =~ ^[1-9][0-9]*$ ]]
+etcd_argv=$(tr "\000" "\n" <"/proc/$etcd_pid/cmdline")
+[[ $(grep -Fxc -- "--trusted-ca-file=/run/fabric-etcd-client-trust/client-ca-bundle.pem" <<<"$etcd_argv") == 1 ]]
+[[ $(grep -Fc -- "--trusted-ca-file=" <<<"$etcd_argv") == 1 ]]
+[[ $(grep -Fxc -- "--peer-trusted-ca-file=/etc/etcd/pki/ca.pem" <<<"$etcd_argv") == 1 ]]
+[[ $(grep -Fc -- "--peer-trusted-ca-file=" <<<"$etcd_argv") == 1 ]]
+/usr/local/bin/etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/var/lib/rancher/k3s/server/etcd-ca.pem \
+  --cert=/var/lib/rancher/k3s/server/etcd-client.pem \
+  --key=/var/lib/rancher/k3s/server/etcd-client-key.pem \
+  --dial-timeout=2s --command-timeout=3s endpoint health >/dev/null
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+sync --file-system /etc
+sync --file-system /usr/local
+[[ -f $work/deadline && ! -L $work/deadline ]]
+deadline=$(<"$work/deadline")
+now=$(date +%s)
+[[ $deadline =~ ^[0-9]+$ && $now =~ ^[0-9]+$ && $now -lt $deadline ]]
+write_state accepted
+systemctl disable "${timer##*/}" "${service##*/}" >/dev/null
+sync --file-system /etc/systemd/system
+flock --unlock "$state_fd"
+exec {state_fd}>&-
+systemctl stop "${timer##*/}"
+for ((attempt = 0; attempt < 30; attempt++)); do
+  timer_active=$(systemctl show --property=ActiveState --value "${timer##*/}")
+  service_active=$(systemctl show --property=ActiveState --value "${service##*/}")
+  timer_job=$(systemctl show --property=Job --value "${timer##*/}")
+  service_job=$(systemctl show --property=Job --value "${service##*/}")
+  if [[ $timer_active == inactive && $service_active == inactive &&
+        -z $timer_job && -z $service_job ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ $(<"$state_path") == "accepted:$token" ]]
+if systemctl is-active --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${service##*/}"; then exit 1; fi
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+printf "ROLLBACK_DISARMED=%s\n" "$token"
+'
+disarm_result=$(printf '%s' "$disarm_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $disarm_result == "ROLLBACK_DISARMED=$rollout_token" ]] ||
+  die 'target-local rollback disarm acknowledgement was not exact'
+rollback_disarmed=true
+
+# shellcheck disable=SC2016 # Literal target-local cleanup program.
+rollback_cleanup_program='set -euo pipefail
+work=$1
+service=$2
+timer=$3
+token=$4
+state_path=$work/state
+state_lock=$work/state.lock
+[[ -d $work && ! -L $work ]]
+[[ -f $service && ! -L $service && -f $timer && ! -L $timer ]]
+[[ $(<"$work/owner") == fabric-etcd-client-trust-rollout ]]
+[[ $(<"$work/expected-token") == "$token" ]]
+[[ $(<"$work/armed") == "$token" ]]
+[[ -f $state_path && ! -L $state_path && -f $state_lock && ! -L $state_lock ]]
+exec {state_fd}>>"$state_lock"
+flock --exclusive "$state_fd"
+[[ $(<"$state_path") == "accepted:$token" ]]
+if systemctl is-active --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-active --quiet "${service##*/}"; then exit 1; fi
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+rm --force -- "$timer" "$service"
+sync --file-system /etc/systemd/system
+systemctl daemon-reload
+systemctl reset-failed "${timer##*/}" "${service##*/}" >/dev/null 2>&1 || true
+[[ $(systemctl show --property=LoadState --value "${timer##*/}") == not-found ]]
+[[ $(systemctl show --property=LoadState --value "${service##*/}") == not-found ]]
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+if systemctl is-enabled --quiet "${timer##*/}"; then exit 1; fi
+if systemctl is-enabled --quiet "${service##*/}"; then exit 1; fi
+rm --recursive --force -- "$work"
+sync --file-system /var/lib
+[[ ! -e $work && ! -L $work && ! -e $service && ! -L $service && ! -e $timer && ! -L $timer ]]
+[[ $(systemctl show --property=LoadState --value "${timer##*/}") == not-found ]]
+[[ $(systemctl show --property=LoadState --value "${service##*/}") == not-found ]]
+[[ $(systemctl show --property=ActiveState --value "${timer##*/}") == inactive ]]
+[[ $(systemctl show --property=ActiveState --value "${service##*/}") == inactive ]]
+[[ -z $(systemctl show --property=Job --value "${timer##*/}") ]]
+[[ -z $(systemctl show --property=Job --value "${service##*/}") ]]
+printf "ROLLBACK_CLEANED=%s\n" "$token"
+'
+rollback_cleanup=$(printf '%s' "$rollback_cleanup_program" |
+  "${ssh[@]}" sudo --non-interactive /usr/bin/bash -s -- \
+    "$remote_work" "$rollback_service_path" "$rollback_timer_path" \
+    "$rollout_token")
+[[ $rollback_cleanup == "ROLLBACK_CLEANED=$rollout_token" ]] ||
+  die 'target-local rollback cleanup acknowledgement was not exact'
+rollback_armed=false
+success=true
+echo "$full_node now runs Fabric etcd client-trust payload $payload_hash; peer trust remains physical-only"

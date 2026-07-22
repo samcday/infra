@@ -1,0 +1,215 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-etcd-client-v1-certificates
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificates
+  matchConditions:
+    - name: exact-signer
+      expression: >-
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.name == 'fabric-etcd-client-v1' &&
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.kind == 'ClusterIssuer'
+  variables:
+    - name: target
+      expression: >-
+        request.operation == 'DELETE' ? oldObject : object
+    - name: tenantUid
+      expression: >-
+        has(variables.target.metadata.labels) &&
+        'etcdetcetc.samcday.com/tenant-uid' in variables.target.metadata.labels ?
+        variables.target.metadata.labels['etcdetcetc.samcday.com/tenant-uid'] : ''
+    - name: safeLeaf
+      expression: >-
+        (variables.target.spec.duration == '24h' || variables.target.spec.duration == '24h0m0s') &&
+        (variables.target.spec.renewBefore == '8h' || variables.target.spec.renewBefore == '8h0m0s') &&
+        variables.target.spec.privateKey.algorithm == 'ECDSA' &&
+        variables.target.spec.privateKey.rotationPolicy == 'Always' &&
+        (!has(variables.target.spec.privateKey.size) || variables.target.spec.privateKey.size == 256) &&
+        variables.target.spec.usages.size() == 2 &&
+        variables.target.spec.usages.exists(usage, usage == 'digital signature') &&
+        variables.target.spec.usages.exists(usage, usage == 'client auth') &&
+        (!has(variables.target.spec.isCA) || variables.target.spec.isCA == false) &&
+        (!has(variables.target.spec.subject) || variables.target.spec.subject == {}) &&
+        (!has(variables.target.spec.literalSubject) || variables.target.spec.literalSubject == '') &&
+        (!has(variables.target.spec.dnsNames) || variables.target.spec.dnsNames.size() == 0) &&
+        (!has(variables.target.spec.ipAddresses) || variables.target.spec.ipAddresses.size() == 0) &&
+        (!has(variables.target.spec.uris) || variables.target.spec.uris.size() == 0) &&
+        (!has(variables.target.spec.emailAddresses) || variables.target.spec.emailAddresses.size() == 0) &&
+        (!has(variables.target.spec.otherNames) || variables.target.spec.otherNames.size() == 0)
+    - name: exactAdmin
+      expression: >-
+        variables.target.metadata.namespace == 'etcdetcetc' &&
+        variables.target.metadata.name == 'fabric-etcdetcetc-admin' &&
+        variables.target.spec.commonName == 'fabric-etcdetcetc' &&
+        variables.target.spec.secretName == 'fabric-etcdetcetc-admin' &&
+        variables.safeLeaf
+    - name: exactTenant
+      expression: >-
+        variables.target.metadata.namespace == 'etcdetcetc' &&
+        variables.tenantUid.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') &&
+        variables.target.metadata.name == 'etcdtenant-' + variables.tenantUid &&
+        variables.target.spec.commonName == 'etcdtenant:' + variables.tenantUid &&
+        variables.target.spec.secretName == variables.target.metadata.name + '-tls' &&
+        has(variables.target.metadata.ownerReferences) &&
+        variables.target.metadata.ownerReferences.exists(owner,
+          owner.apiVersion == 'etcdetcetc.samcday.com/v1alpha1' &&
+          owner.kind == 'EtcdCluster' &&
+          owner.name == 'fabric-etcd' &&
+          owner.controller == true) &&
+        variables.safeLeaf
+  validations:
+    - expression: >-
+        (request.userInfo.username == 'system:serviceaccount:flux-system:kustomize-controller' && variables.exactAdmin) ||
+        (request.userInfo.username == 'system:serviceaccount:etcdetcetc:etcdetcetc' && variables.exactTenant) ||
+        (request.operation == 'UPDATE' &&
+          request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+          oldObject != null && object.spec == oldObject.spec)
+      message: >-
+        fabric-etcd-client-v1 may issue only the exact Flux-managed admin leaf or
+        UID-scoped etcdetcetc tenant leaves; cert-manager may update only an unchanged spec
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-etcd-client-v1-certificates
+spec:
+  policyName: fabric-etcd-client-v1-certificates
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-etcd-client-v1-requests
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificaterequests
+  matchConditions:
+    - name: exact-signer
+      expression: >-
+        object.spec.issuerRef.name == 'fabric-etcd-client-v1' &&
+        object.spec.issuerRef.kind == 'ClusterIssuer'
+  validations:
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+        object.metadata.namespace == 'etcdetcetc' &&
+        has(object.metadata.ownerReferences) &&
+        object.metadata.ownerReferences.exists(owner,
+          owner.apiVersion == 'cert-manager.io/v1' &&
+          owner.kind == 'Certificate' &&
+          owner.controller == true &&
+          object.metadata.name.startsWith(owner.name + '-')) &&
+        object.spec.duration == '24h0m0s' &&
+        (!has(object.spec.isCA) || object.spec.isCA == false) &&
+        object.spec.usages.size() == 2 &&
+        object.spec.usages.exists(usage, usage == 'digital signature') &&
+        object.spec.usages.exists(usage, usage == 'client auth') &&
+        size(object.spec.request) > 0 &&
+        (request.operation == 'CREATE' || (oldObject != null && object.spec == oldObject.spec))
+      message: >-
+        fabric-etcd-client-v1 CertificateRequests must be immutable, Certificate-owned,
+        client-only requests created by cert-manager in the etcdetcetc namespace
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-etcd-client-v1-requests
+spec:
+  policyName: fabric-etcd-client-v1-requests
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-etcd-client-v1-clusterissuer
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - clusterissuers
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - issuers
+  variables:
+    - name: target
+      expression: >-
+        request.operation == 'DELETE' ? oldObject : object
+  matchConditions:
+    - name: protected-signer-or-reserved-secret
+      # ValidatingAdmissionPolicy variables are unavailable in matchConditions;
+      # select the request snapshot directly and keep alias DELETEs unmatched.
+      expression: >-
+        (request.resource.resource == 'clusterissuers' &&
+          ((request.operation == 'DELETE' ? oldObject : object).metadata.name == 'fabric-etcd-client-v1' ||
+            (request.operation != 'DELETE' &&
+              has(object.spec.ca) &&
+              object.spec.ca.secretName == 'fabric-etcd-client-v1-ca'))) ||
+        (request.resource.resource == 'issuers' &&
+          request.namespace == 'cert-manager' &&
+          has(object.spec.ca) &&
+          object.spec.ca.secretName == 'fabric-etcd-client-v1-ca')
+  validations:
+    - expression: >-
+        request.resource.resource == 'clusterissuers' &&
+        variables.target.metadata.name == 'fabric-etcd-client-v1' &&
+        has(variables.target.spec.ca) &&
+        variables.target.spec.ca.secretName == 'fabric-etcd-client-v1-ca' &&
+        (request.userInfo.username == 'system:serviceaccount:flux-system:kustomize-controller' ||
+          (request.operation == 'UPDATE' &&
+            request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+            oldObject != null && object.spec == oldObject.spec))
+      message: >-
+        fabric-etcd-client-v1 is Flux-owned, and no Issuer or alternate
+        ClusterIssuer may reference its isolated versioned CA Secret
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-etcd-client-v1-clusterissuer
+spec:
+  policyName: fabric-etcd-client-v1-clusterissuer
+  validationActions:
+    - Deny

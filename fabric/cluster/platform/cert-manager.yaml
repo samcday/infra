@@ -1,0 +1,175 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 24h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:cd55fea42658e54abc25e85a0bc1de229925a5006445f916bfd2c6dc80ac3613
+  timeout: 2m
+  url: oci://quay.io/jetstack/charts/cert-manager
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: cert-manager
+    namespace: flux-system
+  driftDetection:
+    mode: enabled
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  interval: 1h
+  timeout: 10m
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    crds:
+      enabled: true
+      keep: true
+    global:
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+      priorityClassName: system-cluster-critical
+      rbac:
+        aggregateClusterRoles: false
+    approveSignerNames:
+      - issuers.cert-manager.io/*
+      - clusterissuers.cert-manager.io/fabric-etcd-client-v1
+      - clusterissuers.cert-manager.io/selfsigned
+    image:
+      digest: sha256:e370f7800a53078e9d74324287a7d52b553864e55f5b4e521f911c3f6c7da203
+      pullPolicy: IfNotPresent
+    acmesolver:
+      image:
+        digest: sha256:33ebbc2688578e37bd48dcc5b6b1f1362c919dff44fe5e5f602532a2d37d514f
+        pullPolicy: IfNotPresent
+    replicaCount: 2
+    strategy:
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+      type: RollingUpdate
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: controller
+                app.kubernetes.io/instance: cert-manager
+                app.kubernetes.io/name: cert-manager
+            topologyKey: kubernetes.io/hostname
+    tolerations:
+      - effect: NoSchedule
+        key: fabric.samcday.com/platform
+        operator: Equal
+        value: "true"
+    resources:
+      limits:
+        cpu: 250m
+        memory: 192Mi
+      requests:
+        cpu: 20m
+        memory: 64Mi
+    webhook:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: webhook
+                  app.kubernetes.io/instance: cert-manager
+                  app.kubernetes.io/name: webhook
+              topologyKey: kubernetes.io/hostname
+      image:
+        digest: sha256:c33cca307541e2d58861a55b1af5f390b7e19c8741e48b433693b73a7cce88b3
+        pullPolicy: IfNotPresent
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+      replicaCount: 2
+      resources:
+        limits:
+          cpu: 100m
+          memory: 96Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      strategy:
+        rollingUpdate:
+          maxSurge: 0
+          maxUnavailable: 1
+        type: RollingUpdate
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    cainjector:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: cainjector
+                  app.kubernetes.io/instance: cert-manager
+                  app.kubernetes.io/name: cainjector
+              topologyKey: kubernetes.io/hostname
+      image:
+        digest: sha256:ad1dcc5b2fccc420f9b3fbee7ce8a869450c540fd4f2f41de2d95b1ca0c4d701
+        pullPolicy: IfNotPresent
+      podDisruptionBudget:
+        enabled: true
+        minAvailable: 1
+      replicaCount: 2
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 10m
+          memory: 64Mi
+      strategy:
+        rollingUpdate:
+          maxSurge: 0
+          maxUnavailable: 1
+        type: RollingUpdate
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    startupapicheck:
+      image:
+        digest: sha256:68b3c5029dc63e64a6b6435337d7dc0eb169f889a48a02d999d1f22f31865b33
+        pullPolicy: IfNotPresent
+      resources:
+        limits:
+          cpu: 100m
+          memory: 64Mi
+        requests:
+          cpu: 10m
+          memory: 32Mi
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+    prometheus:
+      enabled: false

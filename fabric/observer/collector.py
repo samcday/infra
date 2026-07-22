@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-VERSION = "1"
+VERSION = "2"
 API_ENDPOINTS = (
     ("vip", "api-vip", "", "10.66.0.254", 6443),
     ("node", "fabric-az1-cp1", "fabric-az1-cp1", "10.66.0.10", 6443),
@@ -37,12 +37,25 @@ LEASE_PATH = (
     "/apis/coordination.k8s.io/v1/namespaces/kube-system/"
     "leases/plndr-cp-lock"
 )
+ETCD_CERTIFICATE_NAMESPACE = "etcdetcetc"
+ETCD_CERTIFICATES_PATH = (
+    "/apis/cert-manager.io/v1/namespaces/etcdetcetc/certificates?limit=250"
+)
 READY_PATH = "/readyz"
 MAX_HTTP_BODY = 65536
+MAX_CERTIFICATE_LIST_BODY = 2 * 1024 * 1024
+MAX_ETCD_CERTIFICATES = 250
 RFC3339_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
     r"(?P<fraction>\.\d+)?Z$"
 )
+TENANT_UID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+# This is a reviewed phase allowlist, not a naming-pattern allowlist. R1 adds
+# exactly the reviewed next issuer; R5 removes current after the old-reference
+# inventory is empty. Arbitrary version-shaped names must stay rejected.
+ETCD_ISSUER_ALLOWLIST = frozenset({"fabric-etcd-client-v1"})
 
 
 class CollectorError(RuntimeError):
@@ -182,19 +195,19 @@ def _metric(name: str, value: int | float, **labels: str) -> str:
     return f"{name}{rendered} {number}"
 
 
-def parse_rfc3339(value: Any) -> float:
+def parse_rfc3339(value: Any, where: str = "Lease renewTime") -> float:
     if not isinstance(value, str):
-        raise CollectorError("Lease renewTime is not a string")
+        raise CollectorError(f"{where} is not a string")
     match = RFC3339_RE.fullmatch(value)
     if match is None:
-        raise CollectorError("Lease renewTime is not strict UTC RFC3339")
+        raise CollectorError(f"{where} is not strict UTC RFC3339")
     fraction = match.group("fraction") or ""
     if fraction:
         fraction = "." + fraction[1:7].ljust(6, "0")
     try:
         parsed = dt.datetime.fromisoformat(match.group("date") + fraction + "+00:00")
     except ValueError as exc:
-        raise CollectorError("Lease renewTime is invalid") from exc
+        raise CollectorError(f"{where} is invalid") from exc
     return parsed.timestamp()
 
 
@@ -244,6 +257,213 @@ def parse_lease(payload: bytes, now: float) -> dict[str, Any]:
     }
 
 
+def _certificate_leaf_contract(
+    item: dict[str, Any], metadata: dict[str, Any]
+) -> dict[str, str]:
+    name = metadata.get("name")
+    namespace = metadata.get("namespace")
+    uid = metadata.get("uid")
+    generation = metadata.get("generation")
+    if (
+        not isinstance(name, str)
+        or not name
+        or namespace != ETCD_CERTIFICATE_NAMESPACE
+        or not isinstance(uid, str)
+        or not uid
+        or metadata.get("deletionTimestamp") is not None
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
+        raise CollectorError("etcd client Certificate metadata is incomplete")
+
+    spec = item.get("spec")
+    if not isinstance(spec, dict):
+        raise CollectorError(f"Certificate {name} has no spec")
+    issuer = spec.get("issuerRef")
+    private_key = spec.get("privateKey")
+    usages = spec.get("usages")
+    if (
+        not isinstance(issuer, dict)
+        or issuer.get("group") != "cert-manager.io"
+        or issuer.get("kind") != "ClusterIssuer"
+        or not isinstance(issuer.get("name"), str)
+        or issuer["name"] not in ETCD_ISSUER_ALLOWLIST
+        or not isinstance(private_key, dict)
+        or private_key.get("algorithm") != "ECDSA"
+        or private_key.get("rotationPolicy") != "Always"
+        or private_key.get("size", 256) != 256
+        or spec.get("duration") not in ("24h", "24h0m0s")
+        or spec.get("renewBefore") not in ("8h", "8h0m0s")
+        or not isinstance(usages, list)
+        or len(usages) != 2
+        or not all(isinstance(usage, str) for usage in usages)
+        or set(usages) != {"digital signature", "client auth"}
+        or spec.get("isCA", False) is not False
+    ):
+        raise CollectorError(f"Certificate {name} violates the fixed leaf contract")
+
+    if name == "fabric-etcdetcetc-admin":
+        if (
+            spec.get("commonName") != "fabric-etcdetcetc"
+            or spec.get("secretName") != "fabric-etcdetcetc-admin"
+        ):
+            raise CollectorError("the etcdetcetc admin Certificate identity is invalid")
+        return {
+            "certificate": name,
+            "credential": "admin",
+            "issuer": issuer["name"],
+            "tenant_name": "",
+            "tenant_namespace": "",
+            "tenant_uid": "",
+        }
+
+    labels = metadata.get("labels")
+    owners = metadata.get("ownerReferences")
+    if not isinstance(labels, dict) or not isinstance(owners, list) or len(owners) != 1:
+        raise CollectorError(f"tenant Certificate {name} lacks exact provenance")
+    tenant_uid = labels.get("etcdetcetc.samcday.com/tenant-uid")
+    tenant_name = labels.get("etcdetcetc.samcday.com/tenant-name")
+    tenant_namespace = labels.get("etcdetcetc.samcday.com/tenant-namespace")
+    owner = owners[0]
+    expected_name = f"etcdtenant-{tenant_uid}"
+    if (
+        not isinstance(tenant_uid, str)
+        or TENANT_UID_RE.fullmatch(tenant_uid) is None
+        or not isinstance(tenant_name, str)
+        or not tenant_name
+        or not isinstance(tenant_namespace, str)
+        or not tenant_namespace
+        or name != expected_name
+        or spec.get("commonName") != f"etcdtenant:{tenant_uid}"
+        or spec.get("secretName") != f"{expected_name}-tls"
+        or not isinstance(owner, dict)
+        or owner.get("apiVersion") != "etcdetcetc.samcday.com/v1alpha1"
+        or owner.get("kind") != "EtcdCluster"
+        or owner.get("name") != "fabric-etcd"
+        or owner.get("controller") is not True
+        or not isinstance(owner.get("uid"), str)
+        or not owner["uid"]
+    ):
+        raise CollectorError(f"tenant Certificate {name} identity is invalid")
+    return {
+        "certificate": name,
+        "credential": "tenant",
+        "issuer": issuer["name"],
+        "tenant_name": tenant_name,
+        "tenant_namespace": tenant_namespace,
+        "tenant_uid": tenant_uid,
+    }
+
+
+def _certificate_status(
+    item: dict[str, Any], metadata: dict[str, Any]
+) -> dict[str, Any]:
+    generation = metadata["generation"]
+    status = item.get("status")
+    if not isinstance(status, dict):
+        return {"ready": False, "issuing": False, "status_valid": False}
+    conditions = status.get("conditions")
+    revision = status.get("revision")
+    if (
+        not isinstance(conditions, list)
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+    ):
+        return {"ready": False, "issuing": False, "status_valid": False}
+
+    current_ready_conditions = [
+        condition
+        for condition in conditions
+        if isinstance(condition, dict)
+        and condition.get("type") == "Ready"
+        and condition.get("observedGeneration") == generation
+        and condition.get("status") in ("True", "False", "Unknown")
+    ]
+    issuing = any(
+        isinstance(condition, dict)
+        and condition.get("type") == "Issuing"
+        and condition.get("status") == "True"
+        and condition.get("observedGeneration") == generation
+        for condition in conditions
+    )
+    if len(current_ready_conditions) != 1:
+        return {"ready": False, "issuing": issuing, "status_valid": False}
+
+    try:
+        not_after = parse_rfc3339(
+            status.get("notAfter"), "Certificate status.notAfter"
+        )
+        renewal_time = parse_rfc3339(
+            status.get("renewalTime"), "Certificate status.renewalTime"
+        )
+    except CollectorError:
+        return {"ready": False, "issuing": issuing, "status_valid": False}
+    if abs((not_after - renewal_time) - 8 * 60 * 60) > 1:
+        return {"ready": False, "issuing": issuing, "status_valid": False}
+    return {
+        "ready": current_ready_conditions[0]["status"] == "True",
+        "issuing": issuing,
+        "status_valid": True,
+        "not_after": not_after,
+        "renewal_time": renewal_time,
+        "revision": revision,
+    }
+
+
+def parse_etcd_certificate_list(payload: bytes) -> list[dict[str, Any]]:
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CollectorError("Certificate list is not valid UTF-8 JSON") from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("apiVersion") != "cert-manager.io/v1"
+        or document.get("kind") != "CertificateList"
+    ):
+        raise CollectorError("Certificate list has the wrong identity")
+    list_metadata = document.get("metadata")
+    items = document.get("items")
+    if (
+        not isinstance(list_metadata, dict)
+        or not isinstance(list_metadata.get("resourceVersion"), str)
+        or not list_metadata["resourceVersion"]
+        or list_metadata.get("continue", "") != ""
+        or not isinstance(items, list)
+        or len(items) > MAX_ETCD_CERTIFICATES
+    ):
+        raise CollectorError("Certificate list is incomplete or exceeds its bound")
+
+    certificates: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    admin_count = 0
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or item.get("apiVersion") != "cert-manager.io/v1"
+            or item.get("kind") != "Certificate"
+            or not isinstance(item.get("metadata"), dict)
+        ):
+            raise CollectorError("Certificate list contains a malformed item")
+        metadata = item["metadata"]
+        labels = _certificate_leaf_contract(item, metadata)
+        if labels["certificate"] in identities:
+            raise CollectorError("Certificate list contains a duplicate identity")
+        identities.add(labels["certificate"])
+        admin_count += int(labels["credential"] == "admin")
+        certificates.append(labels | _certificate_status(item, metadata))
+    if admin_count != 1:
+        raise CollectorError("Certificate list does not contain exactly one admin leaf")
+    return sorted(
+        certificates,
+        key=lambda certificate: (
+            certificate["credential"],
+            certificate["certificate"],
+        ),
+    )
+
+
 def certificate_not_after(path: pathlib.Path) -> float:
     read_regular_file(path, secret=False, maximum=65536)
     try:
@@ -277,6 +497,7 @@ def _api_get(
     path: str,
     context: ssl.SSLContext,
     timeout: int,
+    maximum_body: int = MAX_HTTP_BODY,
 ) -> tuple[int, str, bytes]:
     connection = http.client.HTTPSConnection(host, port, timeout=timeout, context=context)
     try:
@@ -290,14 +511,135 @@ def _api_get(
             },
         )
         response = connection.getresponse()
-        body = response.read(MAX_HTTP_BODY + 1)
-        if len(body) > MAX_HTTP_BODY:
+        body = response.read(maximum_body + 1)
+        if len(body) > maximum_body:
             raise CollectorError("Kubernetes API response exceeded the size bound")
         return response.status, response.getheader("Content-Type", ""), body
     except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
         raise CollectorError("bounded Kubernetes API request failed") from exc
     finally:
         connection.close()
+
+
+def collect_etcd_certificate_metrics(
+    context: ssl.SSLContext | None,
+    api_vip_ready: bool,
+    request_timeout_seconds: int,
+) -> list[str]:
+    lines = [
+        "# HELP fabric_observer_etcd_client_certificate_query_success One when the bounded cert-manager Certificate list request succeeded.",
+        "# TYPE fabric_observer_etcd_client_certificate_query_success gauge",
+        "# HELP fabric_observer_etcd_client_certificate_inventory_valid One when the list contains exactly the structurally valid admin leaf and zero or more UID-scoped tenant leaves.",
+        "# TYPE fabric_observer_etcd_client_certificate_inventory_valid gauge",
+    ]
+    response_body: bytes | None = None
+    if context is not None and api_vip_ready:
+        try:
+            status, content_type, body = _api_get(
+                "10.66.0.254",
+                6443,
+                ETCD_CERTIFICATES_PATH,
+                context,
+                request_timeout_seconds,
+                MAX_CERTIFICATE_LIST_BODY,
+            )
+            if status != 200 or "json" not in content_type.lower():
+                raise CollectorError(
+                    "Certificate list request returned an unexpected response"
+                )
+            response_body = body
+        except CollectorError:
+            response_body = None
+    lines.append(
+        _metric(
+            "fabric_observer_etcd_client_certificate_query_success",
+            int(response_body is not None),
+        )
+    )
+
+    certificates: list[dict[str, Any]] | None = None
+    if response_body is not None:
+        try:
+            certificates = parse_etcd_certificate_list(response_body)
+        except CollectorError:
+            certificates = None
+    lines.append(
+        _metric(
+            "fabric_observer_etcd_client_certificate_inventory_valid",
+            int(certificates is not None),
+        )
+    )
+    if certificates is None:
+        return lines
+
+    lines.extend(
+        [
+            "# HELP fabric_observer_etcd_client_certificate_ready One when cert-manager reports Ready=True for the current Certificate generation.",
+            "# TYPE fabric_observer_etcd_client_certificate_ready gauge",
+            "# HELP fabric_observer_etcd_client_certificate_issuing One when cert-manager reports Issuing=True for the current Certificate generation.",
+            "# TYPE fabric_observer_etcd_client_certificate_issuing gauge",
+            "# HELP fabric_observer_etcd_client_certificate_status_valid One when current-generation status has a valid revision and exact renewal/expiry relationship.",
+            "# TYPE fabric_observer_etcd_client_certificate_status_valid gauge",
+            "# HELP fabric_observer_etcd_client_certificate_revision cert-manager's issued revision for the current leaf.",
+            "# TYPE fabric_observer_etcd_client_certificate_revision gauge",
+            "# HELP fabric_observer_etcd_client_certificate_not_after_timestamp_seconds Expiry time reported for the current admin or tenant client leaf.",
+            "# TYPE fabric_observer_etcd_client_certificate_not_after_timestamp_seconds gauge",
+            "# HELP fabric_observer_etcd_client_certificate_renewal_timestamp_seconds Scheduled renewal time reported for the current admin or tenant client leaf.",
+            "# TYPE fabric_observer_etcd_client_certificate_renewal_timestamp_seconds gauge",
+        ]
+    )
+    for certificate in certificates:
+        labels = {
+            key: certificate[key]
+            for key in (
+                "certificate",
+                "credential",
+                "issuer",
+                "tenant_name",
+                "tenant_namespace",
+                "tenant_uid",
+            )
+        }
+        lines.extend(
+            [
+                _metric(
+                    "fabric_observer_etcd_client_certificate_ready",
+                    int(certificate["ready"]),
+                    **labels,
+                ),
+                _metric(
+                    "fabric_observer_etcd_client_certificate_issuing",
+                    int(certificate["issuing"]),
+                    **labels,
+                ),
+                _metric(
+                    "fabric_observer_etcd_client_certificate_status_valid",
+                    int(certificate["status_valid"]),
+                    **labels,
+                ),
+            ]
+        )
+        if certificate["status_valid"]:
+            lines.extend(
+                [
+                    _metric(
+                        "fabric_observer_etcd_client_certificate_revision",
+                        certificate["revision"],
+                        **labels,
+                    ),
+                    _metric(
+                        "fabric_observer_etcd_client_certificate_not_after_timestamp_seconds",
+                        certificate["not_after"],
+                        **labels,
+                    ),
+                    _metric(
+                        "fabric_observer_etcd_client_certificate_renewal_timestamp_seconds",
+                        certificate["renewal_time"],
+                        **labels,
+                    ),
+                ]
+            )
+    return lines
 
 
 def collect_kubernetes(config: Config, now: float) -> list[str]:
@@ -459,6 +801,13 @@ def collect_kubernetes(config: Config, now: float) -> list[str]:
                 ),
             ]
         )
+    lines.extend(
+        collect_etcd_certificate_metrics(
+            context,
+            results.get("api-vip", False),
+            config.request_timeout_seconds,
+        )
+    )
     return lines
 
 

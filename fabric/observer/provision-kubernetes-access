@@ -6,8 +6,9 @@ usage() {
 Issue or revoke a short-lived, uniquely named Kubernetes observer credential.
 
 Issue a requested 54-hour client certificate into a new directory on trusted
-encrypted storage. This creates and approves one Kubernetes CSR and creates two
-bindings for its unique CN; it never exports an admin credential or CA key:
+encrypted storage. This creates and approves one Kubernetes CSR and creates
+three bindings for its unique CN; it never exports an admin credential or CA
+key. The cert-manager CRD and the `etcdetcetc` Namespace must already exist:
 
   provision-kubernetes-access \
     --issue \
@@ -151,6 +152,7 @@ case $action in
       die 'generated observer identity has an invalid shape'
     csr_name=$identity
     role_binding=$identity
+    certificate_role_binding=$identity
     cluster_role_binding=$identity
     cleanup_cluster=false
     cleanup() {
@@ -160,6 +162,8 @@ case $action in
           --ignore-not-found >/dev/null 2>&1 || true
         root_kubectl delete rolebinding "$role_binding" --namespace kube-system \
           --ignore-not-found >/dev/null 2>&1 || true
+        root_kubectl delete rolebinding "$certificate_role_binding" \
+          --namespace etcdetcetc --ignore-not-found >/dev/null 2>&1 || true
         root_kubectl delete certificateSigningRequest "$csr_name" \
           --ignore-not-found >/dev/null 2>&1 || true
       fi
@@ -326,8 +330,34 @@ case $action in
           name: $identity
         }]
       }' > "$work/role-binding.json"
+    jq -n \
+      --arg name "$certificate_role_binding" \
+      --arg identity "$identity" \
+      '{
+        apiVersion: "rbac.authorization.k8s.io/v1",
+        kind: "RoleBinding",
+        metadata: {
+          name: $name,
+          namespace: "etcdetcetc",
+          labels: {
+            "fabric.samcday.com/purpose": "soak-observer",
+            "fabric.samcday.com/session": $identity
+          }
+        },
+        roleRef: {
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "ClusterRole",
+          name: "fabric-observer-etcd-client-certificates"
+        },
+        subjects: [{
+          apiGroup: "rbac.authorization.k8s.io",
+          kind: "User",
+          name: $identity
+        }]
+      }' > "$work/certificate-role-binding.json"
     root_kubectl create --filename=- < "$work/cluster-role-binding.json" >/dev/null
     root_kubectl create --filename=- < "$work/role-binding.json" >/dev/null
+    root_kubectl create --filename=- < "$work/certificate-role-binding.json" >/dev/null
 
     observer_get() {
       local url=$1
@@ -352,6 +382,12 @@ case $action in
       jq -er '.metadata.name') ||
       die 'issued observer cannot read the fixed kube-vip Lease'
     [[ $lease_name == plndr-cp-lock ]] || die 'observer read the wrong Lease'
+    certificate_list_kind=$(observer_get \
+      'https://10.66.0.254:6443/apis/cert-manager.io/v1/namespaces/etcdetcetc/certificates?limit=250' |
+      jq -er '.kind') ||
+      die 'issued observer cannot list etcdetcetc Certificates'
+    [[ $certificate_list_kind == CertificateList ]] ||
+      die 'observer received the wrong cert-manager list kind'
 
     root_kubectl auth can-i --quiet get /readyz \
       --as="$identity" --as-group=system:authenticated ||
@@ -361,6 +397,10 @@ case $action in
       --namespace kube-system --as="$identity" \
       --as-group=system:authenticated ||
       die 'observer impersonation check denies the fixed Lease'
+    root_kubectl auth can-i --quiet list certificates.cert-manager.io \
+      --namespace etcdetcetc --as="$identity" \
+      --as-group=system:authenticated ||
+      die 'observer impersonation check denies the etcdetcetc Certificate list'
     if root_kubectl auth can-i --quiet list leases.coordination.k8s.io \
       --namespace kube-system --as="$identity" \
       --as-group=system:authenticated; then
@@ -398,6 +438,15 @@ case $action in
     done
     deny_can_i 'read Nodes' get nodes
     deny_can_i 'read ConfigMaps' get configmaps --namespace kube-system
+    deny_can_i 'GET the admin Certificate' get \
+      certificates.cert-manager.io/fabric-etcdetcetc-admin --namespace etcdetcetc
+    for verb in create patch update delete watch; do
+      deny_can_i "$verb etcdetcetc Certificates" "$verb" \
+        certificates.cert-manager.io --namespace etcdetcetc
+    done
+    deny_can_i 'read etcdetcetc CertificateRequests' list \
+      certificaterequests.cert-manager.io --namespace etcdetcetc
+    deny_can_i 'read etcdetcetc Secrets' list secrets --namespace etcdetcetc
     deny_can_i 'read apiserver metrics' get /metrics
     deny_can_i 'create CSRs' create certificatesigningrequests.certificates.k8s.io
     deny_can_i 'approve CSRs' update certificatesigningrequests.certificates.k8s.io \
@@ -418,6 +467,9 @@ case $action in
       /apis/rbac.authorization.k8s.io/v1/clusterrolebindings \
       /apis/coordination.k8s.io/v1/namespaces/kube-system/leases \
       /apis/coordination.k8s.io/v1/namespaces/kube-system/leases/not-plndr-cp-lock \
+      /api/v1/namespaces/etcdetcetc/secrets \
+      /apis/cert-manager.io/v1/namespaces/etcdetcetc/certificaterequests \
+      /apis/cert-manager.io/v1/namespaces/etcdetcetc/certificates/fabric-etcdetcetc-admin \
       /metrics; do
       status=$(curl \
         --noproxy '*' \
@@ -447,7 +499,8 @@ case $action in
       "$work/client-ca.crt" \
       "$work/csr.json" \
       "$work/cluster-role-binding.json" \
-      "$work/role-binding.json"
+      "$work/role-binding.json" \
+      "$work/certificate-role-binding.json"
     chmod 0600 "$work/client-key.pem" "$work/identity.json"
     chmod 0644 "$work/client.pem" "$work/ca.crt"
     mv -- "$work" "$output_dir"
@@ -484,6 +537,8 @@ case $action in
     root_kubectl delete clusterrolebinding "$cluster_role_binding" \
       --ignore-not-found >/dev/null
     root_kubectl delete rolebinding "$role_binding" --namespace kube-system \
+      --ignore-not-found >/dev/null
+    root_kubectl delete rolebinding "$role_binding" --namespace etcdetcetc \
       --ignore-not-found >/dev/null
     root_kubectl delete certificateSigningRequest "$csr_name" \
       --ignore-not-found >/dev/null

@@ -35,3 +35,86 @@ spec:
     namespace: flux-system
   timeout: 10m
   wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-etcdetcetc-policy
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-platform
+  interval: 10m
+  path: ./fabric/cluster/etcdetcetc-policy
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-etcdetcetc-controller
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-etcdetcetc-config
+  interval: 10m
+  path: ./fabric/cluster/etcdetcetc-controller
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  suspend: true
+  timeout: 10m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-etcdetcetc-config
+  namespace: flux-system
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    # Apply only the CA/ClusterIssuer/admin Certificate while the controller and its
+    # CRDs remain absent. This creates the delegated identity needed for the
+    # attended etcd-user ceremony without creating runtime custom resources.
+    - name: fabric-etcdetcetc-policy
+  interval: 10m
+  path: ./fabric/cluster/etcdetcetc
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  suspend: true
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-etcdetcetc-runtime
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-etcdetcetc-config
+    - name: fabric-etcdetcetc-controller
+  interval: 10m
+  path: ./fabric/cluster/etcdetcetc/runtime
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  suspend: true
+  timeout: 5m
+  wait: true

@@ -11,8 +11,11 @@ agents are declared in Git. During the explicitly temporary flat-L2 phase,
 `10.66.0.0/24` and `10.66.1.0/24` share daisy-chained unmanaged switches while
 retaining their final addresses. This is routing and policy separation, not a
 security boundary: only the two trusted service nodes and reviewed foundation
-workloads may use it. Child etcd identities, tenant workloads, KubeVirt, and
-general worker induction remain gated on the managed-switch VLAN boundary.
+workloads may use it. A narrow exception admits the Fabric-hosted etcdetcetc
+controller and its dedicated smoke identity to TCP/2379 so the shared-etcd
+tenancy foundation can be proven. It does not admit a child control plane,
+general tenant workloads, KubeVirt, or worker induction; those remain gated on
+the managed-switch VLAN boundary.
 Future Bootie provisioning remains worker-only and attended.
 
 The design and induction gates live in

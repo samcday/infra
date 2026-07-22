@@ -20,7 +20,12 @@ included in the current hub Flux fan-out, and nothing merges the current
   values enabled would also reactivate receipt after a host-mode transition.
 - `etcd.yaml` runs one physical etcd member per machine. The service has
   `RequiresMountsFor=/var/lib/etcd`, uses a 2 GiB backend quota, and every
-  fresh member explicitly starts with `initial-cluster-state=new`.
+  fresh member explicitly starts with `initial-cluster-state=new`. Its client
+  trust renderer concatenates the offline physical CA with the public,
+  client-only etcdetcetc CA in `/run`; peer trust remains the physical CA
+  alone. Existing installed voters receive this public policy only through
+  `scripts/rollout-fabric-etcd-client-trust`, one member at a time with a
+  cluster lock, target-local rollback, and consensus/API acceptance proofs.
 - `control-plane.yaml` runs K3s against external etcd under `/fabric-root`.
   It keeps K3s Flannel and kube-proxy, while disabling CoreDNS, Traefik,
   ServiceLB, local-path storage, and metrics-server. The consensus-only phase
@@ -34,18 +39,29 @@ included in the current hub Flux fan-out, and nothing merges the current
 - `firewall.yaml` installs a root-only, default-drop nftables guard before
   etcd or K3s. It admits consensus traffic only among the three declared root
   addresses, admits operational/API metrics only from observer `10.66.0.2`,
-  and stages only API, kubelet, and Flannel access for the two declared
-  service-node addresses. It fixes kube-proxy to iptables, keeps new root
-  forwarding denied, and makes NodePorts unreachable on roots. The staged
-  service rules remain inactive until the router's exact-source policy exists
-  and has passed negative etcd-access tests. During the temporary flat-L2
-  exception those IP rules constrain trusted nodes but are not anti-spoofing
-  isolation; the managed-switch VLAN remains mandatory for broader workloads.
+  and stages API, kubelet, Flannel, plus TCP/2379 client access for exactly the
+  two declared service-node addresses. It never admits service sources to etcd
+  peer TCP/2380 or metrics TCP/2381. It fixes kube-proxy to iptables, keeps new
+  root forwarding denied, and makes NodePorts unreachable on roots. Roll the
+  combined root policy one member at a time only after the ordinary-Pod source
+  qualification passes, and while the live router's legacy rule still rejects
+  all three etcd ports. The guarded router transition is the final network-open
+  gate and replaces that legacy rule with exact-node TCP/2379 allow followed by
+  TCP/2380-2381 reject. During the temporary flat-L2 exception those IP rules
+  constrain trusted nodes but are not anti-spoofing isolation; the
+  managed-switch VLAN remains mandatory for broader workloads.
   `scripts/rollout-fabric-root-firewall` treats this guard and the routed-host
   sysctl payload as one combined, hash-confirmed root network policy. It rolls
-  one member at a time with a cluster lock, exact route and interface checks,
-  a five-minute local rollback, and API/etcd/heartbeat acceptance checks; the
-  old firewall-only confirmation is intentionally no longer valid.
+  one member at a time with the shared
+  `kube-system/fabric-maintenance-lock`, exact route and interface
+  checks, a persistent reboot-surviving five-minute local rollback, exact live
+  nftables service-source/port/order proof, token-bound two-phase disarm, and
+  API/etcd/heartbeat acceptance checks; the old firewall-only confirmation is
+  intentionally no longer valid.
+  A failure retains that global lock, preventing delegated trust/admin,
+  pre-open, another root rollout, router transition, or post-open work from
+  overlapping stale rollback state. Inspect the persistent target evidence at
+  `/var/lib/fabric-root-network-policy-rollback` before any attended recovery.
 - `time.yaml` makes the dedicated router the sole configured chrony source.
   The roots retain their own RTC and persisted drift when the router or WAN is
   unavailable after initial synchronization.

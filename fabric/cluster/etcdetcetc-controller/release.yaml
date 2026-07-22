@@ -1,0 +1,75 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: etcdetcetc
+  namespace: etcdetcetc
+spec:
+  chart:
+    spec:
+      chart: charts/etcdetcetc
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: infra
+        namespace: flux-system
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+  driftDetection:
+    ignore:
+      # The chart creates the coordination object, but only the controller owns
+      # its spec. Never let Helm drift correction clear a live holder record.
+      - paths:
+          - /spec
+        target:
+          group: coordination.k8s.io
+          version: v1
+          kind: Lease
+          name: etcdetcetc-leader
+    mode: enabled
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  interval: 1h
+  # The pinned bootstrap image still requires cluster-wide core-object watches.
+  # The image-build activation change replaces this digest before unsuspending.
+  suspend: true
+  timeout: 5m
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    allowedNamespaces:
+      - etcdetcetc
+      - etcdetcetc-smoke
+    image:
+      repository: ghcr.io/samcday/infra-etcdetcetc
+      tag: "2026072008"
+      digest: sha256:863603a393e2671b1492b9a212df1ff87a37925bc6bac67c207133b9ce108977
+      pullPolicy: IfNotPresent
+    managedNamespaces:
+      - etcdetcetc-smoke
+    legacyClusterWideCoreWatches: false
+    replicaCount: 2
+    nodeSelector:
+      fabric.samcday.com/platform: "true"
+      kubernetes.io/os: linux
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchFields:
+                - key: metadata.name
+                  operator: In
+                  values:
+                    - fabric-az1-svc1
+                    - fabric-az1-svc2
+    priorityClassName: system-cluster-critical
+    tolerations:
+      - effect: NoSchedule
+        key: fabric.samcday.com/platform
+        operator: Equal
+        value: "true"

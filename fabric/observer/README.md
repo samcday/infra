@@ -3,8 +3,8 @@
 The root trio deliberately does not host a monitoring database, and workers do
 not exist until after the initial soak. This directory supplies the static
 Prometheus scrape configuration, focused alert rules, and a loopback-only
-API/Lease collector for a temporary trusted operations laptop. It does not put
-a TSDB or an observer workload on the root trio.
+API/Lease/certificate collector for a temporary trusted operations laptop. It
+does not put a TSDB or an observer workload on the root trio.
 
 The roots run only the bounded host exporter defined in
 `fabric/butane/node-exporter.yaml`; it has no TSDB and no dependency on etcd or
@@ -187,18 +187,41 @@ for address in 10.66.0.10 10.66.0.11 10.66.0.12; do
 done
 ```
 
-## API and Lease collector
+## API, Lease, and delegated-leaf collector
 
 `collector.py` is deliberately fabric-specific: its API VIP, three direct node
 addresses, Lease namespace/name, permitted holders, and 30-second duration are
 fixed in code. It performs CA-verified mTLS requests to `/readyz` through the
-VIP and every node, then GETs only `kube-system/plndr-cp-lock`. Unexpected TLS,
-HTTP, JSON, holder, duration, or timing state emits failure metrics. It listens
-only on IPv4 loopback and serves only `/metrics`.
+VIP and every node, GETs only `kube-system/plndr-cp-lock`, and makes one bounded
+LIST for Certificate metadata/spec/status in only the `etcdetcetc` namespace.
+Unexpected TLS, HTTP, JSON, holder, duration, identity, provenance, pagination,
+or timing state emits failure metrics. It listens only on IPv4 loopback and
+serves only `/metrics`.
 
-`access.yaml` defines two inert roles: GET `/readyz`, and GET that one named
-Lease. Immediately before the 48-hour soak, issue a unique requested 54-hour
-client identity into a new directory on trusted encrypted storage:
+Issuer names are an exact reviewed phase allowlist in `collector.py`, currently
+only `fabric-etcd-client-v1`; a name merely shaped like `v2` or `v999` is not
+accepted. Rotation R1 adds exactly the reviewed next issuer while current and
+next overlap. R5 removes current from this allowlist only after the complete
+inventory proves no Certificate still references it, while the current CA
+expiry series becomes `lifecycle="retiring"`; R6 removes that retired CA series
+after old trust is absent.
+
+The Certificate list contains no Secret data or private key. It is the
+cert-manager-owned renewal control-plane signal: current-generation `Ready`,
+revision, `renewalTime`, and `notAfter`. It does not pretend that status is a
+cryptographic reading of the Secret. The controller independently parses the
+tenant staging leaf and performs a live prefix probe every five minutes, while
+the EtcdCluster controller reconnects and authenticates with the admin Secret
+every fifteen seconds. The status alerts provide advance warning; those
+runtime checks remain the fail-closed proof of actual keypair usability.
+
+`access.yaml` defines three inert read-only capabilities: GET `/readyz`, GET
+that one named Lease, and LIST Certificate objects only through a RoleBinding
+in `etcdetcetc`. It grants no Secret, CertificateRequest, individual
+Certificate GET, watch, or mutation access. The cert-manager CRD and
+`etcdetcetc` namespace must exist first. Immediately before the monitored
+rollout or 48-hour soak, issue a unique requested 54-hour client identity into
+a new directory on trusted encrypted storage:
 
 ```sh
 ./provision-kubernetes-access \
@@ -236,10 +259,14 @@ Validate before starting Prometheus:
   promtool check metrics
 ```
 
-All four API readiness series, the Lease query and validity series, and
-client-certificate validity must be `1`. Exactly three holder series must be
-present, with exactly one equal to `1`. After preserving non-secret evidence,
-revoke this exact session and securely remove its key:
+All four API readiness series, the Lease query and validity series, observer
+client-certificate validity, delegated-leaf query success, and delegated-leaf
+inventory validity must be `1`. Exactly three holder series must be present,
+with exactly one equal to `1`. There must be exactly one admin leaf series;
+every tenant series must carry its UID, namespace, and name. Existing observer
+credentials lack the new namespaced binding: issue a new unique identity
+rather than expanding or reusing an old soak identity. After preserving
+non-secret evidence, revoke this exact session and securely remove its key:
 
 ```sh
 ./provision-kubernetes-access \
@@ -309,13 +336,22 @@ each node must expose `/`, `/var`, and `/var/lib/etcd` through
 The rules cover etcd target loss, leader absence and churn, failed, slow,
 stuck, or unapplied proposals, WAL fsync and backend commit p99 latency,
 backend quota and fragmentation pressure, etcd process restarts, authenticated
-alarm failure/staleness/active state, plus kube-vip target loss and leadership.
+alarm failure/staleness/active state, and the exact active or retiring
+delegated client-CA generation at non-overlapping 90-, 30-, and 7-day expiry
+thresholds, plus kube-vip target loss and leadership. The CA expiry series is
+bound to the reviewed public certificate's exact notAfter and SHA-256
+fingerprint; an overlap rotation adds the next generation before trust rollout
+and retains the old series as `lifecycle="retiring"` until old trust is gone.
 Host rules cover exporter and collector loss, sustained
 CPU and memory exhaustion, selected root filesystem capacity and read-only
 state, CPU/memory/I/O pressure stalls, and sustained physical-disk busy time.
 Laptop rules cover fresh collection, VIP/direct API readiness, the
 authoritative Lease, disagreement between that Lease and kube-vip's own leader
-metric, and short-lived client-certificate validity and expiry.
+metric, short-lived observer client-certificate validity and expiry, and the
+bounded admin/tenant client-leaf inventory. A leaf alerts after ten minutes of
+invalid or non-Ready current-generation status, twenty effective minutes past
+its scheduled renewal time (a 15-minute threshold plus a five-minute hold),
+and inside the critical final four hours before expiry.
 The 10 ms WAL and 25 ms backend commit thresholds follow
 the [etcd performance
 guidance](https://etcd.io/docs/v3.6/faq/#what-does-the-etcd-warning-apply-entries-took-too-long-mean).
@@ -371,6 +407,18 @@ fabric_observer_kube_api_ready{job="fabric-observer"}
 
 ```promql
 fabric_observer_kube_vip_lease_holder{job="fabric-observer"}
+```
+
+```promql
+fabric_observer_etcd_client_certificate_ready{job="fabric-observer"}
+```
+
+```promql
+fabric_observer_etcd_client_certificate_not_after_timestamp_seconds{job="fabric-observer"} - time()
+```
+
+```promql
+time() - fabric_observer_etcd_client_certificate_renewal_timestamp_seconds{job="fabric-observer"}
 ```
 
 Host utilization and pressure graphs use the `fabric-node` job. PSI rates are

@@ -1,0 +1,656 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+readonly lock_name=fabric-maintenance-lock
+readonly controller_namespace=etcdetcetc
+readonly admin_name=fabric-etcdetcetc-admin
+readonly client_issuer=fabric-etcd-client-v1
+readonly bootstrap_image_tag=2026072008
+readonly bootstrap_image_digest=sha256:863603a393e2671b1492b9a212df1ff87a37925bc6bac67c207133b9ce108977
+readonly -a service_nodes=(fabric-az1-svc1 fabric-az1-svc2)
+readonly -a service_addresses=(10.66.1.10 10.66.1.11)
+
+usage() {
+  cat >&2 <<'EOF'
+Prove the complete read-only Fabric etcdetcetc pre-open contract.
+
+Usage:
+  scripts/verify-fabric-etcd-pre-open
+  scripts/verify-fabric-etcd-pre-open --expected-lock-holder <exact-holder>
+
+Without --expected-lock-holder, the global Fabric maintenance lock must be
+absent. The router transition supplies its exact holder and reruns this helper
+while it owns both maintenance locks. This helper makes no write to Kubernetes,
+etcd, any root node, or the router. Its delegated-admin proof does establish
+three supervised, loopback-only SSH forwards through cp1 and removes them
+before returning.
+EOF
+}
+
+die() {
+  printf 'verify-fabric-etcd-pre-open: %s\n' "$*" >&2
+  exit 1
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+expected_lock_holder=
+while (($#)); do
+  case $1 in
+    --expected-lock-holder)
+      (($# >= 2)) || die '--expected-lock-holder requires a value'
+      [[ -z $expected_lock_holder ]] || die '--expected-lock-holder may be specified only once'
+      expected_lock_holder=$2
+      [[ -n $expected_lock_holder && $expected_lock_holder != *$'\n'* ]] ||
+        die '--expected-lock-holder is empty or contains a newline'
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in base64 gh git grep jq kubectl openssl realpath skopeo sort yq; do
+  need_command "$command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(realpath -- "$script_dir/..")
+[[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
+  die 'script is not inside the expected Git worktree'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] || die 'run only from main'
+[[ -z $(git -C "$repo_root" status --porcelain) ]] || die 'worktree must be clean'
+git -C "$repo_root" fetch --quiet origin main
+head=$(git -C "$repo_root" rev-parse HEAD)
+[[ $head =~ ^[0-9a-f]{40}$ ]] || die 'cannot resolve a full HEAD revision'
+[[ $head == "$(git -C "$repo_root" rev-parse origin/main)" ]] ||
+  die 'HEAD must exactly match freshly fetched origin/main'
+expected_revision="main@sha1:$head"
+expected_chart_revision="0.0.0+${head:0:12}"
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+hub_ik=("$repo_root/scripts/ik" --context=hub --request-timeout=15s)
+
+verify_lock_contract() {
+  local lock_json holder object_name
+  if [[ -z $expected_lock_holder ]]; then
+    object_name=$("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+      --ignore-not-found --output=name) ||
+      die 'cannot prove the global Fabric maintenance lock is absent'
+    if [[ -n $object_name ]]; then
+      holder=$("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+        --output=jsonpath='{.data.holder}' 2>/dev/null || true)
+      die "another or stale global Fabric maintenance lock exists: ${holder:-unknown}"
+    fi
+    return
+  fi
+
+  lock_json=$("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+    --output=json) || die 'router-owned global Fabric maintenance lock is absent'
+  jq -e --arg holder "$expected_lock_holder" '
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and length > 0) and
+    .data == {holder: $holder}
+  ' <<<"$lock_json" >/dev/null ||
+    die 'global Fabric maintenance lock does not have the exact expected owner'
+}
+
+verify_flux_object() {
+  local name=$1 state
+  state=$("${ik[@]}" --namespace flux-system get kustomization "$name" \
+    --output=json) || die "cannot read Flux Kustomization $name"
+  jq -e --arg revision "$expected_revision" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    (.spec.suspend // false) == false and
+    .status.observedGeneration == $generation and
+    .status.lastAppliedRevision == $revision and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    )
+  ' <<<"$state" >/dev/null ||
+    die "Flux Kustomization $name is not current and Ready on $expected_revision"
+}
+
+verify_suspended_child() {
+  local name=$1 state
+  state=$("${ik[@]}" --namespace flux-system get kustomization "$name" \
+    --output=json) || die "cannot read suspended Flux Kustomization $name"
+  jq -e '
+    .metadata.deletionTimestamp == null and .spec.suspend == true
+  ' <<<"$state" >/dev/null ||
+    die "Flux Kustomization $name is not exactly suspended"
+}
+
+verify_service_nodes() {
+  local nodes
+  nodes=$("${ik[@]}" get nodes "${service_nodes[@]}" --output=json) ||
+    die 'cannot read the two Fabric service nodes'
+  jq -e \
+    --arg svc1 "${service_nodes[0]}" --arg svc2 "${service_nodes[1]}" \
+    --arg ip1 "${service_addresses[0]}" --arg ip2 "${service_addresses[1]}" '
+    def expected_ip($name):
+      if $name == $svc1 then $ip1 elif $name == $svc2 then $ip2 else null end;
+    (.items | length) == 2 and
+    ([.items[].metadata.name] | sort) == ([$svc1, $svc2] | sort) and
+    all(.items[];
+      .metadata.deletionTimestamp == null and
+      (.metadata.uid | type == "string" and length > 0) and
+      .metadata.labels["fabric.samcday.com/platform"] == "true" and
+      .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      .metadata.labels["kubernetes.io/arch"] == "amd64" and
+      .metadata.labels["kubernetes.io/os"] == "linux" and
+      (.metadata.labels["fabric.samcday.com/root-consensus"] // "") != "true" and
+      (.spec.unschedulable // false) == false and
+      (.spec.taints // []) == [{
+        effect: "NoSchedule", key: "fabric.samcday.com/platform", value: "true"
+      }] and
+      ([.status.addresses[]? | select(.type == "InternalIP") | .address] ==
+        [expected_ip(.metadata.name)]) and
+      any(.status.conditions[]?; .type == "Ready" and .status == "True")
+    )
+  ' <<<"$nodes" >/dev/null ||
+    die 'service nodes are not the exact Ready platform identities at 10.66.1.10/.11'
+}
+
+verify_hub_reconciliation() {
+  local chart kustomizations release source
+  source=$("${hub_ik[@]}" --namespace flux-system get gitrepository infra \
+    --output=json) || die 'cannot read the Hub infra GitRepository'
+  jq -e --arg revision "$expected_revision" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    (.spec.suspend // false) == false and
+    .spec.ref == {branch: "main"} and
+    .status.observedGeneration == $generation and
+    .status.artifact.revision == $revision and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    )
+  ' <<<"$source" >/dev/null ||
+    die "Hub infra GitRepository is not current and Ready on $expected_revision"
+
+  kustomizations=$("${hub_ik[@]}" --namespace flux-system get kustomization \
+    infra etcdetcetc cloud-cluster --output=json) ||
+    die 'cannot read the Hub owner Kustomizations for the legacy releases'
+  jq -e --arg revision "$expected_revision" '
+    def expected_path($name):
+      if $name == "infra" then "hub/cluster/flux-system"
+      elif $name == "etcdetcetc" then "hub/cluster/etcdetcetc"
+      elif $name == "cloud-cluster" then "hub/cluster/cloud-cluster"
+      else null end;
+    ([.items[].metadata.name] | sort) ==
+      ["cloud-cluster", "etcdetcetc", "infra"] and
+    all(.items[];
+      .metadata.generation as $generation |
+      .metadata.deletionTimestamp == null and
+      (.spec.suspend // false) == false and
+      .spec.path == expected_path(.metadata.name) and
+      .spec.sourceRef == {
+        kind: "GitRepository", name: "infra", namespace: "flux-system"
+      } and
+      .status.observedGeneration == $generation and
+      .status.lastAppliedRevision == $revision and
+      any(.status.conditions[]?;
+        .type == "Ready" and .status == "True" and
+        .observedGeneration == $generation
+      )
+    )
+  ' <<<"$kustomizations" >/dev/null ||
+    die "Hub owner Kustomizations are not current and Ready on $expected_revision"
+
+  release=$("${hub_ik[@]}" --namespace flux-system get helmrelease kustomizations \
+    --output=json) || die 'cannot read the Hub Kustomization fan-out HelmRelease'
+  jq -e --arg revision "$expected_chart_revision" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    (.spec.suspend // false) == false and
+    .spec.chart.spec.chart == "charts/resources" and
+    .spec.chart.spec.reconcileStrategy == "Revision" and
+    .spec.chart.spec.sourceRef == {
+      kind: "GitRepository", name: "infra", namespace: "flux-system"
+    } and
+    .status.observedGeneration == $generation and
+    .status.lastAttemptedRevision == $revision and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    ) and
+    all(.status.conditions[]?;
+      if .type == "Reconciling" or .type == "Stalled" then .status != "True"
+      else true end
+    )
+  ' <<<"$release" >/dev/null ||
+    die "Hub Kustomization fan-out HelmRelease is not settled on $expected_chart_revision"
+
+  chart=$("${hub_ik[@]}" --namespace flux-system get \
+    helmcharts.source.toolkit.fluxcd.io flux-system-kustomizations --output=json) ||
+    die 'cannot read the Hub Kustomization fan-out HelmChart'
+  jq -e --arg revision "$expected_chart_revision" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    .spec.chart == "charts/resources" and
+    .spec.reconcileStrategy == "Revision" and
+    .spec.sourceRef == {kind: "GitRepository", name: "infra"} and
+    .status.observedGeneration == $generation and
+    .status.artifact.revision == $revision and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    )
+  ' <<<"$chart" >/dev/null ||
+    die "Hub Kustomization fan-out HelmChart is not current on $expected_chart_revision"
+}
+
+verify_legacy_suspensions() {
+  local namespace name state
+  while IFS=$'\t' read -r namespace name; do
+    state=$("${hub_ik[@]}" --namespace "$namespace" get helmrelease "$name" \
+      --output=json) || die "cannot read legacy HelmRelease $namespace/$name"
+    jq -e '
+      .metadata.deletionTimestamp == null and .spec.suspend == true
+    ' <<<"$state" >/dev/null ||
+      die "legacy HelmRelease $namespace/$name is not exactly suspended"
+  done <<'EOF'
+etcdetcetc	etcdetcetc
+cloud-cluster	etcdetcetc
+cloud-cluster	etcdetcetc-cloud-etcd
+EOF
+}
+
+verify_no_controller_or_runtime() {
+  local crd inventory namespace network_policies object_name resource
+  object_name=$("${ik[@]}" --namespace "$controller_namespace" get helmrelease \
+    etcdetcetc --ignore-not-found --output=name) ||
+    die 'cannot prove the Fabric controller HelmRelease is absent'
+  if [[ -n $object_name ]]; then
+    die 'Fabric controller HelmRelease already exists before the network-open gate'
+  fi
+  inventory=$("${ik[@]}" --namespace "$controller_namespace" get \
+    deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,replicationcontrollers,pods \
+    --output=json) || die 'cannot inventory pre-open controller workloads'
+  jq -e '.items == []' <<<"$inventory" >/dev/null ||
+    die 'controller Deployment or Pod exists while the controller child is suspended'
+
+  inventory=$("${ik[@]}" --namespace etcdetcetc-smoke get \
+    deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,replicationcontrollers,pods \
+    --output=json) || die 'cannot inventory pre-open smoke workloads'
+  jq -e '.items == []' <<<"$inventory" >/dev/null ||
+    die 'smoke workload or Pod exists before runtime activation'
+  namespace=$("${ik[@]}" get namespace etcdetcetc-smoke --output=json) ||
+    die 'cannot read the permanent smoke Namespace'
+  jq -e '
+    .metadata.name == "etcdetcetc-smoke" and
+    .metadata.deletionTimestamp == null
+  ' <<<"$namespace" >/dev/null ||
+    die 'permanent smoke Namespace is absent or terminating'
+  network_policies=$("${ik[@]}" --namespace etcdetcetc-smoke get networkpolicy \
+    --output=json) || die 'cannot inventory pre-open smoke NetworkPolicies'
+  jq -e '
+    (.items | length) == 1 and
+    .items[0].metadata.name == "default-deny" and
+    .items[0].metadata.namespace == "etcdetcetc-smoke" and
+    .items[0].metadata.deletionTimestamp == null and
+    .items[0].spec == {
+      podSelector: {}, policyTypes: ["Egress", "Ingress"]
+    }
+  ' <<<"$network_policies" >/dev/null ||
+    die 'smoke NetworkPolicy set is not exactly the permanent default-deny'
+  for resource in \
+    secret/fabric-smoke-etcd \
+    configmap/fabric-smoke-etcd; do
+    object_name=$("${ik[@]}" --namespace etcdetcetc-smoke get "$resource" \
+      --ignore-not-found --output=name) ||
+      die "cannot prove pre-open smoke artifact absent: $resource"
+    [[ -z $object_name ]] ||
+      die "pre-open smoke artifact already exists: $resource"
+  done
+
+  for crd in \
+    etcdclusters.etcdetcetc.samcday.com \
+    etcdtenants.etcdetcetc.samcday.com; do
+    object_name=$("${ik[@]}" get customresourcedefinition "$crd" \
+      --ignore-not-found --output=name) ||
+      die "cannot prove runtime CRD is absent: $crd"
+    if [[ -n $object_name ]]; then
+      die "runtime CRD already exists before controller activation: $crd"
+    fi
+  done
+}
+
+verify_issuer() {
+  local name=$1 expected_kind=$2 issuer
+  issuer=$("${ik[@]}" get clusterissuer.cert-manager.io "$name" --output=json) ||
+    die "cannot read ClusterIssuer $name"
+  jq -e --arg kind "$expected_kind" --arg secret "$client_issuer-ca" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    (if $kind == "ca" then .spec == {ca: {secretName: $secret}}
+     else .spec == {selfSigned: {}} end) and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    )
+  ' <<<"$issuer" >/dev/null ||
+    die "ClusterIssuer $name is not the exact current-generation Ready contract"
+}
+
+verify_admission_status() {
+  local policies bindings expected_contract live_contract
+  expected_contract=$(kubectl kustomize \
+    "$repo_root/fabric/cluster/etcdetcetc-policy" |
+    yq -o=json -I=0 |
+    jq -s -cS '
+      def default_rules:
+        if has("resourceRules") then
+          .resourceRules |= map(.scope = (.scope // "*"))
+        else . end |
+        if has("excludeResourceRules") then
+          .excludeResourceRules |= map(.scope = (.scope // "*"))
+        else . end;
+      def default_match_resources:
+        .matchPolicy = (.matchPolicy // "Equivalent") |
+        .namespaceSelector = (.namespaceSelector // {}) |
+        .objectSelector = (.objectSelector // {}) |
+        default_rules;
+      def server_defaults:
+        if .kind == "ValidatingAdmissionPolicy" then
+          .spec.failurePolicy = (.spec.failurePolicy // "Fail") |
+          if .spec.matchConstraints != null then
+            .spec.matchConstraints |= default_match_resources
+          else . end
+        elif .kind == "ValidatingAdmissionPolicyBinding" and
+             .spec.matchResources != null then
+          .spec.matchResources |= default_match_resources
+        else . end;
+      [.[] |
+        select(
+          .kind == "ValidatingAdmissionPolicy" or
+          .kind == "ValidatingAdmissionPolicyBinding"
+        ) |
+        server_defaults |
+        {kind, name: .metadata.name, spec}
+      ] | sort_by(.kind, .name)
+    ') || die 'cannot render the committed Fabric signer admission contract'
+  [[ $(jq -r 'length' <<<"$expected_contract") == 20 ]] ||
+    die 'committed Fabric signer admission contract does not contain exactly 20 objects'
+  policies=$("${ik[@]}" get \
+    validatingadmissionpolicies.admissionregistration.k8s.io --output=json) ||
+    die 'cannot read Fabric signer admission policies'
+  bindings=$("${ik[@]}" get \
+    validatingadmissionpolicybindings.admissionregistration.k8s.io --output=json) ||
+    die 'cannot read Fabric signer admission policy bindings'
+  jq -e '
+    def ours:
+      .metadata.name |
+      startswith("fabric-control-plane-") or startswith("fabric-etcd-client-v1-");
+    ([.items[] | select(ours) | .metadata.name] | sort) == [
+      "fabric-control-plane-bootstrap-certificates",
+      "fabric-control-plane-bootstrap-namespace",
+      "fabric-control-plane-bootstrap-requests",
+      "fabric-control-plane-ca-issuers",
+      "fabric-control-plane-leaf-certificates",
+      "fabric-control-plane-leaf-requests",
+      "fabric-control-plane-selfsigned-issuer",
+      "fabric-etcd-client-v1-certificates",
+      "fabric-etcd-client-v1-clusterissuer",
+      "fabric-etcd-client-v1-requests"
+    ] and
+    all(.items[] | select(ours);
+      .metadata.deletionTimestamp == null and
+      .spec.failurePolicy == "Fail" and
+      .status.observedGeneration == .metadata.generation and
+      (.status.typeChecking.expressionWarnings // []) == []
+    )
+  ' <<<"$policies" >/dev/null ||
+    die 'Fabric signer admission policies are incomplete, stale, or have CEL warnings'
+  jq -e '
+    def ours:
+      .metadata.name |
+      startswith("fabric-control-plane-") or startswith("fabric-etcd-client-v1-");
+    ([.items[] | select(ours) | .metadata.name] | sort) == [
+      "fabric-control-plane-bootstrap-certificates",
+      "fabric-control-plane-bootstrap-namespace",
+      "fabric-control-plane-bootstrap-requests",
+      "fabric-control-plane-ca-issuers",
+      "fabric-control-plane-leaf-certificates",
+      "fabric-control-plane-leaf-requests",
+      "fabric-control-plane-selfsigned-issuer",
+      "fabric-etcd-client-v1-certificates",
+      "fabric-etcd-client-v1-clusterissuer",
+      "fabric-etcd-client-v1-requests"
+    ] and
+    all(.items[] | select(ours);
+      .metadata.deletionTimestamp == null and
+      .spec.policyName == .metadata.name and
+      .spec.validationActions == ["Deny"]
+    )
+  ' <<<"$bindings" >/dev/null ||
+    die 'Fabric signer admission bindings are not the exact fail-closed set'
+
+  live_contract=$(jq -cnS \
+    --argjson policies "$policies" \
+    --argjson bindings "$bindings" '
+      def ours:
+        .metadata.name |
+        startswith("fabric-control-plane-") or startswith("fabric-etcd-client-v1-");
+      [
+        ($policies.items[] | select(ours) | {
+          kind: "ValidatingAdmissionPolicy",
+          name: .metadata.name,
+          spec
+        }),
+        ($bindings.items[] | select(ours) | {
+          kind: "ValidatingAdmissionPolicyBinding",
+          name: .metadata.name,
+          spec
+        })
+      ] | sort_by(.kind, .name)
+    ') || die 'cannot normalize the live Fabric signer admission contract'
+  [[ $live_contract == "$expected_contract" ]] ||
+    die 'live Fabric signer admission specs differ from the exact committed contract'
+}
+
+verify_admin_certificate() {
+  local certificate secret_header secret_keys public_cert public_ca
+  local secret_type secret_uid secret_name_label secret_component_label
+  local subject issuer text canonical_ca_fingerprint live_ca_fingerprint
+  certificate=$("${ik[@]}" --namespace "$controller_namespace" get \
+    certificate.cert-manager.io "$admin_name" --output=json) ||
+    die 'cannot read the Fabric controller admin Certificate'
+  jq -e --arg issuer "$client_issuer" --arg secret "$admin_name" '
+    .metadata.generation as $generation |
+    .metadata.deletionTimestamp == null and
+    .spec.commonName == "fabric-etcdetcetc" and
+    .spec.duration == "24h0m0s" and
+    .spec.renewBefore == "8h0m0s" and
+    .spec.issuerRef == {group: "cert-manager.io", kind: "ClusterIssuer", name: $issuer} and
+    .spec.privateKey == {algorithm: "ECDSA", rotationPolicy: "Always"} and
+    .spec.secretName == $secret and
+    .spec.usages == ["digital signature", "client auth"] and
+    (.status.revision | type == "number" and . >= 1) and
+    any(.status.conditions[]?;
+      .type == "Ready" and .status == "True" and
+      .observedGeneration == $generation
+    )
+  ' <<<"$certificate" >/dev/null ||
+    die 'Fabric controller admin Certificate is not the exact current-generation Ready contract'
+
+  secret_header=$("${ik[@]}" --namespace "$controller_namespace" get secret \
+    "$admin_name" --output=go-template='{{.type}}{{"\t"}}{{.metadata.uid}}{{"\t"}}{{index .metadata.labels "app.kubernetes.io/name"}}{{"\t"}}{{index .metadata.labels "app.kubernetes.io/component"}}{{"\n"}}') ||
+    die 'cannot read admin Secret metadata'
+  IFS=$'\t' read -r secret_type secret_uid secret_name_label \
+    secret_component_label <<<"$secret_header"
+  [[ $secret_type == kubernetes.io/tls && $secret_uid =~ ^[0-9a-f-]+$ &&
+     $secret_name_label == etcdetcetc &&
+     $secret_component_label == admin-credential ]] ||
+    die 'admin Secret metadata differs from the exact TLS credential contract'
+  # shellcheck disable=SC2016 # Go-template variables, not shell variables.
+  secret_keys=$("${ik[@]}" --namespace "$controller_namespace" get secret \
+    "$admin_name" --output=go-template='{{range $key, $value := .data}}{{$key}}{{"\n"}}{{end}}' | sort) ||
+    die 'cannot inventory admin Secret data keys'
+  [[ $secret_keys == $'ca.crt\ntls.crt\ntls.key' ]] ||
+    die 'admin Secret does not contain exactly ca.crt, tls.crt, and tls.key'
+
+  public_cert=$("${ik[@]}" --namespace "$controller_namespace" get secret \
+    "$admin_name" --output=jsonpath='{.data.tls\.crt}' | base64 --decode) ||
+    die 'cannot decode the public admin certificate'
+  public_ca=$("${ik[@]}" --namespace "$controller_namespace" get secret \
+    "$admin_name" --output=jsonpath='{.data.ca\.crt}' | base64 --decode) ||
+    die 'cannot decode the public admin CA bundle'
+  subject=$(openssl x509 -noout -subject -nameopt RFC2253 <<<"$public_cert")
+  issuer=$(openssl x509 -noout -issuer -nameopt RFC2253 <<<"$public_cert")
+  [[ $subject == 'subject=CN=fabric-etcdetcetc' ]] ||
+    die "admin leaf has an unexpected subject: $subject"
+  [[ $issuer == 'issuer=CN=fabric-etcdetcetc-client-ca' ]] ||
+    die "admin leaf has an unexpected issuer: $issuer"
+  text=$(openssl x509 -noout -text <<<"$public_cert")
+  grep -Fq 'TLS Web Client Authentication' <<<"$text" ||
+    die 'admin leaf lacks client-auth EKU'
+  ! grep -Fq 'TLS Web Server Authentication' <<<"$text" ||
+    die 'admin leaf unexpectedly has server-auth EKU'
+  openssl x509 -noout -checkend 3600 <<<"$public_cert" >/dev/null ||
+    die 'admin leaf expires in less than one hour'
+  if openssl x509 -noout -checkend 90000 <<<"$public_cert" >/dev/null; then
+    die 'admin leaf lifetime exceeds the bounded 24-hour credential contract'
+  fi
+  canonical_ca_fingerprint=$(openssl x509 \
+    -in "$repo_root/fabric/pki/etcdetcetc/client-ca.pem" \
+    -noout -fingerprint -sha256)
+  live_ca_fingerprint=$(openssl x509 -noout -fingerprint -sha256 <<<"$public_ca")
+  [[ $live_ca_fingerprint == "$canonical_ca_fingerprint" ]] ||
+    die 'admin Secret CA bundle differs from the reviewed delegated client CA'
+}
+
+verify_image_pin() {
+  local release repository tag digest inspection config image_revision
+  local image_tree head_tree image_workflow head_workflow provenance
+  release=$repo_root/fabric/cluster/etcdetcetc-controller/release.yaml
+  read -r repository tag digest < <(yq -er '
+    select(.kind == "HelmRelease" and .metadata.name == "etcdetcetc") |
+    [.spec.values.image.repository, .spec.values.image.tag, .spec.values.image.digest] |
+    @tsv
+  ' "$release") || die 'cannot resolve the committed controller image pin'
+  [[ $repository == ghcr.io/samcday/infra-etcdetcetc &&
+     $tag =~ ^[0-9]{10}(\.[0-9]+)?$ && $tag != "$bootstrap_image_tag" &&
+     $digest =~ ^sha256:[0-9a-f]{64}$ && $digest != "$bootstrap_image_digest" ]] ||
+    die 'pre-open controller image is not a canonical non-bootstrap tag-and-digest pin'
+  inspection=$(skopeo inspect --retry-times 3 "docker://$repository:$tag") ||
+    die 'cannot inspect the committed controller image tag in the registry'
+  jq -e --arg digest "$digest" '
+    .Digest == $digest and .Architecture == "amd64" and .Os == "linux"
+  ' <<<"$inspection" >/dev/null ||
+    die 'controller image tag does not resolve to its committed linux/amd64 digest'
+  config=$(skopeo inspect --retry-times 3 --config "docker://$repository@$digest") ||
+    die 'cannot read the pinned controller image configuration'
+  jq -e '
+    .config.User == "65532" and
+    .config.Entrypoint == ["/etcdetcetc"] and
+    (.config.Labels["org.opencontainers.image.revision"] |
+      type == "string" and test("^[0-9a-f]{40}$"))
+  ' <<<"$config" >/dev/null ||
+    die 'pinned controller image user, entrypoint, or source revision is not exact'
+  image_revision=$(jq -er '.config.Labels["org.opencontainers.image.revision"]' \
+    <<<"$config")
+  git -C "$repo_root" merge-base --is-ancestor "$image_revision" "$head" ||
+    die 'pinned controller image revision is not an ancestor of the activation revision'
+  image_tree=$(git -C "$repo_root" rev-parse "$image_revision:apps/etcdetcetc") ||
+    die 'cannot resolve the controller tree from the pinned image revision'
+  head_tree=$(git -C "$repo_root" rev-parse "$head:apps/etcdetcetc") ||
+    die 'cannot resolve the controller tree from the activation revision'
+  [[ $image_tree == "$head_tree" ]] ||
+    die 'pinned controller image was not built from the exact reviewed controller tree'
+  image_workflow=$(git -C "$repo_root" rev-parse \
+    "$image_revision:.github/workflows/images.yaml") ||
+    die 'cannot resolve the image workflow from the attested source revision'
+  head_workflow=$(git -C "$repo_root" rev-parse \
+    "$head:.github/workflows/images.yaml") ||
+    die 'cannot resolve the image workflow from the activation revision'
+  [[ $image_workflow == "$head_workflow" ]] ||
+    die 'attested controller image used a different build workflow than the reviewed revision'
+
+  provenance=$(gh attestation verify "oci://$repository@$digest" \
+    --repo samcday/infra \
+    --signer-workflow samcday/infra/.github/workflows/images.yaml \
+    --source-digest "$image_revision" \
+    --source-ref refs/heads/main \
+    --deny-self-hosted-runners \
+    --format=json) ||
+    die 'pinned controller image lacks trusted GitHub Actions build provenance'
+  jq -e --arg name "$repository" --arg digest "${digest#sha256:}" '
+    type == "array" and length > 0 and
+    any(.[];
+      .verificationResult.statement.predicateType ==
+        "https://slsa.dev/provenance/v1" and
+      any(.verificationResult.statement.subject[]?;
+        .name == $name and .digest == {sha256: $digest}
+      )
+    )
+  ' <<<"$provenance" >/dev/null ||
+    die 'verified controller provenance does not bind the exact image subject'
+}
+
+verify_lock_contract
+"${ik[@]}" get --raw='/readyz?verbose' | grep -Fxq 'readyz check passed' ||
+  die 'Fabric Kubernetes API is not fully ready'
+"$repo_root/fabric/pki/etcdetcetc/verify-foundation" >/dev/null ||
+  die 'committed Fabric etcdetcetc foundation contract is invalid'
+verify_image_pin
+
+source_state=$("${ik[@]}" --namespace flux-system get gitrepository infra \
+  --output=json) || die 'cannot read the Fabric infra GitRepository'
+jq -e --arg revision "$expected_revision" '
+  .metadata.generation as $generation |
+  .metadata.deletionTimestamp == null and
+  (.spec.suspend // false) == false and
+  .status.observedGeneration == $generation and
+  .status.artifact.revision == $revision and
+  any(.status.conditions[]?;
+    .type == "Ready" and .status == "True" and
+    .observedGeneration == $generation
+  )
+' <<<"$source_state" >/dev/null ||
+  die "Fabric infra GitRepository is not current and Ready on $expected_revision"
+
+for kustomization in \
+  fabric-root \
+  fabric-foundation \
+  fabric-platform \
+  fabric-etcdetcetc-policy \
+  fabric-etcdetcetc-config; do
+  verify_flux_object "$kustomization"
+done
+verify_suspended_child fabric-etcdetcetc-controller
+verify_suspended_child fabric-etcdetcetc-runtime
+verify_service_nodes
+verify_hub_reconciliation
+verify_legacy_suspensions
+verify_no_controller_or_runtime
+verify_issuer selfsigned selfsigned
+verify_issuer "$client_issuer" ca
+verify_admission_status
+verify_admin_certificate
+
+"$repo_root/scripts/rollout-fabric-etcd-client-trust" --verify-live-all >/dev/null ||
+  die 'delegated client trust is not exact on all three physical etcd members'
+"$repo_root/scripts/rollout-fabric-root-firewall" --verify-live-all >/dev/null ||
+  die 'Fabric root network policy is not exact on all three consensus members'
+
+admin_proof=$("$repo_root/fabric/pki/etcd/manage-etcdetcetc-admin" --verify-remote) ||
+  die 'delegated etcdetcetc administrator proof failed'
+[[ $admin_proof == "FABRIC_ETCDETCETC_ADMIN_REMOTE=PASS revision=$head" ]] ||
+  die 'delegated etcdetcetc administrator proof returned an unexpected contract'
+
+verify_lock_contract
+printf 'FABRIC_ETCDETCETC_PRE_OPEN=pass revision=%s\n' "$head"

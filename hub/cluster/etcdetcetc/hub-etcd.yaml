@@ -1,5 +1,9 @@
 apiVersion: etcdetcetc.samcday.com/v1alpha1
 kind: EtcdCluster
+# Upgrade freeze: do not change or delete this directly Kustomized object while
+# the etcdetcetc HelmRelease is suspended at the legacy-controller gate. The
+# physical Hub store is still etcd 3.6.4 and cannot become Ready under the
+# hardened controller until a separate attended 3.6.13 upgrade is qualified.
 metadata:
   name: hub-etcd
 spec:

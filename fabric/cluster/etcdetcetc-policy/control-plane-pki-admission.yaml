@@ -1,0 +1,368 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-selfsigned-issuer
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - clusterissuers
+        resourceNames:
+          - selfsigned
+  variables:
+    - name: target
+      expression: >-
+        request.operation == 'DELETE' ? oldObject : object
+  validations:
+    - expression: >-
+        (request.userInfo.username == 'system:serviceaccount:flux-system:kustomize-controller' &&
+          variables.target.metadata.name == 'selfsigned' &&
+          has(variables.target.spec.selfSigned)) ||
+        (request.operation == 'UPDATE' &&
+          request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+          oldObject != null && object.spec == oldObject.spec)
+      message: >-
+        the selfsigned ClusterIssuer is Flux-owned and may contain only its selfSigned issuer config
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-selfsigned-issuer
+spec:
+  policyName: fabric-control-plane-selfsigned-issuer
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-bootstrap-certificates
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificates
+  matchConditions:
+    - name: selfsigned
+      expression: >-
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.name == 'selfsigned' &&
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.kind == 'ClusterIssuer'
+  variables:
+    - name: target
+      expression: >-
+        request.operation == 'DELETE' ? oldObject : object
+    - name: duration
+      expression: >-
+        variables.target.spec.duration
+    - name: exactBootstrap
+      expression: >-
+        (variables.duration == '8760h' || variables.duration == '8760h0m0s') &&
+        ((variables.target.metadata.name == 'ca' &&
+          variables.target.spec.secretName == 'ca' &&
+          variables.target.spec.commonName == 'kubernetes' &&
+          variables.target.spec.isCA == true) ||
+         (variables.target.metadata.name == 'front-proxy-ca' &&
+          variables.target.spec.secretName == 'front-proxy-ca' &&
+          variables.target.spec.commonName == 'front-proxy-ca' &&
+          variables.target.spec.isCA == true) ||
+         (variables.target.metadata.name == 'sa' &&
+          variables.target.spec.secretName == 'sa' &&
+          variables.target.spec.commonName == 'sa' &&
+          (!has(variables.target.spec.isCA) || variables.target.spec.isCA == false)))
+  validations:
+    - expression: >-
+        (request.userInfo.username == 'system:serviceaccount:flux-system:helm-controller' &&
+          variables.exactBootstrap) ||
+        (request.operation == 'UPDATE' &&
+          request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+          oldObject != null && object.spec == oldObject.spec)
+      message: >-
+        selfsigned may bootstrap only the exact Helm-managed Kubernetes, front-proxy,
+        and service-account keys in labelled child-control-plane namespaces
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-bootstrap-certificates
+spec:
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fabric.samcday.com/k8s-control-plane: "true"
+  policyName: fabric-control-plane-bootstrap-certificates
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-bootstrap-requests
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificaterequests
+  matchConditions:
+    - name: selfsigned
+      expression: >-
+        object.spec.issuerRef.name == 'selfsigned' &&
+        object.spec.issuerRef.kind == 'ClusterIssuer'
+  validations:
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+        has(object.metadata.ownerReferences) &&
+        object.metadata.ownerReferences.exists(owner,
+          owner.apiVersion == 'cert-manager.io/v1' &&
+          owner.kind == 'Certificate' &&
+          owner.controller == true &&
+          (owner.name == 'ca' || owner.name == 'front-proxy-ca' || owner.name == 'sa') &&
+          object.metadata.name.startsWith(owner.name + '-')) &&
+        object.spec.duration == '8760h0m0s' &&
+        size(object.spec.request) > 0 &&
+        (request.operation == 'CREATE' || (oldObject != null && object.spec == oldObject.spec))
+      message: >-
+        selfsigned CertificateRequests must be immutable, cert-manager-created requests
+        owned by an exact bootstrap Certificate in a labelled control-plane namespace
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-bootstrap-requests
+spec:
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fabric.samcday.com/k8s-control-plane: "true"
+  policyName: fabric-control-plane-bootstrap-requests
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-bootstrap-namespace
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificates
+          - certificaterequests
+  matchConditions:
+    - name: selfsigned
+      expression: >-
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.name == 'selfsigned' &&
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.kind == 'ClusterIssuer'
+  validations:
+    - expression: "false"
+      message: >-
+        selfsigned may be used only in a Namespace labelled fabric.samcday.com/k8s-control-plane=true
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-bootstrap-namespace
+spec:
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: fabric.samcday.com/k8s-control-plane
+          operator: NotIn
+          values:
+            - "true"
+  policyName: fabric-control-plane-bootstrap-namespace
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-ca-issuers
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - issuers
+        resourceNames:
+          - ca
+          - front-proxy-ca
+  variables:
+    - name: target
+      expression: >-
+        request.operation == 'DELETE' ? oldObject : object
+    - name: exactIssuer
+      expression: >-
+        (variables.target.metadata.name == 'ca' && variables.target.spec.ca.secretName == 'ca') ||
+        (variables.target.metadata.name == 'front-proxy-ca' &&
+          variables.target.spec.ca.secretName == 'front-proxy-ca')
+  validations:
+    - expression: >-
+        (request.userInfo.username == 'system:serviceaccount:flux-system:helm-controller' &&
+          variables.exactIssuer) ||
+        (request.operation == 'UPDATE' &&
+          request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+          oldObject != null && object.spec == oldObject.spec)
+      message: >-
+        child control-plane CA Issuers are Helm-owned and may reference only their exact local CA Secret
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-ca-issuers
+spec:
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fabric.samcday.com/k8s-control-plane: "true"
+  policyName: fabric-control-plane-ca-issuers
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-leaf-certificates
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificates
+  matchConditions:
+    - name: child-ca
+      expression: >-
+        (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.kind == 'Issuer' &&
+        ((request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.name == 'ca' ||
+         (request.operation == 'DELETE' ? oldObject : object).spec.issuerRef.name == 'front-proxy-ca')
+  validations:
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:flux-system:helm-controller' ||
+        (request.operation == 'UPDATE' &&
+          request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+          oldObject != null && object.spec == oldObject.spec)
+      message: >-
+        only Helm may define child control-plane leaves; cert-manager may update only an unchanged spec
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-leaf-certificates
+spec:
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fabric.samcday.com/k8s-control-plane: "true"
+  policyName: fabric-control-plane-leaf-certificates
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fabric-control-plane-leaf-requests
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+      - apiGroups:
+          - cert-manager.io
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - certificaterequests
+  matchConditions:
+    - name: child-ca
+      expression: >-
+        object.spec.issuerRef.kind == 'Issuer' &&
+        (object.spec.issuerRef.name == 'ca' || object.spec.issuerRef.name == 'front-proxy-ca')
+  validations:
+    - expression: >-
+        request.userInfo.username == 'system:serviceaccount:cert-manager:cert-manager' &&
+        has(object.metadata.ownerReferences) &&
+        object.metadata.ownerReferences.exists(owner,
+          owner.apiVersion == 'cert-manager.io/v1' &&
+          owner.kind == 'Certificate' &&
+          owner.controller == true &&
+          object.metadata.name.startsWith(owner.name + '-')) &&
+        size(object.spec.request) > 0 &&
+        (request.operation == 'CREATE' || (oldObject != null && object.spec == oldObject.spec))
+      message: >-
+        child control-plane CertificateRequests must be immutable requests created by
+        cert-manager for a Certificate in a labelled control-plane namespace
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fabric-control-plane-leaf-requests
+spec:
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fabric.samcday.com/k8s-control-plane: "true"
+  policyName: fabric-control-plane-leaf-requests
+  validationActions:
+    - Deny

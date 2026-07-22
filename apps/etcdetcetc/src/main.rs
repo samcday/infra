@@ -1,22 +1,28 @@
 mod cluster;
 mod crd;
 mod etcd;
+mod health;
+mod leadership;
 mod tenant;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use kube::CustomResourceExt;
 use std::{
     collections::HashMap,
     error::Error as StdError,
+    net::SocketAddr,
     sync::{Arc, RwLock as StdRwLock},
+    time::Duration,
 };
 use tokio::sync::RwLock;
 use tokio::{
     signal::unix::{SignalKind, signal},
-    task::JoinError,
+    sync::watch,
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
+
+const HEALTH_ADDRESS: &str = "0.0.0.0:8080";
 
 #[derive(Parser)]
 #[command(name = "etcdetcetc")]
@@ -25,6 +31,14 @@ struct Cli {
     /// When empty, the controller operates cluster-wide.
     #[arg(long = "allowed-namespace")]
     allowed_namespaces: Vec<String>,
+
+    /// Address for the kubelet health, readiness, and leadership endpoints.
+    #[arg(long, default_value = HEALTH_ADDRESS)]
+    health_address: SocketAddr,
+
+    /// Pre-created Lease used to coordinate the active controller replica.
+    #[arg(long, default_value = "etcdetcetc-leader")]
+    leader_election_lease_name: String,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -62,6 +76,8 @@ async fn main() -> Result<()> {
     let Cli {
         command,
         allowed_namespaces,
+        health_address,
+        leader_election_lease_name,
     } = Cli::parse();
 
     if let Some(Commands::Crds) = command {
@@ -86,62 +102,136 @@ async fn main() -> Result<()> {
         "loaded kubernetes client config"
     );
 
+    let election_client = kube::Client::try_from(config.clone())?;
     let client = kube::Client::try_from(config)?;
     tracing::info!("connected to kubernetes");
 
+    let pod_name = required_env("POD_NAME")?;
+    let pod_namespace = required_env("POD_NAMESPACE")?;
+    let pod_uid = required_env("POD_UID")?;
+    let boot_nonce = rand::random::<u128>();
+    let identity = format!("{pod_uid}_{boot_nonce:032x}");
+    tracing::info!(
+        pod_name,
+        pod_uid,
+        identity,
+        "configured leader-election identity"
+    );
+    let (leadership_gate, leadership_guard) = leadership::channel();
+
     let cluster_clients: cluster::ClusterClients = Arc::new(RwLock::new(HashMap::new()));
-    let secret_refs: cluster::SecretRefIndex = Arc::new(StdRwLock::new(HashMap::new()));
     let cluster_context = cluster::ClusterContext {
         client: client.clone(),
         clients: cluster_clients.clone(),
-        secret_refs,
         allowed_namespaces: allowed_namespaces.clone(),
         config_hashes: Arc::new(StdRwLock::new(HashMap::new())),
+        leadership: leadership_guard.clone(),
     };
 
     let tenant_context = tenant::TenantContext {
         client: client.clone(),
-        clients: cluster_clients,
         allowed_namespaces,
+        leadership: leadership_guard,
     };
 
-    let mut cluster_task = tokio::spawn(async move {
-        cluster::run(cluster_context).await;
-    });
+    let election_config = leadership::LeaderElectionConfig::production(
+        pod_namespace,
+        leader_election_lease_name,
+        identity,
+    );
+    let health_state = Arc::new(health::HealthState::new(
+        election_config.elector_stall_timeout,
+        election_config.api_stale_timeout,
+    ));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let mut tenant_task = tokio::spawn(async move {
-        tenant::run(tenant_context).await;
-    });
+    let mut health_task = tokio::spawn(health::serve(
+        health_address,
+        health_state.clone(),
+        shutdown_rx.clone(),
+    ));
+    let mut election_task = tokio::spawn(leadership::run(
+        election_client,
+        election_config,
+        health_state.clone(),
+        leadership_gate,
+        cluster_context,
+        tenant_context,
+        shutdown_rx,
+    ));
 
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    tokio::select! {
-        result = &mut cluster_task => {
-            return Err(controller_task_ended("EtcdCluster", result));
-        }
-        result = &mut tenant_task => {
-            return Err(controller_task_ended("EtcdTenant", result));
-        }
+    enum Exit {
+        Election(std::result::Result<Result<()>, tokio::task::JoinError>),
+        Health(std::result::Result<Result<()>, tokio::task::JoinError>),
+        Signal,
+    }
+
+    let exit = tokio::select! {
+        result = &mut election_task => Exit::Election(result),
+        result = &mut health_task => Exit::Health(result),
         _ = sigint.recv() => {
             tracing::info!("received SIGINT, shutting down");
+            Exit::Signal
         }
         _ = sigterm.recv() => {
             tracing::info!("received SIGTERM, shutting down");
+            Exit::Signal
+        }
+    };
+
+    health_state.begin_shutdown();
+    let _ = shutdown_tx.send(true);
+
+    match exit {
+        Exit::Signal => {
+            await_shutdown("leader election", &mut election_task).await?;
+            await_shutdown("health server", &mut health_task).await?;
+            Ok(())
+        }
+        Exit::Election(result) => {
+            await_shutdown("health server", &mut health_task).await?;
+            Err(background_task_ended("leader election", result))
+        }
+        Exit::Health(result) => {
+            await_shutdown("leader election", &mut election_task).await?;
+            Err(background_task_ended("health server", result))
         }
     }
-
-    cluster_task.abort();
-    tenant_task.abort();
-    let _ = cluster_task.await;
-    let _ = tenant_task.await;
-
-    Ok(())
 }
 
-fn controller_task_ended(name: &str, result: std::result::Result<(), JoinError>) -> anyhow::Error {
+fn required_env(name: &str) -> Result<String> {
+    let value = std::env::var(name).with_context(|| format!("{name} must be set"))?;
+    if value.is_empty() {
+        return Err(anyhow!("{name} must not be empty"));
+    }
+    Ok(value)
+}
+
+async fn await_shutdown<T>(
+    name: &str,
+    task: &mut tokio::task::JoinHandle<Result<T>>,
+) -> Result<()> {
+    match tokio::time::timeout(Duration::from_secs(5), &mut *task).await {
+        Ok(result) => result
+            .map_err(|error| anyhow!("{name} task failed during shutdown: {error}"))?
+            .map(|_| ()),
+        Err(_) => {
+            task.abort();
+            Err(anyhow!("{name} task did not stop within five seconds"))
+        }
+    }
+}
+
+fn background_task_ended<T>(
+    name: &str,
+    result: std::result::Result<Result<T>, tokio::task::JoinError>,
+) -> anyhow::Error {
     match result {
-        Ok(()) => anyhow!("{name} controller task exited unexpectedly"),
-        Err(err) => anyhow!("{name} controller task failed: {err}"),
+        Ok(Ok(_)) => anyhow!("{name} task exited unexpectedly"),
+        Ok(Err(error)) => anyhow!("{name} task failed: {error:#}"),
+        Err(err) => anyhow!("{name} task failed: {err}"),
     }
 }

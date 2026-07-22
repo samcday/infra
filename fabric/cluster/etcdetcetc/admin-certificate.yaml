@@ -1,0 +1,24 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fabric-etcdetcetc-admin
+  namespace: etcdetcetc
+spec:
+  commonName: fabric-etcdetcetc
+  duration: 24h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: fabric-etcd-client-v1
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+  renewBefore: 8h
+  secretName: fabric-etcdetcetc-admin
+  secretTemplate:
+    labels:
+      app.kubernetes.io/component: admin-credential
+      app.kubernetes.io/name: etcdetcetc
+  usages:
+    - digital signature
+    - client auth

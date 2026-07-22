@@ -243,12 +243,13 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "flat_l2_sysctl=/etc/sysctl.d/90-fabric-flat-l2.conf",
             "net.ipv6.conf.all.accept_source_route=-1",
             "SYSCTL_POLICY=image-owned-no-preserved-overrides-live-exact",
-            "assert_section_count rule 25",
-            "assert_live_fw4_chain forward_lan 15",
+            "assert_section_count rule 26",
+            "assert_live_fw4_chain forward_lan 16",
             "assert_live_fw4_chain input_lan 11",
             "Allow-observer-to-services-SSH",
             "Allow-services-to-Bootie-rootfs",
-            "Reject-services-to-root-etcd",
+            "Allow-platform-to-root-etcd-client",
+            "Reject-services-to-root-etcd-internal",
             "api_endpoints='10.66.0.254/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'",
             "assert_uci uhttpd.main.listen_http '10.66.0.1:80 10.66.1.1:80'",
             "http://10.66.1.1/static/SHASUMS.txt",
@@ -379,13 +380,29 @@ class FlatL2FirewallTests(unittest.TestCase):
             **self.routed_flow("10.66.1.12", "10.66.0.2", "tcp", 80),
         )
 
-    def test_etcd_and_every_other_cross_prefix_flow_are_rejected(self) -> None:
-        for port in (2379, 2380, 2381):
-            self.assert_flow(
-                "REJECT",
-                "fabric_flat_reject_services_etcd",
-                **self.routed_flow("10.66.1.10", "10.66.0.10", "tcp", port),
-            )
+    def test_platform_etcd_client_is_exact_and_internal_ports_are_rejected(self) -> None:
+        for service in ("10.66.1.10", "10.66.1.11"):
+            for root in ("10.66.0.10", "10.66.0.11", "10.66.0.12"):
+                self.assert_flow(
+                    "ACCEPT",
+                    "fabric_flat_services_etcd_client",
+                    **self.routed_flow(service, root, "tcp", 2379),
+                )
+                for port in (2380, 2381):
+                    self.assert_flow(
+                        "REJECT",
+                        "fabric_flat_reject_services_etcd_internal",
+                        **self.routed_flow(service, root, "tcp", port),
+                    )
+        for flow in (
+            self.routed_flow("10.66.1.12", "10.66.0.10", "tcp", 2379),
+            self.routed_flow("10.66.1.10", "10.66.0.13", "tcp", 2379),
+            self.routed_flow("10.66.1.10", "10.66.0.10", "udp", 2379),
+        ):
+            with self.subTest(flow=flow):
+                self.assert_flow(
+                    "REJECT", "fabric_flat_reject_services_roots", **flow
+                )
         for flow, rule in (
             (self.routed_flow("10.66.1.10", "10.66.0.10", "tcp", 22),
              "fabric_flat_reject_services_roots"),
@@ -477,6 +494,7 @@ class FlatL2FirewallTests(unittest.TestCase):
             {
                 "fabric_root_egress",
                 "fabric_services_egress",
+                "fabric_flat_services_etcd_client",
                 "fabric_flat_services_api",
                 "fabric_flat_services_vxlan",
                 "fabric_flat_roots_vxlan",

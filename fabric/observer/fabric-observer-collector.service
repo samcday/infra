@@ -1,5 +1,5 @@
 [Unit]
-Description=Temporary pre-worker fabric observer collector
+Description=Temporary fabric API, Lease, and certificate observer collector
 Documentation=file:/opt/fabric-observer/README.md
 After=network-online.target
 Wants=network-online.target

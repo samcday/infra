@@ -1,4 +1,19 @@
 {{- if (empty $.Values.etcd.endpoints) -}}{{- fail "missing etcd.endpoints" -}}{{- end -}}
+{{- if and $.Values.etcd.clientSecret.create $.Values.etcd.externalSecretRevisionsRequired -}}
+{{- fail "etcd.externalSecretRevisionsRequired is valid only when etcd.clientSecret.create=false" -}}
+{{- end -}}
+{{- if and (not $.Values.etcd.clientSecret.create) $.Values.etcd.externalSecretRevisionsRequired (empty $.Values.etcd.serverCATrustRevision) -}}
+{{- fail "missing etcd.serverCATrustRevision for externally managed etcd client Secret" -}}
+{{- end -}}
+{{- if and (not $.Values.etcd.clientSecret.create) $.Values.etcd.externalSecretRevisionsRequired (empty $.Values.etcd.clientCertificateRevision) -}}
+{{- fail "missing etcd.clientCertificateRevision for externally managed etcd client Secret" -}}
+{{- end -}}
+{{- if and (not (empty $.Values.etcd.serverCATrustRevision)) (not (regexMatch "^sha256:[0-9a-f]{64}$" $.Values.etcd.serverCATrustRevision)) -}}
+{{- fail "etcd.serverCATrustRevision must be sha256:<64 lowercase hex characters>" -}}
+{{- end -}}
+{{- if and (not (empty $.Values.etcd.clientCertificateRevision)) (not (regexMatch "^sha256:[0-9a-f]{64}$" $.Values.etcd.clientCertificateRevision)) -}}
+{{- fail "etcd.clientCertificateRevision must be sha256:<64 lowercase hex characters>" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +25,15 @@ spec:
       app: apiserver
   template:
     metadata:
+      {{- if or (not (empty $.Values.etcd.serverCATrustRevision)) (not (empty $.Values.etcd.clientCertificateRevision)) }}
+      annotations:
+        {{- with $.Values.etcd.clientCertificateRevision }}
+        etcd.samcday.com/client-certificate-revision: {{ . | quote }}
+        {{- end }}
+        {{- with $.Values.etcd.serverCATrustRevision }}
+        etcd.samcday.com/server-ca-trust-revision: {{ . | quote }}
+        {{- end }}
+      {{- end }}
       labels:
         app: apiserver
     spec:

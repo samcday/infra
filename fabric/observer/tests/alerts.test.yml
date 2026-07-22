@@ -137,3 +137,57 @@ tests:
                 cardinality other than one. Correlate with the authoritative
                 Lease probe before touching the Lease or any control-plane
                 process.
+
+  - name: an etcdetcetc leaf that misses renewal is surfaced before expiry
+    interval: 1m
+    input_series:
+      - series: >-
+          fabric_observer_etcd_client_certificate_renewal_timestamp_seconds{job="fabric-observer",certificate="etcdtenant-11111111-1111-4111-8111-111111111111",credential="tenant",issuer="fabric-etcd-client-v1",tenant_name="api",tenant_namespace="child-api",tenant_uid="11111111-1111-4111-8111-111111111111"}
+        values: 0x25
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: FabricEtcdClientCertificateRenewalStale
+        exp_alerts:
+          - exp_labels:
+              certificate: etcdtenant-11111111-1111-4111-8111-111111111111
+              credential: tenant
+              issuer: fabric-etcd-client-v1
+              job: fabric-observer
+              severity: warning
+              tenant_name: api
+              tenant_namespace: child-api
+              tenant_uid: 11111111-1111-4111-8111-111111111111
+            exp_annotations:
+              summary: >-
+                Etcd tenant Certificate
+                etcdtenant-11111111-1111-4111-8111-111111111111 missed its
+                renewal time.
+              description: >-
+                The current leaf's scheduled renewal time passed at least fifteen
+                minutes ago and cert-manager has not advanced it. Investigate the
+                Certificate and its latest CertificateRequest before expiry.
+
+  - name: an unrenewed admin leaf enters the critical expiry window
+    interval: 1m
+    input_series:
+      - series: >-
+          fabric_observer_etcd_client_certificate_not_after_timestamp_seconds{job="fabric-observer",certificate="fabric-etcdetcetc-admin",credential="admin",issuer="fabric-etcd-client-v1",tenant_name="",tenant_namespace="",tenant_uid=""}
+        values: 1000x8
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FabricEtcdClientCertificateExpiresWithin4Hours
+        exp_alerts:
+          - exp_labels:
+              certificate: fabric-etcdetcetc-admin
+              credential: admin
+              issuer: fabric-etcd-client-v1
+              job: fabric-observer
+              severity: critical
+            exp_annotations:
+              summary: >-
+                Etcd admin Certificate fabric-etcdetcetc-admin expires within
+                four hours.
+              description: >-
+                The 24-hour leaf is inside the critical half-renewal window or is
+                already expired. Preserve etcd access and repair issuance without
+                bypassing the delegated-CA controls.

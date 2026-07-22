@@ -1,0 +1,518 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/../../.." && pwd)
+
+readonly public_ca="$script_dir/client-ca.pem"
+readonly secret_manifest="$repo_root/fabric/cluster/etcdetcetc/client-ca.yaml"
+readonly server_ca_manifest="$repo_root/fabric/cluster/etcdetcetc/server-ca.yaml"
+readonly butane="$repo_root/fabric/butane/etcd.yaml"
+readonly physical_fingerprint=FB:23:A7:72:A5:21:41:42:B3:0A:80:70:55:8D:BC:B5:86:D9:A6:BE:86:20:2C:18:31:B3:24:A8:E0:75:6A:52
+readonly delegated_fingerprint=9C:AB:12:25:89:2B:1D:41:12:F5:92:3E:43:D4:0F:65:17:DD:92:5F:18:0A:D0:88:71:4D:06:7C:A6:FD:32:92
+readonly runtime_recipient=age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+readonly recovery_recipient=age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+
+die() {
+  echo "verify-foundation: $*" >&2
+  exit 1
+}
+
+for command in bash grep helm jq kubectl openssl sed sops sort yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+fingerprint_file() {
+  openssl x509 -in "$1" -noout -fingerprint -sha256 |
+    sed 's/^sha256 Fingerprint=//'
+}
+
+[[ $(fingerprint_file "$public_ca") == "$delegated_fingerprint" ]] ||
+  die 'delegated public CA fingerprint differs from the reviewed value'
+delegated_text=$(openssl x509 -in "$public_ca" -noout -text)
+grep -Fq 'CA:TRUE, pathlen:0' <<<"$delegated_text" || die 'delegated CA is not pathlen:0'
+grep -Fq 'TLS Web Client Authentication' <<<"$delegated_text" ||
+  die 'delegated CA is not client-auth constrained'
+openssl x509 -in "$public_ca" -noout -checkend 63072000 >/dev/null ||
+  die 'delegated CA has less than two years remaining'
+
+server_ca=$(yq -er '.data["ca.crt"]' "$server_ca_manifest")
+server_ca_fingerprint=$(openssl x509 \
+  -in <(printf '%s\n' "$server_ca") -noout -fingerprint -sha256 |
+  sed 's/^sha256 Fingerprint=//')
+server_ca_subject=$(openssl x509 \
+  -in <(printf '%s\n' "$server_ca") -noout -subject -nameopt RFC2253)
+[[ $server_ca_fingerprint == "$physical_fingerprint" ]] ||
+  die 'server-CA ConfigMap does not contain the reviewed physical etcd CA'
+[[ $server_ca_subject == 'subject=CN=fabric-etcd-ca' ]] ||
+  die 'server-CA ConfigMap has an unexpected subject'
+
+butane_ca=$(TARGET_PATH=/etc/etcd/pki/etcdetcetc-client-ca.pem \
+  yq -er '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' "$butane")
+butane_ca_fingerprint=$(openssl x509 \
+  -in <(printf '%s\n' "$butane_ca") -noout -fingerprint -sha256 |
+  sed 's/^sha256 Fingerprint=//')
+[[ $butane_ca_fingerprint == "$delegated_fingerprint" ]] ||
+  die 'Butane delegated CA differs from the canonical public CA'
+
+etcd_unit=$(UNIT=etcd.service yq -er \
+  '.systemd.units[] | select(.name == strenv(UNIT)) | .contents' "$butane")
+[[ $(grep -Fc -- '--trusted-ca-file=/run/fabric-etcd-client-trust/client-ca-bundle.pem' \
+  <<<"$etcd_unit") -eq 1 ]] || die 'etcd client trust bundle flag is absent or duplicated'
+[[ $(grep -Fc -- '--peer-trusted-ca-file=/etc/etcd/pki/ca.pem' <<<"$etcd_unit") -eq 1 ]] ||
+  die 'etcd peer trust no longer uses only the physical CA'
+! grep -Fq -- '--peer-trusted-ca-file=/run/fabric-etcd-client-trust' <<<"$etcd_unit" ||
+  die 'delegated client CA leaked into etcd peer trust'
+trust_unit=$(UNIT=fabric-etcd-client-trust.service yq -er \
+  '.systemd.units[] | select(.name == strenv(UNIT)) | .contents' "$butane")
+grep -Fq 'Before=etcd.service' <<<"$trust_unit" || die 'trust renderer is not ordered before etcd'
+grep -Fq 'RuntimeDirectory=fabric-etcd-client-trust' <<<"$trust_unit" ||
+  die 'trust renderer lacks its owned runtime directory'
+trust_renderer=$(TARGET_PATH=/usr/local/sbin/render-fabric-etcd-client-trust \
+  yq -er '.storage.files[] | select(.path == strenv(TARGET_PATH)) | .contents.inline' "$butane")
+bash -n <(printf '%s\n' "$trust_renderer") || die 'embedded trust renderer is not valid Bash'
+
+[[ $(sops filestatus "$secret_manifest" | yq -r '.encrypted') == true ]] ||
+  die 'delegated CA Secret is not SOPS-encrypted'
+recipients=$(yq -r '.sops.age[].recipient' "$secret_manifest" | sort)
+[[ $recipients == $(printf '%s\n%s\n' "$recovery_recipient" "$runtime_recipient" | sort) ]] ||
+  die 'delegated CA Secret recipients differ from runtime plus recovery'
+! grep -Eq -- '-----BEGIN (CERTIFICATE|[^-]*PRIVATE KEY)-----' "$secret_manifest" ||
+  die 'delegated CA Secret contains plaintext PEM material'
+[[ $(yq -r '.metadata.name' "$secret_manifest") == fabric-etcd-client-v1-ca &&
+   $(yq -r '.metadata.namespace' "$secret_manifest") == cert-manager &&
+   $(yq -r '.type' "$secret_manifest") == kubernetes.io/tls ]] ||
+  die 'delegated CA Secret metadata differs from contract'
+
+issuer="$repo_root/fabric/cluster/etcdetcetc/issuer.yaml"
+[[ $(yq -r '.kind' "$issuer") == ClusterIssuer &&
+   $(yq -r '.metadata.name' "$issuer") == fabric-etcd-client-v1 &&
+   $(yq -r '.metadata.namespace // ""' "$issuer") == '' &&
+   $(yq -r '.spec.ca.secretName' "$issuer") == fabric-etcd-client-v1-ca ]] ||
+  die 'client CA must be exposed only through the versioned ClusterIssuer'
+
+admin="$repo_root/fabric/cluster/etcdetcetc/admin-certificate.yaml"
+[[ $(yq -r '.spec.commonName' "$admin") == fabric-etcdetcetc &&
+   $(yq -r '.spec.duration' "$admin") == 24h &&
+   $(yq -r '.spec.renewBefore' "$admin") == 8h &&
+   $(yq -r '.spec.issuerRef.kind' "$admin") == ClusterIssuer &&
+   $(yq -r '.spec.issuerRef.name' "$admin") == fabric-etcd-client-v1 ]] ||
+  die 'controller admin Certificate differs from the short-lived isolated-signer contract'
+[[ $(yq -r '.spec.usages | join(",")' "$admin") == 'digital signature,client auth' ]] ||
+  die 'controller admin Certificate usages are not client-only'
+
+cluster="$repo_root/fabric/cluster/etcdetcetc/runtime/cluster.yaml"
+[[ $(yq -r '.spec.authSecretRef.name' "$cluster") == fabric-etcdetcetc-admin &&
+   $(yq -r '.spec.serverCAConfigMapRef.name' "$cluster") == fabric-etcd-server-ca &&
+   $(yq -r '.spec.tenantTls.issuerRef.kind' "$cluster") == ClusterIssuer &&
+   $(yq -r '.spec.tenantTls.issuerRef.name' "$cluster") == fabric-etcd-client-v1 &&
+   $(yq -r '.spec.allowedNamespaces | join(",")' "$cluster") == etcdetcetc-smoke ]] ||
+  die 'Fabric EtcdCluster trust or namespace contract differs'
+expected_endpoints='https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379'
+[[ $(yq -r '.spec.endpoints | join(",")' "$cluster") == "$expected_endpoints" ]] ||
+  die 'Fabric EtcdCluster endpoints differ from the physical three-member set'
+
+smoke="$repo_root/fabric/cluster/etcdetcetc/runtime/smoke-tenant.yaml"
+[[ $(yq -r '.metadata.namespace' "$smoke") == etcdetcetc-smoke &&
+   $(yq -r '.metadata.annotations["etcdetcetc.samcday.com/shared-availability-risk"]' \
+     "$smoke") == accepted-v1 &&
+   $(yq -r '.spec.credentialMode' "$smoke") == TLS &&
+   $(yq -r '.spec.secretName' "$smoke") == fabric-smoke-etcd &&
+   $(yq -r '.spec.clusterRef.name' "$smoke") == fabric-etcd &&
+   $(yq -r '.spec.clusterRef.namespace' "$smoke") == etcdetcetc ]] ||
+  die 'permanent smoke Tenant differs from the TLS cross-namespace contract'
+
+cert_manager="$repo_root/fabric/cluster/platform/cert-manager.yaml"
+[[ $(yq -r 'select(.kind == "OCIRepository") | .spec.layerSelector.mediaType' \
+  "$cert_manager") == application/vnd.cncf.helm.chart.content.v1.tar+gzip &&
+   $(yq -r 'select(.kind == "OCIRepository") | .spec.layerSelector.operation' \
+  "$cert_manager") == copy ]] ||
+  die 'cert-manager OCI source does not select the Helm chart content layer'
+[[ $(yq -r 'select(.kind == "HelmRelease") | .spec.values.global.rbac.aggregateClusterRoles' \
+  "$cert_manager") == false &&
+   $(yq -r 'select(.kind == "HelmRelease") | .spec.values.approveSignerNames | join(",")' \
+  "$cert_manager") == \
+  'issuers.cert-manager.io/*,clusterissuers.cert-manager.io/fabric-etcd-client-v1,clusterissuers.cert-manager.io/selfsigned' &&
+   $(yq -r 'select(.kind == "HelmRelease") | [.spec.values.replicaCount, .spec.values.webhook.replicaCount, .spec.values.cainjector.replicaCount] | join(",")' \
+  "$cert_manager" | grep -v '^$') == '2,2,2' ]] ||
+  die 'cert-manager must be HA, disable aggregate roles, and approve only admission-gated signers'
+
+namespaces_manifest="$repo_root/fabric/cluster/platform/namespaces.yaml"
+network_policies_manifest="$repo_root/fabric/cluster/platform/network-policies.yaml"
+namespace_objects=$(yq -o=json -I=0 '.' "$namespaces_manifest" | jq -s '.') ||
+  die 'cannot parse Fabric platform Namespaces'
+jq -e '
+  def restricted_labels: {
+    "pod-security.kubernetes.io/audit": "restricted",
+    "pod-security.kubernetes.io/audit-version": "v1.36",
+    "pod-security.kubernetes.io/enforce": "restricted",
+    "pod-security.kubernetes.io/enforce-version": "v1.36",
+    "pod-security.kubernetes.io/warn": "restricted",
+    "pod-security.kubernetes.io/warn-version": "v1.36"
+  };
+  . == [
+    {"apiVersion": "v1", "kind": "Namespace",
+      "metadata": {"name": "cert-manager", "labels": restricted_labels}},
+    {"apiVersion": "v1", "kind": "Namespace",
+      "metadata": {"name": "etcdetcetc", "labels": restricted_labels}},
+    {"apiVersion": "v1", "kind": "Namespace",
+      "metadata": {"name": "etcdetcetc-smoke", "labels": restricted_labels}}
+  ]
+' >/dev/null <<<"$namespace_objects" ||
+  die 'Fabric foundation Namespaces must be the exact restricted-v1.36 set'
+
+network_policy_objects=$(yq -o=json -I=0 '.' "$network_policies_manifest" | jq -s '.') ||
+  die 'cannot parse Fabric platform NetworkPolicies'
+jq -e '
+  all(.[]; .apiVersion == "networking.k8s.io/v1" and .kind == "NetworkPolicy") and
+  ([.[] | (.metadata.namespace + "/" + .metadata.name)] | sort) == [
+    "cert-manager/allow-dns-and-kubernetes-api",
+    "cert-manager/allow-kubernetes-api-to-webhook",
+    "cert-manager/default-deny",
+    "etcdetcetc-smoke/default-deny",
+    "etcdetcetc/allow-controller-egress",
+    "etcdetcetc/default-deny"
+  ] and
+  ([.[] | select(.metadata.name == "default-deny") |
+    {namespace: .metadata.namespace, spec: .spec}] | sort_by(.namespace)) == [
+    {namespace: "cert-manager", spec: {podSelector: {}, policyTypes: ["Egress", "Ingress"]}},
+    {namespace: "etcdetcetc", spec: {podSelector: {}, policyTypes: ["Egress", "Ingress"]}},
+    {namespace: "etcdetcetc-smoke", spec: {podSelector: {}, policyTypes: ["Egress", "Ingress"]}}
+  ] and
+  [.[] | select(
+    .metadata.namespace == "etcdetcetc" and .metadata.name == "allow-controller-egress"
+  ) | .spec] == [{
+    podSelector: {matchLabels: {
+      "app.kubernetes.io/component": "controller",
+      "app.kubernetes.io/name": "etcdetcetc"
+    }},
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: [{
+          namespaceSelector: {matchLabels: {"kubernetes.io/metadata.name": "kube-system"}},
+          podSelector: {matchLabels: {"k8s-app": "kube-dns"}}
+        }],
+        ports: [{port: 53, protocol: "UDP"}, {port: 53, protocol: "TCP"}]
+      },
+      {
+        to: [{ipBlock: {cidr: "172.21.0.10/32"}}],
+        ports: [{port: 53, protocol: "UDP"}, {port: 53, protocol: "TCP"}]
+      },
+      {
+        to: [{ipBlock: {cidr: "172.21.0.1/32"}}],
+        ports: [{port: 443, protocol: "TCP"}]
+      },
+      {
+        to: [
+          {ipBlock: {cidr: "10.66.0.10/32"}},
+          {ipBlock: {cidr: "10.66.0.11/32"}},
+          {ipBlock: {cidr: "10.66.0.12/32"}},
+          {ipBlock: {cidr: "10.66.0.254/32"}}
+        ],
+        ports: [{port: 6443, protocol: "TCP"}]
+      },
+      {
+        to: [
+          {ipBlock: {cidr: "10.66.0.10/32"}},
+          {ipBlock: {cidr: "10.66.0.11/32"}},
+          {ipBlock: {cidr: "10.66.0.12/32"}}
+        ],
+        ports: [{port: 2379, protocol: "TCP"}]
+      }
+    ]
+  }]
+' >/dev/null <<<"$network_policy_objects" ||
+  die 'Fabric platform NetworkPolicy set or exact controller egress contract differs'
+
+release="$repo_root/fabric/cluster/etcdetcetc-controller/release.yaml"
+children="$repo_root/fabric/cluster/flux-system/children.yaml"
+bootstrap_path="$repo_root/fabric/cluster/etcdetcetc"
+policy_path="$repo_root/fabric/cluster/etcdetcetc-policy"
+runtime_path="$bootstrap_path/runtime"
+config_suspended=$(yq -er \
+  'select(.metadata.name == "fabric-etcdetcetc-config") | (.spec.suspend // false)' \
+  "$children")
+controller_suspended=$(yq -er \
+  'select(.metadata.name == "fabric-etcdetcetc-controller") | (.spec.suspend // false)' \
+  "$children")
+runtime_suspended=$(yq -er \
+  'select(.metadata.name == "fabric-etcdetcetc-runtime") | (.spec.suspend // false)' \
+  "$children")
+release_suspended=$(yq -er \
+  'select(.metadata.name == "etcdetcetc") | (.spec.suspend // false)' "$release")
+
+activation_state=$config_suspended:$controller_suspended:$runtime_suspended:$release_suspended
+case $activation_state in
+  true:true:true:true) activation_phase=staged ;;
+  false:true:true:true) activation_phase=config-active ;;
+  false:false:true:false) activation_phase=controller-active ;;
+  false:false:false:false) activation_phase=runtime-active ;;
+  *)
+    die "inconsistent Fabric etcdetcetc activation gates: $activation_state"
+    ;;
+esac
+
+image_repository=$(yq -er \
+  'select(.metadata.name == "etcdetcetc") | .spec.values.image.repository' "$release")
+image_tag=$(yq -er \
+  'select(.metadata.name == "etcdetcetc") | .spec.values.image.tag' "$release")
+image_digest=$(yq -er \
+  'select(.metadata.name == "etcdetcetc") | .spec.values.image.digest' "$release")
+if [[ $activation_phase == controller-active || $activation_phase == runtime-active ]]; then
+  readonly bootstrap_image_tag=2026072008
+  readonly bootstrap_image_digest=sha256:863603a393e2671b1492b9a212df1ff87a37925bc6bac67c207133b9ce108977
+  [[ $image_repository == ghcr.io/samcday/infra-etcdetcetc &&
+     $image_tag =~ ^[0-9]{10}(\.[0-9]+)?$ &&
+     $image_digest =~ ^sha256:[0-9a-f]{64}$ &&
+     $image_tag != "$bootstrap_image_tag" &&
+     $image_digest != "$bootstrap_image_digest" ]] ||
+    die 'active Fabric controller must use a canonical non-bootstrap tag-and-digest image pin'
+fi
+[[ $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.allowedNamespaces | join(",")' \
+  "$release") == 'etcdetcetc,etcdetcetc-smoke' &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.managedNamespaces | join(",")' \
+  "$release") == etcdetcetc-smoke &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | (.spec.values.clusterNamespaces // []) | join(",")' \
+  "$release") == '' &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.legacyClusterWideCoreWatches' \
+  "$release") == false &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.replicaCount' \
+  "$release") == 2 &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.nodeSelector | to_entries | sort_by(.key) | map(.key + "=" + .value) | join(",")' \
+  "$release") == 'fabric.samcday.com/platform=true,kubernetes.io/os=linux' &&
+   $(yq -o=json -I=0 'select(.metadata.name == "etcdetcetc") | .spec.values.affinity' \
+  "$release" | jq -cS '.') == '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchFields":[{"key":"metadata.name","operator":"In","values":["fabric-az1-svc1","fabric-az1-svc2"]}]}]}}}' &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.tolerations[] | [.key, .operator, .value, .effect] | @tsv' \
+  "$release") == $'fabric.samcday.com/platform\tEqual\ttrue\tNoSchedule' &&
+   $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.priorityClassName' \
+  "$release") == system-cluster-critical ]] ||
+  die 'Fabric controller namespace scope or service-node placement differs from contract'
+[[ $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.driftDetection.ignore[] | [.paths | join(","), .target.group, .target.version, .target.kind, .target.name] | @tsv' \
+  "$release") == $'/spec\tcoordination.k8s.io\tv1\tLease\tetcdetcetc-leader' ]] ||
+  die 'Fabric Helm drift correction must ignore only the live leader Lease spec'
+[[ $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-policy") | .spec.dependsOn[].name' \
+  "$children") == fabric-platform &&
+   $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-policy") | .spec.suspend // false' \
+  "$children") == false ]] ||
+  die 'signer admission policy must reconcile unsuspended after platform'
+[[ $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-config") | .spec.dependsOn[].name' \
+  "$children") == fabric-etcdetcetc-policy ]] ||
+  die 'bootstrap configuration Kustomization must depend only on signer admission policy'
+[[ $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-controller") | .spec.dependsOn[].name' \
+  "$children") == fabric-etcdetcetc-config ]] ||
+  die 'controller Kustomization must depend only on Ready bootstrap configuration'
+[[ $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-runtime") | [.spec.dependsOn[].name] | join(",")' \
+  "$children" | grep -v '^$') == \
+  'fabric-etcdetcetc-config,fabric-etcdetcetc-controller' ]] ||
+  die 'runtime Kustomization must depend on bootstrap configuration and controller'
+[[ $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-config") | .spec.path' \
+  "$children") == ./fabric/cluster/etcdetcetc &&
+   $(yq -r 'select(.metadata.name == "fabric-etcdetcetc-runtime") | .spec.path' \
+  "$children") == ./fabric/cluster/etcdetcetc/runtime ]] ||
+  die 'bootstrap/runtime Flux paths differ from the split contract'
+
+bootstrap_objects=$(kubectl kustomize "$bootstrap_path" | yq -r \
+  '[.apiVersion, .kind, .metadata.namespace, .metadata.name] | @tsv' | sort)
+expected_bootstrap_objects='cert-manager.io/v1	Certificate	etcdetcetc	fabric-etcdetcetc-admin
+cert-manager.io/v1	ClusterIssuer	null	fabric-etcd-client-v1
+cert-manager.io/v1	ClusterIssuer	null	selfsigned
+v1	ConfigMap	etcdetcetc	fabric-etcd-server-ca
+v1	Secret	cert-manager	fabric-etcd-client-v1-ca'
+[[ $bootstrap_objects == "$expected_bootstrap_objects" ]] ||
+  die 'bootstrap Kustomization must render exactly isolated CA, server trust, two ClusterIssuers, and admin Certificate'
+
+policy_render=$(kubectl kustomize "$policy_path") ||
+  die 'cannot render signer admission policy Kustomization'
+policy_objects=$(yq -r \
+  '[.apiVersion, .kind, .metadata.name] | @tsv' <<<"$policy_render" | sort)
+expected_policy_objects='admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-bootstrap-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-bootstrap-namespace
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-bootstrap-requests
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-ca-issuers
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-leaf-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-leaf-requests
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-control-plane-selfsigned-issuer
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-etcd-client-v1-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-etcd-client-v1-clusterissuer
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicy	fabric-etcd-client-v1-requests
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-bootstrap-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-bootstrap-namespace
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-bootstrap-requests
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-ca-issuers
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-leaf-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-leaf-requests
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-control-plane-selfsigned-issuer
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-etcd-client-v1-certificates
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-etcd-client-v1-clusterissuer
+admissionregistration.k8s.io/v1	ValidatingAdmissionPolicyBinding	fabric-etcd-client-v1-requests'
+[[ $policy_objects == "$expected_policy_objects" ]] ||
+  die 'signer policy Kustomization must render exactly ten fail-closed policies and bindings'
+[[ $(yq -r \
+  'select(.kind == "ValidatingAdmissionPolicy") | .spec.failurePolicy' \
+  <<<"$policy_render" | grep -v '^---$' | sort -u) == Fail &&
+   $(yq -r \
+  'select(.kind == "ValidatingAdmissionPolicyBinding") | .spec.validationActions | join(",")' \
+  <<<"$policy_render" | grep -v '^---$' | sort -u) == Deny ]] ||
+  die 'signer admission policies must all fail closed with Deny bindings'
+
+delete_policies=$(yq -r \
+  'select(.kind == "ValidatingAdmissionPolicy" and (.spec.matchConstraints.resourceRules[].operations | contains(["DELETE"]))) | .metadata.name' \
+  <<<"$policy_render" | grep -v '^---$' | sort)
+expected_delete_policies='fabric-control-plane-selfsigned-issuer
+fabric-etcd-client-v1-clusterissuer'
+[[ $delete_policies == "$expected_delete_policies" ]] ||
+  die 'only protected cluster-scoped issuers may intercept DELETE during namespace teardown'
+
+reserved_signer_policy=$(POLICY=fabric-etcd-client-v1-clusterissuer yq -o=json -I=0 \
+  'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == strenv(POLICY))' \
+  <<<"$policy_render")
+jq -e '
+  .spec.matchConstraints.resourceRules == [
+    {
+      apiGroups: ["cert-manager.io"], apiVersions: ["v1"],
+      operations: ["CREATE", "UPDATE", "DELETE"], resources: ["clusterissuers"]
+    },
+    {
+      apiGroups: ["cert-manager.io"], apiVersions: ["v1"],
+      operations: ["CREATE", "UPDATE"], resources: ["issuers"]
+    }
+  ] and
+  (.spec.matchConditions | length) == 1 and
+  (.spec.matchConditions[0].expression |
+    contains("request.resource.resource == '\''clusterissuers'\''") and
+    contains("(request.operation == '\''DELETE'\'' ? oldObject : object).metadata.name == '\''fabric-etcd-client-v1'\''") and
+    contains("request.operation != '\''DELETE'\''") and
+    contains("request.resource.resource == '\''issuers'\''") and
+    contains("request.namespace == '\''cert-manager'\''") and
+    contains("object.spec.ca.secretName == '\''fabric-etcd-client-v1-ca'\''") and
+    (contains("variables.") | not)) and
+  (.spec.validations | length) == 1 and
+  (.spec.validations[0].expression |
+    contains("request.resource.resource == '\''clusterissuers'\''") and
+    contains("variables.target.metadata.name == '\''fabric-etcd-client-v1'\''") and
+    contains("variables.target.spec.ca.secretName == '\''fabric-etcd-client-v1-ca'\''"))
+' >/dev/null <<<"$reserved_signer_policy" ||
+  die 'reserved client-CA policy does not deny namespaced Issuer and alternate ClusterIssuer aliases safely'
+
+namespace_selector=$(POLICY=fabric-control-plane-bootstrap-namespace yq -r \
+  'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == strenv(POLICY)) | .spec.matchResources.namespaceSelector.matchExpressions[] | [.key, .operator, (.values | join(","))] | @tsv' \
+  <<<"$policy_render" | grep -Ev '^(---)?$')
+[[ $namespace_selector == $'fabric.samcday.com/k8s-control-plane\tNotIn\ttrue' ]] ||
+  die 'selfsigned use outside exactly-labelled control-plane namespaces is not denied'
+[[ $(POLICY=fabric-control-plane-bootstrap-namespace yq -r \
+  'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == strenv(POLICY)) | .spec.validations[].expression' \
+  <<<"$policy_render" | grep -Ev '^(---)?$') == false ]] ||
+  die 'unlabelled selfsigned namespace policy must unconditionally deny'
+
+fabric_leaf_policy=$(POLICY=fabric-etcd-client-v1-certificates yq -r \
+  'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == strenv(POLICY)) | .spec.variables[] | select(.name == "safeLeaf") | .expression' \
+  <<<"$policy_render")
+if ! grep -Fq "duration == '24h0m0s'" <<<"$fabric_leaf_policy" ||
+   ! grep -Fq "renewBefore == '8h0m0s'" <<<"$fabric_leaf_policy"; then
+  die 'Fabric signer Certificate policy does not accept canonical duration serialization'
+fi
+fabric_request_policy=$(POLICY=fabric-etcd-client-v1-requests yq -r \
+  'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == strenv(POLICY)) | .spec.validations[].expression' \
+  <<<"$policy_render")
+grep -Fq "object.spec.duration == '24h0m0s'" <<<"$fabric_request_policy" ||
+  die 'Fabric signer CertificateRequest policy lacks the canonical 24-hour bound'
+
+controller_values=$(yq -o=yaml \
+  'select(.metadata.name == "etcdetcetc") | .spec.values' "$release")
+controller_rbac=$(helm template etcdetcetc "$repo_root/charts/etcdetcetc" \
+  --namespace etcdetcetc --values - <<<"$controller_values") ||
+  die 'cannot render etcdetcetc controller RBAC'
+controller_objects=$(yq -o=json -I=0 '.' <<<"$controller_rbac" | jq -s '.') ||
+  die 'cannot parse rendered etcdetcetc controller objects'
+controller_image=$image_repository:$image_tag@$image_digest
+jq -e --arg image "$controller_image" '
+  [.[] | select(.kind == "Deployment" and .metadata.name == "etcdetcetc")] as $objects |
+  ($objects | length) == 1 and ($objects[0] |
+    .spec.replicas == 2 and
+    .spec.strategy == {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}} and
+    .spec.template.spec.terminationGracePeriodSeconds == 10 and
+    .spec.template.spec.priorityClassName == "system-cluster-critical" and
+    .spec.template.spec.nodeSelector == {
+      "fabric.samcday.com/platform": "true", "kubernetes.io/os": "linux"
+    } and
+    .spec.template.spec.tolerations == [{
+      "effect": "NoSchedule", "key": "fabric.samcday.com/platform",
+      "operator": "Equal", "value": "true"
+    }] and
+    .spec.template.spec.affinity.nodeAffinity == {
+      "requiredDuringSchedulingIgnoredDuringExecution": {
+        "nodeSelectorTerms": [{"matchFields": [{
+          "key": "metadata.name", "operator": "In",
+          "values": ["fabric-az1-svc1", "fabric-az1-svc2"]
+        }]}]
+      }
+    } and
+    (.spec.template.spec.topologySpreadConstraints | length) == 1 and
+    .spec.template.spec.topologySpreadConstraints[0].topologyKey == "kubernetes.io/hostname" and
+    .spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable == "DoNotSchedule" and
+    (.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution | length) == 1 and
+    .spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey == "kubernetes.io/hostname" and
+    .spec.template.spec.containers[0].image == $image and
+    .spec.template.spec.containers[0].args[0] == "--leader-election-lease-name=etcdetcetc-leader" and
+    [.spec.template.spec.containers[0].env[] | select(.name == "POD_NAME" or .name == "POD_NAMESPACE" or .name == "POD_UID") | .name] == ["POD_NAME", "POD_NAMESPACE", "POD_UID"] and
+    .spec.template.spec.containers[0].ports == [{"containerPort": 8080, "name": "health", "protocol": "TCP"}] and
+    .spec.template.spec.containers[0].startupProbe.httpGet == {"path": "/healthz", "port": "health"} and
+    .spec.template.spec.containers[0].livenessProbe.httpGet == {"path": "/healthz", "port": "health"} and
+    .spec.template.spec.containers[0].readinessProbe.httpGet == {"path": "/readyz", "port": "health"}
+  )
+' >/dev/null <<<"$controller_objects" ||
+  die 'controller Deployment differs from the two-replica election/probe/separation contract'
+jq -e '
+  [.[] | select(.kind == "Lease" and .metadata.name == "etcdetcetc-leader")] == [{
+    "apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+    "metadata": {
+      "name": "etcdetcetc-leader",
+      "labels": {
+        "app.kubernetes.io/name": "etcdetcetc",
+        "app.kubernetes.io/instance": "etcdetcetc",
+        "app.kubernetes.io/component": "leader-election"
+      }
+    }
+  }]
+' >/dev/null <<<"$controller_objects" ||
+  die 'leader-election Lease must be declarative metadata only'
+jq -e '
+  [.[] | select(.kind == "Role" and .metadata.name == "etcdetcetc") |
+    .rules[] | select(.apiGroups == ["coordination.k8s.io"])] == [{
+      "apiGroups": ["coordination.k8s.io"], "resources": ["leases"],
+      "resourceNames": ["etcdetcetc-leader"], "verbs": ["get", "update"]
+    }]
+' >/dev/null <<<"$controller_objects" ||
+  die 'leader-election RBAC must allow only get/update on the exact Lease'
+jq -e '
+  [.[] | select(.kind == "ClusterRole" and .metadata.name == "etcdetcetc") |
+    .rules[] | select(.resources == ["etcdclusters/status", "etcdtenants/status"])] == [{
+      "apiGroups": ["etcdetcetc.samcday.com"],
+      "resources": ["etcdclusters/status", "etcdtenants/status"],
+      "verbs": ["update"]
+    }]
+' >/dev/null <<<"$controller_objects" ||
+  die 'controller status RBAC must allow only update for resourceVersion-fenced PUTs'
+jq -e '
+  [.[] | select(.kind == "PodDisruptionBudget" and .metadata.name == "etcdetcetc")] as $objects |
+  ($objects | length) == 1 and ($objects[0] |
+    .spec.minAvailable == 1 and
+    .spec.selector.matchLabels["app.kubernetes.io/component"] == "controller")
+' >/dev/null <<<"$controller_objects" ||
+  die 'controller PDB must keep one election participant available'
+! yq -e 'select(.kind == "ClusterRole" and .metadata.name == "etcdetcetc") | .rules[] | select(.resources[] == "secrets" or .resources[] == "configmaps" or .resources[] == "certificates")' \
+  >/dev/null 2>&1 <<<"$controller_rbac" ||
+  die 'controller has cluster-wide access to signer material or namespaced artifacts'
+! yq -e 'select(.kind == "Role" and .metadata.namespace == "cert-manager")' \
+  >/dev/null 2>&1 <<<"$controller_rbac" ||
+  die 'controller must not receive RBAC in the cert-manager signer namespace'
+
+runtime_objects=$(kubectl kustomize "$runtime_path" | yq -r \
+  '[.apiVersion, .kind, .metadata.namespace, .metadata.name] | @tsv' | sort)
+expected_runtime_objects='etcdetcetc.samcday.com/v1alpha1	EtcdCluster	etcdetcetc	fabric-etcd
+etcdetcetc.samcday.com/v1alpha1	EtcdTenant	etcdetcetc-smoke	fabric-smoke'
+[[ $runtime_objects == "$expected_runtime_objects" ]] ||
+  die 'runtime Kustomization must render exactly one EtcdCluster and one smoke Tenant'
+
+echo "validated Fabric etcdetcetc delegated PKI, two-CA boundary, and $activation_phase activation gates"

@@ -1,4 +1,70 @@
 image:
   repository: ghcr.io/samcday/infra-etcdetcetc
   tag: latest
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Every replica participates in the same pre-created Lease. Only the holder
+# starts controller streams; standbys remain Ready so Helm can observe the
+# Deployment as available.
+replicaCount: 2
+leaderElection:
+  # Immutable while any controller replica is running. Changing the object
+  # requires an attended scale-to-zero migration of the coordination record.
+  leaseName: etcdetcetc-leader
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Restricts which EtcdCluster and EtcdTenant objects the controller reconciles;
+# this is runtime scope, not EtcdCluster tenant authorization. An empty list
+# safely defaults the chart to its release namespace. List every additional
+# object namespace explicitly with the matching RBAC entries below. Before
+# removing one, first migrate any legacy finalizer-only tenants to proven
+# Provisioned state. Then remove tenant authorization from the relevant
+# EtcdCluster.spec.allowedNamespaces while all Helm scope/RBAC remains, wait
+# for proven deprovisioning, and only then narrow these chart values.
 allowedNamespaces: []
+
+# Namespaces in which tenant-facing Secret and ConfigMap artifacts may be
+# managed. The controller namespace receives separate RBAC for its auth,
+# server-CA, and certificate-staging objects. Never remove this RBAC until all
+# affected tenants have completed authorization-driven deprovisioning.
+managedNamespaces: []
+
+# Additional namespaces that may contain EtcdCluster objects. These receive
+# access to cluster auth/server-CA objects and Certificate staging resources.
+# The Helm release namespace already receives that access automatically. Keep
+# an entry until its EtcdClusters, tenant cleanup, and staging artifacts are
+# fully retired.
+clusterNamespaces: []
+
+# Temporary opt-in upgrade bridge for older controllers that still open
+# cluster-wide core-object watches. Current images use bounded namespaced reads.
+legacyClusterWideCoreWatches: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true

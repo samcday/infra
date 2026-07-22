@@ -14,134 +14,188 @@ spec:
     singular: etcdcluster
   scope: Namespaced
   versions:
-  - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
-      type: string
-    - jsonPath: .status.version
-      name: Version
-      type: string
-    - jsonPath: .status.dbSize
-      name: DB Size
-      type: string
-    - jsonPath: .status.leader
-      name: Leader
-      type: string
-    name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: Auto-generated derived type for EtcdClusterSpec via `CustomResource`
-        properties:
-          spec:
-            description: 'An etcd cluster that tenants can be provisioned on.
+    - additionalPrinterColumns:
+        - jsonPath: .status.conditions[?(@.type=="Ready")].status
+          name: Ready
+          type: string
+        - jsonPath: .status.version
+          name: Version
+          type: string
+        - jsonPath: .status.dbSize
+          name: DB Size
+          type: string
+        - jsonPath: .status.leader
+          name: Leader
+          type: string
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Auto-generated derived type for EtcdClusterSpec via `CustomResource`
+          properties:
+            spec:
+              description: |-
+                An etcd cluster that tenants can be provisioned on.
 
-
-              The controller connects using root credentials from the referenced auth
-              Secret, which can hold either TLS certs (tls.crt, tls.key, ca.crt) or
-              basic auth (username, password, ca.crt).'
-            properties:
-              allowedNamespaces:
-                default: []
-                description: Namespaces allowed to reference this cluster. Empty means
-                  same-namespace only. Use `["*"]` to allow all namespaces.
-                items:
-                  type: string
-                type: array
-              authSecretRef:
-                description: Reference to a Secret with root/admin credentials.
-                properties:
-                  name:
+                The controller connects using a root/admin TLS client certificate from the referenced auth Secret (`tls.crt`, `tls.key`). Password-based admin auth is intentionally unsupported.
+              properties:
+                allowedNamespaces:
+                  default: []
+                  description: Cross-namespace tenant namespaces allowed to reference this cluster. Empty permits no tenants. Use `["*"]` to allow every namespace except the EtcdCluster's own namespace.
+                  items:
                     type: string
-                required:
-                - name
-                type: object
-              endpoints:
-                description: etcd endpoint URLs (e.g. https://host:2379).
-                items:
-                  type: string
-                type: array
-            required:
-            - authSecretRef
-            - endpoints
-            type: object
-          status:
-            nullable: true
-            properties:
-              alarms:
-                default: []
-                description: 'Active alarms (e.g. "etcd-1: NOSPACE")'
-                items:
-                  type: string
-                type: array
-              conditions:
-                default: []
-                description: Standard Kubernetes conditions (supports `kubectl wait
-                  --for=condition=Ready`).
-                items:
+                  type: array
+                authSecretRef:
+                  description: Reference to a Secret with a root/admin TLS client certificate and key.
                   properties:
-                    lastTransitionTime:
-                      type: string
-                    message:
-                      nullable: true
-                      type: string
-                    reason:
-                      nullable: true
-                      type: string
-                    status:
-                      enum:
-                      - 'True'
-                      - 'False'
-                      - Unknown
-                      type: string
-                    type:
-                      type: string
-                  required:
-                  - lastTransitionTime
-                  - status
-                  - type
-                  type: object
-                type: array
-              connected:
-                default: false
-                type: boolean
-              dbSize:
-                description: Database size, human-readable (e.g. "24 MiB")
-                nullable: true
-                type: string
-              leader:
-                description: Current leader member name
-                nullable: true
-                type: string
-              members:
-                default: []
-                description: Cluster members
-                items:
-                  properties:
-                    endpoint:
-                      type: string
-                    isLearner:
-                      default: false
-                      type: boolean
                     name:
                       type: string
                   required:
-                  - endpoint
-                  - name
+                    - name
                   type: object
-                type: array
-              version:
-                description: etcd server version
-                nullable: true
-                type: string
-            type: object
-        required:
-        - spec
-        title: EtcdCluster
-        type: object
-    served: true
-    storage: true
-    subresources:
-      status: {}
+                endpoints:
+                  description: etcd endpoint URLs (e.g. https://host:2379).
+                  items:
+                    type: string
+                  type: array
+                serverCAConfigMapRef:
+                  description: Explicit physical etcd server CA. This is separate from any CA emitted by the tenant client-certificate Issuer. When omitted, `ca.crt` in `authSecretRef` is used for backward compatibility.
+                  nullable: true
+                  properties:
+                    key:
+                      default: ca.crt
+                      description: Key containing the PEM-encoded CA used to verify the physical etcd server certificates.
+                      type: string
+                    name:
+                      type: string
+                  required:
+                    - name
+                  type: object
+                tenantTls:
+                  description: Optional cert-manager Issuer used for TLS-mode tenants. A namespaced Issuer must be colocated with the EtcdCluster; a ClusterIssuer must be protected by an independent fail-closed admission policy. The Certificate and staging Secret are always created in the EtcdCluster namespace.
+                  nullable: true
+                  properties:
+                    issuerRef:
+                      description: |-
+                        Reference to an explicitly scoped cert-manager issuer.
+
+                        The API group remains fixed. `ClusterIssuer` is intended for a signer key isolated outside every namespace readable by this controller and must be protected by admission policy.
+                      properties:
+                        kind:
+                          default: Issuer
+                          description: Permitted cert-manager issuer scope for tenant client certificates.
+                          enum:
+                            - Issuer
+                            - ClusterIssuer
+                          type: string
+                        name:
+                          type: string
+                      required:
+                        - name
+                      type: object
+                  required:
+                    - issuerRef
+                  type: object
+              required:
+                - authSecretRef
+                - endpoints
+              type: object
+              x-kubernetes-validations: []
+            status:
+              nullable: true
+              properties:
+                alarms:
+                  default: []
+                  description: 'Active alarms (e.g. "etcd-1: NOSPACE")'
+                  items:
+                    type: string
+                  type: array
+                authEnabled:
+                  default: false
+                  description: Whether every configured endpoint freshly reports etcd RBAC auth enabled through the AuthStatus RPC.
+                  type: boolean
+                clusterId:
+                  description: Durable identity of the physical etcd cluster. The controller pins the first qualified nonzero cluster ID and never silently adopts another.
+                  nullable: true
+                  type: string
+                conditions:
+                  default: []
+                  description: Standard Kubernetes conditions (supports `kubectl wait --for=condition=Ready`).
+                  items:
+                    properties:
+                      lastTransitionTime:
+                        type: string
+                      message:
+                        nullable: true
+                        type: string
+                      observedGeneration:
+                        format: int64
+                        nullable: true
+                        type: integer
+                      reason:
+                        nullable: true
+                        type: string
+                      status:
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - status
+                      - type
+                    type: object
+                  type: array
+                connected:
+                  default: false
+                  type: boolean
+                dbSize:
+                  description: Database size, human-readable (e.g. "24 MiB")
+                  nullable: true
+                  type: string
+                leader:
+                  description: Current leader member name
+                  nullable: true
+                  type: string
+                members:
+                  default: []
+                  description: Cluster members
+                  items:
+                    properties:
+                      endpoint:
+                        type: string
+                      isLearner:
+                        default: false
+                        type: boolean
+                      name:
+                        type: string
+                    required:
+                      - endpoint
+                      - name
+                    type: object
+                  type: array
+                version:
+                  description: etcd server version
+                  nullable: true
+                  type: string
+              type: object
+          required:
+            - spec
+          title: EtcdCluster_kube_validation
+          type: object
+          x-kubernetes-validations:
+            - message: spec.endpoints is immutable; create a new EtcdCluster for a different physical etcd cluster
+              rule: self.spec.endpoints == oldSelf.spec.endpoints
+            - message: spec.authSecretRef is immutable; rotate the referenced Secret contents in place
+              rule: self.spec.authSecretRef == oldSelf.spec.authSecretRef
+            - message: spec.serverCAConfigMapRef is immutable; rotate the referenced ConfigMap contents in place
+              rule: (!has(self.spec.serverCAConfigMapRef) && !has(oldSelf.spec.serverCAConfigMapRef)) || (has(self.spec.serverCAConfigMapRef) && has(oldSelf.spec.serverCAConfigMapRef) && self.spec.serverCAConfigMapRef == oldSelf.spec.serverCAConfigMapRef)
+      served: true
+      storage: true
+      subresources:
+        status: {}
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -159,80 +213,159 @@ spec:
     singular: etcdtenant
   scope: Namespaced
   versions:
-  - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="Ready")].status
-      name: Ready
-      type: string
-    name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: Auto-generated derived type for EtcdTenantSpec via `CustomResource`
-        properties:
-          spec:
-            description: 'A tenant on an EtcdCluster. The controller provisions the
-              etcd user, role, and prefix-scoped permissions, then emits a Secret
-              with connection details.
+    - additionalPrinterColumns:
+        - jsonPath: .status.conditions[?(@.type=="Ready")].status
+          name: Ready
+          type: string
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Auto-generated derived type for EtcdTenantSpec via `CustomResource`
+          properties:
+            spec:
+              description: |-
+                A tenant on an EtcdCluster. The controller provisions the etcd user, role, and prefix-scoped permissions, then emits a Secret with connection details.
 
-
-              On deletion a finalizer purges the keyspace and removes RBAC entities.'
-            properties:
-              clusterRef:
-                description: Reference to the EtcdCluster to provision on.
-                properties:
-                  name:
-                    type: string
-                  namespace:
-                    description: Namespace of the EtcdCluster. Defaults to the tenant's
-                      namespace.
-                    nullable: true
-                    type: string
-                required:
-                - name
-                type: object
-              secretName:
-                description: Name of the output Secret. Defaults to `<name>-etcd`.
-                nullable: true
-                type: string
-            required:
-            - clusterRef
-            type: object
-          status:
-            nullable: true
-            properties:
-              conditions:
-                default: []
-                description: Standard Kubernetes conditions (supports `kubectl wait
-                  --for=condition=Ready`).
-                items:
+                On deletion a finalizer removes the tenant identity and credentials but deliberately retains all keys under the tenant prefix.
+              properties:
+                clusterRef:
+                  description: Reference to the EtcdCluster to provision on.
                   properties:
-                    lastTransitionTime:
+                    name:
                       type: string
-                    message:
-                      nullable: true
-                      type: string
-                    reason:
-                      nullable: true
-                      type: string
-                    status:
-                      enum:
-                      - 'True'
-                      - 'False'
-                      - Unknown
-                      type: string
-                    type:
+                    namespace:
+                      description: Explicit namespace of the EtcdCluster. It must differ from the EtcdTenant namespace so namespace garbage collection cannot remove the administrative cleanup path together with the tenant.
                       type: string
                   required:
-                  - lastTransitionTime
-                  - status
-                  - type
+                    - name
+                    - namespace
                   type: object
-                type: array
-            type: object
-        required:
-        - spec
-        title: EtcdTenant
-        type: object
-    served: true
-    storage: true
-    subresources:
-      status: {}
+                credentialMode:
+                  default: Password
+                  description: Credential type emitted in `secretName`. Password preserves the legacy username/password contract; TLS requests a client certificate.
+                  enum:
+                    - Password
+                    - TLS
+                  type: string
+                secretName:
+                  description: Name of the output Secret. Defaults to `<name>-etcd`.
+                  nullable: true
+                  type: string
+              required:
+                - clusterRef
+              type: object
+              x-kubernetes-validations: []
+            status:
+              nullable: true
+              properties:
+                conditions:
+                  default: []
+                  description: Standard Kubernetes conditions (supports `kubectl wait --for=condition=Ready`).
+                  items:
+                    properties:
+                      lastTransitionTime:
+                        type: string
+                      message:
+                        nullable: true
+                        type: string
+                      observedGeneration:
+                        format: int64
+                        nullable: true
+                        type: integer
+                      reason:
+                        nullable: true
+                        type: string
+                      status:
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - status
+                      - type
+                    type: object
+                  type: array
+                externalAccessState:
+                  description: Durable controller ownership state for the pinned etcd user and role. `Provisioning` is written before the first possible external mutation, and `Deprovisioning` is written before authorization-driven cleanup. Those states must finish their exact operation even if authorization changes concurrently. Absence and `LegacyUnverified` remain unknown legacy state.
+                  enum:
+                    - Planned
+                    - LegacyUnverified
+                    - Provisioning
+                    - Provisioned
+                    - Deprovisioning
+                    - Deprovisioned
+                  nullable: true
+                  type: string
+                externalIdentity:
+                  description: Controller-pinned identity and artifact names. Once set, reconciliation refuses to silently move the tenant to a different external identity.
+                  nullable: true
+                  properties:
+                    certificateName:
+                      nullable: true
+                      type: string
+                    clusterRef:
+                      description: Immutable resolved reference to the physical EtcdCluster used by a tenant.
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        uid:
+                          type: string
+                      required:
+                        - name
+                        - namespace
+                        - uid
+                      type: object
+                    configMapName:
+                      type: string
+                    credentialMode:
+                      enum:
+                        - Password
+                        - TLS
+                      type: string
+                    etcdRole:
+                      type: string
+                    etcdUser:
+                      type: string
+                    outputSecretName:
+                      type: string
+                    passwordSecretName:
+                      nullable: true
+                      type: string
+                    prefix:
+                      type: string
+                    stagingSecretName:
+                      nullable: true
+                      type: string
+                  required:
+                    - clusterRef
+                    - configMapName
+                    - credentialMode
+                    - etcdRole
+                    - etcdUser
+                    - outputSecretName
+                    - prefix
+                  type: object
+              type: object
+          required:
+            - spec
+          title: EtcdTenant_kube_validation
+          type: object
+          x-kubernetes-validations:
+            - message: spec.clusterRef is immutable
+              rule: self.spec.clusterRef == oldSelf.spec.clusterRef
+            - message: spec.clusterRef.namespace must be non-empty
+              rule: self.spec.clusterRef.namespace != ''
+            - message: spec.secretName is immutable
+              rule: (!has(self.spec.secretName) && !has(oldSelf.spec.secretName)) || (has(self.spec.secretName) && has(oldSelf.spec.secretName) && self.spec.secretName == oldSelf.spec.secretName)
+            - message: spec.credentialMode is immutable
+              rule: self.spec.credentialMode == oldSelf.spec.credentialMode
+      served: true
+      storage: true
+      subresources:
+        status: {}

@@ -1,5 +1,6 @@
 # Plaintext private material must only ever exist in a temporary directory.
 *.pem
+!etcdetcetc/client-ca.pem
 *.csr
 *.key
 sops-age-key.txt
