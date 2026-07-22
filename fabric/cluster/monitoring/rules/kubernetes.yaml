@@ -150,26 +150,6 @@ spec:
               metrics-server has had fewer available replicas than desired for
               five minutes. Node resource evidence may be incomplete.
 
-        - alert: FabricMetricsAPIUnavailable
-          expr: |
-            (
-              max(
-                kube_apiservice_status_condition{
-                  name="v1beta1.metrics.k8s.io",
-                  condition="Available",
-                  status="true"
-                }
-              ) or vector(0)
-            ) != 1
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: The fabric resource metrics API is unavailable.
-            description: >-
-              APIService v1beta1.metrics.k8s.io has not reported Available for
-              five minutes. Check serving TLS and both metrics-server replicas.
-
     - name: fabric-kubernetes-warning
       rules:
         - alert: FabricNodeReadyFlapping
