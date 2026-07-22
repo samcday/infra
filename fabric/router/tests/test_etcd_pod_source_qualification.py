@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
@@ -236,6 +237,45 @@ bash -c '
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
+
+    def test_runtime_contract_accepts_only_absent_or_false_host_network(self) -> None:
+        predicate = (
+            '((.spec | has("hostNetwork") | not) or '
+            '(.spec.hostNetwork == false))'
+        )
+        self.assertIn(predicate, self.script)
+        cases = (
+            ({"spec": {}}, True),
+            ({"spec": {"hostNetwork": False}}, True),
+            ({"spec": {"hostNetwork": True}}, False),
+            ({"spec": {"hostNetwork": None}}, False),
+        )
+        for document, accepted in cases:
+            with self.subTest(document=document):
+                result = subprocess.run(
+                    ["jq", "-e", predicate],
+                    input=json.dumps(document),
+                    text=True,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_final_pod_json_is_protected_before_runtime_validation(self) -> None:
+        function = re.search(
+            r"(?ms)^wait_probe_pod\(\) \{\n(?P<body>.*?)^\}$",
+            self.script,
+        )
+        self.assertIsNotNone(function)
+        body = function.group("body")
+        write = 'printf \'%s\\n\' "$pod" >"$evidence_dir/$name.pod.json"'
+        chmod = 'chmod 0600 -- "$evidence_dir/$name.pod.json"'
+        validation = "  jq -e \\\n"
+        self.assertIn(write, body)
+        self.assertIn(chmod, body)
+        self.assertLess(body.index(write), body.index(chmod))
+        self.assertLess(body.index(chmod), body.index(validation))
 
     def test_only_exact_observed_node_addresses_can_pass(self) -> None:
         for required in (

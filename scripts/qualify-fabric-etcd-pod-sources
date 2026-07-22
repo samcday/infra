@@ -645,6 +645,8 @@ wait_probe_pod() {
     sleep 1
   done
   [[ $phase == Succeeded ]] || die "probe Pod $name did not complete within 120 seconds"
+  printf '%s\n' "$pod" >"$evidence_dir/$name.pod.json"
+  chmod 0600 -- "$evidence_dir/$name.pod.json"
   pod_ip=$(jq -er '.status.podIP' <<<"$pod") || die "probe Pod $name has no Pod IP"
   jq -e \
     --arg name "$name" \
@@ -655,7 +657,7 @@ wait_probe_pod() {
       .metadata.namespace == "fabric-etcd-source-probe" and
       .metadata.deletionTimestamp == null and
       .spec.nodeName == $node and
-      .spec.hostNetwork == false and
+      ((.spec | has("hostNetwork") | not) or (.spec.hostNetwork == false)) and
       .status.phase == "Succeeded" and
       .status.hostIP == $hostIp and
       .status.podIP == $podIp and
