@@ -13,14 +13,23 @@ detection, and Prometheus-generated scrape health. cAdvisor and the dedicated
 apiserver and etcd targets remain separate, keeping duplicated high-cardinality
 component histograms out of the local TSDB.
 
+The API endpoint also multiplexes K3s component registries. Its metric relabel
+policy retains every raw family consumed by the enabled API availability/SLO,
+aggregated-API, termination, client-error, and version rules, together with
+API-to-etcd request latency and error evidence and K3s's fixed-identity
+certificate-expiry gauges. Prometheus-generated target health remains outside
+metric relabeling; unrelated scheduler, workqueue, and duplicate component
+series are discarded locally.
+
 The stock `KubeClientCertificateExpiration` rule is disabled because every
 operator request made through `scripts/ik` deliberately presents a bounded
 15-minute client certificate. The API server's aggregate histogram cannot
 identify which client certificate it observed, so its stock 24-hour critical
-threshold would continuously page on healthy operator access. Fabric's local
-rules retain the identity-specific etcd alarm-observer certificate check; the
-remaining K3s PKI needs fixed-identity file or collector metrics rather than
-this unlabelled API-server histogram.
+threshold would continuously page on healthy operator access. Fabric instead
+fails closed when an otherwise healthy API endpoint stops exposing K3s's
+fixed-identity certificate-expiry gauges, warns at thirty days, and pages at
+seven days. The separate etcd alarm-observer certificate check remains in the
+root-node collector.
 
 Prometheus and node-exporter stay on the Pod network. Fabric's separately
 qualified Flannel egress path SNATs routed root scrapes to the hosting service

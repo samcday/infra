@@ -120,6 +120,24 @@ spec:
       enabled: true
       serviceMonitor:
         interval: 30s
+        metricRelabelings:
+          # Preserve the chart's default pruning of buckets that are not used
+          # by the Kubernetes API availability/SLO rules.
+          - action: drop
+            regex: >-
+              (etcd_request|apiserver_request_slo|apiserver_request_sli|apiserver_request)_duration_seconds_bucket;(0\.15|0\.2|0\.3|0\.35|0\.4|0\.45|0\.6|0\.7|0\.8|0\.9|1\.25|1\.5|1\.75|2|3|3\.5|4|4\.5|6|7|8|9|15|20|40|45|50)(\.0)?
+            sourceLabels:
+              - __name__
+              - le
+          # K3s multiplexes scheduler, controller, kubelet, workqueue, and
+          # other registries through 6443. Keep every raw family consumed by
+          # enabled API rules plus bounded API-to-etcd request evidence; the
+          # host etcd targets provide the authoritative server-side metrics.
+          - action: keep
+            regex: >-
+              (aggregator_unavailable_apiservice(_total)?|apiserver_request_(sli_duration_seconds_(bucket|count|sum)|terminations_total|total)|etcd_request_(duration_seconds_(bucket|count|sum)|errors_total)|etcd_requests_total|k3s_certificate_expiration_seconds|kubernetes_build_info|rest_client_requests_total)
+            sourceLabels:
+              - __name__
     kubeControllerManager:
       enabled: false
     kubeDns:

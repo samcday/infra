@@ -48,6 +48,58 @@ spec:
               Every current fabric node is an explicitly managed platform or
               consensus machine and requires investigation.
 
+        - alert: FabricNodeReadyFlapping
+          expr: |
+            max by (node) (
+              changes(
+                kube_node_status_condition{
+                  condition="Ready",
+                  status="true"
+                }[30m]
+              )
+            ) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric node {{ $labels.node }} is flapping Ready state.
+            description: >-
+              The Ready condition changed more than twice in thirty minutes.
+              Correlate with carrier, kubelet, pressure, and API evidence.
+
+        - alert: FabricK3SCertificateMetricsMissing
+          expr: |
+            up{job="apiserver"} == 1
+              unless on (job, instance)
+            count by (job, instance) (
+              k3s_certificate_expiration_seconds{job="apiserver"}
+            )
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              K3s certificate-expiry evidence is missing from {{ $labels.instance }}.
+            description: >-
+              The API target is healthy but no fixed-identity K3s certificate
+              expiry metrics are present. Restore this fail-closed PKI evidence.
+
+        - alert: FabricK3SCertificateExpiryCritical
+          expr: |
+            min by (instance, subject, usages) (
+              k3s_certificate_expiration_seconds{job="apiserver"}
+            ) < 604800
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              A K3s certificate on {{ $labels.instance }} expires within seven days.
+            description: >-
+              Certificate {{ $labels.subject }} ({{ $labels.usages }}) has
+              fewer than seven days remaining. Rotate it and prove all three
+              API endpoints before expiry.
+
         - alert: FabricControlPlaneLeaseStaleOrMissing
           expr: |
             (
@@ -152,24 +204,25 @@ spec:
 
     - name: fabric-kubernetes-warning
       rules:
-        - alert: FabricNodeReadyFlapping
+        - alert: FabricK3SCertificateExpiring
           expr: |
-            max by (node) (
-              changes(
-                kube_node_status_condition{
-                  condition="Ready",
-                  status="true"
-                }[30m]
-              )
-            ) > 2
-          for: 5m
+            min by (instance, subject, usages) (
+              k3s_certificate_expiration_seconds{job="apiserver"}
+            ) >= 604800
+            and
+            min by (instance, subject, usages) (
+              k3s_certificate_expiration_seconds{job="apiserver"}
+            ) < 2592000
+          for: 10m
           labels:
             severity: warning
           annotations:
-            summary: Fabric node {{ $labels.node }} is flapping Ready state.
+            summary: >-
+              A K3s certificate on {{ $labels.instance }} expires within thirty days.
             description: >-
-              The Ready condition changed more than twice in thirty minutes.
-              Correlate with carrier, kubelet, pressure, and API evidence.
+              Certificate {{ $labels.subject }} ({{ $labels.usages }}) has
+              between seven and thirty days remaining. Rotate it before the
+              critical paging threshold.
 
         - alert: FabricNodePressure
           expr: |

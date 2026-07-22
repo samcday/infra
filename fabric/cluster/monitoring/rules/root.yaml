@@ -148,6 +148,28 @@ spec:
               Inspect fabric_etcd_alarm_active for the member and alarm type;
               do not disarm an alarm without resolving and recording its cause.
 
+        - alert: FabricEtcdLeaderChangesHigh
+          expr: |
+            max by (cluster) (
+              round(
+                increase(
+                  etcd_server_leader_changes_seen_total{
+                    cluster="fabric",
+                    job="fabric-etcd",
+                    tier="root"
+                  }[15m]
+                )
+              )
+            ) > 2
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fabric etcd changed leader repeatedly in fifteen minutes.
+            description: >-
+              More than two elections usually indicate peer-network, host, or
+              storage latency instability.
+
     - name: fabric-root-host-critical
       rules:
         - alert: FabricRootNodeTargetsIncomplete
@@ -255,28 +277,6 @@ spec:
 
     - name: fabric-root-etcd-warning
       rules:
-        - alert: FabricEtcdLeaderChangesHigh
-          expr: |
-            max by (cluster) (
-              round(
-                increase(
-                  etcd_server_leader_changes_seen_total{
-                    cluster="fabric",
-                    job="fabric-etcd",
-                    tier="root"
-                  }[15m]
-                )
-              )
-            ) > 2
-          for: 1m
-          labels:
-            severity: warning
-          annotations:
-            summary: Fabric etcd changed leader repeatedly in fifteen minutes.
-            description: >-
-              More than two elections usually indicate peer-network, host, or
-              storage latency instability.
-
         - alert: FabricEtcdProposalFailures
           expr: |
             increase(
