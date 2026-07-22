@@ -180,6 +180,29 @@ jq -e '
     {namespace: "etcdetcetc-smoke", spec: {podSelector: {}, policyTypes: ["Egress", "Ingress"]}}
   ] and
   [.[] | select(
+    .metadata.namespace == "cert-manager" and
+    .metadata.name == "allow-kubernetes-api-to-webhook"
+  ) | .spec] == [{
+    podSelector: {matchLabels: {
+      "app.kubernetes.io/component": "webhook",
+      "app.kubernetes.io/instance": "cert-manager",
+      "app.kubernetes.io/name": "webhook"
+    }},
+    policyTypes: ["Ingress"],
+    ingress: [{
+      from: [
+        {ipBlock: {cidr: "10.66.0.10/32"}},
+        {ipBlock: {cidr: "10.66.0.11/32"}},
+        {ipBlock: {cidr: "10.66.0.12/32"}},
+        {ipBlock: {cidr: "10.66.0.254/32"}},
+        {ipBlock: {cidr: "172.22.0.0/32"}},
+        {ipBlock: {cidr: "172.22.1.0/32"}},
+        {ipBlock: {cidr: "172.22.2.0/32"}}
+      ],
+      ports: [{port: 10250, protocol: "TCP"}]
+    }]
+  }] and
+  [.[] | select(
     .metadata.namespace == "etcdetcetc" and .metadata.name == "allow-controller-egress"
   ) | .spec] == [{
     podSelector: {matchLabels: {
@@ -223,7 +246,7 @@ jq -e '
     ]
   }]
 ' >/dev/null <<<"$network_policy_objects" ||
-  die 'Fabric platform NetworkPolicy set or exact controller egress contract differs'
+  die 'Fabric platform NetworkPolicy set or exact webhook/controller contract differs'
 
 release="$repo_root/fabric/cluster/etcdetcetc-controller/release.yaml"
 children="$repo_root/fabric/cluster/flux-system/children.yaml"

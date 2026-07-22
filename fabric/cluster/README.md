@@ -80,6 +80,12 @@ Kubelet scraping remains strict: metrics-server uses the projected K3s server
 CA, which signs each node's IP-bearing kubelet serving certificate, and the
 bootstrap rejects `--kubelet-insecure-tls` before accepting node samples.
 
+The cert-manager webhook remains Pod-networked. K3s server connections to its
+remote endpoints enter Flannel with the exact subnet-base host addresses
+`172.22.0.0`, `172.22.1.0`, or `172.22.2.0`; its ingress NetworkPolicy admits
+only those three `/32`s alongside the declared physical API endpoints. Do not
+widen that exception to a root or service-plane PodCIDR.
+
 ## Provisioning boundary
 
 Cp1 and cp2 were bootstrapped from node-local media and were never exposed to

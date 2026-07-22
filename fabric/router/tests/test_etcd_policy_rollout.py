@@ -1367,6 +1367,43 @@ guard_live
             ],
         )
 
+        webhook = next(
+            policy
+            for policy in policies
+            if policy["metadata"]
+            == {
+                "name": "allow-kubernetes-api-to-webhook",
+                "namespace": "cert-manager",
+            }
+        )
+        self.assertEqual(
+            webhook["spec"],
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/component": "webhook",
+                        "app.kubernetes.io/instance": "cert-manager",
+                        "app.kubernetes.io/name": "webhook",
+                    }
+                },
+                "policyTypes": ["Ingress"],
+                "ingress": [
+                    {
+                        "from": [
+                            {"ipBlock": {"cidr": "10.66.0.10/32"}},
+                            {"ipBlock": {"cidr": "10.66.0.11/32"}},
+                            {"ipBlock": {"cidr": "10.66.0.12/32"}},
+                            {"ipBlock": {"cidr": "10.66.0.254/32"}},
+                            {"ipBlock": {"cidr": "172.22.0.0/32"}},
+                            {"ipBlock": {"cidr": "172.22.1.0/32"}},
+                            {"ipBlock": {"cidr": "172.22.2.0/32"}},
+                        ],
+                        "ports": [{"port": 10250, "protocol": "TCP"}],
+                    }
+                ],
+            },
+        )
+
         controller = next(
             policy
             for policy in policies
