@@ -7,12 +7,14 @@ two Alertmanager replicas run across `fabric-az1-svc1` and
 enough local evidence to page when the root cluster or its GitOps loop wobbles.
 Grafana, ingress, remote write, and the Prometheus admin API stay disabled.
 
-Prometheus uses host networking so its root scrapes have the exact approved
-service-node source addresses. The root and router policy admit only
-`10.66.1.10/32` and `10.66.1.11/32` to cp1-cp3 TCP/2112,2381,9100. Until a
-managed VLAN provides anti-spoofing, this is a trusted-node boundary rather
-than hostile-workload isolation. Alertmanager's writable API is separately
-limited by NetworkPolicy to the Prometheus sources and Alertmanager mesh.
+Prometheus and node-exporter stay on the Pod network. Fabric's separately
+qualified Flannel egress path SNATs routed root scrapes to the hosting service
+node, so the root and router policy still admits only `10.66.1.10/32` and
+`10.66.1.11/32` to cp1-cp3 TCP/2112,2381,9100 without exposing monitoring
+listeners on the service hosts. Until a managed VLAN provides anti-spoofing,
+this is a trusted-node boundary rather than hostile-workload isolation.
+Alertmanager's writable API is separately limited by NetworkPolicy to the
+Prometheus Pods and Alertmanager mesh.
 
 The Prometheus operator is installed separately so its CRDs exist before this
 release. The chart's cluster-wide controller RBAC is disabled: direct Roles
