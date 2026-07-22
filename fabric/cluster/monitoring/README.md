@@ -7,6 +7,14 @@ two Alertmanager replicas run across `fabric-az1-svc1` and
 enough local evidence to page when the root cluster or its GitOps loop wobbles.
 Grafana, ingress, remote write, and the Prometheus admin API stay disabled.
 
+The stock `KubeClientCertificateExpiration` rule is disabled because every
+operator request made through `scripts/ik` deliberately presents a bounded
+15-minute client certificate. The API server's aggregate histogram cannot
+identify which client certificate it observed, so its stock 24-hour critical
+threshold would continuously page on healthy operator access. Certificate
+health with a durable identity is covered by Fabric's identity-specific
+observer and etcd certificate metrics instead.
+
 Prometheus and node-exporter stay on the Pod network. Fabric's separately
 qualified Flannel egress path SNATs routed root scrapes to the hosting service
 node, so the root and router policy still admits only `10.66.1.10/32` and

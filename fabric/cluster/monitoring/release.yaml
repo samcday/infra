@@ -99,6 +99,13 @@ spec:
         interval: 30s
     defaultRules:
       create: true
+      # Every scripts/ik call intentionally uses a freshly bounded 15-minute
+      # operator certificate. The stock rule treats any observed client
+      # certificate below 24 hours as a critical cluster-PKI failure, so it
+      # cannot distinguish this access design from an expiring durable
+      # credential.
+      disabled:
+        KubeClientCertificateExpiration: true
       rules:
         etcd: false
         kubeControllerManager: false
