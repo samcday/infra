@@ -6,6 +6,11 @@ two Alertmanager replicas run across `fabric-az1-svc1` and
 `fabric-az1-svc2`, retain only 48 hours of bounded ephemeral state, and keep
 enough local evidence to page when the root cluster or its GitOps loop wobbles.
 Grafana, ingress, remote write, and the Prometheus admin API stay disabled.
+K3s exposes embedded apiserver, etcd, scheduler, and other component metrics
+again through each root kubelet endpoint. The kubelet scrape retains only
+genuine `kubelet_*` samples (plus Prometheus-generated scrape health), while
+cAdvisor and the dedicated apiserver and etcd targets remain separate; this
+keeps duplicated high-cardinality component histograms out of the local TSDB.
 
 The stock `KubeClientCertificateExpiration` rule is disabled because every
 operator request made through `scripts/ik` deliberately presents a bounded

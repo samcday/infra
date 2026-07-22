@@ -169,6 +169,18 @@ spec:
         insecureSkipVerify: false
         interval: 30s
         kubelet: true
+        # K3s multiplexes apiserver, etcd, scheduler, and other embedded
+        # component registries through the root kubelet endpoint. Those
+        # components have dedicated targets or explicit Lease coverage here;
+        # retaining only genuine kubelet metrics avoids ingesting roughly one
+        # hundred thousand duplicate, high-cardinality series per replica.
+        # Prometheus-generated scrape health (`up`) is unaffected, and the
+        # separately configured cAdvisor endpoint keeps workload metrics.
+        metricRelabelings:
+          - action: keep
+            regex: kubelet_.*
+            sourceLabels:
+              - __name__
         probes: false
         resource: false
     nodeExporter:
