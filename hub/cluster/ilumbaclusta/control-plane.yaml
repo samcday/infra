@@ -14,6 +14,10 @@ spec:
         name: infra
         namespace: flux-system
   interval: 1h
+  upgrade:
+    # Jobs in this chart have ttlSecondsAfterFinished and get GC'd between chart
+    # upgrades; force recreates missing resources instead of failing to patch.
+    force: true
   valuesFrom:
     - kind: ConfigMap
       name: control-plane-values
