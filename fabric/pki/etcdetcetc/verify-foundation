@@ -253,17 +253,21 @@ children="$repo_root/fabric/cluster/flux-system/children.yaml"
 bootstrap_path="$repo_root/fabric/cluster/etcdetcetc"
 policy_path="$repo_root/fabric/cluster/etcdetcetc-policy"
 runtime_path="$bootstrap_path/runtime"
-config_suspended=$(yq -er \
-  'select(.metadata.name == "fabric-etcdetcetc-config") | (.spec.suspend // false)' \
-  "$children")
-controller_suspended=$(yq -er \
-  'select(.metadata.name == "fabric-etcdetcetc-controller") | (.spec.suspend // false)' \
-  "$children")
-runtime_suspended=$(yq -er \
-  'select(.metadata.name == "fabric-etcdetcetc-runtime") | (.spec.suspend // false)' \
-  "$children")
-release_suspended=$(yq -er \
-  'select(.metadata.name == "etcdetcetc") | (.spec.suspend // false)' "$release")
+
+read_suspend_state() {
+  local manifest=$1 resource_name=$2 state
+  state=$(RESOURCE_NAME="$resource_name" yq -r \
+    'select(.metadata.name == strenv(RESOURCE_NAME)) | (.spec.suspend // false)' \
+    "$manifest") || die "cannot read suspension state for $resource_name"
+  [[ $state == true || $state == false ]] ||
+    die "suspension state for $resource_name is absent, duplicated, or non-boolean"
+  printf '%s\n' "$state"
+}
+
+config_suspended=$(read_suspend_state "$children" fabric-etcdetcetc-config)
+controller_suspended=$(read_suspend_state "$children" fabric-etcdetcetc-controller)
+runtime_suspended=$(read_suspend_state "$children" fabric-etcdetcetc-runtime)
+release_suspended=$(read_suspend_state "$release" etcdetcetc)
 
 activation_state=$config_suspended:$controller_suspended:$runtime_suspended:$release_suspended
 case $activation_state in

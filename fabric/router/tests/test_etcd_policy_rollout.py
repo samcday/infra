@@ -1629,6 +1629,15 @@ guard_live
         for expected in expected_cases:
             with self.subTest(expected=expected):
                 self.assertIn(expected, verifier)
+        self.assertIn("read_suspend_state()", verifier)
+        self.assertIn(
+            "[[ $state == true || $state == false ]]",
+            verifier,
+        )
+        self.assertNotRegex(
+            verifier,
+            r"(?m)^(config|controller|runtime|release)_suspended=\$\(yq -er",
+        )
         self.assertIn(
             "inconsistent Fabric etcdetcetc activation gates", verifier
         )
