@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+readonly repo_root
+readonly helper_path=scripts/clear-stale-fabric-maintenance-lock
+readonly lock_name=fabric-maintenance-lock
+readonly lock_namespace=kube-system
+readonly confirmation_prefix=CLEAR-STALE-FABRIC-MAINTENANCE-LOCK
+readonly minimum_age_seconds=1800
+
+mode=
+confirmation=
+
+usage() {
+  cat <<EOF
+Inspect or conditionally remove the retained global Fabric maintenance lock.
+
+Read-only inspection:
+  scripts/clear-stale-fabric-maintenance-lock --check
+
+Attended conditional removal (copy the exact confirmation from --check):
+  scripts/clear-stale-fabric-maintenance-lock --run \\
+    --confirm '$confirmation_prefix:<pushed-main-commit>:<uid>:<resource-version>:<state-sha256>'
+
+The helper refuses locks younger than 30 minutes and a holder PID that still
+exists on this host. A remote holder cannot be proved dead automatically: the
+exact confirmation is the operator's attestation that its retained rollback
+evidence has been inspected and no operation still owns the lock.
+
+The live pass requires a clean pushed main checkout, rereads the exact lock,
+and uses Kubernetes UID plus resourceVersion deletion preconditions. It never
+adopts or removes a replacement lock.
+EOF
+}
+
+die() {
+  printf 'clear-stale-fabric-maintenance-lock: %s\n' "$*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case $1 in
+    --check)
+      [[ -z $mode ]] || die 'choose exactly one of --check or --run'
+      mode=check
+      shift
+      ;;
+    --run)
+      [[ -z $mode ]] || die 'choose exactly one of --check or --run'
+      mode=run
+      shift
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      [[ -z $confirmation ]] || die '--confirm may only be specified once'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n $mode ]] || die 'choose exactly one of --check or --run'
+if [[ $mode == check ]]; then
+  [[ -z $confirmation ]] || die '--check does not accept --confirm'
+else
+  [[ -n $confirmation ]] || die '--run requires --confirm from a passing --check'
+fi
+
+for command in awk date git hostname jq sha256sum; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+cd "$repo_root"
+[[ -x scripts/ik && ! -L scripts/ik ]] || die 'scripts/ik is absent or unsafe'
+[[ -f $helper_path && ! -L $helper_path ]] || die 'helper source is absent or unsafe'
+
+head_commit=
+assert_pushed_revision() {
+  git fetch --quiet origin main || die 'cannot fetch origin/main'
+  head_commit=$(git rev-parse HEAD) || die 'cannot resolve HEAD'
+  [[ $head_commit =~ ^[0-9a-f]{40}$ ]] || die 'HEAD is not a full commit'
+  [[ $head_commit == "$(git rev-parse origin/main)" ]] ||
+    die 'HEAD must exactly match pushed origin/main'
+  [[ -z $(git status --porcelain -- "$helper_path") ]] ||
+    die 'helper source must exactly match the pushed revision'
+
+  if [[ $mode == run ]]; then
+    [[ $(git branch --show-current) == main ]] || die '--run requires branch main'
+    [[ -z $(git status --porcelain) ]] || die '--run requires a clean worktree'
+  fi
+}
+
+readonly -a ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=10s)
+lock_json=
+lock_uid=
+lock_resource_version=
+lock_created=
+lock_holder=
+lock_age_seconds=
+lock_state_sha256=
+
+load_and_validate_lock() {
+  local canonical created_epoch holder_host holder_pid holder_remainder now_epoch
+
+  lock_json=$("${ik[@]}" --namespace "$lock_namespace" get configmap \
+    "$lock_name" --output=json) || die 'cannot read the global Fabric maintenance lock'
+  jq -e --arg name "$lock_name" --arg namespace "$lock_namespace" '
+    .apiVersion == "v1" and
+    .kind == "ConfigMap" and
+    .metadata.name == $name and
+    .metadata.namespace == $namespace and
+    .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and
+      test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.metadata.resourceVersion | type == "string" and test("^[1-9][0-9]*$")) and
+    (.metadata.creationTimestamp | type == "string" and length > 0) and
+    (.data | type == "object" and keys == ["holder"]) and
+    (.data.holder | type == "string" and length > 0)
+  ' <<<"$lock_json" >/dev/null || die 'global Fabric maintenance lock has an unexpected shape'
+
+  lock_uid=$(jq -er '.metadata.uid' <<<"$lock_json")
+  lock_resource_version=$(jq -er '.metadata.resourceVersion' <<<"$lock_json")
+  lock_created=$(jq -er '.metadata.creationTimestamp' <<<"$lock_json")
+  lock_holder=$(jq -er '.data.holder' <<<"$lock_json")
+  canonical=$(jq -cS '
+    {
+      apiVersion,
+      kind,
+      metadata: {
+        name: .metadata.name,
+        namespace: .metadata.namespace,
+        uid: .metadata.uid,
+        resourceVersion: .metadata.resourceVersion,
+        creationTimestamp: .metadata.creationTimestamp
+      },
+      data: {holder: .data.holder}
+    }
+  ' <<<"$lock_json") || die 'cannot canonicalize global Fabric maintenance lock'
+  lock_state_sha256=$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')
+  [[ $lock_state_sha256 =~ ^[0-9a-f]{64}$ ]] || die 'cannot hash global Fabric maintenance lock'
+
+  created_epoch=$(date -u --date="$lock_created" +%s) || die 'lock creation time is invalid'
+  now_epoch=$(date -u +%s) || die 'cannot read the current time'
+  ((created_epoch <= now_epoch)) || die 'lock creation time is in the future'
+  lock_age_seconds=$((now_epoch - created_epoch))
+  ((lock_age_seconds >= minimum_age_seconds)) ||
+    die "lock is only ${lock_age_seconds}s old; minimum stale age is ${minimum_age_seconds}s"
+
+  holder_host=${lock_holder%%:*}
+  holder_remainder=${lock_holder#*:}
+  [[ -n $holder_host && $holder_remainder != "$lock_holder" ]] ||
+    die 'lock holder does not contain a host and PID'
+  holder_pid=${holder_remainder%%:*}
+  [[ $holder_pid =~ ^[1-9][0-9]*$ && ${holder_remainder#*:} != "$holder_remainder" ]] ||
+    die 'lock holder does not contain a valid PID and operation identity'
+  if [[ $holder_host == "$(hostname)" && -d /proc/$holder_pid ]]; then
+    die "recorded local holder PID $holder_pid still exists; refusing stale-lock removal"
+  fi
+}
+
+expected_confirmation() {
+  printf '%s:%s:%s:%s:%s' "$confirmation_prefix" "$head_commit" \
+    "$lock_uid" "$lock_resource_version" "$lock_state_sha256"
+}
+
+assert_pushed_revision
+load_and_validate_lock
+expected=$(expected_confirmation)
+
+if [[ $mode == check ]]; then
+  printf 'LOCK=%s/%s\n' "$lock_namespace" "$lock_name"
+  printf 'HOLDER=%s\n' "$lock_holder"
+  printf 'CREATED=%s\n' "$lock_created"
+  printf 'AGE_SECONDS=%s\n' "$lock_age_seconds"
+  printf 'UID=%s\n' "$lock_uid"
+  printf 'RESOURCE_VERSION=%s\n' "$lock_resource_version"
+  printf 'STATE_SHA256=%s\n' "$lock_state_sha256"
+  printf 'CONFIRMATION=%s\n' "$expected"
+  exit 0
+fi
+
+[[ $confirmation == "$expected" ]] || die "exact --confirm '$expected' is required"
+
+# Re-fetch the source revision and re-read the object immediately before the
+# only mutation. Any push or lock update invalidates the attended confirmation.
+confirmed_head=$head_commit
+confirmed_uid=$lock_uid
+confirmed_resource_version=$lock_resource_version
+confirmed_state_sha256=$lock_state_sha256
+assert_pushed_revision
+[[ $head_commit == "$confirmed_head" ]] || die 'pushed main changed after confirmation validation'
+load_and_validate_lock
+[[ $lock_uid == "$confirmed_uid" &&
+   $lock_resource_version == "$confirmed_resource_version" &&
+   $lock_state_sha256 == "$confirmed_state_sha256" &&
+   $(expected_confirmation) == "$confirmation" ]] ||
+  die 'global Fabric maintenance lock changed after confirmation; run --check again'
+
+delete_response=$(jq -cn --arg uid "$lock_uid" --arg rv "$lock_resource_version" '{
+  apiVersion: "v1",
+  kind: "DeleteOptions",
+  preconditions: {uid: $uid, resourceVersion: $rv}
+}' | "${ik[@]}" delete \
+  --raw="/api/v1/namespaces/$lock_namespace/configmaps/$lock_name" \
+  --filename=-) || die 'conditional stale-lock removal failed'
+jq -e --arg name "$lock_name" --arg uid "$lock_uid" '
+  (.kind == "Status" and .status == "Success" and
+    .details.name == $name and (.details.uid // $uid) == $uid) or
+  (.kind == "ConfigMap" and .metadata.name == $name and .metadata.uid == $uid)
+' <<<"$delete_response" >/dev/null || die 'conditional stale-lock removal returned an unexpected response'
+
+remaining=$("${ik[@]}" --namespace "$lock_namespace" get configmap "$lock_name" \
+  --ignore-not-found --output=name) || die 'cannot prove the stale lock is absent'
+[[ -z $remaining ]] || die 'a new global Fabric maintenance lock exists; it was not removed'
+
+printf 'CLEARED=%s/%s\n' "$lock_namespace" "$lock_name"
+printf 'CLEARED_UID=%s\n' "$lock_uid"
+printf 'CLEARED_RESOURCE_VERSION=%s\n' "$lock_resource_version"

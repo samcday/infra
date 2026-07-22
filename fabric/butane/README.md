@@ -65,6 +65,14 @@ included in the current hub Flux fan-out, and nothing merges the current
   pre-open, another root rollout, router transition, or post-open work from
   overlapping stale rollback state. Inspect the persistent target evidence at
   `/var/lib/fabric-root-network-policy-rollback` before any attended recovery.
+  If that inspection proves the owner is gone and the retained rollback is no
+  longer active, `scripts/clear-stale-fabric-maintenance-lock --check` prints a
+  commit-, UID-, resourceVersion-, and canonical-state-bound confirmation for
+  the only supported removal path. Its live pass requires clean pushed `main`,
+  refuses locks younger than thirty minutes and a still-live local holder PID,
+  rereads the exact object, and uses both Kubernetes deletion preconditions.
+  It cannot prove a remote holder dead; copying its confirmation is the
+  operator's explicit attestation that the retained evidence was inspected.
 - `time.yaml` makes the dedicated router the sole configured chrony source.
   The roots retain their own RTC and persisted drift when the router or WAN is
   unavailable after initial synchronization.
