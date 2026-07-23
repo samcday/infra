@@ -98,7 +98,8 @@ nft list chain "${firewall_chain[@]}" >/dev/null 2>&1 ||
 install_firewall_rule() {
   local comment=$1
   shift
-  if ! nft -a list chain "${firewall_chain[@]}" | grep -Fq "comment \"$comment\""; then
+  if ! nft -a list chain "${firewall_chain[@]}" |
+    grep -F "comment \"$comment\"" >/dev/null; then
     nft insert rule "${firewall_chain[@]}" "$@" counter accept comment "$comment"
   fi
 }
@@ -111,7 +112,8 @@ install_firewall_rule fabric-bootie-http \
   ip saddr '{ 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
   tcp dport 80
 for comment in fabric-bootie-dhcp fabric-bootie-tftp fabric-bootie-http; do
-  nft -a list chain "${firewall_chain[@]}" | grep -Fq "comment \"$comment\"" ||
+  nft -a list chain "${firewall_chain[@]}" |
+    grep -F "comment \"$comment\"" >/dev/null ||
     die "host firewall admission is absent: $comment"
 done
 
