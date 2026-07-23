@@ -2,6 +2,23 @@
 
 bootie is a simple container to facilitate PXE booting k8s nodes with FCOS.
 
+Fabric day-two mode is the steady-state cluster deployment. One host-networked
+Pod runs on either service node, serves only the five admitted hardware MACs,
+and embeds the SHA-256-pinned FCOS live payload plus its signed shim and GRUB.
+Every machine may therefore keep IPv4 PXE first in UEFI boot order. An ordinary
+request receives only GRUB `exit` and continues to the local disk.
+
+An installation response exists only while all of these agree: the exact
+inventory record, the replacement Kubernetes Node UID, a short-lived
+`bootie-session` Secret UID, the global maintenance-lock UID, the destination
+disk, the Git revision, the Ignition digest, and the attested Bootie image
+digest/revision. Bootie consumes the Node's install annotation before returning
+installer arguments, and consumes the separate Ignition token before returning
+the fixed profile. The session Secret is absent in steady state and is removed
+after that one fetch. Set `BOOTIE_DAY2_MODE=true` only through
+`/bin/run-cluster`; the original generic and attended-station modes remain for
+offline recovery.
+
 It has four HTTP endpoints:
 
  * `/boot.ipxe?mac=&serial=`. iPXE clients chain this URL and receive

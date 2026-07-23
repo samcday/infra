@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+
+joined=$*
+if [[ -n ${FAKE_KUBECTL_LOG:-} ]]; then
+  printf '%s\n' "$joined" >>"$FAKE_KUBECTL_LOG"
+fi
+case $joined in
+  'get node/fabric-az1-cp1 --output=json')
+    state=${FAKE_NODE_STATE:-armed}
+    install=true
+    token=
+    mode=
+    boot_device=/dev/disk/by-id/nvme-test-cp1
+    if [[ $state == response ]]; then
+      install=
+      token=${FAKE_IGNITION_TOKEN:-test-token}
+      mode=install
+      boot_device=${FAKE_BOOT_DEVICE-/dev/disk/by-id/nvme-test-cp1}
+    fi
+    jq -n \
+      --arg uid "${FAKE_NODE_UID:-01234567-89ab-cdef-0123-456789abcdef}" \
+      --arg rv "${FAKE_NODE_RV:-12345}" \
+      --arg install "$install" --arg token "$token" --arg mode "$mode" \
+      --arg device "$boot_device" \
+      --arg session_uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" '
+      {
+        apiVersion:"v1", kind:"Node",
+        metadata:{name:"fabric-az1-cp1",uid:$uid,resourceVersion:$rv,
+          labels:{
+            "samcday.com/mac":"6c-4b-90-76-c6-00",
+            "samcday.com/discovery":"false",
+            "fabric.samcday.com/bootstrap-placeholder":"true",
+            "fabric.samcday.com/root-consensus":"true"
+          },
+          annotations:{
+            "fabric.samcday.com/bootstrap-state":
+              (if $token == "" then "install-armed" else "install-response-issued" end),
+            "fabric.samcday.com/bootie-session-uid":$session_uid,
+            "samcday.com/boot-device":$device,
+            "samcday.com/install":$install,
+            "samcday.com/ignition-token":$token,
+            "samcday.com/ignition-mode":$mode
+          }},
+        spec:{taints:[{key:"fabric.samcday.com/root-consensus",value:"true",effect:"NoSchedule"}]},
+        status:{nodeInfo:{}}
+      }'
+    ;;
+  '--namespace bootie get secret/bootie-session --output=json')
+    [[ ${FAKE_SECRET_ABSENT:-false} != true ]] || exit 1
+    jq -n \
+      --arg uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" \
+      --arg session "${FAKE_SESSION_B64:?}" \
+      --arg policy "${FAKE_POLICY_B64:?}" \
+      --arg ignition "${FAKE_IGNITION_B64:?}" '{
+        apiVersion:"v1",kind:"Secret",
+        metadata:{name:"bootie-session",namespace:"bootie",uid:$uid},
+        data:{"session.json":$session,"install-policy":$policy,
+          "fabric-az1-cp1.ign":$ignition}
+      }'
+    ;;
+  'patch node/fabric-az1-cp1 --type=json --patch '*)
+    [[ ${FAKE_PATCH_FAIL:-false} != true ]]
+    ;;
+  *)
+    printf 'unexpected day-two kubectl invocation: %s\n' "$joined" >&2
+    exit 1
+    ;;
+esac

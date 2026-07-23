@@ -1,6 +1,10 @@
 #!/bin/bash
 set -ueo pipefail
 
+if [[ "${BOOTIE_DAY2_MODE:-false}" == true ]]; then
+  exec /usr/local/bin/generate-ignition-day2
+fi
+
 request_path=${REQUEST_URI%%\?*}
 name=$(basename "$request_path" | tr '[:upper:]' '[:lower:]' | tr ':' '-')
 node=$(kubectl get node -o name "$name" 2>/dev/null || true)

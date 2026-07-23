@@ -474,6 +474,45 @@ missing_policy=$(
 assert_contains "$missing_policy" 'Status: 409 Conflict'
 assert_contains "$missing_policy" 'the required install policy is unavailable'
 
+uid_bound_log=$(mktemp)
+uid_bound_install=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_EXPECTED_NODE_UID=01234567-89ab-cdef-0123-456789abcdef \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_BOOTSTRAP_STATE=install-armed \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    FAKE_KUBECTL_LOG="$uid_bound_log" \
+    "$boot_request"
+)
+assert_contains "$uid_bound_install" 'coreos.inst.install_dev=/dev/disk/by-id/ata-approved'
+grep -Fq '"path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"' \
+  "$uid_bound_log" || fail 'fixed-Ignition install consumption was not Node-UID bound'
+rm -f -- "$uid_bound_log"
+
+uid_mismatch=$(
+  BOOT_FORMAT=grub \
+    BOOTIE_ALLOW_NODE_CREATE=false \
+    BOOTIE_EXPECTED_NODE_UID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
+    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_REQUIRE_INSTALL_POLICY=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
+    FAKE_BOOTSTRAP_STATE=install-armed \
+    FAKE_DISCOVERY=false \
+    FAKE_INSTALL=true \
+    "$boot_request" 2>&1
+)
+assert_contains "$uid_mismatch" 'Status: 409 Conflict'
+assert_contains "$uid_mismatch" 'Node UID does not match the issued identity'
+assert_not_contains "$uid_mismatch" 'coreos.inst.install_dev='
+
 invalid_format=$(
   BOOT_FORMAT=pxelinux \
     FAKE_BOOT_DEVICE='' \
@@ -536,4 +575,5 @@ assert_contains "$failed_consumption" 'Status: 409 Conflict'
 assert_contains "$failed_consumption" 'ignition token was already consumed'
 assert_not_contains "$failed_consumption" '/etc/bootie-fixed-profile'
 
+"$script_dir/run-day2"
 echo 'bootie request tests passed'

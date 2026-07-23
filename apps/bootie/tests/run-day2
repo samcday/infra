@@ -1,0 +1,97 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+boot_request=$script_dir/../boot-request-day2.sh
+ignition_request=$script_dir/../generate-ignition-day2.sh
+export PATH="$script_dir/fake-day2:$PATH"
+
+work=$(mktemp -d)
+cleanup() {
+  find "$work" -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$work" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+inventory=$work/nodes.tsv
+cat >"$inventory" <<'EOF'
+fabric-az1-cp1 control-plane 10.66.0.10 6c:4b:90:76:c6:00 /dev/disk/by-id/nvme-test-cp1 10.66.1.101
+fabric-az1-cp2 control-plane 10.66.0.11 c4:65:16:9e:9a:e6 /dev/disk/by-id/nvme-test-cp2 10.66.1.102
+fabric-az1-cp3 control-plane 10.66.0.12 6c:4b:90:54:2d:65 /dev/disk/by-id/nvme-test-cp3 10.66.1.103
+fabric-az1-svc1 service 10.66.1.10 6c:4b:90:50:9f:0d /dev/disk/by-id/ata-test-svc1 10.66.1.104
+fabric-az1-svc2 service 10.66.1.11 6c:4b:90:6e:ab:ee /dev/disk/by-id/ata-test-svc2 10.66.1.105
+EOF
+ignition=$work/fabric-az1-cp1.ign
+printf '%s\n' '{"ignition":{"version":"3.4.0"}}' >"$ignition"
+policy=$work/install-policy
+printf '%s\n' 'fabric-az1-cp1 /dev/disk/by-id/nvme-test-cp1' >"$policy"
+ignition_sha=$(sha256sum "$ignition" | awk '{print $1}')
+policy_sha=$(sha256sum "$policy" | awk '{print $1}')
+image_digest=sha256:$(printf 'a%.0s' {1..64})
+image_revision=$(printf 'b%.0s' {1..40})
+session=$(jq -cn \
+  --arg ignition "$ignition_sha" --arg policy "$policy_sha" \
+  --arg digest "$image_digest" --arg image_revision "$image_revision" '{
+    schema:1,purpose:"fabric-node-day-two-session",
+    node:"fabric-az1-cp1",role:"control-plane",address:"10.66.0.10",
+    mac:"6c:4b:90:76:c6:00",bootDevice:"/dev/disk/by-id/nvme-test-cp1",
+    nodeUid:"01234567-89ab-cdef-0123-456789abcdef",
+    repoCommit:"cccccccccccccccccccccccccccccccccccccccc",
+    ignitionSha256:$ignition,installPolicySha256:$policy,
+    bootieImageDigest:$digest,bootieImageRevision:$image_revision,
+    lockUid:"11111111-2222-3333-4444-555555555555"
+  }')
+FAKE_SESSION_B64=$(printf '%s' "$session" | base64 -w0)
+FAKE_POLICY_B64=$(base64 -w0 "$policy")
+FAKE_IGNITION_B64=$(base64 -w0 "$ignition")
+export FAKE_SESSION_B64 FAKE_POLICY_B64 FAKE_IGNITION_B64
+export BOOTIE_HOST_IP=10.66.1.10
+export BOOTIE_IMAGE_DIGEST=$image_digest
+export BOOTIE_IMAGE_REVISION=$image_revision
+export BOOTIE_NODE_INVENTORY_FILE=$inventory
+export BOOTIE_PUBLIC_ORIGIN=http://10.66.1.10
+export BOOTIE_SESSION_NAMESPACE=bootie
+export BOOTIE_SESSION_SECRET=bootie-session
+export FCOS_BASE=http://10.66.1.10/static
+export FCOS_GRUB_BASE='(http,10.66.1.10)/static'
+export FCOS_VERSION=44.test
+
+fail() { printf 'day-two Bootie test failed: %s\n' "$*" >&2; exit 1; }
+contains() { grep -Fq -- "$2" <<<"$1" || fail "missing output: $2"; }
+excludes() { ! grep -Fq -- "$2" <<<"$1" || fail "unexpected output: $2"; }
+
+log=$work/kubectl.log
+export FAKE_KUBECTL_LOG=$log
+local_boot=$(FAKE_SECRET_ABSENT=true BOOT_FORMAT=grub \
+  QUERY_STRING='mac=6c:4b:90:76:c6:00' "$boot_request")
+contains "$local_boot" 'not armed'
+excludes "$local_boot" 'coreos.inst.install_dev='
+[[ ! -s $log || -z $(grep '^patch ' "$log" || true) ]] || fail 'default local boot mutated a Node'
+
+: >"$log"
+armed=$(BOOT_FORMAT=grub QUERY_STRING='mac=6c:4b:90:76:c6:00' "$boot_request")
+contains "$armed" 'coreos.inst.install_dev=/dev/disk/by-id/nvme-test-cp1'
+contains "$armed" 'coreos.inst.ignition_url=http://10.66.1.10/ignition/fabric-az1-cp1?token='
+grep -Fq '"path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"' "$log" ||
+  fail 'install response was not Node-UID bound'
+grep -Fq '"path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid"' "$log" ||
+  fail 'install response was not session-UID bound'
+grub2-script-check /dev/stdin <<<"${armed#*$'\n\n'}"
+
+wrong_uid=$(FAKE_NODE_UID=ffffffff-ffff-ffff-ffff-ffffffffffff \
+  BOOT_FORMAT=grub QUERY_STRING='mac=6c-4b-90-76-c6-00' "$boot_request" 2>&1)
+contains "$wrong_uid" 'Status: 409 Conflict'
+excludes "$wrong_uid" 'coreos.inst.install_dev='
+
+: >"$log"
+ignition_response=$(FAKE_NODE_STATE=response REQUEST_METHOD=GET \
+  REQUEST_URI=/ignition/fabric-az1-cp1 \
+  QUERY_STRING='token=test-token&install=1' "$ignition_request")
+contains "$ignition_response" 'content-type: application/json'
+body=${ignition_response#*$'\n\n'}
+[[ $(printf '%s\n' "$body" | jq -r '.ignition.version') == 3.4.0 ]] ||
+  fail 'Ignition response did not return the exact fixed profile'
+grep -Fq '"path":"/metadata/annotations/samcday.com~1boot-device"' "$log" ||
+  fail 'Ignition consumption did not clear the destructive device arm'
+
+printf 'day-two Bootie request tests passed\n'

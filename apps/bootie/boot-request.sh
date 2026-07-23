@@ -1,6 +1,10 @@
 #!/bin/bash
 set -ueo pipefail
 
+if [[ "${BOOTIE_DAY2_MODE:-false}" == true ]]; then
+  exec /usr/local/bin/boot-request-day2
+fi
+
 BOOT_FORMAT=${BOOT_FORMAT:-ipxe}
 case "$BOOT_FORMAT" in
   grub | ipxe) ;;
@@ -100,6 +104,10 @@ if [[ -n "${BOOTIE_NODE_NAME:-}" ]] &&
        ${#BOOTIE_NODE_NAME} -gt 63 ]]; then
   booterr 'BOOTIE_NODE_NAME is not a valid Kubernetes Node name'
 fi
+if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" &&
+      ! "$BOOTIE_EXPECTED_NODE_UID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  booterr 'BOOTIE_EXPECTED_NODE_UID must be one exact Kubernetes UUID'
+fi
 if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
   if [[ -z "${BOOTIE_NODE_NAME:-}" ||
         "${BOOTIE_ALLOW_NODE_CREATE:-true}" != false ||
@@ -119,10 +127,8 @@ if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
         'coreos.inst.skip_reboot systemd.show_status=false' ]]; then
     booterr 'BOOTIE_CUSTOM_LIVE_KARGS must preserve the exact reviewed installer lifecycle arguments'
   fi
-  if [[ -z "${BOOTIE_EXPECTED_NODE_UID:-}" ||
-        ! "$BOOTIE_EXPECTED_NODE_UID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-    booterr 'BOOTIE_EXPECTED_NODE_UID must be one exact Kubernetes UUID'
-  fi
+  [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" ]] ||
+    booterr 'custom-initramfs delivery requires BOOTIE_EXPECTED_NODE_UID'
   if [[ -z "${BOOTIE_CUSTOM_INITRAMFS_SHA256:-}" ||
         ! "$BOOTIE_CUSTOM_INITRAMFS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     booterr 'BOOTIE_CUSTOM_INITRAMFS_SHA256 must be one lowercase SHA-256'
@@ -191,7 +197,8 @@ node_snapshot=
 
 if [[ -n "${BOOTIE_NODE_NAME:-}" ]]; then
   node=node/$BOOTIE_NODE_NAME
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
+  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ||
+        (-n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}") ]]; then
     node_snapshot=$(kubectl get "$node" -o json) ||
       booterr "the fixed Bootie Node is unavailable: $node"
     jq -e --arg name "$BOOTIE_NODE_NAME" '
@@ -199,7 +206,8 @@ if [[ -n "${BOOTIE_NODE_NAME:-}" ]]; then
     ' <<<"$node_snapshot" >/dev/null ||
       booterr "the fixed Bootie Node snapshot is malformed: $node"
     custom_node_uid=$(jq -r '.metadata.uid // ""' <<<"$node_snapshot")
-    if [[ $custom_node_uid != "$BOOTIE_EXPECTED_NODE_UID" ]]; then
+    if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" &&
+          $custom_node_uid != "$BOOTIE_EXPECTED_NODE_UID" ]]; then
       booterr "the fixed Bootie Node UID does not match the issued identity: $node"
     fi
     declared_mac=$(jq -r '.metadata.labels["samcday.com/mac"] // ""' <<<"$node_snapshot")
@@ -262,7 +270,8 @@ if [[ -z "$node" ]]; then
   )
   node_created=true
 else
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
+  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ||
+        (-n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}") ]]; then
     boot_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' \
       <<<"$node_snapshot")
     install=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' \
@@ -401,14 +410,29 @@ if [[ "${install:-}" == "true" ]]; then
       {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"}
     ]')
   elif [[ "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" == true ]]; then
-    patch=$(jq -cn --arg token "$ignition_token" '[
-      {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
-      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
-      {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
-      {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
-      {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
-      {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
-    ]')
+    if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}" ]]; then
+      patch=$(jq -cn --arg token "$ignition_token" \
+        --arg resource_version "$custom_node_resource_version" \
+        --arg uid "$custom_node_uid" '[
+        {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
+        {"op":"test","path":"/metadata/uid","value":$uid},
+        {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
+        {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
+        {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
+        {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
+      ]')
+    else
+      patch=$(jq -cn --arg token "$ignition_token" '[
+        {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
+        {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
+        {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
+        {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
+      ]')
+    fi
   else
     patch=$(jq -cn --arg token "$ignition_token" '[
       {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
