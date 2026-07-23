@@ -35,24 +35,13 @@ spec:
           value: "true"
       containers:
         - name: bootie
-          image: ghcr.io/samcday/infra-bootie@sha256:127a6726c645f39d4d2c3bbf343a2ce0d70b9cdaa907d0182b6b0d7505cb6222
+          image: ghcr.io/samcday/infra-bootie@sha256:afee9e79946cedd16940f867468c24249b4ae6fd25e58bd52cfe62876f570d28
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
             - -ceu
           args:
-            - |-
-              install -d -m 0755 /run/nginx /run/bootie/tftp
-              install -m 0644 \
-                /usr/share/bootie/tftp/EFI/BOOT/grubx64.efi \
-                /run/bootie/tftp/grubx64.efi
-              install -m 0644 \
-                /usr/share/bootie/tftp/EFI/BOOT/mmx64.efi \
-                /run/bootie/tftp/mmx64.efi
-              install -m 0644 \
-                /usr/share/bootie/grub.cfg \
-                /run/bootie/tftp/grub.cfg
-              exec /bin/run-cluster
+            - install -d -m 0755 /run/nginx; exec /bin/run-cluster
           env:
             - name: BOOTIE_HOST_IP
               valueFrom:
@@ -60,9 +49,9 @@ spec:
                   apiVersion: v1
                   fieldPath: status.hostIP
             - name: BOOTIE_IMAGE_DIGEST
-              value: sha256:127a6726c645f39d4d2c3bbf343a2ce0d70b9cdaa907d0182b6b0d7505cb6222
+              value: sha256:afee9e79946cedd16940f867468c24249b4ae6fd25e58bd52cfe62876f570d28
             - name: BOOTIE_IMAGE_REVISION
-              value: 097cc54394a441e791278a53bc49ddfa15770e20
+              value: 4eb1d41be1aafd859ed885a24eee9edc4e656755
             - name: BOOTIE_NODE_INVENTORY_FILE
               value: /config/nodes.tsv
             - name: BOOTIE_SESSION_NAMESPACE
