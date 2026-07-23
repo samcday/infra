@@ -61,7 +61,7 @@ case ${1:-} in
     shift
     exec "$script_dir/prepare-fabric-node-bootie-handoff" "$@"
     ;;
-  arm | status | close)
+  arm | record | status | close)
     exec "$script_dir/fabric-node-bootie-session" "$@"
     ;;
   reboot)

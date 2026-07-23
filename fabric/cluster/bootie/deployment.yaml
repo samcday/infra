@@ -41,7 +41,18 @@ spec:
             - /bin/bash
             - -ceu
           args:
-            - install -d -m 0755 /run/nginx; exec /bin/run-cluster
+            - |-
+              install -d -m 0755 /run/nginx /run/bootie/tftp
+              install -m 0644 \
+                /usr/share/bootie/tftp/EFI/BOOT/grubx64.efi \
+                /run/bootie/tftp/grubx64.efi
+              install -m 0644 \
+                /usr/share/bootie/tftp/EFI/BOOT/mmx64.efi \
+                /run/bootie/tftp/mmx64.efi
+              install -m 0644 \
+                /usr/share/bootie/grub.cfg \
+                /run/bootie/tftp/grub.cfg
+              exec /bin/run-cluster
           env:
             - name: BOOTIE_HOST_IP
               valueFrom:

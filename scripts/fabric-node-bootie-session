@@ -25,6 +25,12 @@ Usage:
     --confirm ARM-BOOTIE:<node>:<disk>:<ignition-sha256>
   scripts/fabric-node-bootie-session status \
     --receipt-dir /dev/shm/fabric-az1-svc1-bootie-session
+  scripts/fabric-node-bootie-session record \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --handoff-dir /dev/shm/fabric-az1-svc1-bootie-handoff \
+    --output-dir /dev/shm/fabric-az1-svc1-bootie-session \
+    --confirm RECORD-BOOTIE-SESSION:<node>:<node-uid>:<secret-uid>
   scripts/fabric-node-bootie-session close \
     --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
     --receipt-dir /dev/shm/fabric-az1-svc1-bootie-session \
@@ -35,7 +41,9 @@ cordoned placeholder, one immutable bootie/bootie-session Secret, and then
 atomically arms that placeholder. Bootie consumes the install response and
 Ignition token once. close is allowed only after the token was consumed; it
 UID/resourceVersion-deletes the Secret while retaining the non-secret receipt
-for finalization. There is no name-only deletion or automatic re-arm.
+for finalization. record reconstructs only the non-secret local receipt if the
+process was interrupted after a fully matching arm. There is no name-only
+deletion or automatic re-arm.
 EOF
 }
 
@@ -53,7 +61,7 @@ receipt_dir=
 confirmation=
 case ${1:-} in
   --check) mode=check; shift ;;
-  arm | status | close) mode=$1; shift ;;
+  arm | record | status | close) mode=$1; shift ;;
   -h | --help) usage; exit 0 ;;
   *) usage; exit 2 ;;
 esac
@@ -236,6 +244,22 @@ if [[ $mode == arm ]]; then
     die 'immutable Bootie session Secret creation failed; placeholder remains safely unarmed'
   secret_uid=$(jq -er '.metadata.uid' <<<"$created_secret")
   secret_rv=$(jq -er '.metadata.resourceVersion' <<<"$created_secret")
+  # Node lifecycle controllers immediately add TTL/status/taints and can advance
+  # resourceVersion between creation and Secret publication. Re-read and bind
+  # the same safe placeholder UID immediately before the atomic arm.
+  live_node=$("${ik[@]}" get node "$node" --output=json) ||
+    die 'placeholder disappeared before the exact arm'
+  jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
+    .metadata.uid == $uid and
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    .metadata.labels["samcday.com/discovery"] == "true" and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+    (.spec.unschedulable // false) == true and
+    ((.status.nodeInfo.machineID // "") == "")
+  ' <<<"$live_node" >/dev/null ||
+    die 'placeholder changed before the exact arm; session remains safely unarmed'
+  node_rv=$(jq -r '.metadata.resourceVersion' <<<"$live_node")
   patch=$(jq -cn --arg rv "$node_rv" --arg uid "$node_uid" --arg session_uid "$secret_uid" \
     --arg disk "$disk" '[
       {"op":"test","path":"/metadata/resourceVersion","value":$rv},
@@ -261,6 +285,71 @@ if [[ $mode == arm ]]; then
   mv -T -- "$work" "$output_dir"
   printf 'ARMED %s placeholder-uid=%s session-uid=%s\n' "$node" "$node_uid" "$secret_uid"
   printf 'Bootie will issue one install response for %s and otherwise exits to local disk.\n' "$disk"
+  exit 0
+fi
+
+if [[ $mode == record ]]; then
+  [[ -n $node && -n $lock_receipt && -n $handoff_dir && -n $output_dir &&
+     -n $confirmation && -z $receipt_dir ]] || { usage; exit 2; }
+  fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+  lock_receipt=$(realpath -e -- "$lock_receipt")
+  "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+  lock_uid=$(jq -r '.lock.uid' "$lock_receipt/lock.json")
+  repo_commit=$(jq -r '.repoCommit' "$lock_receipt/lock.json")
+  [[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" ]] ||
+    die 'maintenance lock belongs to another node'
+  handoff_dir=$(realpath -e -- "$handoff_dir")
+  [[ -d $handoff_dir && ! -L $handoff_dir &&
+     $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs ]] ||
+    die 'handoff must remain on tmpfs'
+  secret_json=$("${ik[@]}" --namespace "$namespace" get secret "$secret_name" --output=json) ||
+    die 'live Bootie session Secret is absent'
+  node_json=$("${ik[@]}" get node "$node" --output=json) || die 'live placeholder is absent'
+  session_payload=$(jq -er '.data["session.json"] | @base64d | fromjson' <<<"$secret_json") ||
+    die 'live session payload is malformed'
+  secret_uid=$(jq -r '.metadata.uid' <<<"$secret_json")
+  secret_rv=$(jq -r '.metadata.resourceVersion' <<<"$secret_json")
+  node_uid=$(jq -r '.metadata.uid' <<<"$node_json")
+  ignition_sha=$(sha256sum "$handoff_dir/$node.ign" | awk '{print $1}')
+  policy_sha=$(sha256sum "$handoff_dir/install-policy" | awk '{print $1}')
+  jq -e --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
+    --arg address "$FABRIC_NODE_ADDRESS" --arg mac "$FABRIC_NODE_MAC" \
+    --arg disk "$FABRIC_NODE_DISK" --arg node_uid "$node_uid" \
+    --arg repo "$repo_commit" --arg lock_uid "$lock_uid" \
+    --arg ignition_sha "$ignition_sha" --arg policy_sha "$policy_sha" '
+    .schema == 1 and .purpose == "fabric-node-day-two-session" and
+    .node == $node and .role == $role and .address == $address and .mac == $mac and
+    .bootDevice == $disk and .nodeUid == $node_uid and .repoCommit == $repo and
+    .lockUid == $lock_uid and .ignitionSha256 == $ignition_sha and
+    .installPolicySha256 == $policy_sha
+  ' <<<"$session_payload" >/dev/null || die 'live session differs from handoff, lock, or inventory'
+  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
+    .metadata.uid == $uid and
+    .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    (.metadata.annotations["fabric.samcday.com/bootstrap-state"] as $state |
+      $state == "install-armed" or $state == "install-response-issued")
+  ' <<<"$node_json" >/dev/null ||
+    die 'live placeholder is not the exact armed or response-issued session'
+  [[ $(jq -r '.immutable' <<<"$secret_json") == true &&
+     $confirmation == "RECORD-BOOTIE-SESSION:$node:$node_uid:$secret_uid" ]] ||
+    die "exact --confirm RECORD-BOOTIE-SESSION:$node:$node_uid:$secret_uid is required"
+  output_dir=$(realpath -m -- "$output_dir")
+  [[ ! -e $output_dir && ! -L $output_dir ]] || die 'session receipt output already exists'
+  output_parent=$(dirname -- "$output_dir")
+  [[ -d $output_parent && ! -L $output_parent &&
+     $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+    die 'session receipt parent must be tmpfs'
+  work=$(mktemp -d -- "$output_parent/.fabric-bootie-record.XXXXXXXX")
+  chmod 0700 "$work"
+  jq -n --argjson session "$session_payload" --arg uid "$secret_uid" --arg rv "$secret_rv" \
+    --arg created "$(date --utc --iso-8601=seconds)" '{
+      schema:1, purpose:"fabric-node-day-two-session-receipt", session:$session,
+      secret:{namespace:"bootie", name:"bootie-session", uid:$uid, resourceVersion:$rv},
+      createdAt:$created
+    }' >"$work/session.json"
+  chmod 0600 "$work/session.json"
+  mv -T -- "$work" "$output_dir"
+  printf 'RECORDED %s placeholder-uid=%s session-uid=%s\n' "$node" "$node_uid" "$secret_uid"
   exit 0
 fi
 

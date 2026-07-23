@@ -135,12 +135,18 @@ git -C "$repo_root" ls-files --error-unmatch -- \
   >/dev/null 2>&1 || die 'day-two handoff inputs must be committed'
 [[ $(git -C "$repo_root" branch --show-current) == main ]] ||
   die 'day-two handoffs may only be rendered from main'
-[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
-  die 'day-two handoffs require a completely clean worktree'
 git -C "$repo_root" fetch --quiet origin main || die 'could not refresh origin/main'
 [[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" &&
    $(git -C "$repo_root" rev-parse origin/main) == "$repo_commit" ]] ||
   die 'local and remote main must equal the held lock revision'
+render_inputs=(
+  fabric/inventory fabric/pxe-first.yaml fabric/ssh-host-keys
+  fabric/butane fabric/workers/butane
+)
+git -C "$repo_root" diff --quiet -- "${render_inputs[@]}" ||
+  die 'an unstaged node-Ignition input differs from the held revision'
+git -C "$repo_root" diff --cached --quiet -- "${render_inputs[@]}" ||
+  die 'a staged node-Ignition input differs from the held revision'
 
 output_dir=$(realpath -m -- "$output_dir")
 case $output_dir in "$repo_root" | "$repo_root"/*) die 'handoff output must remain outside Git' ;; esac
@@ -187,6 +193,14 @@ ignition=$rendered/$node.ign
   die 'renderer did not produce one safe node Ignition'
 jq -e 'type == "object" and (.ignition.version | startswith("3."))' "$ignition" >/dev/null ||
   die 'rendered destination Ignition is invalid'
+if [[ $role == service ]]; then
+  checksum=$ignition.sha256
+  [[ -f $checksum && ! -L $checksum && $(stat -Lc '%a:%h' "$checksum") == 600:1 ]] ||
+    die 'service renderer did not produce one safe Ignition checksum'
+  (cd "$rendered" && sha256sum --check --strict "${node}.ign.sha256" >/dev/null) ||
+    die 'service renderer Ignition checksum verification failed'
+  find "$checksum" -maxdepth 0 -type f -delete
+fi
 mv -- "$ignition" "$work/$node.ign"
 rmdir -- "$rendered"
 
