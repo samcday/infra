@@ -120,9 +120,9 @@ spec:
             - name: run
               mountPath: /run
             - name: nginx-cache
-              mountPath: /var/lib/nginx
+              mountPath: /var/lib/nginx/tmp
             - name: nginx-log
-              mountPath: /var/log/nginx
+              mountPath: /var/lib/nginx/logs
             - name: tmp
               mountPath: /tmp
       volumes:
