@@ -149,6 +149,9 @@ kubectl patch "node/$node" --type=json --patch "$patch" >/dev/null ||
 
 ignition_url="$BOOTIE_PUBLIC_ORIGIN/ignition/$node?token=$token&install=1"
 kernel_args="coreos.live.rootfs_url=$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-rootfs.x86_64.img coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=$ignition_url"
+if [[ $role == service ]]; then
+  kernel_args+=" ignition.firstboot ignition.platform.id=metal ignition.config.url=$FCOS_BASE/fabric-day2-service-live.ign coreos.inst.skip_reboot systemd.show_status=false"
+fi
 printf 'content-type: text/plain\n\n'
 if [[ ${BOOT_FORMAT:-grub} == grub ]]; then
   printf 'linux %s/fedora-coreos-%s-live-kernel.x86_64 %s\n' "$FCOS_GRUB_BASE" "$FCOS_VERSION" "${kernel_args//&/\\&}"

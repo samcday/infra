@@ -90,6 +90,15 @@ COPY cluster-grub.cfg /usr/share/bootie/grub.cfg
 COPY --from=fcos /out/pxe /pxe
 COPY --from=fcos /out/tftp /usr/share/bootie/tftp
 COPY --from=fcos /out/SHA256SUMS /usr/share/bootie/FCOS-SHA256SUMS
+COPY day2-service-live.bu /tmp/day2-service-live.bu
+
+RUN set -eux; \
+    butane --strict </tmp/day2-service-live.bu \
+      >/pxe/fabric-day2-service-live.ign; \
+    chmod 0644 /pxe/fabric-day2-service-live.ign; \
+    sha256sum /pxe/fabric-day2-service-live.ign | \
+      sed 's#  /pxe/#  static/#' >>/usr/share/bootie/FCOS-SHA256SUMS; \
+    rm /tmp/day2-service-live.bu
 
 RUN chmod +x \
         /bin/run \

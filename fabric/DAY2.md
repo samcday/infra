@@ -27,10 +27,15 @@ For one node, the flow is:
    derivable from the preceding receipt; there is no broad or name-only arm.
 7. `status` reports `install-response-issued`; after the one-use Ignition fetch,
    `close` conditionally deletes the exact session Secret.
-8. On a control-plane node, `etcd plan-promote` and `etcd promote` restore the
+8. A successfully installed service node powers off instead of warm-rebooting.
+   Remove AC power from only that node for at least 30 seconds, then restore it;
+   this is the explicit TPM first-boot gate. A failed install remains on its
+   live console for diagnosis. This cold cycle is the one physical exception
+   for a full service-node reprovision, not a normal package/config upgrade.
+9. On a control-plane node, `etcd plan-promote` and `etcd promote` restore the
    third voter. Then `finalize` attests and uncordons the same Node UID and destroys
    the secret-bearing tmpfs handoff.
-9. `lock release`, then `qualify --revision <main-commit>` before selecting the
+10. `lock release`, then `qualify --revision <main-commit>` before selecting the
    next node.
 
 All mutating phases require the same UID-bound lock receipt and an exact

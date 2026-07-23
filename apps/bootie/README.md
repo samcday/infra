@@ -8,6 +8,14 @@ and embeds the SHA-256-pinned FCOS live payload plus its signed shim and GRUB.
 Every machine may therefore keep IPv4 PXE first in UEFI boot order. An ordinary
 request receives only GRUB `exit` and continues to the local disk.
 
+An armed service-node response also loads the image-embedded public
+`fabric-day2-service-live.ign` and appends `coreos.inst.skip_reboot`. Its
+coreos-installer post-install unit powers the machine off only after a
+successful install, so a TPM-bound first local boot cannot accidentally follow
+a warm reboot. The operator then removes AC power from that service node for at
+least 30 seconds before restoring it. Control-plane responses do not use this
+worker-only poweroff policy.
+
 An installation response exists only while all of these agree: the exact
 inventory record, the replacement Kubernetes Node UID, a short-lived
 `bootie-session` Secret UID, the global maintenance-lock UID, the destination

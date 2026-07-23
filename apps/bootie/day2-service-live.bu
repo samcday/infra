@@ -1,0 +1,41 @@
+variant: fcos
+version: 1.6.0
+
+storage:
+  files:
+    - path: /usr/local/bin/fabric-day2-service-install-poweroff
+      mode: 0700
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec </dev/console >/dev/console 2>&1
+          printf '\nINSTALL SUCCEEDED: the Fabric service node is installed.\n'
+          printf 'Powering off before its TPM-bound first local boot.\n'
+          printf 'Remove AC power from this node for at least 30 seconds, then restore it.\n'
+          printf 'Do not use Alt-P for this transition.\n'
+          sync
+          systemctl --no-block poweroff
+          while :; do sleep 60; done
+
+systemd:
+  units:
+    - name: fabric-day2-service-install-poweroff.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Power off after a successful Fabric service-node installation
+        Documentation=https://coreos.github.io/coreos-installer/customizing-install/
+        Requires=coreos-installer.service
+        After=coreos-installer.service
+        Before=coreos-installer.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/fabric-day2-service-install-poweroff
+        RemainAfterExit=true
+        StandardOutput=kmsg+console
+        StandardError=kmsg+console
+
+        [Install]
+        RequiredBy=coreos-installer.target

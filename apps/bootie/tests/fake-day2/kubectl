@@ -6,32 +6,43 @@ if [[ -n ${FAKE_KUBECTL_LOG:-} ]]; then
   printf '%s\n' "$joined" >>"$FAKE_KUBECTL_LOG"
 fi
 case $joined in
-  'get node/fabric-az1-cp1 --output=json')
+  'get node/fabric-az1-cp1 --output=json' | 'get node/fabric-az1-svc1 --output=json')
+    requested_node=${joined#get node/}
+    requested_node=${requested_node% --output=json}
     state=${FAKE_NODE_STATE:-armed}
     install=true
     token=
     mode=
-    boot_device=/dev/disk/by-id/nvme-test-cp1
+    if [[ $requested_node == fabric-az1-cp1 ]]; then
+      mac=6c-4b-90-76-c6-00
+      boot_device=/dev/disk/by-id/nvme-test-cp1
+      root_consensus=true
+    else
+      mac=6c-4b-90-50-9f-0d
+      boot_device=/dev/disk/by-id/ata-test-svc1
+      root_consensus=
+    fi
     if [[ $state == response ]]; then
       install=
       token=${FAKE_IGNITION_TOKEN:-test-token}
       mode=install
-      boot_device=${FAKE_BOOT_DEVICE-/dev/disk/by-id/nvme-test-cp1}
+      boot_device=${FAKE_BOOT_DEVICE-$boot_device}
     fi
     jq -n \
       --arg uid "${FAKE_NODE_UID:-01234567-89ab-cdef-0123-456789abcdef}" \
       --arg rv "${FAKE_NODE_RV:-12345}" \
       --arg install "$install" --arg token "$token" --arg mode "$mode" \
-      --arg device "$boot_device" \
+      --arg node "$requested_node" --arg mac "$mac" --arg device "$boot_device" \
+      --arg root_consensus "$root_consensus" \
       --arg session_uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" '
       {
         apiVersion:"v1", kind:"Node",
-        metadata:{name:"fabric-az1-cp1",uid:$uid,resourceVersion:$rv,
+        metadata:{name:$node,uid:$uid,resourceVersion:$rv,
           labels:{
-            "samcday.com/mac":"6c-4b-90-76-c6-00",
+            "samcday.com/mac":$mac,
             "samcday.com/discovery":"false",
             "fabric.samcday.com/bootstrap-placeholder":"true",
-            "fabric.samcday.com/root-consensus":"true"
+            "fabric.samcday.com/root-consensus":$root_consensus
           },
           annotations:{
             "fabric.samcday.com/bootstrap-state":
@@ -42,24 +53,33 @@ case $joined in
             "samcday.com/ignition-token":$token,
             "samcday.com/ignition-mode":$mode
           }},
-        spec:{taints:[{key:"fabric.samcday.com/root-consensus",value:"true",effect:"NoSchedule"}]},
+        spec:{taints:[
+          (if $root_consensus == "true" then
+            {key:"fabric.samcday.com/root-consensus",value:"true",effect:"NoSchedule"}
+           else
+            {key:"fabric.samcday.com/platform",value:"true",effect:"NoSchedule"}
+           end)
+        ]},
         status:{nodeInfo:{}}
       }'
     ;;
   '--namespace bootie get secret/bootie-session --output=json')
     [[ ${FAKE_SECRET_ABSENT:-false} != true ]] || exit 1
+    session_node=$(printf '%s' "${FAKE_SESSION_B64:?}" | base64 -d | jq -er '.node')
     jq -n \
       --arg uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" \
       --arg session "${FAKE_SESSION_B64:?}" \
       --arg policy "${FAKE_POLICY_B64:?}" \
-      --arg ignition "${FAKE_IGNITION_B64:?}" '{
+      --arg ignition "${FAKE_IGNITION_B64:?}" \
+      --arg ignition_key "$session_node.ign" '{
         apiVersion:"v1",kind:"Secret",
         metadata:{name:"bootie-session",namespace:"bootie",uid:$uid},
         data:{"session.json":$session,"install-policy":$policy,
-          "fabric-az1-cp1.ign":$ignition}
+          ($ignition_key):$ignition}
       }'
     ;;
-  'patch node/fabric-az1-cp1 --type=json --patch '*)
+  'patch node/fabric-az1-cp1 --type=json --patch '* | \
+    'patch node/fabric-az1-svc1 --type=json --patch '*)
     [[ ${FAKE_PATCH_FAIL:-false} != true ]]
     ;;
   *)

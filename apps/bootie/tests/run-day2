@@ -72,6 +72,8 @@ excludes "$local_boot" 'coreos.inst.install_dev='
 armed=$(BOOT_FORMAT=grub QUERY_STRING='mac=6c:4b:90:76:c6:00' "$boot_request")
 contains "$armed" 'coreos.inst.install_dev=/dev/disk/by-id/nvme-test-cp1'
 contains "$armed" 'coreos.inst.ignition_url=http://10.66.1.10/ignition/fabric-az1-cp1?token='
+excludes "$armed" 'fabric-day2-service-live.ign'
+excludes "$armed" 'coreos.inst.skip_reboot'
 grep -Fq '"path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"' "$log" ||
   fail 'install response was not Node-UID bound'
 grep -Fq '"path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid"' "$log" ||
@@ -93,5 +95,44 @@ body=${ignition_response#*$'\n\n'}
   fail 'Ignition response did not return the exact fixed profile'
 grep -Fq '"path":"/metadata/annotations/samcday.com~1boot-device"' "$log" ||
   fail 'Ignition consumption did not clear the destructive device arm'
+
+service_ignition=$work/fabric-az1-svc1.ign
+service_policy=$work/service-install-policy
+printf '%s\n' '{"ignition":{"version":"3.4.0"}}' >"$service_ignition"
+printf '%s\n' 'fabric-az1-svc1 /dev/disk/by-id/ata-test-svc1' >"$service_policy"
+service_ignition_sha=$(sha256sum "$service_ignition" | awk '{print $1}')
+service_policy_sha=$(sha256sum "$service_policy" | awk '{print $1}')
+service_session=$(jq -cn \
+  --arg ignition "$service_ignition_sha" --arg policy "$service_policy_sha" \
+  --arg digest "$image_digest" --arg image_revision "$image_revision" '{
+    schema:1,purpose:"fabric-node-day-two-session",
+    node:"fabric-az1-svc1",role:"service",address:"10.66.1.10",
+    mac:"6c:4b:90:50:9f:0d",bootDevice:"/dev/disk/by-id/ata-test-svc1",
+    nodeUid:"01234567-89ab-cdef-0123-456789abcdef",
+    repoCommit:"cccccccccccccccccccccccccccccccccccccccc",
+    ignitionSha256:$ignition,installPolicySha256:$policy,
+    bootieImageDigest:$digest,bootieImageRevision:$image_revision,
+    lockUid:"11111111-2222-3333-4444-555555555555"
+  }')
+export FAKE_SESSION_B64
+FAKE_SESSION_B64=$(printf '%s' "$service_session" | base64 -w0)
+export FAKE_POLICY_B64
+FAKE_POLICY_B64=$(base64 -w0 "$service_policy")
+export FAKE_IGNITION_B64
+FAKE_IGNITION_B64=$(base64 -w0 "$service_ignition")
+: >"$log"
+service_armed=$(BOOT_FORMAT=grub QUERY_STRING='mac=6c:4b:90:50:9f:0d' "$boot_request")
+contains "$service_armed" 'coreos.inst.install_dev=/dev/disk/by-id/ata-test-svc1'
+contains "$service_armed" 'ignition.firstboot ignition.platform.id=metal'
+contains "$service_armed" \
+  'ignition.config.url=http://10.66.1.10/static/fabric-day2-service-live.ign'
+contains "$service_armed" 'coreos.inst.skip_reboot systemd.show_status=false'
+grub2-script-check /dev/stdin <<<"${service_armed#*$'\n\n'}"
+
+service_armed_ipxe=$(BOOT_FORMAT=ipxe QUERY_STRING='mac=6c:4b:90:50:9f:0d' "$boot_request")
+contains "$service_armed_ipxe" '#!ipxe'
+contains "$service_armed_ipxe" \
+  'ignition.config.url=http://10.66.1.10/static/fabric-day2-service-live.ign'
+contains "$service_armed_ipxe" 'coreos.inst.skip_reboot systemd.show_status=false'
 
 printf 'day-two Bootie request tests passed\n'
