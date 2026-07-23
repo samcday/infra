@@ -73,6 +73,7 @@ RUN --mount=type=bind,from=builder,source=/home/user/packages/home,target=/pkg \
         jq \
         kubectl \
         nginx \
+        nftables \
         sops
 
 COPY nginx.conf /etc/nginx/conf.d/nginx.conf

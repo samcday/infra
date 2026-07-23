@@ -49,6 +49,10 @@ storage:
                   iifname "cni0" ip saddr 172.22.0.0/16 tcp dport 10250 counter accept comment "same-node Pod metrics to kubelet"
                   ip saddr 10.66.0.2 tcp dport 22 counter accept comment "attended operator SSH"
 
+                  iifname "enp0s31f6" udp sport 68 udp dport 67 counter accept comment "fabric-bootie-dhcp"
+                  ip saddr { 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 } udp dport 69 counter accept comment "fabric-bootie-tftp"
+                  ip saddr { 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 } tcp dport 80 counter accept comment "fabric-bootie-http"
+
                   counter drop comment "deny all remaining host input"
               }
           }

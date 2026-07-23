@@ -88,6 +88,33 @@ if [[ ${BOOTIE_CLUSTER_CHECK:-false} == true ]]; then
   exit 0
 fi
 
+# The two existing service nodes predate the permanent Bootie admissions in
+# their Ignition. Converge the same narrow rules in the host network namespace
+# so the first reimage does not require a direct host-firewall mutation. A
+# reimaged node recreates the table with these rules already present.
+firewall_chain=(inet fabric_services_guard input)
+nft list chain "${firewall_chain[@]}" >/dev/null 2>&1 ||
+  die 'the service-node host firewall chain is unavailable'
+install_firewall_rule() {
+  local comment=$1
+  shift
+  if ! nft -a list chain "${firewall_chain[@]}" | grep -Fq "comment \"$comment\""; then
+    nft insert rule "${firewall_chain[@]}" "$@" counter accept comment "$comment"
+  fi
+}
+install_firewall_rule fabric-bootie-dhcp \
+  iifname enp0s31f6 udp sport 68 udp dport 67
+install_firewall_rule fabric-bootie-tftp \
+  ip saddr '{ 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
+  udp dport 69
+install_firewall_rule fabric-bootie-http \
+  ip saddr '{ 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
+  tcp dport 80
+for comment in fabric-bootie-dhcp fabric-bootie-tftp fabric-bootie-http; do
+  nft -a list chain "${firewall_chain[@]}" | grep -Fq "comment \"$comment\"" ||
+    die "host firewall admission is absent: $comment"
+done
+
 export BOOTIE_DAY2_MODE=true
 export BOOTIE_PUBLIC_ORIGIN="http://$BOOTIE_HOST_IP"
 export FCOS_BASE="http://$BOOTIE_HOST_IP/static"
