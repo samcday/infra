@@ -38,7 +38,10 @@ spec:
           image: ghcr.io/samcday/infra-bootie@sha256:100eef2a463cd132302e47fe02608e80baf899b40128526ccf2fb955a9ea4bab
           imagePullPolicy: IfNotPresent
           command:
-            - /bin/run-cluster
+            - /bin/bash
+            - -ceu
+          args:
+            - install -d -m 0755 /run/nginx; exec /bin/run-cluster
           env:
             - name: BOOTIE_HOST_IP
               valueFrom:
