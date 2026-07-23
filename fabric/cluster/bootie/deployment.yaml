@@ -114,8 +114,9 @@ spec:
               type: RuntimeDefault
           volumeMounts:
             - name: inventory
-              mountPath: /config
+              mountPath: /config/nodes.tsv
               readOnly: true
+              subPath: nodes.tsv
             - name: run
               mountPath: /run
             - name: nginx-cache
