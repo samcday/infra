@@ -12,3 +12,5 @@ sam-desktop.tailnet.hub.samcday.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmmIT2i
 10.66.0.12 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINPgB6vjBv5oXK+mQq5t49pJCd2VFyPtFhi7gWg5Vg2O
 10.66.1.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAWsyj3oc0aDIsMN0dbdKipT9kOUgiG055jBhLbup1qs
 10.66.1.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILLc/eCLV2Lynty9D2xPo5mLpWi+oaD3mupEyc0VCJCv
+# Temporary first-transition svc1 key, matched to the retained attended fingerprint.
+10.66.1.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO22PI2VoFEL1I8hESjEoRozq8JyKMOE0RhEoUBZpjv5
