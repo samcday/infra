@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/retire-fabric-node --check
+  scripts/retire-fabric-node plan \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock
+  scripts/retire-fabric-node apply \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --confirm RETIRE:<node>:<node-uid>:<password-secret-uid-or-absent>
+
+Run after the selected node has been drained, stopped, and remained
+without a fresh kubelet Lease for at least 90 seconds. The apply mode deletes
+only the exact Node UID and its exact K3s node-password Secret UID using API
+preconditions. It never stops a host, drains workloads, or accepts a ready
+target. A control-plane target additionally requires the exact learner-add
+receipt produced by replace-fabric-etcd-member. The global day-two maintenance
+lock remains held for Bootie.
+EOF
+}
+
+die() {
+  printf 'retire-fabric-node: %s\n' "$*" >&2
+  exit 1
+}
+
+mode=
+node=
+lock_receipt=
+confirmation=
+case ${1:-} in
+  --check) mode=check; shift ;;
+  plan | apply) mode=$1; shift ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+esac
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in curl date find id jq kubectl mktemp realpath rmdir sleep stat wc yq; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_validate_node_inventory || die 'five-node inventory validation failed'
+if [[ $mode == check ]]; then
+  [[ -z $node && -z $lock_receipt && -z $confirmation ]] ||
+    die '--check accepts no other arguments'
+  bash -n "$script_path"
+  printf 'validated the stopped-node exact-UID retirement helper\n'
+  exit 0
+fi
+
+[[ -n $node && -n $lock_receipt ]] || { usage; exit 2; }
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+if [[ $mode == plan ]]; then
+  [[ -z $confirmation ]] || die 'plan does not accept --confirm'
+else
+  [[ -n $confirmation ]] || die 'apply requires --confirm'
+fi
+
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+receipt=$lock_receipt/lock.json
+[[ $(jq -r '.node' "$receipt") == "$node" &&
+   $(jq -r '.role' "$receipt") == "$FABRIC_NODE_ROLE" ]] ||
+  die 'maintenance lock receipt is for another node or role'
+receipt_node_uid=$(jq -r '.targetNodeUid' "$receipt")
+if [[ $FABRIC_NODE_ROLE == control-plane ]]; then
+  member_receipt=$lock_receipt/etcd-member.json
+  [[ -f $member_receipt && ! -L $member_receipt &&
+     $(stat -Lc '%u:%g:%a:%h' "$member_receipt") == "$(id -u):$(id -g):600:1" ]] ||
+    die 'control-plane retirement requires one safe etcd-member.json receipt'
+  jq -e --arg node "$node" --arg revision "$(jq -r '.repoCommit' "$receipt")" \
+    --arg lock_uid "$(jq -r '.lock.uid' "$receipt")" '
+    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+    .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
+    .state == "learner-added" and
+    (.removedMemberId | test("^[0-9a-f]{16}$")) and
+    (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+    .removedMemberId != .learnerMemberId
+  ' "$member_receipt" >/dev/null ||
+    die 'etcd member receipt does not bind the same-name learner replacement'
+fi
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+[[ $("${ik[@]}" get --raw=/readyz) == ok ]] || die 'Fabric API is not ready'
+nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
+node_json=$(jq -ce --arg node "$node" '.items[] | select(.metadata.name == $node)' \
+  <<<"$nodes_json") || die 'target Node is already absent'
+node_uid=$(jq -r '.metadata.uid' <<<"$node_json")
+node_rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+[[ $node_uid == "$receipt_node_uid" ]] || die 'target Node UID differs from lock acquisition'
+jq -e '
+  .metadata.deletionTimestamp == null and
+  (.spec.unschedulable // false) == true and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+    length) == 0
+' <<<"$node_json" >/dev/null ||
+  die 'target must be cordoned and non-Ready after a proven stop'
+
+for inventory_node in $(yq -r '.nodes[].name' "$repo_root/fabric/inventory/nodes.yaml"); do
+  [[ $inventory_node == "$node" ]] && continue
+  jq -e --arg node "$inventory_node" '
+    [.items[] | select(.metadata.name == $node)] as $matches |
+    ($matches | length) == 1 and
+    ([ $matches[0].status.conditions[]? |
+       select(.type == "Ready" and .status == "True") ] | length) == 1
+  ' <<<"$nodes_json" >/dev/null || die "non-target Node is not Ready: $inventory_node"
+done
+
+lease_time=$("${ik[@]}" --namespace kube-node-lease get lease "$node" \
+  -o jsonpath='{.spec.renewTime}' 2>/dev/null || true)
+[[ -n $lease_time ]] || die 'target kubelet Lease is absent; inspect before retirement'
+lease_epoch=$(date --date="$lease_time" +%s) || die 'target Lease timestamp is invalid'
+now_epoch=$(date --utc +%s)
+lease_age=$((now_epoch - lease_epoch))
+((lease_age >= 90)) || die "target kubelet Lease is only ${lease_age}s old; wait for a proven stop"
+
+secret_name=$node.node-password.k3s
+secret_uid=$("${ik[@]}" --namespace kube-system get secret "$secret_name" \
+  -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+secret_rv=
+if [[ -n $secret_uid ]]; then
+  [[ $secret_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die 'K3s node-password Secret UID is malformed'
+  secret_rv=$("${ik[@]}" --namespace kube-system get secret "$secret_name" \
+    -o jsonpath='{.metadata.resourceVersion}') || die 'could not bind Secret resourceVersion'
+else
+  secret_uid=absent
+fi
+expected_confirmation="RETIRE:$node:$node_uid:$secret_uid"
+if [[ $mode == plan ]]; then
+  printf 'RETIREMENT READY node=%s uid=%s lease-age=%ss password-secret=%s\n' \
+    "$node" "$node_uid" "$lease_age" "$secret_uid"
+  printf 'Exact live confirmation: %s\n' "$expected_confirmation"
+  exit 0
+fi
+[[ $confirmation == "$expected_confirmation" ]] ||
+  die "exact --confirm $expected_confirmation is required"
+
+proxy_dir=$(mktemp -d -- /dev/shm/.fabric-node-retire.XXXXXXXX)
+chmod 0700 "$proxy_dir"
+proxy_pid=
+cleanup() {
+  if [[ ${proxy_pid:-} =~ ^[1-9][0-9]*$ ]]; then
+    kill -TERM "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+  fi
+  find "$proxy_dir" -xdev -mindepth 1 -delete 2>/dev/null || true
+  rmdir "$proxy_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+proxy_socket=$proxy_dir/kube-api.sock
+node_path=/api/v1/nodes/$node
+secret_path=/api/v1/namespaces/kube-system/secrets/$secret_name
+"${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
+  --accept-paths="^($node_path|$secret_path)\$" \
+  --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+  >"$proxy_dir/proxy.log" 2>&1 &
+proxy_pid=$!
+for _attempt in {1..40}; do
+  [[ -S $proxy_socket ]] && break
+  kill -0 "$proxy_pid" 2>/dev/null || break
+  sleep 0.1
+done
+[[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
+
+uid_delete() {
+  local path=$1 uid=$2 rv=$3 response options
+  options=$(jq -cn --arg uid "$uid" --arg rv "$rv" '{
+    apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
+  }')
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
+    --data-binary "$options" "http://localhost$path") || return 1
+  jq -e --arg uid "$uid" '
+    (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
+  ' <<<"$response" >/dev/null
+}
+
+uid_delete "$node_path" "$node_uid" "$node_rv" ||
+  die 'exact Node UID/resourceVersion deletion failed or raced'
+for _attempt in {1..60}; do
+  [[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] && break
+  sleep 0.5
+done
+[[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
+  die 'target Node remains after its preconditioned deletion'
+
+if [[ $secret_uid != absent ]]; then
+  live_secret_uid=$("${ik[@]}" --namespace kube-system get secret "$secret_name" \
+    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  if [[ -n $live_secret_uid ]]; then
+    [[ $live_secret_uid == "$secret_uid" ]] ||
+      die 'a same-name replacement node-password Secret appeared; refusing deletion'
+    uid_delete "$secret_path" "$secret_uid" "$secret_rv" ||
+      die 'exact node-password Secret UID/resourceVersion deletion failed or raced'
+  fi
+fi
+[[ -z $("${ik[@]}" --namespace kube-system get secret "$secret_name" \
+  --ignore-not-found --output=name) ]] || die 'target node-password Secret remains'
+
+printf 'RETIRED %s uid=%s; its day-two maintenance lock remains held\n' "$node" "$node_uid"
+printf 'The stopped target may now be represented only by a fresh exact-MAC Bootie placeholder.\n'

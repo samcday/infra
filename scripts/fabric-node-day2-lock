@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+readonly lock_name=fabric-maintenance-lock
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/fabric-node-day2-lock --check
+  scripts/fabric-node-day2-lock acquire \
+    --node fabric-az1-cp1 \
+    --output-dir /dev/shm/fabric-az1-cp1-day2-lock \
+    --confirm LOCK:fabric-az1-cp1:<main-commit>
+  scripts/fabric-node-day2-lock verify \
+    --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock
+  scripts/fabric-node-day2-lock release \
+    --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock \
+    --confirm UNLOCK:fabric-az1-cp1:<lock-uid>
+
+Acquire creates the repository-wide kube-system/fabric-maintenance-lock only
+after the read-only node preflight succeeds. The exact UID/resourceVersion
+receipt stays on tmpfs for the whole one-node ceremony. Release is conditional
+on that immutable receipt and refuses until the selected Node is Ready and
+attested at the receipt's revision. An interrupted ceremony deliberately keeps
+the lock for inspection; there is no automatic or name-only cleanup.
+EOF
+}
+
+die() {
+  printf 'fabric-node-day2-lock: %s\n' "$*" >&2
+  exit 1
+}
+
+mode=
+node=
+output_dir=
+receipt_dir=
+confirmation=
+case ${1:-} in
+  --check) mode=check; shift ;;
+  acquire | verify | release) mode=$1; shift ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+esac
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --output-dir) (($# >= 2)) || die '--output-dir requires a value'; output_dir=$2; shift 2 ;;
+    --receipt-dir) (($# >= 2)) || die '--receipt-dir requires a value'; receipt_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in chmod curl date find git hostname id jq kubectl mktemp mv realpath \
+  rmdir sleep stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_validate_node_inventory || die 'five-node inventory validation failed'
+
+if [[ $mode == check ]]; then
+  [[ -z $node && -z $output_dir && -z $receipt_dir && -z $confirmation ]] ||
+    die '--check accepts no other arguments'
+  bash -n "$script_path"
+  printf 'validated the UID-bound Fabric node day-two maintenance lock\n'
+  exit 0
+fi
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+lock_proxy_pid=
+proxy_dir=
+stop_proxy() {
+  local _attempt
+  [[ ${lock_proxy_pid:-} =~ ^[1-9][0-9]*$ ]] || return 0
+  kill -TERM "$lock_proxy_pid" 2>/dev/null || true
+  for _attempt in {1..40}; do
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -0 "$lock_proxy_pid" 2>/dev/null && kill -KILL "$lock_proxy_pid" 2>/dev/null || true
+  wait "$lock_proxy_pid" 2>/dev/null || true
+  lock_proxy_pid=
+}
+cleanup_proxy() {
+  stop_proxy
+  if [[ -n ${proxy_dir:-} && -d $proxy_dir ]]; then
+    find "$proxy_dir" -xdev -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$proxy_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup_proxy EXIT
+
+validate_receipt_dir() {
+  receipt_dir=$(realpath -e -- "$receipt_dir")
+  [[ -d $receipt_dir && ! -L $receipt_dir &&
+     $(stat --file-system --format=%T -- "$receipt_dir") == tmpfs &&
+     $(stat -Lc '%u:%g:%a' "$receipt_dir") == "$(id -u):$(id -g):700" ]] ||
+    die 'lock receipt directory must be caller-owned mode-0700 tmpfs'
+  [[ -f $receipt_dir/lock.json && ! -L $receipt_dir/lock.json &&
+     $(stat -Lc '%u:%g:%a:%h' "$receipt_dir/lock.json") == "$(id -u):$(id -g):600:1" ]] ||
+    die 'lock receipt must be one caller-owned mode-0600 file'
+  entry_count=$(find "$receipt_dir" -mindepth 1 -maxdepth 1 | wc -l)
+  [[ $entry_count == 1 || $entry_count == 2 ]] ||
+    die 'lock receipt directory has an unexpected entry count'
+  if [[ $entry_count == 2 ]]; then
+    [[ -f $receipt_dir/etcd-member.json && ! -L $receipt_dir/etcd-member.json &&
+       $(stat -Lc '%u:%g:%a:%h' "$receipt_dir/etcd-member.json") == \
+         "$(id -u):$(id -g):600:1" &&
+       $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]] ||
+      die 'only a safe control-plane etcd-member.json may accompany lock.json'
+  fi
+}
+
+verify_live_lock() {
+  local receipt=$receipt_dir/lock.json live
+  live=$("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+    --output=json) || die 'recorded global maintenance lock is absent'
+  jq -e --argjson receipt "$(<"$receipt")" '
+    .apiVersion == "v1" and .kind == "ConfigMap" and
+    .metadata.name == "fabric-maintenance-lock" and
+    .metadata.namespace == "kube-system" and
+    .metadata.uid == $receipt.lock.uid and
+    .metadata.resourceVersion == $receipt.lock.resourceVersion and
+    .metadata.deletionTimestamp == null and
+    .data.holder == $receipt.holder and
+    .metadata.labels["fabric.samcday.com/purpose"] == "node-day-two" and
+    .metadata.labels["fabric.samcday.com/node"] == $receipt.node and
+    .metadata.labels["fabric.samcday.com/revision"] == $receipt.repoCommit
+  ' <<<"$live" >/dev/null || die 'live lock differs from the immutable receipt'
+}
+
+if [[ $mode == acquire ]]; then
+  [[ -n $node && -n $output_dir && -n $confirmation && -z $receipt_dir ]] ||
+    { usage; exit 2; }
+  fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+  [[ $(git -C "$repo_root" branch --show-current) == main &&
+     -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+    die 'lock acquisition requires a clean main worktree'
+  git -C "$repo_root" fetch --quiet origin main || die 'could not refresh origin/main'
+  repo_commit=$(git -C "$repo_root" rev-parse HEAD)
+  [[ $repo_commit == "$(git -C "$repo_root" rev-parse origin/main)" ]] ||
+    die 'lock acquisition requires HEAD exactly at fetched origin/main'
+  [[ $confirmation == "LOCK:$node:$repo_commit" ]] ||
+    die "exact --confirm LOCK:$node:$repo_commit is required"
+  "$repo_root/scripts/fabric-node-day2" preflight --node "$node" >/dev/null
+  target_uid=$("${ik[@]}" get node "$node" -o jsonpath='{.metadata.uid}') ||
+    die 'could not bind the target Node UID'
+  [[ $target_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die 'target Node UID is malformed'
+  output_dir=$(realpath -m -- "$output_dir")
+  case $output_dir in "$repo_root" | "$repo_root"/*) die 'lock receipt must remain outside Git' ;; esac
+  [[ ! -e $output_dir && ! -L $output_dir ]] || die 'lock receipt output already exists'
+  output_parent=$(dirname -- "$output_dir")
+  [[ -d $output_parent && ! -L $output_parent &&
+     $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+    die 'lock receipt parent must be an existing tmpfs directory'
+  holder="$(hostname):$$:node-day2:$node:$repo_commit"
+  lock_json=$("${ik[@]}" --namespace kube-system create configmap "$lock_name" \
+    --from-literal="holder=$holder" \
+    --labels="fabric.samcday.com/purpose=node-day-two,fabric.samcday.com/node=$node,fabric.samcday.com/revision=$repo_commit" \
+    --output=json) || die 'another or stale global maintenance lock already exists'
+  lock_uid=$(jq -er '.metadata.uid' <<<"$lock_json")
+  lock_rv=$(jq -er '.metadata.resourceVersion' <<<"$lock_json")
+  work=$(mktemp -d -- "$output_parent/.fabric-node-day2-lock.XXXXXXXX")
+  chmod 0700 "$work"
+  jq -n --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
+    --arg target_uid "$target_uid" --arg commit "$repo_commit" --arg holder "$holder" \
+    --arg uid "$lock_uid" --arg rv "$lock_rv" \
+    --arg acquired "$(date --utc --iso-8601=seconds)" '{
+      schema: 1, purpose: "fabric-node-day-two", node: $node, role: $role,
+      targetNodeUid: $target_uid, repoCommit: $commit, holder: $holder,
+      lock: {name: "fabric-maintenance-lock", namespace: "kube-system",
+        uid: $uid, resourceVersion: $rv}, acquiredAt: $acquired
+    }' >"$work/lock.json"
+  chmod 0600 "$work/lock.json"
+  mv -T -- "$work" "$output_dir"
+  receipt_dir=$output_dir
+  validate_receipt_dir
+  verify_live_lock
+  printf 'LOCKED %s uid=%s revision=%s receipt=%s\n' \
+    "$node" "$lock_uid" "$repo_commit" "$receipt_dir"
+  exit 0
+fi
+
+[[ -z $node && -z $output_dir && -n $receipt_dir ]] || { usage; exit 2; }
+validate_receipt_dir
+verify_live_lock
+node=$(jq -r '.node' "$receipt_dir/lock.json")
+repo_commit=$(jq -r '.repoCommit' "$receipt_dir/lock.json")
+lock_uid=$(jq -r '.lock.uid' "$receipt_dir/lock.json")
+if [[ $mode == verify ]]; then
+  [[ -z $confirmation ]] || die 'verify does not accept --confirm'
+  printf 'LOCK VERIFIED node=%s uid=%s revision=%s\n' "$node" "$lock_uid" "$repo_commit"
+  exit 0
+fi
+
+[[ $confirmation == "UNLOCK:$node:$lock_uid" ]] ||
+  die "exact --confirm UNLOCK:$node:$lock_uid is required"
+if [[ $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]]; then
+  jq -e --arg node "$node" --arg revision "$repo_commit" --arg lock_uid "$lock_uid" '
+    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+    .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
+    .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
+  ' "$receipt_dir/etcd-member.json" >/dev/null ||
+    die 'control-plane lock cannot be released before exact learner promotion'
+fi
+node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
+jq -e --arg revision "$repo_commit" '
+  .metadata.deletionTimestamp == null and
+  .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+  (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
+    test("^[0-9a-f]{64}$")) and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+    length) == 1
+' <<<"$node_json" >/dev/null ||
+  die 'target Node is not Ready at the receipt revision; refusing lock release'
+
+proxy_dir=$(mktemp -d -- /dev/shm/.fabric-node-lock-proxy.XXXXXXXX)
+chmod 0700 "$proxy_dir"
+proxy_socket=$proxy_dir/kube-api.sock
+"${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
+  --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\$" \
+  --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+  >"$proxy_dir/proxy.log" 2>&1 &
+lock_proxy_pid=$!
+for _attempt in {1..40}; do
+  [[ -S $proxy_socket ]] && break
+  kill -0 "$lock_proxy_pid" 2>/dev/null || break
+  sleep 0.1
+done
+[[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
+delete_options=$(jq -cn --arg uid "$lock_uid" \
+  --arg rv "$(jq -r '.lock.resourceVersion' "$receipt_dir/lock.json")" '{
+    apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
+  }')
+response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+  --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
+  --data-binary "$delete_options" \
+  "http://localhost/api/v1/namespaces/kube-system/configmaps/$lock_name") ||
+  die 'UID/resourceVersion-preconditioned lock deletion failed'
+jq -e --arg uid "$lock_uid" '
+  (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
+' <<<"$response" >/dev/null || die 'conditional lock deletion returned an unexpected object'
+stop_proxy
+[[ -z $("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+  --ignore-not-found --output=name) ]] || die 'global maintenance lock remains after release'
+find "$receipt_dir" -xdev -mindepth 1 -delete
+rmdir "$receipt_dir"
+printf 'UNLOCKED %s uid=%s after Ready revision attestation\n' "$node" "$lock_uid"

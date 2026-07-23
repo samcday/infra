@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/quiesce-fabric-node --check
+  scripts/quiesce-fabric-node \
+    --node fabric-az1-cp1 \
+    --lock-receipt /dev/shm/fabric-az1-cp1-day2-lock \
+    --confirm QUIESCE:fabric-az1-cp1:<node-uid>
+
+Run after kubectl drain has cordoned the target. Through strict pinned SSH this
+stops K3s, plus the separate etcd member on a control-plane node, while leaving
+the host OS and SSH running. It then waits until the target is non-Ready and
+its kubelet Lease is at least 90 seconds stale, while requiring every other
+Fabric Node to remain Ready. The host stays available for the final one-shot
+PXE reboot after the exact Bootie arm is ready.
+EOF
+}
+
+die() {
+  printf 'quiesce-fabric-node: %s\n' "$*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+  shellcheck "$script_path"
+  fabric_validate_node_inventory
+  printf 'validated the serial Fabric node quiesce helper\n'
+  exit 0
+fi
+
+node=
+lock_receipt=
+confirmation=
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ -n $node && -n $lock_receipt && -n $confirmation ]] || { usage; exit 2; }
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+receipt=$lock_receipt/lock.json
+node_uid=$(jq -r '.targetNodeUid' "$receipt")
+[[ $(jq -r '.node' "$receipt") == "$node" &&
+   $confirmation == "QUIESCE:$node:$node_uid" ]] ||
+  die "exact --confirm QUIESCE:$node:$node_uid and matching lock receipt are required"
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
+jq -e --arg uid "$node_uid" '
+  .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+  (.spec.unschedulable // false) == true and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+    length) == 1
+' <<<"$node_json" >/dev/null ||
+  die 'target must be the exact Ready, cordoned Node before quiesce'
+
+case $FABRIC_NODE_ROLE in
+  control-plane)
+    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
+      /usr/bin/systemctl stop k3s.service etcd.service
+    ;;
+  service)
+    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
+      /usr/bin/systemctl stop k3s-agent.service
+    ;;
+esac
+
+for _attempt in {1..75}; do
+  nodes_json=$("${ik[@]}" get nodes --output=json) || die 'lost Fabric API while quiescing'
+  target_ready=$(jq -r --arg node "$node" '
+    [.items[] | select(.metadata.name == $node).status.conditions[]? |
+      select(.type == "Ready") | .status][0] // "Absent"
+  ' <<<"$nodes_json")
+  lease_time=$("${ik[@]}" --namespace kube-node-lease get lease "$node" \
+    -o jsonpath='{.spec.renewTime}' 2>/dev/null || true)
+  if [[ $target_ready != True && -n $lease_time ]]; then
+    lease_epoch=$(date --date="$lease_time" +%s) || die 'target Lease timestamp is invalid'
+    lease_age=$(($(date --utc +%s) - lease_epoch))
+    ((lease_age >= 90)) && break
+  fi
+  sleep 2
+done
+[[ ${target_ready:-} != True && ${lease_age:-0} -ge 90 ]] ||
+  die 'target did not become non-Ready with a 90-second-stale Lease'
+for inventory_node in $(yq -r '.nodes[].name' "$repo_root/fabric/inventory/nodes.yaml"); do
+  [[ $inventory_node == "$node" ]] && continue
+  jq -e --arg node "$inventory_node" '
+    [.items[] | select(.metadata.name == $node)] as $matches |
+    ($matches | length) == 1 and
+    ([ $matches[0].status.conditions[]? |
+       select(.type == "Ready" and .status == "True") ] | length) == 1
+  ' <<<"$nodes_json" >/dev/null || die "non-target Node is not Ready: $inventory_node"
+done
+printf 'QUIESCED %s uid=%s lease-age=%ss; host SSH remains available\n' \
+  "$node" "$node_uid" "$lease_age"

@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/finalize-fabric-node-bootstrap --check
+  scripts/finalize-fabric-node-bootstrap \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --session-receipt /dev/shm/fabric-az1-svc1-bootie-session \
+    --handoff-dir /dev/shm/fabric-az1-svc1-bootie-handoff \
+    --confirm FINALIZE:<node>:<node-uid>:<main-revision>
+
+After the immutable Bootie Secret is closed and the same placeholder UID has
+joined Ready, atomically publish the revision/role attestation, uncordon the
+Node, and remove bootstrap-only metadata. A control-plane Node additionally
+requires its replacement etcd learner to have been promoted. Success destroys
+the local non-secret receipt and secret-bearing tmpfs handoff.
+EOF
+}
+
+die() {
+  printf 'finalize-fabric-node-bootstrap: %s\n' "$*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+  shellcheck "$script_path"
+  fabric_validate_node_inventory
+  printf 'validated the in-cluster Bootie node finalizer\n'
+  exit 0
+fi
+
+node=
+lock_receipt=
+session_receipt=
+handoff_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --session-receipt) (($# >= 2)) || die '--session-receipt requires a value'; session_receipt=$2; shift 2 ;;
+    --handoff-dir) (($# >= 2)) || die '--handoff-dir requires a value'; handoff_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ -n $node && -n $lock_receipt && -n $session_receipt && -n $handoff_dir &&
+   -n $confirmation ]] || { usage; exit 2; }
+for command in find id jq realpath rmdir sha256sum stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+role=$FABRIC_NODE_ROLE
+expected_address=$FABRIC_NODE_ADDRESS
+mac_label=${FABRIC_NODE_MAC//:/-}
+
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+lock_json=$lock_receipt/lock.json
+repo_commit=$(jq -r '.repoCommit' "$lock_json")
+[[ $(jq -r '.node' "$lock_json") == "$node" &&
+   $(jq -r '.role' "$lock_json") == "$role" ]] ||
+  die 'maintenance lock receipt belongs to another node or role'
+if [[ $role == control-plane ]]; then
+  jq -e --arg node "$node" --arg repo "$repo_commit" \
+    --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" '
+    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+    .node == $node and .repoCommit == $repo and .lockUid == $lock_uid and
+    .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
+  ' "$lock_receipt/etcd-member.json" >/dev/null ||
+    die 'control-plane finalization requires the exact replacement learner promotion'
+fi
+
+session_receipt=$(realpath -e -- "$session_receipt")
+[[ -d $session_receipt && ! -L $session_receipt &&
+   $(stat --file-system --format=%T -- "$session_receipt") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$session_receipt") == "$(id -u):$(id -g):700" &&
+   -f $session_receipt/session.json && ! -L $session_receipt/session.json &&
+   $(stat -Lc '%u:%g:%a:%h' "$session_receipt/session.json") == "$(id -u):$(id -g):600:1" &&
+   $(find "$session_receipt" -mindepth 1 -maxdepth 1 | wc -l) == 1 ]] ||
+  die 'session receipt directory is unsafe'
+receipt=$session_receipt/session.json
+jq -e --arg node "$node" --arg role "$role" --arg address "$expected_address" \
+  --arg mac "$FABRIC_NODE_MAC" --arg repo "$repo_commit" \
+  --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" '
+  .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
+  .session.schema == 1 and .session.purpose == "fabric-node-day-two-session" and
+  .session.node == $node and .session.role == $role and .session.address == $address and
+  .session.mac == $mac and .session.repoCommit == $repo and .session.lockUid == $lock_uid and
+  (.session.nodeUid | test("^[0-9a-f-]{36}$")) and
+  (.session.ignitionSha256 | test("^[0-9a-f]{64}$")) and
+  (.session.bootieImageDigest | test("^sha256:[0-9a-f]{64}$")) and
+  (.session.bootieImageRevision | test("^[0-9a-f]{40}$")) and
+  (.secret.uid | test("^[0-9a-f-]{36}$")) and
+  (.closedAt | type == "string" and length > 0)
+' "$receipt" >/dev/null || die 'closed session receipt does not match the lock and inventory'
+node_uid=$(jq -r '.session.nodeUid' "$receipt")
+session_uid=$(jq -r '.secret.uid' "$receipt")
+ignition_sha=$(jq -r '.session.ignitionSha256' "$receipt")
+image_digest=$(jq -r '.session.bootieImageDigest' "$receipt")
+image_revision=$(jq -r '.session.bootieImageRevision' "$receipt")
+[[ $confirmation == "FINALIZE:$node:$node_uid:$repo_commit" ]] ||
+  die "exact --confirm FINALIZE:$node:$node_uid:$repo_commit is required"
+
+handoff_dir=$(realpath -e -- "$handoff_dir")
+[[ -d $handoff_dir && ! -L $handoff_dir &&
+   $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$handoff_dir") == "$(id -u):$(id -g):700" &&
+   $(find "$handoff_dir" -mindepth 1 -maxdepth 1 | wc -l) == 3 ]] ||
+  die 'secret-bearing handoff directory is unsafe'
+[[ $(sha256sum "$handoff_dir/$node.ign" | awk '{print $1}') == "$ignition_sha" ]] ||
+  die 'handoff Ignition differs from the closed session receipt'
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+[[ -z $("${ik[@]}" --namespace bootie get secret bootie-session \
+  --ignore-not-found --output=name) ]] || die 'Bootie session Secret has not been closed'
+node_json=$("${ik[@]}" get node "$node" --output=json) || die 'joined Node is absent'
+jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
+  --arg mac "$mac_label" --arg role "$role" --arg session_uid "$session_uid" \
+  --arg repo "$repo_commit" --arg ignition "$ignition_sha" \
+  --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
+  .metadata.name == $node and .metadata.uid == $uid and
+  .metadata.deletionTimestamp == null and
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "false" and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+  .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+  .metadata.annotations["fabric.samcday.com/config-revision"] == $repo and
+  .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition and
+  .metadata.annotations["fabric.samcday.com/bootie-image-digest"] == $image_digest and
+  .metadata.annotations["fabric.samcday.com/bootie-image-revision"] == $image_revision and
+  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+  ((.metadata.annotations["samcday.com/install"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
+  (.status.nodeInfo.machineID | type == "string" and length > 0) and
+  if $role == "service" then
+    .metadata.labels["fabric.samcday.com/platform"] == "true" and
+    (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+    ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform" and
+      .value == "true" and .effect == "NoSchedule")] | length) == 1
+  else
+    .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+    (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+    (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+    ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus")] | length) == 1 and
+    ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane")] | length) == 1
+  end
+' <<<"$node_json" >/dev/null || die 'joined Node has not reached the exact pre-finalization contract'
+
+rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+patch=$(jq -cn --arg rv "$rv" --arg uid "$node_uid" --arg session_uid "$session_uid" \
+  --arg repo "$repo_commit" --arg role "$role" '[
+    {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+    {"op":"test","path":"/metadata/uid","value":$uid},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+    {"op":"add","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$repo},
+    {"op":"replace","path":"/spec/unschedulable","value":false}
+  ] + (if $role == "service" then [{
+    "op":"add","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"
+  }] else [] end) + [
+    {"op":"remove","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder"},
+    {"op":"remove","path":"/metadata/labels/samcday.com~1discovery"},
+    {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state"},
+    {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid"}
+  ]')
+"${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
+  die 'atomic bootstrap finalization raced or was rejected'
+node_json=$("${ik[@]}" get node "$node" --output=json)
+jq -e --arg revision "$repo_commit" --arg ignition "$ignition_sha" '
+  .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+  .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition and
+  (.spec.unschedulable // false) == false and
+  ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
+  ((.metadata.labels["samcday.com/discovery"] // "") == "") and
+  ((.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "") == "") and
+  ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "")
+' <<<"$node_json" >/dev/null || die 'Node differs from the exact final attestation'
+
+find "$handoff_dir" -xdev -mindepth 1 -delete
+rmdir "$handoff_dir"
+find "$session_receipt" -xdev -mindepth 1 -delete
+rmdir "$session_receipt"
+printf 'FINALIZED %s uid=%s revision=%s; tmpfs handoff destroyed\n' \
+  "$node" "$node_uid" "$repo_commit"

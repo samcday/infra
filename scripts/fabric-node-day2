@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/fabric-node-day2 --check
+  scripts/fabric-node-day2 preflight --node fabric-az1-cp1
+  scripts/fabric-node-day2 lock <acquire|verify|release> ...
+  scripts/fabric-node-day2 drain ...
+  scripts/fabric-node-day2 quiesce ...
+  scripts/fabric-node-day2 retire <plan|apply> ...
+  scripts/fabric-node-day2 prepare ...
+  scripts/fabric-node-day2 arm ...
+  scripts/fabric-node-day2 status ...
+  scripts/fabric-node-day2 close ...
+  scripts/fabric-node-day2 reboot ...
+  scripts/fabric-node-day2 etcd <plan-replace|replace|plan-promote|promote> ...
+  scripts/fabric-node-day2 finalize ...
+  scripts/fabric-node-day2 qualify --revision 0123456789abcdef0123456789abcdef01234567
+
+preflight is read-only. It requires the API, all four non-target nodes, and all
+active fabric Flux Kustomizations to be healthy, and refuses an existing global
+maintenance lock. It prints the exact target identity and the next role-specific
+phase; it does not cordon, stop, delete, reboot, or arm Bootie.
+
+qualify is read-only. It proves all five inventoried Nodes are Ready with their
+exact addresses, roles, taints, and day-two revision attestation, and that the
+active fabric Flux Kustomizations have applied that revision.
+EOF
+}
+
+# Keep one normal operator entry point. The focused helpers remain independently
+# checkable and preserve their exact-confirmation boundaries.
+case ${1:-} in
+  lock)
+    shift
+    exec "$script_dir/fabric-node-day2-lock" "$@"
+    ;;
+  drain)
+    shift
+    exec "$script_dir/drain-fabric-node" "$@"
+    ;;
+  quiesce)
+    shift
+    exec "$script_dir/quiesce-fabric-node" "$@"
+    ;;
+  retire)
+    shift
+    exec "$script_dir/retire-fabric-node" "$@"
+    ;;
+  prepare)
+    shift
+    exec "$script_dir/prepare-fabric-node-bootie-handoff" "$@"
+    ;;
+  arm | status | close)
+    exec "$script_dir/fabric-node-bootie-session" "$@"
+    ;;
+  reboot)
+    shift
+    exec "$script_dir/reboot-fabric-node-to-pxe" "$@"
+    ;;
+  etcd)
+    shift
+    exec "$script_dir/replace-fabric-etcd-member" "$@"
+    ;;
+  finalize)
+    shift
+    exec "$script_dir/finalize-fabric-node-bootstrap" "$@"
+    ;;
+esac
+
+die() {
+  printf 'fabric-node-day2: %s\n' "$*" >&2
+  exit 1
+}
+
+mode=
+node=
+revision=
+case ${1:-} in
+  --check)
+    [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+    mode=check
+    ;;
+  preflight)
+    mode=preflight
+    shift
+    while (($#)); do
+      case $1 in
+        --node)
+          (($# >= 2)) || die '--node requires a value'
+          [[ -z $node ]] || die '--node may only be specified once'
+          node=$2
+          shift 2
+          ;;
+        *) die "unknown preflight argument: $1" ;;
+      esac
+    done
+    [[ -n $node ]] || { usage; exit 2; }
+    ;;
+  qualify)
+    mode=qualify
+    shift
+    while (($#)); do
+      case $1 in
+        --revision)
+          (($# >= 2)) || die '--revision requires a value'
+          [[ -z $revision ]] || die '--revision may only be specified once'
+          revision=$2
+          shift 2
+          ;;
+        *) die "unknown qualify argument: $1" ;;
+      esac
+    done
+    [[ $revision =~ ^[0-9a-f]{40}$ ]] || die '--revision must be one full Git commit'
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+for command in bash git jq kubectl realpath yq; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_validate_node_inventory || die 'five-node inventory validation failed'
+
+if [[ $mode == check ]]; then
+  bash -n "$script_path"
+  [[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
+    die 'script path does not resolve to the repository root'
+  "$script_dir/fabric-node-day2-lock" --check >/dev/null
+  "$script_dir/drain-fabric-node" --check >/dev/null
+  "$script_dir/quiesce-fabric-node" --check >/dev/null
+  "$script_dir/retire-fabric-node" --check >/dev/null
+  "$script_dir/prepare-fabric-node-bootie-handoff" --check >/dev/null
+  "$script_dir/fabric-node-bootie-session" --check >/dev/null
+  "$script_dir/reboot-fabric-node-to-pxe" --check >/dev/null
+  "$script_dir/replace-fabric-etcd-member" --check >/dev/null
+  "$script_dir/finalize-fabric-node-bootstrap" --check >/dev/null
+  printf 'validated the five-node day-two operator workflow and qualifier\n'
+  exit 0
+fi
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+[[ $("${ik[@]}" get --raw=/readyz) == ok ]] || die 'Fabric Kubernetes API is not ready'
+
+if lock_json=$("${ik[@]}" --namespace kube-system get \
+  configmap/fabric-maintenance-lock --output=json 2>/dev/null); then
+  lock_holder=$(jq -r '.data.holder // "unknown"' <<<"$lock_json")
+  die "global fabric-maintenance-lock already exists: $lock_holder"
+fi
+
+nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
+expected_names=$(yq -o=json -I=0 '[.nodes[].name] | sort' \
+  "$repo_root/fabric/inventory/nodes.yaml")
+live_names=$(jq -c '[.items[].metadata.name] | sort' <<<"$nodes_json")
+[[ $live_names == "$expected_names" ]] ||
+  die "live Node set differs from exact five-node inventory: $live_names"
+
+node_ready() {
+  local selected=$1
+  jq -e --arg node "$selected" '
+    [.items[] | select(.metadata.name == $node)] as $matches |
+    ($matches | length) == 1 and
+    ($matches[0].metadata.deletionTimestamp == null) and
+    ([ $matches[0].status.conditions[]? |
+       select(.type == "Ready" and .status == "True") ] | length) == 1
+  ' <<<"$nodes_json" >/dev/null
+}
+
+qualify_inventory_node() {
+  local selected=$1 expected_revision=$2
+  fabric_load_node_inventory "$selected" || return 1
+  local expected_ip=$FABRIC_NODE_ADDRESS expected_role=$FABRIC_NODE_ROLE
+  jq -e --arg node "$selected" --arg ip "$expected_ip" \
+    --arg role "$expected_role" --arg revision "$expected_revision" '
+    [.items[] | select(.metadata.name == $node)] as $matches |
+    ($matches | length) == 1 and
+    ($matches[0] |
+      .metadata.deletionTimestamp == null and
+      .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+      (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
+        test("^[0-9a-f]{64}$")) and
+      (.spec.unschedulable // false) == false and
+      ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+        length) == 1 and
+      (.status.nodeInfo.machineID | type == "string" and length > 0) and
+      if $role == "control-plane" then
+        .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+        (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+        (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+        ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus")] == [{
+          effect:"NoSchedule", key:"fabric.samcday.com/root-consensus", value:"true"
+        }]) and
+        ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane")] == [{
+          effect:"NoSchedule", key:"node-role.kubernetes.io/control-plane", value:"true"
+        }])
+      else
+        .metadata.labels["fabric.samcday.com/platform"] == "true" and
+        .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+        (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+        (.spec.taints == [{
+          effect:"NoSchedule", key:"fabric.samcday.com/platform", value:"true"
+        }])
+      end)
+  ' <<<"$nodes_json" >/dev/null
+}
+
+flux_json=$("${ik[@]}" --namespace flux-system get \
+  kustomizations.kustomize.toolkit.fluxcd.io --output=json) ||
+  die 'could not read Fabric Flux Kustomizations'
+jq -e '
+  [.items[] | select(.spec.suspend != true)] as $active |
+  ($active | length) > 0 and
+  all($active[];
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+      length) == 1)
+' <<<"$flux_json" >/dev/null || die 'an active Fabric Flux Kustomization is not Ready'
+
+case $mode in
+  preflight)
+    fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+    for inventory_node in $(yq -r '.nodes[].name' \
+      "$repo_root/fabric/inventory/nodes.yaml"); do
+      [[ $inventory_node == "$node" ]] && continue
+      node_ready "$inventory_node" || die "non-target Node is not Ready: $inventory_node"
+    done
+    target_json=$(jq -c --arg node "$node" \
+      '.items[] | select(.metadata.name == $node)' <<<"$nodes_json")
+    target_uid=$(jq -r '.metadata.uid' <<<"$target_json")
+    target_ready=false
+    node_ready "$node" && target_ready=true
+    printf 'PREFLIGHT OK node=%s role=%s address=%s mac=%s\n' \
+      "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_ADDRESS" "$FABRIC_NODE_MAC"
+    printf 'disk=%s uid=%s ready=%s\n' "$FABRIC_NODE_DISK" "$target_uid" "$target_ready"
+    if [[ $FABRIC_NODE_ROLE == control-plane ]]; then
+      printf 'next=replace the same-name etcd member under fabric-maintenance-lock, then run the Bootie ceremony\n'
+    else
+      printf 'next=drain and stop this one service node, delete only its exact Node/password receipt, then run the Bootie ceremony\n'
+    fi
+    ;;
+  qualify)
+    git -C "$repo_root" cat-file -e "$revision^{commit}" 2>/dev/null ||
+      die 'requested attested revision is unavailable locally'
+    for inventory_node in $(yq -r '.nodes[].name' \
+      "$repo_root/fabric/inventory/nodes.yaml"); do
+      qualify_inventory_node "$inventory_node" "$revision" ||
+        die "Node has not converged to the exact attested day-two contract: $inventory_node"
+    done
+    jq -e --arg revision "$revision" '
+      [.items[] | select(.spec.suspend != true)] as $active |
+      all($active[];
+        (.status.lastAppliedRevision // "") == ("main@sha1:" + $revision) and
+        (.status.lastAttemptedRevision // "") == ("main@sha1:" + $revision))
+    ' <<<"$flux_json" >/dev/null ||
+      die 'active Fabric Flux Kustomizations have not all applied the attested revision'
+    printf 'QUALIFIED all five Fabric nodes at attested revision %s\n' "$revision"
+    ;;
+esac

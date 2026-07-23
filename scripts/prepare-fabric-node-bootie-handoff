@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/prepare-fabric-node-bootie-handoff --check
+  scripts/prepare-fabric-node-bootie-handoff \
+    --node fabric-az1-cp1 \
+    --lock-receipt /dev/shm/fabric-az1-cp1-day2-lock \
+    --output-dir /dev/shm/fabric-az1-cp1-bootie-handoff
+  scripts/prepare-fabric-node-bootie-handoff \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --output-dir /dev/shm/fabric-az1-svc1-bootie-handoff
+
+Render one destination Ignition and its exact disk policy on tmpfs. The held
+day-two lock supplies the attested main revision. Control-plane media always
+joins the existing external-etcd cluster; service media requires the current
+CA-pinned K3s agent token, which is fetched through one healthy pinned root
+unless --agent-token-file supplies an offline tmpfs copy. This prepares bytes
+only: it does not create a Node or Secret, arm Bootie, reboot a host, or write
+a disk.
+EOF
+}
+
+die() {
+  printf 'prepare-fabric-node-bootie-handoff: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+node=
+lock_receipt=
+agent_token_file=
+output_dir=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --agent-token-file) (($# >= 2)) || die '--agent-token-file requires a value'; agent_token_file=$2; shift 2 ;;
+    --output-dir) (($# >= 2)) || die '--output-dir requires a value'; output_dir=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in bash chmod date find git install jq mktemp mv realpath rmdir \
+  sha256sum stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+
+if $check_only; then
+  [[ -z $node && -z $lock_receipt && -z $agent_token_file && -z $output_dir ]] ||
+    die '--check cannot be combined with render arguments'
+  fabric_validate_node_inventory || die 'five-node inventory validation failed'
+  "$repo_root/fabric/butane/bootstrap.sh" --check --cluster-state existing
+  "$repo_root/fabric/workers/butane/bootstrap.sh" --check
+  bash -n "$script_path"
+  printf 'validated five-node day-two handoff renderers and inventory\n'
+  exit 0
+fi
+
+[[ -n $node && -n $lock_receipt && -n $output_dir ]] || { usage; exit 2; }
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+role=$FABRIC_NODE_ROLE
+mac=$FABRIC_NODE_MAC
+disk=$FABRIC_NODE_DISK
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+lock_json=$lock_receipt/lock.json
+repo_commit=$(jq -r '.repoCommit' "$lock_json")
+[[ $(jq -r '.node' "$lock_json") == "$node" &&
+   $(jq -r '.role' "$lock_json") == "$role" ]] ||
+  die 'maintenance lock receipt belongs to another node or role'
+
+temporary_agent_token=
+cleanup_agent_token() {
+  if [[ -n ${temporary_agent_token:-} && -f $temporary_agent_token ]]; then
+    find "$temporary_agent_token" -maxdepth 0 -type f -delete 2>/dev/null || true
+  fi
+}
+trap cleanup_agent_token EXIT
+
+case $role in
+  control-plane)
+    [[ -z $agent_token_file ]] || die '--agent-token-file is forbidden for a control-plane node'
+    ;;
+  service)
+    if [[ -z $agent_token_file ]]; then
+      gateway=
+      for candidate in fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3; do
+        if "$repo_root/scripts/ik" --context=fabric get node "$candidate" --output=json |
+          jq -e '([.status.conditions[]? |
+            select(.type == "Ready" and .status == "True")] | length) == 1' \
+            >/dev/null 2>&1; then
+          gateway=$candidate
+          break
+        fi
+      done
+      [[ -n $gateway ]] || die 'no healthy root is available to read the K3s agent token'
+      temporary_agent_token=$(mktemp -- /dev/shm/.fabric-agent-token.XXXXXXXX)
+      chmod 0600 "$temporary_agent_token"
+      "$repo_root/scripts/fabric-ssh" "$gateway" sudo --non-interactive \
+        cat /var/lib/rancher/k3s/server/agent-token >"$temporary_agent_token" ||
+        die 'could not read the K3s agent token through the healthy pinned root'
+      agent_token_file=$temporary_agent_token
+    fi
+    agent_token_file=$(realpath -e -- "$agent_token_file")
+    [[ -f $agent_token_file && ! -L $agent_token_file &&
+       $(stat -Lc '%a:%h' "$agent_token_file") == 600:1 ]] ||
+      die 'agent-token input must be one mode-0600 non-symlink file'
+    [[ $(stat --file-system --format=%T -- "$agent_token_file") == tmpfs ]] ||
+      die 'agent-token input must remain on tmpfs'
+    case $agent_token_file in
+      "$repo_root" | "$repo_root"/*) die 'agent-token input must remain outside Git' ;;
+    esac
+    ;;
+esac
+
+git -C "$repo_root" ls-files --error-unmatch -- \
+  fabric/inventory/nodes.yaml fabric/pxe-first.yaml \
+  fabric/butane/bootstrap.sh fabric/workers/butane/bootstrap.sh \
+  scripts/lib/fabric-node-inventory.sh scripts/prepare-fabric-node-bootie-handoff \
+  >/dev/null 2>&1 || die 'day-two handoff inputs must be committed'
+[[ $(git -C "$repo_root" branch --show-current) == main ]] ||
+  die 'day-two handoffs may only be rendered from main'
+[[ -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'day-two handoffs require a completely clean worktree'
+git -C "$repo_root" fetch --quiet origin main || die 'could not refresh origin/main'
+[[ $(git -C "$repo_root" rev-parse HEAD) == "$repo_commit" &&
+   $(git -C "$repo_root" rev-parse origin/main) == "$repo_commit" ]] ||
+  die 'local and remote main must equal the held lock revision'
+
+output_dir=$(realpath -m -- "$output_dir")
+case $output_dir in "$repo_root" | "$repo_root"/*) die 'handoff output must remain outside Git' ;; esac
+[[ ! -e $output_dir && ! -L $output_dir ]] || die 'handoff output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent &&
+   $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'handoff parent must be an existing tmpfs directory'
+
+work=$(mktemp -d -- "$output_parent/.fabric-node-handoff.XXXXXXXX")
+chmod 0700 "$work"
+succeeded=false
+cleanup() {
+  cleanup_agent_token
+  if [[ $succeeded != true && -d ${work:-} ]]; then
+    find "$work" -xdev -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$work" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+rendered=$work/rendered
+case $node in
+  fabric-az1-cp1)
+    FABRIC_CP1_MAC="$mac" "$repo_root/fabric/butane/bootstrap.sh" \
+      --node "$node" --cluster-state existing "$rendered"
+    ;;
+  fabric-az1-cp2)
+    FABRIC_CP2_MAC="$mac" "$repo_root/fabric/butane/bootstrap.sh" \
+      --node "$node" --cluster-state existing "$rendered"
+    ;;
+  fabric-az1-cp3)
+    FABRIC_CP3_MAC="$mac" "$repo_root/fabric/butane/bootstrap.sh" \
+      --node "$node" --cluster-state existing "$rendered"
+    ;;
+  fabric-az1-svc1 | fabric-az1-svc2)
+    FABRIC_AGENT_TOKEN_FILE="$agent_token_file" \
+      "$repo_root/fabric/workers/butane/bootstrap.sh" --node "$node" "$rendered"
+    ;;
+esac
+
+ignition=$rendered/$node.ign
+[[ -f $ignition && ! -L $ignition && $(stat -Lc '%a:%h' "$ignition") == 600:1 ]] ||
+  die 'renderer did not produce one safe node Ignition'
+jq -e 'type == "object" and (.ignition.version | startswith("3."))' "$ignition" >/dev/null ||
+  die 'rendered destination Ignition is invalid'
+mv -- "$ignition" "$work/$node.ign"
+rmdir -- "$rendered"
+
+printf '%s %s\n' "$node" "$disk" >"$work/install-policy"
+chmod 0600 "$work/install-policy"
+ignition_sha256=$(sha256sum "$work/$node.ign" | awk '{print $1}')
+policy_sha256=$(sha256sum "$work/install-policy" | awk '{print $1}')
+inventory_sha256=$(sha256sum "$repo_root/fabric/inventory/nodes.yaml" | awk '{print $1}')
+cluster_state=null
+[[ $role == control-plane ]] && cluster_state=existing
+jq -n --arg node "$node" --arg role "$role" --arg address "$FABRIC_NODE_ADDRESS" \
+  --arg mac "$mac" --arg disk "$disk" --arg ignition_file "$node.ign" \
+  --arg ignition_sha256 "$ignition_sha256" --arg policy_sha256 "$policy_sha256" \
+  --arg inventory_sha256 "$inventory_sha256" --arg repo_commit "$repo_commit" \
+  --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" --arg cluster_state "$cluster_state" \
+  --arg created_at "$(date --utc --iso-8601=seconds)" '{
+    schema:1, purpose:"fabric-node-day-two-handoff", node:$node, role:$role,
+    address:$address, mac:$mac, bootDevice:$disk,
+    clusterState:(if $cluster_state == "null" then null else $cluster_state end),
+    ignition:{file:$ignition_file, sha256:$ignition_sha256},
+    installPolicy:{file:"install-policy", sha256:$policy_sha256},
+    inventorySha256:$inventory_sha256, repoCommit:$repo_commit,
+    lockUid:$lock_uid, createdAt:$created_at
+  }' >"$work/handoff.json"
+chmod 0600 "$work/handoff.json"
+[[ $(find "$work" -mindepth 1 -maxdepth 1 -type f | wc -l) == 3 &&
+   $(find "$work" -mindepth 1 -maxdepth 1 | wc -l) == 3 ]] ||
+  die 'handoff contains an unexpected entry'
+mv -T -- "$work" "$output_dir"
+work=$output_dir
+succeeded=true
+
+printf 'PREPARED %s role=%s revision=%s\n' "$node" "$role" "$repo_commit"
+printf 'ignition-sha256=%s disk=%s handoff=%s\n' "$ignition_sha256" "$disk" "$output_dir"
+printf 'No cluster object changed and no disk was written.\n'

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/reboot-fabric-node-to-pxe --check
+  scripts/reboot-fabric-node-to-pxe \
+    --node fabric-az1-cp1 \
+    --lock-receipt /dev/shm/fabric-az1-cp1-day2-lock \
+    --confirm REBOOT-PXE:fabric-az1-cp1:6c:4b:90:76:c6:00
+
+Run only after the exact Bootie install arm is live. This verifies the global
+day-two lock, uses strict pinned SSH, proves K3s (and etcd on a root) are
+stopped, discovers exactly one IPv4 UEFI entry matching the inventoried MAC,
+moves that entry to the front of persistent BootOrder, and reboots. The new
+Ignition enforces the same PXE-first invariant on every local boot; no firmware
+entry number is hard-coded.
+EOF
+}
+
+die() {
+  printf 'reboot-fabric-node-to-pxe: %s\n' "$*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+  bash -n "$script_path" "$script_dir/lib/fabric-node-pxe-reboot-remote"
+  shellcheck "$script_path" "$script_dir/lib/fabric-node-pxe-reboot-remote"
+  fabric_validate_node_inventory
+  printf 'validated inventory-bound persistent PXE-first reboot helper\n'
+  exit 0
+fi
+
+node=
+lock_receipt=
+confirmation=
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ -n $node && -n $lock_receipt && -n $confirmation ]] || { usage; exit 2; }
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+[[ $confirmation == "REBOOT-PXE:$node:$FABRIC_NODE_MAC" ]] ||
+  die "exact --confirm REBOOT-PXE:$node:$FABRIC_NODE_MAC is required"
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+[[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" ]] ||
+  die 'maintenance lock receipt belongs to another node'
+"$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive /usr/bin/bash -s -- \
+  "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_MAC" "$confirmation" \
+  <"$script_dir/lib/fabric-node-pxe-reboot-remote"

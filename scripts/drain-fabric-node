@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/drain-fabric-node --check
+  scripts/drain-fabric-node \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --confirm DRAIN:<node>:<node-uid>
+
+Cordon and drain exactly the lock-bound Ready Node while all four peers remain
+Ready. DaemonSets are left for host shutdown. If the target is a service node,
+the command also waits for the singleton Bootie Deployment to become Ready on
+the other service node before returning.
+EOF
+}
+
+die() {
+  printf 'drain-fabric-node: %s\n' "$*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+  shellcheck "$script_path"
+  fabric_validate_node_inventory
+  printf 'validated the serial inventory-bound Fabric drain helper\n'
+  exit 0
+fi
+
+node=
+lock_receipt=
+confirmation=
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ -n $node && -n $lock_receipt && -n $confirmation ]] || { usage; exit 2; }
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+role=$FABRIC_NODE_ROLE
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+lock_json=$lock_receipt/lock.json
+node_uid=$(jq -r '.targetNodeUid' "$lock_json")
+[[ $(jq -r '.node' "$lock_json") == "$node" &&
+   $(jq -r '.role' "$lock_json") == "$role" &&
+   $confirmation == "DRAIN:$node:$node_uid" ]] ||
+  die "exact --confirm DRAIN:$node:$node_uid and matching lock receipt are required"
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
+jq -e --arg node "$node" --arg uid "$node_uid" '
+  [.items[] | select(.metadata.name == $node)] as $matches |
+  ($matches | length) == 1 and $matches[0].metadata.uid == $uid and
+  $matches[0].metadata.deletionTimestamp == null and
+  ([ $matches[0].status.conditions[]? |
+    select(.type == "Ready" and .status == "True") ] | length) == 1
+' <<<"$nodes_json" >/dev/null || die 'target is not the exact lock-bound Ready Node'
+for inventory_node in $(yq -r '.nodes[].name' "$repo_root/fabric/inventory/nodes.yaml"); do
+  [[ $inventory_node == "$node" ]] && continue
+  jq -e --arg node "$inventory_node" '
+    [.items[] | select(.metadata.name == $node)] as $matches |
+    ($matches | length) == 1 and
+    ([ $matches[0].status.conditions[]? |
+      select(.type == "Ready" and .status == "True") ] | length) == 1
+  ' <<<"$nodes_json" >/dev/null || die "non-target Node is not Ready: $inventory_node"
+done
+
+"${ik[@]}" drain "$node" --ignore-daemonsets --delete-emptydir-data \
+  --grace-period=60 --timeout=10m
+node_json=$("${ik[@]}" get node "$node" --output=json)
+jq -e --arg uid "$node_uid" '
+  .metadata.uid == $uid and (.spec.unschedulable // false) == true
+' <<<"$node_json" >/dev/null || die 'target did not remain exact and cordoned after drain'
+
+if [[ $role == service ]]; then
+  other_service=fabric-az1-svc1
+  [[ $node == fabric-az1-svc1 ]] && other_service=fabric-az1-svc2
+  ready=false
+  for _attempt in {1..120}; do
+    deployment=$("${ik[@]}" --namespace bootie get deployment bootie --output=json 2>/dev/null || true)
+    pods=$("${ik[@]}" --namespace bootie get pods -l app.kubernetes.io/name=bootie --output=json 2>/dev/null || true)
+    if jq -e '.status.availableReplicas == 1 and .status.readyReplicas == 1' \
+        <<<"${deployment:-{}}" >/dev/null 2>&1 &&
+       jq -e --arg node "$other_service" '
+         [.items[] | select(.spec.nodeName == $node and
+           ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1)] |
+         length == 1
+       ' <<<"${pods:-{}}" >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 2
+  done
+  $ready || die 'Bootie did not relocate Ready to the other service node'
+fi
+printf 'DRAINED %s uid=%s; four peers Ready%s\n' "$node" "$node_uid" \
+  "$([[ $role == service ]] && printf ' and Bootie relocated' || true)"
