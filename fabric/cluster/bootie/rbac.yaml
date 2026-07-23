@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bootie
+  namespace: bootie
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fabric-bootie
+rules:
+  - apiGroups:
+      - ""
+    resourceNames:
+      - fabric-az1-cp1
+      - fabric-az1-cp2
+      - fabric-az1-cp3
+      - fabric-az1-svc1
+      - fabric-az1-svc2
+    resources:
+      - nodes
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fabric-bootie
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fabric-bootie
+subjects:
+  - kind: ServiceAccount
+    name: bootie
+    namespace: bootie
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootie-session-reader
+  namespace: bootie
+rules:
+  - apiGroups:
+      - ""
+    resourceNames:
+      - bootie-session
+    resources:
+      - secrets
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootie-session-reader
+  namespace: bootie
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bootie-session-reader
+subjects:
+  - kind: ServiceAccount
+    name: bootie
+    namespace: bootie
