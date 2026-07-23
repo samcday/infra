@@ -157,6 +157,8 @@ for _ in {1..50}; do
 done
 [[ -S $fcgi_socket && ! -L $fcgi_socket ]] ||
   die 'fcgiwrap did not create its Unix socket'
+chown root:nginx "$fcgi_socket"
+chmod 0770 "$fcgi_socket"
 dnsmasq --keep-in-foreground --conf-file="$dnsmasq_config" &
 dnsmasq_pid=$!
 

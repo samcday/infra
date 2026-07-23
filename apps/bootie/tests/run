@@ -343,6 +343,9 @@ for runner in run.sh run-cluster.sh; do
   # shellcheck disable=SC2016
   grep -Fq 'exec fcgiwrap -s "unix:$fcgi_socket"' "$script_dir/../$runner" ||
     fail "$runner does not bind fcgiwrap to the pod-local Unix socket"
+  # shellcheck disable=SC2016
+  grep -Fq 'chown root:nginx "$fcgi_socket"' "$script_dir/../$runner" ||
+    fail "$runner does not make the Unix socket accessible to the Nginx worker"
   ! grep -Fq 'tcp:127.0.0.1:9000' "$script_dir/../$runner" ||
     fail "$runner still binds the restart-sensitive host-network FastCGI TCP port"
 done

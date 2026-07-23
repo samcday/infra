@@ -27,4 +27,6 @@ for _ in {1..50}; do
     sleep 0.1
 done
 [[ -S $fcgi_socket && ! -L $fcgi_socket ]]
+chown root:nginx "$fcgi_socket"
+chmod 0770 "$fcgi_socket"
 exec nginx
