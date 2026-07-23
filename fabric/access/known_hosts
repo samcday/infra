@@ -5,3 +5,10 @@ sam-desktop.tailnet.hub.samcday.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmmIT2i
 10.66.0.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINXN/YnIxiY7I4jmW8uINFREoxozWPKZ3lTWhSnNkmcd
 10.66.0.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI907dvgdQiZVNeh//rQk604wNm+f6utUor4r7XoSFZ
 10.66.0.12 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINlHCdBkmKuoHlvDHROJ9VLW0w1Pv25cGceirm+Db/DQ
+# Stable day-two identities. The three legacy root keys above remain only for
+# the first serial transition; either exact key is accepted during that window.
+10.66.0.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICEHwgDp2i2vJ7UCTNozIAThCJ1UEMyc3Kd5DxwAi2WA
+10.66.0.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGsSW9C9IoQ+j+nrW9nBu/UV++8pphbKHtfnN/2K7QdZ
+10.66.0.12 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINPgB6vjBv5oXK+mQq5t49pJCd2VFyPtFhi7gWg5Vg2O
+10.66.1.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAWsyj3oc0aDIsMN0dbdKipT9kOUgiG055jBhLbup1qs
+10.66.1.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILLc/eCLV2Lynty9D2xPo5mLpWi+oaD3mupEyc0VCJCv

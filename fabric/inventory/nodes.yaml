@@ -1,0 +1,27 @@
+schema: 1
+nodes:
+  - name: fabric-az1-cp1
+    role: control-plane
+    address: 10.66.0.10
+    permanentMac: 6c:4b:90:76:c6:00
+    rootDisk: /dev/disk/by-id/nvme-eui.002538839100c827
+  - name: fabric-az1-cp2
+    role: control-plane
+    address: 10.66.0.11
+    permanentMac: c4:65:16:9e:9a:e6
+    rootDisk: /dev/disk/by-id/nvme-eui.002538b971048a4f
+  - name: fabric-az1-cp3
+    role: control-plane
+    address: 10.66.0.12
+    permanentMac: 6c:4b:90:54:2d:65
+    rootDisk: /dev/disk/by-id/nvme-eui.002538bb71b4bb45
+  - name: fabric-az1-svc1
+    role: service
+    address: 10.66.1.10
+    permanentMac: 6c:4b:90:50:9f:0d
+    rootDisk: /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182980802384
+  - name: fabric-az1-svc2
+    role: service
+    address: 10.66.1.11
+    permanentMac: 6c:4b:90:6e:ab:ee
+    rootDisk: /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182995802922

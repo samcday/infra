@@ -15,6 +15,9 @@ mac_variables=(FABRIC_CP1_MAC FABRIC_CP2_MAC FABRIC_CP3_MAC)
 common_profiles=(base network firewall time etcd control-plane node-exporter observer-agent)
 check_only=false
 selected_node=
+cluster_state=new
+cluster_state_seen=false
+output_dir=
 
 usage() {
   cat >&2 <<'EOF'
@@ -27,51 +30,157 @@ Usage:
   FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
     ./bootstrap.sh --node fabric-az1-cp1 OUTPUT_DIRECTORY
 
-  ./bootstrap.sh --check
+  FABRIC_CP1_MAC="$CP1_INVENTORY_MAC" \
+    ./bootstrap.sh --node fabric-az1-cp1 --cluster-state existing \
+      OUTPUT_DIRECTORY
+
+  ./bootstrap.sh --check [--cluster-state new|existing]
 
 The normal mode refuses plaintext source profiles, unresolved secret
 placeholders, invalid MAC addresses, and existing output files.  Output
 Ignition files contain recovery keys, cluster tokens, and private keys.
+Fresh-cluster media defaults to --cluster-state new. Day-two replacement media
+must select exactly one node and use --cluster-state existing after that member
+has been added back to the live etcd cluster.
 EOF
 }
 
-case $# in
-  1)
-    if [[ $1 == --check ]]; then
+positional=()
+while (($#)); do
+  case $1 in
+    --check)
+      $check_only && { echo '--check may only be specified once' >&2; exit 2; }
       check_only=true
-      output_dir=
-    else
-      output_dir=$1
-    fi
-    ;;
-  3)
-    if [[ $1 != --node ]]; then
+      shift
+      ;;
+    --node)
+      (($# >= 2)) || { echo '--node requires a value' >&2; exit 2; }
+      [[ -z $selected_node ]] || { echo '--node may only be specified once' >&2; exit 2; }
+      selected_node=$2
+      shift 2
+      ;;
+    --cluster-state)
+      (($# >= 2)) || { echo '--cluster-state requires a value' >&2; exit 2; }
+      ! $cluster_state_seen || {
+        echo '--cluster-state may only be specified once' >&2
+        exit 2
+      }
+      cluster_state=$2
+      cluster_state_seen=true
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      positional+=("$@")
+      break
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
       usage
       exit 2
-    fi
-    selected_node=$2
-    output_dir=$3
-    case $selected_node in
-      fabric-az1-cp1 | fabric-az1-cp2 | fabric-az1-cp3) ;;
-      *)
-        echo "unknown fabric consensus node: $selected_node" >&2
-        usage
-        exit 2
-        ;;
-    esac
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
+      ;;
+    *)
+      positional+=("$1")
+      shift
+      ;;
+  esac
+done
 
-for command in awk butane sha256sum sort wc yq; do
+case $cluster_state in
+  new | existing) ;;
+  *) echo '--cluster-state must be new or existing' >&2; exit 2 ;;
+esac
+if [[ -n $selected_node ]]; then
+  case $selected_node in
+    fabric-az1-cp1 | fabric-az1-cp2 | fabric-az1-cp3) ;;
+    *) echo "unknown fabric consensus node: $selected_node" >&2; exit 2 ;;
+  esac
+fi
+if $check_only; then
+  [[ -z $selected_node && ${#positional[@]} -eq 0 ]] || {
+    echo '--check cannot be combined with --node or an output directory' >&2
+    exit 2
+  }
+else
+  [[ ${#positional[@]} -eq 1 ]] || { usage; exit 2; }
+  output_dir=${positional[0]}
+  if [[ $cluster_state == existing && -z $selected_node ]]; then
+    echo '--cluster-state existing requires exactly one --node' >&2
+    exit 2
+  fi
+fi
+
+for command in awk butane cmp sed sha256sum sort ssh-keygen wc yq; do
   command -v "$command" >/dev/null || {
     echo "$command is required" >&2
     exit 1
   }
 done
+
+prepare_host_identity() {
+  local node=$1
+  local private_key=$workdir/$node-ssh_host_ed25519_key
+  local public_key=$private_key.pub derived_public=$private_key.derived.pub
+  local encrypted=$script_dir/../ssh-host-keys/$node.ed25519.enc
+  local committed_public=$script_dir/../ssh-host-keys/$node.ed25519.pub
+  local profile=$workdir/$node-host-identity.yaml
+
+  if $check_only; then
+    ssh-keygen -q -t ed25519 -C '' -N '' -f "$private_key"
+  else
+    command -v sops >/dev/null || {
+      echo 'sops is required to decrypt the stable SSH host identity' >&2
+      exit 1
+    }
+    [[ -f $encrypted && ! -L $encrypted && -f $committed_public &&
+       ! -L $committed_public ]] || {
+      echo "$node stable SSH host identity is absent or unsafe" >&2
+      exit 1
+    }
+    [[ $(sops filestatus "$encrypted" | jq -r '.encrypted') == true ]] || {
+      echo "$node SSH host private key is not SOPS-encrypted" >&2
+      exit 1
+    }
+    sops --decrypt --input-type json --output-type binary \
+      "$encrypted" >"$private_key"
+    chmod 0600 "$private_key"
+    install -m 0644 "$committed_public" "$public_key"
+  fi
+  ssh-keygen -y -f "$private_key" >"$derived_public"
+  awk '{print $1, $2}' "$public_key" >"$public_key.normalized"
+  awk '{print $1, $2}' "$derived_public" >"$derived_public.normalized"
+  cmp --silent "$public_key.normalized" "$derived_public.normalized" || {
+    echo "$node stable SSH host public/private keys do not match" >&2
+    exit 1
+  }
+  cp -- "$script_dir/../ssh-host-keys/host-identity.yaml.in" "$profile"
+  sed -i \
+    -e "s|@PRIVATE_KEY_FILE@|${private_key##*/}|g" \
+    -e "s|@PUBLIC_KEY_FILE@|${public_key##*/}|g" "$profile"
+  ! grep -q '@.*KEY_FILE@' "$profile" || {
+    echo "$node SSH host identity profile retains a placeholder" >&2
+    exit 1
+  }
+  butane --strict --files-dir "$workdir" \
+    --output "$workdir/$node-host-identity.ign" "$profile"
+}
+
+prepare_pxe_first() {
+  local node=$1 mac=$2
+  local profile=$workdir/$node-pxe-first.yaml
+  cp -- "$script_dir/../pxe-first.yaml" "$profile"
+  [[ $(grep -o '@FABRIC_NODE_MAC@' "$profile" | wc -l) == 1 ]] || {
+    echo 'PXE-first profile must contain exactly one MAC placeholder' >&2
+    exit 1
+  }
+  sed -i "s/@FABRIC_NODE_MAC@/$mac/" "$profile"
+  butane --strict --files-dir "$workdir" \
+    --output "$workdir/$node-pxe-first.ign" "$profile"
+}
 
 if ! $check_only; then
   repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
@@ -177,6 +286,16 @@ for profile in "${common_profiles[@]}"; do
       decrypt_profile "$script_dir/$profile.yaml" "$workdir/$profile.yaml"
       ;;
   esac
+  if [[ $profile == etcd ]]; then
+    [[ $(grep -Fc 'Environment=CLUSTER_STATE=new' "$workdir/etcd.yaml") == 1 ]] || {
+      echo 'etcd profile must contain exactly one fresh-cluster state declaration' >&2
+      exit 1
+    }
+    if [[ $cluster_state == existing ]]; then
+      sed -i 's/Environment=CLUSTER_STATE=new/Environment=CLUSTER_STATE=existing/' \
+        "$workdir/etcd.yaml"
+    fi
+  fi
   butane --strict --files-dir "$workdir" --output "$workdir/$profile.ign" "$workdir/$profile.yaml"
 done
 
@@ -197,8 +316,8 @@ grep -Fxq \
   exit 1
 }
 
-if ! grep -Fq 'Environment=CLUSTER_STATE=new' "$workdir/etcd.yaml"; then
-  echo "etcd.yaml no longer declares the fresh-cluster state; refusing bootstrap" >&2
+if [[ $(grep -Fc "Environment=CLUSTER_STATE=$cluster_state" "$workdir/etcd.yaml") != 1 ]]; then
+  echo "etcd.yaml does not declare the selected cluster state: $cluster_state" >&2
   exit 1
 fi
 expected_initial_cluster='--initial-cluster=fabric-az1-cp1=https://fabric-az1-cp1.fabric.internal:2380,fabric-az1-cp2=https://fabric-az1-cp2.fabric.internal:2380,fabric-az1-cp3=https://fabric-az1-cp3.fabric.internal:2380'
@@ -350,6 +469,8 @@ if [[ -n $selected_node ]]; then
 fi
 
 for node in "${render_nodes[@]}"; do
+  prepare_host_identity "$node"
+  prepare_pxe_first "$node" "${node_macs[$node]}"
   cp -- "$workdir/$node.yaml" "$workdir/$node-render.yaml"
   sed -i "s/@FABRIC_NODE_MAC@/${node_macs[$node]}/g" "$workdir/$node-render.yaml"
   if grep -q '@FABRIC_NODE_MAC@' "$workdir/$node-render.yaml"; then
@@ -376,13 +497,19 @@ ignition:
       - local: control-plane.ign
       - local: node-exporter.ign
       - local: observer-agent.ign
+      - local: $node-host-identity.ign
+      - local: $node-pxe-first.ign
       - local: $node.ign
 EOF
 
   butane --strict --files-dir "$workdir" --output "$workdir/$node-final.ign" "$workdir/$node-final.yaml"
+  [[ $(jq '.ignition.config.merge | length' "$workdir/$node-final.ign") == 11 ]] || {
+    echo "$node final Ignition must merge stable SSH/PXE identity and nine reviewed layers" >&2
+    exit 1
+  }
 
   if $check_only; then
-    echo "validated $node initial Ignition" >&2
+    echo "validated $node $cluster_state-state Ignition" >&2
   fi
 done
 
@@ -408,5 +535,9 @@ if ! $check_only; then
   else
     echo "wrote three sensitive bootstrap Ignitions to $output_dir" >&2
   fi
-  echo "boot at least two members together; all three declare initial-cluster-state=new" >&2
+  if [[ $cluster_state == new ]]; then
+    echo "boot at least two members together; all three declare initial-cluster-state=new" >&2
+  else
+    echo "$selected_node declares initial-cluster-state=existing for one-member replacement" >&2
+  fi
 fi

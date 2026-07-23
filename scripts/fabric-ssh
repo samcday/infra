@@ -3,9 +3,9 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: fabric-ssh <cp1|cp2|cp3> [remote-command [argument ...]]
+Usage: fabric-ssh <cp1|cp2|cp3|svc1|svc2> [remote-command [argument ...]]
 
-Connect end-to-end to a commissioned fabric root through sam-desktop's
+Connect end-to-end to a commissioned Fabric node through sam-desktop's
 Tailnet identity and isolated fabric-observer namespace.
 EOF
 }
@@ -26,7 +26,9 @@ case $node in
   cp1 | fabric-az1-cp1) address=10.66.0.10 ;;
   cp2 | fabric-az1-cp2) address=10.66.0.11 ;;
   cp3 | fabric-az1-cp3) address=10.66.0.12 ;;
-  *) die 'node must be cp1, cp2, or cp3' ;;
+  svc1 | fabric-az1-svc1) address=10.66.1.10 ;;
+  svc2 | fabric-az1-svc2) address=10.66.1.11 ;;
+  *) die 'node must be cp1, cp2, cp3, svc1, or svc2' ;;
 esac
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

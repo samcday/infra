@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/lib/fabric-node-inventory.sh
+source "$script_dir/../lib/fabric-node-inventory.sh"
+
+fabric_validate_node_inventory
+
+expected=(
+  'fabric-az1-cp1 control-plane 10.66.0.10 6c:4b:90:76:c6:00 /dev/disk/by-id/nvme-eui.002538839100c827'
+  'fabric-az1-cp2 control-plane 10.66.0.11 c4:65:16:9e:9a:e6 /dev/disk/by-id/nvme-eui.002538b971048a4f'
+  'fabric-az1-cp3 control-plane 10.66.0.12 6c:4b:90:54:2d:65 /dev/disk/by-id/nvme-eui.002538bb71b4bb45'
+  'fabric-az1-svc1 service 10.66.1.10 6c:4b:90:50:9f:0d /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182980802384'
+  'fabric-az1-svc2 service 10.66.1.11 6c:4b:90:6e:ab:ee /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182995802922'
+)
+
+for expected_record in "${expected[@]}"; do
+  read -r node _ <<<"$expected_record"
+  fabric_load_node_inventory "$node"
+  actual="$FABRIC_NODE_NAME $FABRIC_NODE_ROLE $FABRIC_NODE_ADDRESS $FABRIC_NODE_MAC $FABRIC_NODE_DISK"
+  [[ $actual == "$expected_record" ]] || {
+    printf 'unexpected inventory record for %s: %s\n' "$node" "$actual" >&2
+    exit 1
+  }
+done
+
+if fabric_load_node_inventory fabric-az1-nope >/dev/null 2>&1; then
+  echo 'unknown node was accepted' >&2
+  exit 1
+fi
+
+printf 'validated the exact five-node Fabric day-two inventory\n'

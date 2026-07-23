@@ -1,0 +1,58 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /usr/local/sbin/fabric-pxe-first
+      mode: 493
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export LC_ALL=C
+
+          admitted_mac=@FABRIC_NODE_MAC@
+          compact_mac=${admitted_mac//:/}
+          mapfile -t entries < <(/usr/sbin/efibootmgr -v | awk -v mac="${compact_mac^^}" '
+            toupper($0) ~ /IPV4/ && toupper($0) ~ ("MAC\\(" mac ",") {
+              if (match($1, /^Boot[0-9A-Fa-f]{4}/)) print toupper(substr($1, 5, 4))
+            }
+          ')
+          if ((${#entries[@]} != 1)); then
+            printf 'expected one IPv4 PXE entry for %s; found %s\n' \
+              "$admitted_mac" "${#entries[@]}" >&2
+            exit 1
+          fi
+          pxe_entry=${entries[0]}
+          order=$(/usr/sbin/efibootmgr | awk '/^BootOrder:/ {print toupper($2)}')
+          [[ -n $order ]] || { echo 'UEFI BootOrder is absent' >&2; exit 1; }
+          IFS=, read -r -a current <<<"$order"
+          new_order=$pxe_entry
+          for entry in "${current[@]}"; do
+            [[ $entry == "$pxe_entry" ]] || new_order+=",$entry"
+          done
+          if [[ $order != "$new_order" ]]; then
+            /usr/sbin/efibootmgr --bootorder "$new_order" >/dev/null
+          fi
+          verified=$(/usr/sbin/efibootmgr | awk '/^BootOrder:/ {print toupper($2)}')
+          [[ ${verified%%,*} == "$pxe_entry" ]] || {
+            echo 'IPv4 PXE did not become the first persistent UEFI entry' >&2
+            exit 1
+          }
+          printf 'persistent UEFI boot order starts with IPv4 PXE entry %s\n' "$pxe_entry"
+systemd:
+  units:
+    - name: fabric-pxe-first.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Keep admitted Fabric IPv4 PXE first in UEFI boot order
+        After=local-fs.target
+        ConditionPathExists=/sys/firmware/efi/efivars
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/fabric-pxe-first
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target

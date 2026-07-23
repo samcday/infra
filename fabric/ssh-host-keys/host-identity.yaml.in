@@ -1,0 +1,14 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/ssh/ssh_host_ed25519_key
+      overwrite: true
+      mode: 384
+      contents:
+        local: @PRIVATE_KEY_FILE@
+    - path: /etc/ssh/ssh_host_ed25519_key.pub
+      overwrite: true
+      mode: 420
+      contents:
+        local: @PUBLIC_KEY_FILE@

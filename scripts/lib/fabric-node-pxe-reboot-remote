@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+die() {
+  printf 'fabric-node-pxe-reboot-remote: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 4 ]] || die 'expected node, role, MAC, and exact confirmation'
+node=$1
+role=$2
+mac=$3
+confirmation=$4
+[[ $(hostname) == "$node" ]] || die 'remote hostname differs from the selected inventory node'
+[[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'inventory MAC is malformed'
+[[ $confirmation == "REBOOT-PXE:$node:$mac" ]] || die 'exact PXE reboot confirmation is absent'
+case $role in
+  control-plane)
+    ! systemctl is-active --quiet etcd.service || die 'etcd.service must be stopped first'
+    ! systemctl is-active --quiet k3s.service || die 'k3s.service must be stopped first'
+    ;;
+  service)
+    ! systemctl is-active --quiet k3s-agent.service ||
+      die 'k3s-agent.service must be stopped first'
+    ;;
+  *) die 'inventory role is invalid' ;;
+esac
+
+mac_compact=${mac//:/}
+mapfile -t pxe_entries < <(efibootmgr -v | awk -v mac="${mac_compact^^}" '
+  toupper($0) ~ /IPV4/ && toupper($0) ~ ("MAC\\(" mac ",") {
+    if (match($1, /^Boot[0-9A-Fa-f]{4}/)) print substr($1, 5, 4)
+  }
+')
+((${#pxe_entries[@]} == 1)) ||
+  die "expected exactly one IPv4 UEFI entry for inventory MAC, found ${#pxe_entries[@]}"
+pxe_entry=${pxe_entries[0]^^}
+order=$(efibootmgr | awk '/^BootOrder:/ {print toupper($2)}')
+[[ -n $order ]] || die 'UEFI BootOrder is absent'
+IFS=, read -r -a current_order <<<"$order"
+new_order=$pxe_entry
+for entry in "${current_order[@]}"; do
+  [[ $entry == "$pxe_entry" ]] || new_order+=",$entry"
+done
+efibootmgr --bootorder "$new_order" >/dev/null ||
+  die 'could not persist IPv4 PXE as the first UEFI entry'
+verified_order=$(efibootmgr | awk '/^BootOrder:/ {print toupper($2)}')
+[[ ${verified_order%%,*} == "$pxe_entry" ]] ||
+  die 'UEFI BootOrder did not retain IPv4 PXE first'
+sync
+printf 'REBOOTING %s with persistent IPv4 PXE entry %s first\n' "$node" "$pxe_entry"
+systemctl reboot

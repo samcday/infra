@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
+key_dir=$repo_root/fabric/ssh-host-keys
+recipient=age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+nodes=(fabric-az1-cp1 fabric-az1-cp2 fabric-az1-cp3 fabric-az1-svc1 fabric-az1-svc2)
+addresses=(10.66.0.10 10.66.0.11 10.66.0.12 10.66.1.10 10.66.1.11)
+
+for command in awk git grep jq sops sort ssh-keygen wc; do
+  command -v "$command" >/dev/null || {
+    echo "missing required command: $command" >&2
+    exit 1
+  }
+done
+
+public_blobs=()
+for index in "${!nodes[@]}"; do
+  node=${nodes[$index]}
+  address=${addresses[$index]}
+  encrypted=$key_dir/$node.ed25519.enc
+  public=$key_dir/$node.ed25519.pub
+  [[ -f $encrypted && ! -L $encrypted && -f $public && ! -L $public ]] || {
+    echo "$node stable host identity is absent or unsafe" >&2
+    exit 1
+  }
+  [[ $(sops filestatus "$encrypted" | jq -r '.encrypted') == true &&
+     $(jq -r '.sops.age[].recipient' "$encrypted") == "$recipient" ]] || {
+    echo "$node private host identity is not encrypted only to recovery" >&2
+    exit 1
+  }
+  ! grep -Eq 'BEGIN OPENSSH PRIVATE KEY|private_key' "$encrypted" || {
+    echo "$node encrypted identity contains a private-key marker" >&2
+    exit 1
+  }
+  [[ $(ssh-keygen -l -E sha256 -f "$public" | awk '{print $3}') == "$node" ]] || {
+    echo "$node public host key comment or syntax is invalid" >&2
+    exit 1
+  }
+  public_blob=$(awk '{print $2}' "$public")
+  public_blobs+=("$public_blob")
+  [[ $(awk -v address="$address" -v blob="$public_blob" \
+    '$1 == address && $2 == "ssh-ed25519" && $3 == blob {count++} END {print count+0}' \
+    "$repo_root/fabric/access/known_hosts") == 1 ]] || {
+    echo "$node stable public identity is not pinned exactly once for $address" >&2
+    exit 1
+  }
+done
+
+[[ $(printf '%s\n' "${public_blobs[@]}" | sort -u | wc -l) == 5 ]] || {
+  echo 'the five stable SSH host identities are not distinct' >&2
+  exit 1
+}
+printf 'validated five distinct SOPS-protected stable SSH host identities and pins\n'

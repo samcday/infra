@@ -53,7 +53,8 @@ case $# in
     ;;
 esac
 
-for command in awk bash butane cp find git grep install jq mkdir realpath sed sha256sum stat tail wc yq; do
+for command in awk bash butane cmp cp find git grep install jq mkdir realpath sed \
+  sha256sum sops ssh-keygen stat tail wc yq; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 1
@@ -66,6 +67,64 @@ cleanup() {
   rmdir "$workdir" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+prepare_host_identity() {
+  local node=$1
+  local private_key=$workdir/$node-ssh_host_ed25519_key
+  local public_key=$private_key.pub derived_public=$private_key.derived.pub
+  local key_dir=$repo_root/fabric/ssh-host-keys
+  local encrypted=$key_dir/$node.ed25519.enc
+  local committed_public=$key_dir/$node.ed25519.pub
+  local profile=$workdir/$node-host-identity.yaml
+
+  if $check_only; then
+    ssh-keygen -q -t ed25519 -C '' -N '' -f "$private_key"
+  else
+    [[ -f $encrypted && ! -L $encrypted && -f $committed_public &&
+       ! -L $committed_public ]] || {
+      echo "$node stable SSH host identity is absent or unsafe" >&2
+      exit 1
+    }
+    [[ $(sops filestatus "$encrypted" | jq -r '.encrypted') == true ]] || {
+      echo "$node SSH host private key is not SOPS-encrypted" >&2
+      exit 1
+    }
+    sops --decrypt --input-type json --output-type binary \
+      "$encrypted" >"$private_key"
+    chmod 0600 "$private_key"
+    install -m 0644 "$committed_public" "$public_key"
+  fi
+  ssh-keygen -y -f "$private_key" >"$derived_public"
+  awk '{print $1, $2}' "$public_key" >"$public_key.normalized"
+  awk '{print $1, $2}' "$derived_public" >"$derived_public.normalized"
+  cmp --silent "$public_key.normalized" "$derived_public.normalized" || {
+    echo "$node stable SSH host public/private keys do not match" >&2
+    exit 1
+  }
+  cp -- "$key_dir/host-identity.yaml.in" "$profile"
+  sed -i \
+    -e "s|@PRIVATE_KEY_FILE@|${private_key##*/}|g" \
+    -e "s|@PUBLIC_KEY_FILE@|${public_key##*/}|g" "$profile"
+  ! grep -q '@.*KEY_FILE@' "$profile" || {
+    echo "$node SSH host identity profile retains a placeholder" >&2
+    exit 1
+  }
+  butane --strict --files-dir "$workdir" \
+    --output "$workdir/$node-host-identity.ign" "$profile"
+}
+
+prepare_pxe_first() {
+  local node=$1 mac=$2
+  local profile=$workdir/$node-pxe-first.yaml
+  cp -- "$repo_root/fabric/pxe-first.yaml" "$profile"
+  [[ $(grep -o '@FABRIC_NODE_MAC@' "$profile" | wc -l) == 1 ]] || {
+    echo 'PXE-first profile must contain exactly one MAC placeholder' >&2
+    exit 1
+  }
+  sed -i "s/@FABRIC_NODE_MAC@/$mac/" "$profile"
+  butane --strict --files-dir "$workdir" \
+    --output "$workdir/$node-pxe-first.ign" "$profile"
+}
 
 agent_token=
 if $check_only; then
@@ -261,6 +320,7 @@ if [[ -n $selected_node ]]; then
 fi
 
 for node in "${render_nodes[@]}"; do
+  prepare_host_identity "$node"
   admission=$repo_root/fabric/workers/inventory/$node.yaml
   cp -- "$script_dir/$node.yaml" "$workdir/$node.yaml"
 
@@ -294,6 +354,7 @@ for node in "${render_nodes[@]}"; do
     fabric_worker_load_admission "$node" "$admission"
     node_mac=$FABRIC_WORKER_MAC
   fi
+  prepare_pxe_first "$node" "$node_mac"
 
   [[ $(grep -o '@FABRIC_NODE_MAC@' "$workdir/$node.yaml" | wc -l) == 2 ]] || {
     echo "$node profile must contain exactly two MAC placeholders" >&2
@@ -376,10 +437,16 @@ ignition:
       - local: firewall.ign
       - local: time.ign
       - local: k3s-agent.ign
+      - local: $node-host-identity.ign
+      - local: $node-pxe-first.ign
       - local: $node.ign
 EOF
   butane --strict --files-dir "$workdir" \
     --output "$workdir/$node-final.ign" "$workdir/$node-final.yaml"
+  [[ $(jq '.ignition.config.merge | length' "$workdir/$node-final.ign") == 7 ]] || {
+    echo "$node final Ignition must merge stable SSH/PXE identity and five reviewed layers" >&2
+    exit 1
+  }
 
   jq -e '
     .ignition.version | startswith("3.")
