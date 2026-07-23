@@ -83,6 +83,22 @@ while read -r expected logical extra; do
     die "embedded FCOS asset failed verification: $logical"
 done </usr/share/bootie/FCOS-SHA256SUMS
 
+# DHCP names the nested shim, but Fedora's shim requests its signed peers at
+# the TFTP root. GRUB itself first probes beside the nested shim for grub.cfg.
+# Keep both layouts: this is the same path behavior used by the attended
+# staging helpers and is required by the physical Lenovo UEFI implementation.
+for peer in grubx64.efi mmx64.efi; do
+  install -m 0644 "/usr/share/bootie/tftp/EFI/BOOT/$peer" \
+    "/run/bootie/tftp/$peer"
+done
+install -m 0644 /usr/share/bootie/grub.cfg /run/bootie/tftp/grub.cfg
+for peer in grubx64.efi mmx64.efi; do
+  cmp -s "/usr/share/bootie/tftp/EFI/BOOT/$peer" "/run/bootie/tftp/$peer" ||
+    die "TFTP root peer differs from its verified embedded asset: $peer"
+done
+cmp -s /usr/share/bootie/grub.cfg /run/bootie/tftp/grub.cfg ||
+  die 'TFTP root GRUB configuration differs from its embedded source'
+
 if [[ ${BOOTIE_CLUSTER_CHECK:-false} == true ]]; then
   printf 'validated five-node PXE inventory, dnsmasq configuration, and embedded FCOS assets\n'
   exit 0
