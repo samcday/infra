@@ -333,6 +333,19 @@ assert_not_contains "$wrong_custom_initramfs_capability" \
 grep -Fqx '    location ~ "^/static/[0-9a-f]{32,64}\.img$" {' \
   "$script_dir/../nginx-http.conf" ||
   fail 'Nginx no longer denies capability-shaped files through /static'
+[[ $(grep -Fc 'fastcgi_pass unix:/run/bootie/fcgi.sock;' \
+  "$script_dir/../nginx-http.conf") == 4 ]] ||
+  fail 'Nginx does not route all four CGI endpoints through the pod-local Unix socket'
+! grep -Fq '127.0.0.1:9000' "$script_dir/../nginx-http.conf" ||
+  fail 'Nginx still depends on the restart-sensitive host-network FastCGI TCP port'
+for runner in run.sh run-cluster.sh; do
+  # The runner must pass the literal shell variable to fcgiwrap at runtime.
+  # shellcheck disable=SC2016
+  grep -Fq 'exec fcgiwrap -s "unix:$fcgi_socket"' "$script_dir/../$runner" ||
+    fail "$runner does not bind fcgiwrap to the pod-local Unix socket"
+  ! grep -Fq 'tcp:127.0.0.1:9000' "$script_dir/../$runner" ||
+    fail "$runner still binds the restart-sensitive host-network FastCGI TCP port"
+done
 
 missing_custom_initramfs=$(
   BOOT_FORMAT=grub \

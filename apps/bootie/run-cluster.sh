@@ -25,7 +25,8 @@ mapfile -t nodes < <(awk 'NF && $1 !~ /^#/ {print}' "$BOOTIE_NODE_INVENTORY_FILE
 
 declare -A seen_nodes=() seen_macs=() seen_addresses=()
 dnsmasq_config=/run/bootie/dnsmasq.conf
-install -d -m 0755 /run/bootie /run/bootie/tftp/EFI/BOOT
+install -d -o root -g nginx -m 2770 /run/bootie
+install -d -m 0755 /run/bootie/tftp/EFI/BOOT
 {
   cat <<EOF
 port=0
@@ -138,8 +139,24 @@ export BOOTIE_PUBLIC_ORIGIN="http://$BOOTIE_HOST_IP"
 export FCOS_BASE="http://$BOOTIE_HOST_IP/static"
 export FCOS_GRUB_BASE="(http,$BOOTIE_HOST_IP)/static"
 
-fcgiwrap -s 'tcp:127.0.0.1:9000' &
+fcgi_socket=/run/bootie/fcgi.sock
+[[ ! -e $fcgi_socket && ! -L $fcgi_socket ]] ||
+  die 'the FastCGI Unix socket path is unexpectedly occupied'
+(
+  umask 0007
+  exec fcgiwrap -s "unix:$fcgi_socket"
+) &
 fcgi_pid=$!
+for _ in {1..50}; do
+  [[ -S $fcgi_socket && ! -L $fcgi_socket ]] && break
+  kill -0 "$fcgi_pid" 2>/dev/null || {
+    wait "$fcgi_pid" || true
+    die 'fcgiwrap exited before creating its Unix socket'
+  }
+  sleep 0.1
+done
+[[ -S $fcgi_socket && ! -L $fcgi_socket ]] ||
+  die 'fcgiwrap did not create its Unix socket'
 dnsmasq --keep-in-foreground --conf-file="$dnsmasq_config" &
 dnsmasq_pid=$!
 

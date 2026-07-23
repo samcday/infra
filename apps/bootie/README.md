@@ -7,6 +7,9 @@ Pod runs on either service node, serves only the five admitted hardware MACs,
 and embeds the SHA-256-pinned FCOS live payload plus its signed shim and GRUB.
 Every machine may therefore keep IPv4 PXE first in UEFI boot order. An ordinary
 request receives only GRUB `exit` and continues to the local disk.
+Nginx and fcgiwrap communicate over a pod-local Unix socket, so replacing the
+host-networked Pod cannot inherit a loopback TCP `TIME_WAIT` bind conflict from
+its predecessor.
 
 An armed service-node response also loads the image-embedded public
 `fabric-day2-service-live.ign` and appends `coreos.inst.skip_reboot`. Its
