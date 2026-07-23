@@ -22,6 +22,9 @@ Usage:
     --confirm LOCK:fabric-az1-cp1:<main-commit>
   scripts/fabric-node-day2-lock verify \
     --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock
+  scripts/fabric-node-day2-lock abort \
+    --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock \
+    --confirm ABORT:fabric-az1-cp1:<lock-uid>
   scripts/fabric-node-day2-lock release \
     --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock \
     --confirm UNLOCK:fabric-az1-cp1:<lock-uid>
@@ -31,7 +34,10 @@ after the read-only node preflight succeeds. The exact UID/resourceVersion
 receipt stays on tmpfs for the whole one-node ceremony. Release is conditional
 on that immutable receipt and refuses until the selected Node is Ready and
 attested at the receipt's revision. An interrupted ceremony deliberately keeps
-the lock for inspection; there is no automatic or name-only cleanup.
+the lock for inspection. Abort is available only while the original Node UID
+is still Ready and no Bootie session or etcd replacement exists; it atomically
+uncordons that UID before conditionally deleting the lock. There is no
+automatic or name-only cleanup.
 EOF
 }
 
@@ -47,7 +53,7 @@ receipt_dir=
 confirmation=
 case ${1:-} in
   --check) mode=check; shift ;;
-  acquire | verify | release) mode=$1; shift ;;
+  acquire | verify | abort | release) mode=$1; shift ;;
   -h | --help) usage; exit 0 ;;
   *) usage; exit 2 ;;
 esac
@@ -210,26 +216,53 @@ if [[ $mode == verify ]]; then
   exit 0
 fi
 
-[[ $confirmation == "UNLOCK:$node:$lock_uid" ]] ||
-  die "exact --confirm UNLOCK:$node:$lock_uid is required"
-if [[ $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]]; then
-  jq -e --arg node "$node" --arg revision "$repo_commit" --arg lock_uid "$lock_uid" '
-    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
-    .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
-    .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
-  ' "$receipt_dir/etcd-member.json" >/dev/null ||
-    die 'control-plane lock cannot be released before exact learner promotion'
-fi
 node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
-jq -e --arg revision "$repo_commit" '
-  .metadata.deletionTimestamp == null and
-  .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
-  (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
-    test("^[0-9a-f]{64}$")) and
-  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
-    length) == 1
-' <<<"$node_json" >/dev/null ||
-  die 'target Node is not Ready at the receipt revision; refusing lock release'
+if [[ $mode == abort ]]; then
+  [[ $confirmation == "ABORT:$node:$lock_uid" ]] ||
+    die "exact --confirm ABORT:$node:$lock_uid is required"
+  [[ ! -e $receipt_dir/etcd-member.json &&
+     -z $("${ik[@]}" --namespace bootie get secret bootie-session \
+       --ignore-not-found --output=name 2>/dev/null) ]] ||
+    die 'abort is forbidden after an etcd replacement or Bootie session exists'
+  target_uid=$(jq -r '.targetNodeUid' "$receipt_dir/lock.json")
+  jq -e --arg uid "$target_uid" '
+    .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+      length) == 1
+  ' <<<"$node_json" >/dev/null ||
+    die 'abort requires the original Node UID to remain Ready and unmodified'
+  if [[ $(jq -r '.spec.unschedulable // false' <<<"$node_json") == true ]]; then
+    node_rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+    patch=$(jq -cn --arg rv "$node_rv" --arg uid "$target_uid" '[
+      {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+      {"op":"test","path":"/metadata/uid","value":$uid},
+      {"op":"replace","path":"/spec/unschedulable","value":false}
+    ]')
+    "${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
+      die 'could not atomically uncordon the original Node UID'
+  fi
+else
+  [[ $confirmation == "UNLOCK:$node:$lock_uid" ]] ||
+    die "exact --confirm UNLOCK:$node:$lock_uid is required"
+  if [[ $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]]; then
+    jq -e --arg node "$node" --arg revision "$repo_commit" --arg lock_uid "$lock_uid" '
+      .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+      .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
+      .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
+    ' "$receipt_dir/etcd-member.json" >/dev/null ||
+      die 'control-plane lock cannot be released before exact learner promotion'
+  fi
+  jq -e --arg revision "$repo_commit" '
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+    (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
+      test("^[0-9a-f]{64}$")) and
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+      length) == 1
+  ' <<<"$node_json" >/dev/null ||
+    die 'target Node is not Ready at the receipt revision; refusing lock release'
+fi
 
 proxy_dir=$(mktemp -d -- /dev/shm/.fabric-node-lock-proxy.XXXXXXXX)
 chmod 0700 "$proxy_dir"
@@ -262,4 +295,8 @@ stop_proxy
   --ignore-not-found --output=name) ]] || die 'global maintenance lock remains after release'
 find "$receipt_dir" -xdev -mindepth 1 -delete
 rmdir "$receipt_dir"
-printf 'UNLOCKED %s uid=%s after Ready revision attestation\n' "$node" "$lock_uid"
+if [[ $mode == abort ]]; then
+  printf 'ABORTED %s uid=%s; original Ready Node uncordoned\n' "$node" "$lock_uid"
+else
+  printf 'UNLOCKED %s uid=%s after Ready revision attestation\n' "$node" "$lock_uid"
+fi

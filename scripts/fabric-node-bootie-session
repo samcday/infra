@@ -275,10 +275,12 @@ secret_rv=$(jq -r '.secret.resourceVersion' "$receipt")
 
 node_json=$("${ik[@]}" get node "$node" --output=json 2>/dev/null || true)
 secret_json=$("${ik[@]}" --namespace "$namespace" get secret "$secret_name" --output=json 2>/dev/null || true)
-state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "absent"' <<<"${node_json:-{}}")
-token=$(jq -r '.metadata.annotations["samcday.com/ignition-token"] // ""' <<<"${node_json:-{}}")
-boot_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' <<<"${node_json:-{}}")
-live_secret_uid=$(jq -r '.metadata.uid // "absent"' <<<"${secret_json:-{}}")
+[[ -n $node_json ]] || node_json='{}'
+[[ -n $secret_json ]] || secret_json='{}'
+state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "absent"' <<<"$node_json")
+token=$(jq -r '.metadata.annotations["samcday.com/ignition-token"] // ""' <<<"$node_json")
+boot_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' <<<"$node_json")
+live_secret_uid=$(jq -r '.metadata.uid // "absent"' <<<"$secret_json")
 if [[ $mode == status ]]; then
   [[ -z $lock_receipt && -z $confirmation ]] || die 'status accepts only --receipt-dir'
   printf 'SESSION node=%s node-uid=%s state=%s secret=%s token=%s boot-device=%s\n' \

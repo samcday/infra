@@ -96,13 +96,15 @@ if [[ $role == service ]]; then
   for _attempt in {1..120}; do
     deployment=$("${ik[@]}" --namespace bootie get deployment bootie --output=json 2>/dev/null || true)
     pods=$("${ik[@]}" --namespace bootie get pods -l app.kubernetes.io/name=bootie --output=json 2>/dev/null || true)
+    [[ -n $deployment ]] || deployment='{}'
+    [[ -n $pods ]] || pods='{}'
     if jq -e '.status.availableReplicas == 1 and .status.readyReplicas == 1' \
-        <<<"${deployment:-{}}" >/dev/null 2>&1 &&
+        <<<"$deployment" >/dev/null 2>&1 &&
        jq -e --arg node "$other_service" '
          [.items[] | select(.spec.nodeName == $node and
            ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1)] |
          length == 1
-       ' <<<"${pods:-{}}" >/dev/null 2>&1; then
+       ' <<<"$pods" >/dev/null 2>&1; then
       ready=true
       break
     fi
