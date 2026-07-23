@@ -164,9 +164,16 @@ if [[ $mode == acquire ]]; then
      $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
     die 'lock receipt parent must be an existing tmpfs directory'
   holder="$(hostname):$$:node-day2:$node:$repo_commit"
-  lock_json=$("${ik[@]}" --namespace kube-system create configmap "$lock_name" \
-    --from-literal="holder=$holder" \
-    --labels="fabric.samcday.com/purpose=node-day-two,fabric.samcday.com/node=$node,fabric.samcday.com/revision=$repo_commit" \
+  lock_manifest=$(jq -cn --arg holder "$holder" --arg node "$node" \
+    --arg revision "$repo_commit" '{
+      apiVersion:"v1", kind:"ConfigMap",
+      metadata:{name:"fabric-maintenance-lock", namespace:"kube-system", labels:{
+        "fabric.samcday.com/purpose":"node-day-two",
+        "fabric.samcday.com/node":$node,
+        "fabric.samcday.com/revision":$revision
+      }}, data:{holder:$holder}
+    }')
+  lock_json=$(printf '%s' "$lock_manifest" | "${ik[@]}" create --filename=- \
     --output=json) || die 'another or stale global maintenance lock already exists'
   lock_uid=$(jq -er '.metadata.uid' <<<"$lock_json")
   lock_rv=$(jq -er '.metadata.resourceVersion' <<<"$lock_json")
