@@ -41,9 +41,11 @@ cordoned placeholder, one immutable bootie/bootie-session Secret, and then
 atomically arms that placeholder. Bootie consumes the install response and
 Ignition token once. close is allowed only after the token was consumed; it
 UID/resourceVersion-deletes the Secret while retaining the non-secret receipt
-for finalization. record reconstructs only the non-secret local receipt if the
-process was interrupted after a fully matching arm. There is no name-only
-deletion or automatic re-arm.
+for finalization. Rerunning the same confirmed arm adopts only its exact safe
+discovery placeholder, immutable Secret bytes, or armed/consumed session and
+finishes the missing step or receipt. record remains available to reconstruct
+only the non-secret local receipt after a fully matching arm. There is no
+name-only deletion or automatic re-arm.
 EOF
 }
 
@@ -178,11 +180,6 @@ if [[ $mode == arm ]]; then
     .status.availableReplicas == 1 and .status.readyReplicas == 1 and
     ([.spec.template.spec.containers[] | select(.name == "bootie") | .image] == [$image])
   ' <<<"$deployment" >/dev/null || die 'in-cluster Bootie is not exactly Ready at the pinned image'
-  [[ -z $("${ik[@]}" --namespace "$namespace" get secret "$secret_name" \
-    --ignore-not-found --output=name) ]] || die 'another Bootie session already exists'
-  [[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
-    die 'target Node still exists; retire the stopped exact UID first'
-
   output_dir=$(realpath -m -- "$output_dir")
   case $output_dir in "$repo_root" | "$repo_root"/*) die 'session receipt must remain outside Git' ;; esac
   [[ ! -e $output_dir && ! -L $output_dir ]] || die 'session receipt output already exists'
@@ -190,6 +187,21 @@ if [[ $mode == arm ]]; then
   [[ -d $output_parent && ! -L $output_parent &&
      $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
     die 'session receipt parent must be an existing tmpfs directory'
+
+  work=$(mktemp -d -- "$output_parent/.fabric-bootie-session.XXXXXXXX")
+  chmod 0700 "$work"
+  arm_complete=false
+  # shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+  cleanup_arm_work() {
+    local status=$?
+    trap - EXIT
+    if [[ $arm_complete != true && -d ${work:-} ]]; then
+      find "$work" -xdev -mindepth 1 -delete 2>/dev/null || true
+      rmdir "$work" 2>/dev/null || status=1
+    fi
+    exit "$status"
+  }
+  trap cleanup_arm_work EXIT
 
   taints='[{"key":"fabric.samcday.com/platform","value":"true","effect":"NoSchedule"}]'
   labels=$(jq -cn --arg mac "$mac_label" '{
@@ -211,13 +223,54 @@ if [[ $mode == arm ]]; then
       annotations:{"fabric.samcday.com/bootstrap-state":"discovery"}},
     spec:{unschedulable:true, taints:$taints}
   }')
-  created_node=$(printf '%s' "$placeholder" | "${ik[@]}" create --filename=- --output=json) ||
-    die 'exact bootstrap placeholder creation failed'
-  node_uid=$(jq -er '.metadata.uid' <<<"$created_node")
-  node_rv=$(jq -er '.metadata.resourceVersion' <<<"$created_node")
+  live_node=$("${ik[@]}" get node "$node" --ignore-not-found --output=json) ||
+    die 'could not inspect target placeholder state'
+  live_secret=$("${ik[@]}" --namespace "$namespace" get secret "$secret_name" \
+    --ignore-not-found --output=json) || die 'could not inspect Bootie session state'
+  if [[ -z $live_node ]]; then
+    [[ -z $live_secret ]] ||
+      die 'an orphan Bootie session exists without its receipt-bound placeholder'
+    created_node=$(printf '%s' "$placeholder" | "${ik[@]}" create --filename=- --output=json) ||
+      die 'exact bootstrap placeholder creation failed'
+    node_uid=$(jq -er '.metadata.uid' <<<"$created_node")
+  else
+    jq -e --arg mac "$mac_label" --arg role "$role" '
+      .metadata.deletionTimestamp == null and
+      .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+      .metadata.labels["samcday.com/mac"] == $mac and
+      (.metadata.annotations["fabric.samcday.com/bootstrap-state"] as $state |
+        $state == "discovery" or $state == "install-armed" or
+        $state == "install-response-issued") and
+      (.spec.unschedulable // false) == true and
+      ((.status.nodeInfo.machineID // "") == "") and
+      ([.status.addresses[]? | select(.type == "InternalIP")] | length) == 0 and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+        length) == 0 and
+      if $role == "service" then
+        .metadata.labels["fabric.samcday.com/platform"] == "true" and
+        (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+        (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+        ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform" and
+          .value == "true" and .effect == "NoSchedule")] | length) == 1 and
+        ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus" or
+          .key == "node-role.kubernetes.io/control-plane")] | length) == 0
+      else
+        .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+        (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+        (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+        ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus" and
+          .value == "true" and .effect == "NoSchedule")] | length) == 1 and
+        ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane" and
+          .value == "true" and .effect == "NoSchedule")] | length) == 1 and
+        ([.spec.taints[]? | select(.key == "fabric.samcday.com/platform")] | length) == 0
+      end
+    ' <<<"$live_node" >/dev/null ||
+      die 'same-name Node is not an exact resumable Bootie placeholder'
+    node_uid=$(jq -er '.metadata.uid' <<<"$live_node")
+  fi
+  [[ $node_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die 'placeholder Node UID is malformed'
 
-  work=$(mktemp -d -- "$output_parent/.fabric-bootie-session.XXXXXXXX")
-  chmod 0700 "$work"
   session_payload=$(jq -cn --arg node "$node" --arg role "$role" --arg address "$address" \
     --arg mac "$mac" --arg disk "$disk" --arg node_uid "$node_uid" \
     --arg repo "$repo_commit" --arg ignition_sha "$ignition_sha" \
@@ -240,40 +293,119 @@ if [[ $mode == arm ]]; then
       type:"Opaque", data:{"session.json":$session, "install-policy":$policy} +
         {($node + ".ign"):$ignition}
     }')
-  created_secret=$(printf '%s' "$secret_manifest" | "${ik[@]}" create --filename=- --output=json) ||
-    die 'immutable Bootie session Secret creation failed; placeholder remains safely unarmed'
-  secret_uid=$(jq -er '.metadata.uid' <<<"$created_secret")
-  secret_rv=$(jq -er '.metadata.resourceVersion' <<<"$created_secret")
+  if [[ -z $live_secret ]]; then
+    expected_discovery_identity="$node_uid"$'\t'discovery
+    [[ $("${ik[@]}" get node "$node" \
+      -o jsonpath='{.metadata.uid}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootstrap-state}') == \
+      "$expected_discovery_identity" ]] ||
+      die 'armed, replaced, or consumed placeholder cannot receive a new session Secret'
+    created_secret=$(printf '%s' "$secret_manifest" | "${ik[@]}" create --filename=- --output=json) ||
+      die 'immutable Bootie session Secret creation failed; rerun the same arm command'
+    secret_uid=$(jq -er '.metadata.uid' <<<"$created_secret")
+    secret_rv=$(jq -er '.metadata.resourceVersion' <<<"$created_secret")
+  else
+    jq -e --arg node "$node" '
+      .metadata.deletionTimestamp == null and .immutable == true and .type == "Opaque" and
+      .metadata.labels["fabric.samcday.com/purpose"] == "node-day-two" and
+      .metadata.labels["fabric.samcday.com/node"] == $node and
+      ([.data | keys[]] | sort) == (["install-policy","session.json",($node + ".ign")] | sort) and
+      (.metadata.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+      (.metadata.resourceVersion | test("^[1-9][0-9]*$"))
+    ' <<<"$live_secret" >/dev/null || die 'live Bootie session Secret has an unsafe shape'
+    live_payload=$(jq -er '.data["session.json"] | @base64d | fromjson | @json' \
+      <<<"$live_secret") || die 'live Bootie session payload is malformed'
+    [[ $(jq -cS . <<<"$live_payload") == $(jq -cS . <<<"$session_payload") ]] ||
+      die 'live Bootie session payload differs from the exact resumable arm'
+    jq -er '.data["install-policy"]' <<<"$live_secret" | base64 --decode >"$work/live-policy"
+    jq -er --arg node "$node" '.data[$node + ".ign"]' <<<"$live_secret" |
+      base64 --decode >"$work/live-ignition"
+    [[ $(sha256sum "$work/live-policy" | awk '{print $1}') == "$policy_sha" &&
+       $(sha256sum "$work/live-ignition" | awk '{print $1}') == "$ignition_sha" ]] ||
+      die 'live Bootie session bytes differ from the exact resumable handoff'
+    rm -f -- "$work/live-policy" "$work/live-ignition"
+    secret_uid=$(jq -er '.metadata.uid' <<<"$live_secret")
+    secret_rv=$(jq -er '.metadata.resourceVersion' <<<"$live_secret")
+  fi
   # Node lifecycle controllers immediately add TTL/status/taints and can advance
   # resourceVersion between creation and Secret publication. Re-read and bind
   # the same safe placeholder UID immediately before the atomic arm.
   live_node=$("${ik[@]}" get node "$node" --output=json) ||
     die 'placeholder disappeared before the exact arm'
-  jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
+  bootstrap_state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"]' \
+    <<<"$live_node")
+  if [[ $bootstrap_state == discovery ]]; then
+    jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
     .metadata.uid == $uid and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["samcday.com/discovery"] == "true" and
     .metadata.labels["samcday.com/mac"] == $mac and
     .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
     (.spec.unschedulable // false) == true and
+    ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "") and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
     ((.status.nodeInfo.machineID // "") == "")
+    ' <<<"$live_node" >/dev/null ||
+      die 'discovery placeholder changed before the exact resumable arm'
+    node_rv=$(jq -r '.metadata.resourceVersion' <<<"$live_node")
+    patch=$(jq -cn --arg rv "$node_rv" --arg uid "$node_uid" --arg session_uid "$secret_uid" \
+      --arg disk "$disk" '[
+        {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+        {"op":"test","path":"/metadata/uid","value":$uid},
+        {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"true"},
+        {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"discovery"},
+        {"op":"replace","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
+        {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
+        {"op":"add","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1boot-device","value":$disk},
+        {"op":"add","path":"/metadata/annotations/samcday.com~1install","value":"true"}
+      ]')
+    "${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
+      die 'exact Node arm raced; rerun the same arm command'
+  elif [[ $bootstrap_state != install-armed && $bootstrap_state != install-response-issued ]]; then
+    die 'placeholder entered a non-resumable state before the exact arm'
+  fi
+
+  live_node=$("${ik[@]}" get node "$node" --output=json) ||
+    die 'placeholder disappeared after the exact arm'
+  jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg role "$role" \
+    --arg session_uid "$secret_uid" --arg disk "$disk" \
+    --arg repo "$repo_commit" --arg ignition "$ignition_sha" \
+    --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
+    .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    .metadata.labels["samcday.com/discovery"] == "false" and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    (.spec.unschedulable // false) == true and
+    (if $role == "service" then
+      .metadata.labels["fabric.samcday.com/platform"] == "true" and
+      (.metadata.labels | has("fabric.samcday.com/root-consensus") | not)
+    else
+      .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+      (.metadata.labels | has("fabric.samcday.com/platform") | not)
+    end) and
+    if .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-armed" then
+      .metadata.annotations["samcday.com/boot-device"] == $disk and
+      .metadata.annotations["samcday.com/install"] == "true" and
+      ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+      ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "")
+    elif .metadata.annotations["fabric.samcday.com/bootstrap-state"] ==
+      "install-response-issued" then
+      .metadata.annotations["fabric.samcday.com/config-revision"] == $repo and
+      .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition and
+      .metadata.annotations["fabric.samcday.com/bootie-image-digest"] == $image_digest and
+      .metadata.annotations["fabric.samcday.com/bootie-image-revision"] == $image_revision and
+      ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+      ((.metadata.annotations["samcday.com/install"] // "") == "") and
+      ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+      ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "")
+    else false end
   ' <<<"$live_node" >/dev/null ||
-    die 'placeholder changed before the exact arm; session remains safely unarmed'
-  node_rv=$(jq -r '.metadata.resourceVersion' <<<"$live_node")
-  patch=$(jq -cn --arg rv "$node_rv" --arg uid "$node_uid" --arg session_uid "$secret_uid" \
-    --arg disk "$disk" '[
-      {"op":"test","path":"/metadata/resourceVersion","value":$rv},
-      {"op":"test","path":"/metadata/uid","value":$uid},
-      {"op":"test","path":"/metadata/labels/samcday.com~1discovery","value":"true"},
-      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"discovery"},
-      {"op":"replace","path":"/metadata/labels/samcday.com~1discovery","value":"false"},
-      {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
-      {"op":"add","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
-      {"op":"add","path":"/metadata/annotations/samcday.com~1boot-device","value":$disk},
-      {"op":"add","path":"/metadata/annotations/samcday.com~1install","value":"true"}
-    ]')
-  "${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
-    die 'session exists but exact Node arm raced; do not reboot and inspect'
+    die 'placeholder does not match the exact armed or consumed session'
   jq -n --argjson session "$session_payload" --arg uid "$secret_uid" --arg rv "$secret_rv" \
     --arg created "$(date --utc --iso-8601=seconds)" '{
       schema:1, purpose:"fabric-node-day-two-session-receipt", session:$session,
@@ -283,6 +415,8 @@ if [[ $mode == arm ]]; then
   chmod 0600 "$work/session.json"
   rm -f -- "$work/payload.json"
   mv -T -- "$work" "$output_dir"
+  arm_complete=true
+  trap - EXIT
   printf 'ARMED %s placeholder-uid=%s session-uid=%s\n' "$node" "$node_uid" "$secret_uid"
   printf 'Bootie will issue one install response for %s and otherwise exits to local disk.\n' "$disk"
   exit 0

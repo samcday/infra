@@ -29,7 +29,10 @@ For one node, the flow is:
    local receipt to the exact live Secret and armed placeholder, persists
    PXE-first, and restarts the host. Its confirmation includes the session UID.
    Exact confirmation strings are printed or derivable from the preceding
-   receipt; there is no broad or name-only arm or reboot.
+   receipt; there is no broad or name-only arm or reboot. If `arm` is
+   interrupted, rerun the same command: it adopts only the exact lock/handoff
+   placeholder and immutable session bytes, then completes the missing publish,
+   patch, or receipt step.
    Bootie first serves a non-consuming live profile that copies the exact
    MAC-bound static connection into the installed system. Its live boot also
    carries the recognized `rd.net.timeout.carrier=60` network argument, so the
