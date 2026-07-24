@@ -16,11 +16,17 @@ Usage:
   scripts/retire-fabric-node --check
   scripts/retire-fabric-node plan \
     --node fabric-az1-svc1 \
-    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    [--failed-firstboot]
   scripts/retire-fabric-node apply \
     --node fabric-az1-svc1 \
     --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
     --confirm RETIRE:<node>:<node-uid>:<password-secret-uid-or-absent>
+  scripts/retire-fabric-node apply \
+    --node fabric-az1-svc1 \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --failed-firstboot \
+    --confirm RETIRE-FAILED-FIRSTBOOT:<node>:<node-uid>:POWERED-OFF:<admitted-disk>
 
 Run after the selected node has been drained, stopped, and remained
 without a fresh kubelet Lease for at least 90 seconds. The apply mode deletes
@@ -29,6 +35,12 @@ preconditions. It never stops a host, drains workloads, or accepts a ready
 target. A control-plane target additionally requires the exact learner-add
 receipt produced by replace-fabric-etcd-member. The global day-two maintenance
 lock remains held for Bootie.
+
+--failed-firstboot is a service-node recovery path for a closed Bootie session
+whose exact placeholder never produced a Lease, node-password Secret, machine
+ID, or InternalIP. It requires the consumed-session annotations and synthetic
+NodeStatusNeverUpdated status, refuses a live Bootie session, and changes the
+confirmation to bind the admitted disk plus an explicit POWERED-OFF attestation.
 EOF
 }
 
@@ -41,6 +53,7 @@ mode=
 node=
 lock_receipt=
 confirmation=
+failed_firstboot=false
 case ${1:-} in
   --check) mode=check; shift ;;
   plan | apply) mode=$1; shift ;;
@@ -52,24 +65,104 @@ while (($#)); do
     --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
     --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
     --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    --failed-firstboot) failed_firstboot=true; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-for command in curl date find id jq kubectl mktemp realpath rmdir sleep stat wc yq; do
+for command in curl date find git id jq kubectl mktemp realpath rmdir sleep stat wc yq; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 fabric_validate_node_inventory || die 'five-node inventory validation failed'
+
+qualify_failed_firstboot_node() {
+  local candidate_json=$1 expected_uid=$2 expected_mac=$3
+  jq -e --arg uid "$expected_uid" --arg mac "$expected_mac" '
+    .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    .metadata.labels["fabric.samcday.com/platform"] == "true" and
+    .metadata.labels["samcday.com/discovery"] == "false" and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+    (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+    (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+    .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+    (.metadata.annotations["fabric.samcday.com/bootie-session-uid"] |
+      test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.metadata.annotations["fabric.samcday.com/config-revision"] |
+      test("^[0-9a-f]{40}$")) and
+    (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
+      test("^[0-9a-f]{64}$")) and
+    (.metadata.annotations["fabric.samcday.com/bootie-image-digest"] |
+      test("^sha256:[0-9a-f]{64}$")) and
+    (.metadata.annotations["fabric.samcday.com/bootie-image-revision"] |
+      test("^[0-9a-f]{40}$")) and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    (.spec.unschedulable // false) == true and
+    ([.spec.taints[]? | select(
+      .key == "fabric.samcday.com/platform" and .value == "true" and
+      .effect == "NoSchedule")] | length) == 1 and
+    all(.spec.taints[]?;
+      (.key == "fabric.samcday.com/platform" and .value == "true" and
+        .effect == "NoSchedule") or
+      (.key == "node.kubernetes.io/unschedulable" and .effect == "NoSchedule") or
+      (.key == "node.kubernetes.io/unreachable" and
+        (.effect == "NoSchedule" or .effect == "NoExecute"))) and
+    ((.status.nodeInfo.machineID // "") == "") and
+    ([.status.addresses[]? | select(.type == "InternalIP")] | length) == 0 and
+    ([.status.conditions[]? |
+      select(.status != "Unknown" or .reason != "NodeStatusNeverUpdated")] |
+      length) == 0
+  ' <<<"$candidate_json" >/dev/null
+}
+
 if [[ $mode == check ]]; then
-  [[ -z $node && -z $lock_receipt && -z $confirmation ]] ||
+  [[ -z $node && -z $lock_receipt && -z $confirmation &&
+     $failed_firstboot == false ]] ||
     die '--check accepts no other arguments'
   bash -n "$script_path"
+  fixture_uid=01234567-89ab-cdef-0123-456789abcdef
+  fixture_mac=00-00-5e-00-53-71
+  fixture=$(jq -cn --arg uid "$fixture_uid" --arg mac "$fixture_mac" '{
+    metadata:{uid:$uid, deletionTimestamp:null, labels:{
+      "fabric.samcday.com/bootstrap-placeholder":"true",
+      "fabric.samcday.com/platform":"true", "samcday.com/discovery":"false",
+      "samcday.com/mac":$mac}, annotations:{
+      "fabric.samcday.com/bootstrap-state":"install-response-issued",
+      "fabric.samcday.com/bootie-session-uid":"11111111-2222-3333-4444-555555555555",
+      "fabric.samcday.com/config-revision":("a" * 40),
+      "fabric.samcday.com/ignition-sha256":("b" * 64),
+      "fabric.samcday.com/bootie-image-digest":("sha256:" + ("c" * 64)),
+      "fabric.samcday.com/bootie-image-revision":("d" * 40)}},
+    spec:{unschedulable:true, taints:[
+      {key:"fabric.samcday.com/platform",value:"true",effect:"NoSchedule"},
+      {key:"node.kubernetes.io/unreachable",effect:"NoExecute"}]},
+    status:{nodeInfo:{machineID:""}, conditions:[{
+      type:"Ready",status:"Unknown",reason:"NodeStatusNeverUpdated"}]}
+  }')
+  qualify_failed_firstboot_node "$fixture" "$fixture_uid" "$fixture_mac" ||
+    die 'failed-firstboot safe-state fixture was rejected'
+  for unsafe_fixture in \
+    "$(jq -c '.status.nodeInfo.machineID="unexpected"' <<<"$fixture")" \
+    "$(jq -c '.status.addresses=[{type:"InternalIP",address:"10.66.1.10"}]' <<<"$fixture")" \
+    "$(jq -c '.status.conditions[0].reason="KubeletStoppedPosting"' <<<"$fixture")" \
+    "$(jq -c '.metadata.annotations["samcday.com/ignition-token"]="live"' <<<"$fixture")" \
+    "$(jq -c '.metadata.labels["node-role.kubernetes.io/worker"]="true"' <<<"$fixture")"; do
+    ! qualify_failed_firstboot_node "$unsafe_fixture" "$fixture_uid" "$fixture_mac" ||
+      die 'failed-firstboot qualification accepted an unsafe fixture'
+  done
   printf 'validated the stopped-node exact-UID retirement helper\n'
   exit 0
 fi
 
 [[ -n $node && -n $lock_receipt ]] || { usage; exit 2; }
 fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+if $failed_firstboot && [[ $FABRIC_NODE_ROLE != service ]]; then
+  die '--failed-firstboot is supported only for a TPM-bound service node'
+fi
 if [[ $mode == plan ]]; then
   [[ -z $confirmation ]] || die 'plan does not accept --confirm'
 else
@@ -128,11 +221,17 @@ done
 
 lease_time=$("${ik[@]}" --namespace kube-node-lease get lease "$node" \
   -o jsonpath='{.spec.renewTime}' 2>/dev/null || true)
-[[ -n $lease_time ]] || die 'target kubelet Lease is absent; inspect before retirement'
-lease_epoch=$(date --date="$lease_time" +%s) || die 'target Lease timestamp is invalid'
-now_epoch=$(date --utc +%s)
-lease_age=$((now_epoch - lease_epoch))
-((lease_age >= 90)) || die "target kubelet Lease is only ${lease_age}s old; wait for a proven stop"
+lease_age=absent
+if $failed_firstboot; then
+  [[ -z $lease_time ]] ||
+    die 'failed-firstboot placeholder has a kubelet Lease; use the normal stopped-node path'
+else
+  [[ -n $lease_time ]] || die 'target kubelet Lease is absent; inspect before retirement'
+  lease_epoch=$(date --date="$lease_time" +%s) || die 'target Lease timestamp is invalid'
+  now_epoch=$(date --utc +%s)
+  lease_age=$((now_epoch - lease_epoch))
+  ((lease_age >= 90)) || die "target kubelet Lease is only ${lease_age}s old; wait for a proven stop"
+fi
 
 secret_name=$node.node-password.k3s
 secret_uid=$("${ik[@]}" --namespace kube-system get secret "$secret_name" \
@@ -146,10 +245,27 @@ if [[ -n $secret_uid ]]; then
 else
   secret_uid=absent
 fi
-expected_confirmation="RETIRE:$node:$node_uid:$secret_uid"
+if $failed_firstboot; then
+  [[ $secret_uid == absent ]] ||
+    die 'failed-firstboot placeholder has a K3s node-password Secret'
+  [[ -z $("${ik[@]}" --namespace bootie get secret bootie-session \
+    --ignore-not-found --output=name) ]] ||
+    die 'failed-firstboot recovery requires the consumed Bootie session to be closed'
+  mac_label=${FABRIC_NODE_MAC//:/-}
+  qualify_failed_firstboot_node "$node_json" "$node_uid" "$mac_label" ||
+    die 'target is not the exact consumed, never-joined failed-firstboot placeholder'
+  failed_image_revision=$(jq -r \
+    '.metadata.annotations["fabric.samcday.com/bootie-image-revision"]' <<<"$node_json")
+  lock_revision=$(jq -r '.repoCommit' "$receipt")
+  git -C "$repo_root" merge-base --is-ancestor "$failed_image_revision" "$lock_revision" ||
+    die 'failed Bootie source revision is not an ancestor of the held recovery revision'
+  expected_confirmation="RETIRE-FAILED-FIRSTBOOT:$node:$node_uid:POWERED-OFF:$FABRIC_NODE_DISK"
+else
+  expected_confirmation="RETIRE:$node:$node_uid:$secret_uid"
+fi
 if [[ $mode == plan ]]; then
-  printf 'RETIREMENT READY node=%s uid=%s lease-age=%ss password-secret=%s\n' \
-    "$node" "$node_uid" "$lease_age" "$secret_uid"
+  printf 'RETIREMENT READY node=%s uid=%s lease-age=%s password-secret=%s failed-firstboot=%s\n' \
+    "$node" "$node_uid" "$lease_age" "$secret_uid" "$failed_firstboot"
   printf 'Exact live confirmation: %s\n' "$expected_confirmation"
   exit 0
 fi

@@ -36,7 +36,17 @@ For one node, the flow is:
    third voter. Then `finalize` attests and uncordons the same Node UID and destroys
    the secret-bearing tmpfs handoff.
 10. `lock release`, then `qualify --revision <main-commit>` before selecting the
-   next node.
+    next node.
+
+If a TPM-bound service node from an older Bootie revision warm-rebooted into a
+failed first Ignition boot, keep it off and recover through the same operator
+surface. After inspecting and conditionally clearing any stale maintenance lock,
+run a fresh `preflight` and `lock acquire`, then use `retire plan/apply` with
+`--failed-firstboot`. That mode accepts only the exact consumed placeholder with
+no Lease, node-password Secret, machine ID, InternalIP, or non-synthetic status;
+its confirmation binds the admitted disk and explicitly attests `POWERED-OFF`.
+Continue with ordinary `prepare` and `arm`. The current service-node install
+will power off at the cold gate before its first TPM-bound local boot.
 
 All mutating phases require the same UID-bound lock receipt and an exact
 confirmation. An interruption deliberately leaves a visible receipt and a
