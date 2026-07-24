@@ -180,6 +180,9 @@ if [[ $mode == arm ]]; then
     .status.availableReplicas == 1 and .status.readyReplicas == 1 and
     ([.spec.template.spec.containers[] | select(.name == "bootie") | .image] == [$image])
   ' <<<"$deployment" >/dev/null || die 'in-cluster Bootie is not exactly Ready at the pinned image'
+  [[ -z $("${ik[@]}" --namespace kube-system get secret "$node.node-password.k3s" \
+    --ignore-not-found --output=name) ]] ||
+    die 'target K3s node-password Secret remains; complete exact retirement first'
   output_dir=$(realpath -m -- "$output_dir")
   case $output_dir in "$repo_root" | "$repo_root"/*) die 'session receipt must remain outside Git' ;; esac
   [[ ! -e $output_dir && ! -L $output_dir ]] || die 'session receipt output already exists'
@@ -521,7 +524,6 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
   die 'maintenance lock and session receipt do not match'
 [[ $confirmation == "CLOSE-BOOTIE-SESSION:$node:$secret_uid" ]] ||
   die "exact --confirm CLOSE-BOOTIE-SESSION:$node:$secret_uid is required"
-[[ $live_secret_uid == "$secret_uid" ]] || die 'live Secret UID differs from the session receipt'
 jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
   .metadata.uid == $uid and
   .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
@@ -532,46 +534,56 @@ jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
   ((.metadata.annotations["samcday.com/install"] // "") == "")
 ' <<<"$node_json" >/dev/null || die 'one-use Ignition has not been fully consumed'
 
-proxy_dir=$(mktemp -d -- /dev/shm/.fabric-bootie-session-delete.XXXXXXXX)
-chmod 0700 "$proxy_dir"
-proxy_socket=$proxy_dir/kube-api.sock
-proxy_pid=
-cleanup_proxy() {
-  if [[ ${proxy_pid:-} =~ ^[1-9][0-9]*$ ]]; then
-    kill -TERM "$proxy_pid" 2>/dev/null || true
-    wait "$proxy_pid" 2>/dev/null || true
-  fi
-  find "$proxy_dir" -xdev -mindepth 1 -delete 2>/dev/null || true
-  rmdir "$proxy_dir" 2>/dev/null || true
-}
-trap cleanup_proxy EXIT
-path=/api/v1/namespaces/$namespace/secrets/$secret_name
-"${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
-  --accept-paths="^$path\$" --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
-  >"$proxy_dir/proxy.log" 2>&1 &
-proxy_pid=$!
-for _attempt in {1..40}; do
-  [[ -S $proxy_socket ]] && break
-  kill -0 "$proxy_pid" 2>/dev/null || break
-  sleep 0.1
-done
-[[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
-options=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" '{
-  apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
-}')
-response=$(curl --fail-with-body --silent --show-error --max-time 10 \
-  --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
-  --data-binary "$options" "http://localhost$path") || die 'preconditioned session deletion failed'
-jq -e --arg uid "$secret_uid" '
-  (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
-' <<<"$response" >/dev/null || die 'session deletion returned an unexpected object'
-for _attempt in {1..20}; do
+if jq -e '.closedAt | type == "string" and length > 0' "$receipt" >/dev/null; then
+  [[ $live_secret_uid == absent ]] || die 'closed receipt has a live same-name Bootie Secret'
+  printf 'ALREADY CLOSED %s session-uid=%s; immutable Secret is absent\n' \
+    "$node" "$secret_uid"
+  exit 0
+fi
+if [[ $live_secret_uid != absent ]]; then
+  [[ $live_secret_uid == "$secret_uid" ]] || die 'live Secret UID differs from the session receipt'
+  proxy_dir=$(mktemp -d -- /dev/shm/.fabric-bootie-session-delete.XXXXXXXX)
+  chmod 0700 "$proxy_dir"
+  proxy_socket=$proxy_dir/kube-api.sock
+  proxy_pid=
+  # shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+  cleanup_proxy() {
+    if [[ ${proxy_pid:-} =~ ^[1-9][0-9]*$ ]]; then
+      kill -TERM "$proxy_pid" 2>/dev/null || true
+      wait "$proxy_pid" 2>/dev/null || true
+    fi
+    find "$proxy_dir" -xdev -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$proxy_dir" 2>/dev/null || true
+  }
+  trap cleanup_proxy EXIT
+  path=/api/v1/namespaces/$namespace/secrets/$secret_name
+  "${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
+    --accept-paths="^$path\$" --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+    >"$proxy_dir/proxy.log" 2>&1 &
+  proxy_pid=$!
+  for _attempt in {1..40}; do
+    [[ -S $proxy_socket ]] && break
+    kill -0 "$proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  [[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
+  options=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" '{
+    apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
+  }')
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
+    --data-binary "$options" "http://localhost$path") || die 'preconditioned session deletion failed'
+  jq -e --arg uid "$secret_uid" '
+    (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
+  ' <<<"$response" >/dev/null || die 'session deletion returned an unexpected object'
+  for _attempt in {1..20}; do
+    [[ -z $("${ik[@]}" --namespace "$namespace" get secret "$secret_name" \
+      --ignore-not-found --output=name) ]] && break
+    sleep 0.25
+  done
   [[ -z $("${ik[@]}" --namespace "$namespace" get secret "$secret_name" \
-    --ignore-not-found --output=name) ]] && break
-  sleep 0.25
-done
-[[ -z $("${ik[@]}" --namespace "$namespace" get secret "$secret_name" \
-  --ignore-not-found --output=name) ]] || die 'Bootie session Secret remains'
+    --ignore-not-found --output=name) ]] || die 'Bootie session Secret remains'
+fi
 tmp=$(mktemp -- "$receipt_dir/.session.json.XXXXXXXX")
 chmod 0600 "$tmp"
 jq --arg closed "$(date --utc --iso-8601=seconds)" '.closedAt = $closed' "$receipt" >"$tmp"

@@ -129,8 +129,60 @@ handoff_dir=$(realpath -e -- "$handoff_dir")
 ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 [[ -z $("${ik[@]}" --namespace bootie get secret bootie-session \
   --ignore-not-found --output=name) ]] || die 'Bootie session Secret has not been closed'
+
+qualify_final_node() {
+  local candidate=$1
+  jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
+    --arg mac "$mac_label" --arg role "$role" --arg repo "$repo_commit" \
+    --arg ignition "$ignition_sha" --arg image_digest "$image_digest" \
+    --arg image_revision "$image_revision" '
+    .metadata.name == $node and .metadata.uid == $uid and
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    .metadata.labels["fabric.samcday.com/config-revision"] == $repo and
+    .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition and
+    .metadata.annotations["fabric.samcday.com/bootie-image-digest"] == $image_digest and
+    .metadata.annotations["fabric.samcday.com/bootie-image-revision"] == $image_revision and
+    ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
+    ((.metadata.labels["samcday.com/discovery"] // "") == "") and
+    ((.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "") == "") and
+    ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "") and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    (.spec.unschedulable // false) == false and
+    ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+      length) == 1 and
+    (.status.nodeInfo.machineID | type == "string" and length > 0) and
+    if $role == "service" then
+      .metadata.labels["fabric.samcday.com/platform"] == "true" and
+      .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+      .spec.taints == [{
+        effect:"NoSchedule", key:"fabric.samcday.com/platform", value:"true"
+      }]
+    else
+      .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+      (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+      (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+      (.spec.taints | length) == 2 and
+      ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus")] == [{
+        effect:"NoSchedule", key:"fabric.samcday.com/root-consensus", value:"true"
+      }]) and
+      ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane")] == [{
+        effect:"NoSchedule", key:"node-role.kubernetes.io/control-plane", value:"true"
+      }])
+    end
+  ' <<<"$candidate" >/dev/null
+}
+
 node_json=$("${ik[@]}" get node "$node" --output=json) || die 'joined Node is absent'
-jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
+pre_final=false
+if jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
   --arg mac "$mac_label" --arg role "$role" --arg session_uid "$session_uid" \
   --arg repo "$repo_commit" --arg ignition "$ignition_sha" \
   --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
@@ -164,37 +216,35 @@ jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
     ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus")] | length) == 1 and
     ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane")] | length) == 1
   end
-' <<<"$node_json" >/dev/null || die 'joined Node has not reached the exact pre-finalization contract'
+' <<<"$node_json" >/dev/null; then
+  pre_final=true
+elif ! qualify_final_node "$node_json"; then
+  die 'joined Node is neither the exact pre-finalization nor final contract'
+fi
 
-rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
-patch=$(jq -cn --arg rv "$rv" --arg uid "$node_uid" --arg session_uid "$session_uid" \
-  --arg repo "$repo_commit" --arg role "$role" '[
-    {"op":"test","path":"/metadata/resourceVersion","value":$rv},
-    {"op":"test","path":"/metadata/uid","value":$uid},
-    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
-    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
-    {"op":"add","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$repo},
-    {"op":"replace","path":"/spec/unschedulable","value":false}
-  ] + (if $role == "service" then [{
-    "op":"add","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"
-  }] else [] end) + [
-    {"op":"remove","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder"},
-    {"op":"remove","path":"/metadata/labels/samcday.com~1discovery"},
-    {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state"},
-    {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid"}
-  ]')
-"${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
-  die 'atomic bootstrap finalization raced or was rejected'
+if $pre_final; then
+  rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+  patch=$(jq -cn --arg rv "$rv" --arg uid "$node_uid" --arg session_uid "$session_uid" \
+    --arg repo "$repo_commit" --arg role "$role" '[
+      {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+      {"op":"test","path":"/metadata/uid","value":$uid},
+      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
+      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+      {"op":"add","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$repo},
+      {"op":"replace","path":"/spec/unschedulable","value":false}
+    ] + (if $role == "service" then [{
+      "op":"add","path":"/metadata/labels/node-role.kubernetes.io~1worker","value":"true"
+    }] else [] end) + [
+      {"op":"remove","path":"/metadata/labels/fabric.samcday.com~1bootstrap-placeholder"},
+      {"op":"remove","path":"/metadata/labels/samcday.com~1discovery"},
+      {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state"},
+      {"op":"remove","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid"}
+    ]')
+  "${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
+    die 'atomic bootstrap finalization raced or was rejected'
+fi
 node_json=$("${ik[@]}" get node "$node" --output=json)
-jq -e --arg revision "$repo_commit" --arg ignition "$ignition_sha" '
-  .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
-  .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition and
-  (.spec.unschedulable // false) == false and
-  ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
-  ((.metadata.labels["samcday.com/discovery"] // "") == "") and
-  ((.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "") == "") and
-  ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "")
-' <<<"$node_json" >/dev/null || die 'Node differs from the exact final attestation'
+qualify_final_node "$node_json" || die 'Node differs from the exact final attestation'
 
 find "$handoff_dir" -xdev -mindepth 1 -delete
 rmdir "$handoff_dir"

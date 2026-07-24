@@ -324,15 +324,9 @@ uid_delete() {
   ' <<<"$response" >/dev/null
 }
 
-uid_delete "$node_path" "$node_uid" "$node_rv" ||
-  die 'exact Node UID/resourceVersion deletion failed or raced'
-for _attempt in {1..60}; do
-  [[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] && break
-  sleep 0.5
-done
-[[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
-  die 'target Node remains after its preconditioned deletion'
-
+# Remove the exact node-password receipt first. If the process is interrupted,
+# the stopped Node still exists and the same retirement command can safely
+# re-plan; the reverse order could strand a stale password after Node deletion.
 if [[ $secret_uid != absent ]]; then
   live_secret_uid=$("${ik[@]}" --namespace kube-system get secret "$secret_name" \
     -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
@@ -345,6 +339,15 @@ if [[ $secret_uid != absent ]]; then
 fi
 [[ -z $("${ik[@]}" --namespace kube-system get secret "$secret_name" \
   --ignore-not-found --output=name) ]] || die 'target node-password Secret remains'
+
+uid_delete "$node_path" "$node_uid" "$node_rv" ||
+  die 'exact Node UID/resourceVersion deletion failed or raced'
+for _attempt in {1..60}; do
+  [[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] && break
+  sleep 0.5
+done
+[[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
+  die 'target Node remains after its preconditioned deletion'
 
 printf 'RETIRED %s uid=%s; its day-two maintenance lock remains held\n' "$node" "$node_uid"
 printf 'The stopped target may now be represented only by a fresh exact-MAC Bootie placeholder.\n'

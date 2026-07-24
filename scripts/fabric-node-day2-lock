@@ -38,8 +38,10 @@ Acquire creates the repository-wide kube-system/fabric-maintenance-lock only
 after the read-only node preflight succeeds. The exact UID/resourceVersion
 receipt stays on tmpfs for the whole one-node ceremony. Release is conditional
 on that immutable receipt and refuses until the selected Node is Ready and
-attested at the receipt's revision. An interrupted ceremony deliberately keeps
-the lock for inspection. Abort is available only while the original Node UID
+attested at the receipt's revision. If the conditional delete reply was lost,
+rerunning release cleans its receipt only after proving the lock is absent and
+the same final Node contract still holds. An interrupted ceremony deliberately
+keeps the lock for inspection. Abort is available only while the original Node UID
 is still Ready and no Bootie session or etcd replacement exists; it atomically
 uncordons that UID before conditionally deleting the lock. There is no
 automatic or name-only cleanup.
@@ -216,7 +218,13 @@ fi
 
 [[ -z $node && -z $output_dir && -n $receipt_dir ]] || { usage; exit 2; }
 validate_receipt_dir
-verify_live_lock
+lock_already_absent=false
+if [[ $mode == release && -z $("${ik[@]}" --namespace kube-system get \
+  configmap "$lock_name" --ignore-not-found --output=name) ]]; then
+  lock_already_absent=true
+else
+  verify_live_lock
+fi
 node=$(jq -r '.node' "$receipt_dir/lock.json")
 repo_commit=$(jq -r '.repoCommit' "$receipt_dir/lock.json")
 lock_uid=$(jq -r '.lock.uid' "$receipt_dir/lock.json")
@@ -274,39 +282,42 @@ else
     die 'target Node is not Ready at the receipt revision; refusing lock release'
 fi
 
-proxy_dir=$(mktemp -d -- /dev/shm/.fabric-node-lock-proxy.XXXXXXXX)
-chmod 0700 "$proxy_dir"
-proxy_socket=$proxy_dir/kube-api.sock
-"${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
-  --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\$" \
-  --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
-  >"$proxy_dir/proxy.log" 2>&1 &
-lock_proxy_pid=$!
-for _attempt in {1..40}; do
-  [[ -S $proxy_socket ]] && break
-  kill -0 "$lock_proxy_pid" 2>/dev/null || break
-  sleep 0.1
-done
-[[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
-delete_options=$(jq -cn --arg uid "$lock_uid" \
-  --arg rv "$(jq -r '.lock.resourceVersion' "$receipt_dir/lock.json")" '{
-    apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
-  }')
-response=$(curl --fail-with-body --silent --show-error --max-time 10 \
-  --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
-  --data-binary "$delete_options" \
-  "http://localhost/api/v1/namespaces/kube-system/configmaps/$lock_name") ||
-  die 'UID/resourceVersion-preconditioned lock deletion failed'
-jq -e --arg uid "$lock_uid" '
-  (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
-' <<<"$response" >/dev/null || die 'conditional lock deletion returned an unexpected object'
-stop_proxy
-[[ -z $("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
-  --ignore-not-found --output=name) ]] || die 'global maintenance lock remains after release'
+if ! $lock_already_absent; then
+  proxy_dir=$(mktemp -d -- /dev/shm/.fabric-node-lock-proxy.XXXXXXXX)
+  chmod 0700 "$proxy_dir"
+  proxy_socket=$proxy_dir/kube-api.sock
+  "${ik[@]}" proxy --unix-socket="$proxy_socket" --accept-hosts='^localhost$' \
+    --accept-paths="^/api/v1/namespaces/kube-system/configmaps/$lock_name\$" \
+    --reject-methods='^(GET|POST|PUT|PATCH|HEAD|OPTIONS|CONNECT|TRACE)$' \
+    >"$proxy_dir/proxy.log" 2>&1 &
+  lock_proxy_pid=$!
+  for _attempt in {1..40}; do
+    [[ -S $proxy_socket ]] && break
+    kill -0 "$lock_proxy_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  [[ -S $proxy_socket ]] || die 'conditional-delete API proxy did not start'
+  delete_options=$(jq -cn --arg uid "$lock_uid" \
+    --arg rv "$(jq -r '.lock.resourceVersion' "$receipt_dir/lock.json")" '{
+      apiVersion:"v1", kind:"DeleteOptions", preconditions:{uid:$uid, resourceVersion:$rv}
+    }')
+  response=$(curl --fail-with-body --silent --show-error --max-time 10 \
+    --unix-socket "$proxy_socket" --request DELETE --header 'Content-Type: application/json' \
+    --data-binary "$delete_options" \
+    "http://localhost/api/v1/namespaces/kube-system/configmaps/$lock_name") ||
+    die 'UID/resourceVersion-preconditioned lock deletion failed'
+  jq -e --arg uid "$lock_uid" '
+    (.kind == "Status" and .status == "Success") or .metadata.uid == $uid
+  ' <<<"$response" >/dev/null || die 'conditional lock deletion returned an unexpected object'
+  stop_proxy
+  [[ -z $("${ik[@]}" --namespace kube-system get configmap "$lock_name" \
+    --ignore-not-found --output=name) ]] || die 'global maintenance lock remains after release'
+fi
 find "$receipt_dir" -xdev -mindepth 1 -delete
 rmdir "$receipt_dir"
 if [[ $mode == abort ]]; then
   printf 'ABORTED %s uid=%s; original Ready Node uncordoned\n' "$node" "$lock_uid"
 else
-  printf 'UNLOCKED %s uid=%s after Ready revision attestation\n' "$node" "$lock_uid"
+  printf 'UNLOCKED %s uid=%s after Ready revision attestation%s\n' "$node" "$lock_uid" \
+    "$($lock_already_absent && printf ' (lock was already absent)' || true)"
 fi

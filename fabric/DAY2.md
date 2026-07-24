@@ -42,7 +42,8 @@ For one node, the flow is:
    inventoried address before Ignition fetches router assets; no
    temporary-address router aperture is part of day two.
 7. `status` reports `install-response-issued`; after the one-use Ignition fetch,
-   `close` conditionally deletes the exact session Secret.
+   `close` conditionally deletes the exact session Secret. Rerunning it after a
+   lost delete reply safely records the already-absent Secret as closed.
 8. A successfully installed service node powers off instead of warm-rebooting.
    Remove AC power from only that node for at least 30 seconds, then restore it;
    this is the explicit TPM first-boot gate. A failed install remains on its
@@ -51,9 +52,13 @@ For one node, the flow is:
 9. On a control-plane node, `etcd plan-promote` and `etcd promote` restore the
    third voter. Promotion is also intent-backed and rerunnable if the API reply
    or local process is lost. Then `finalize` attests and uncordons the same Node
-   UID and destroys the secret-bearing tmpfs handoff.
+   UID and destroys the secret-bearing tmpfs handoff. If its Node patch already
+   succeeded, rerunning `finalize` recognizes the exact final contract and
+   finishes local cleanup without patching again.
 10. `lock release`, then `qualify --revision <main-commit>` before selecting the
-    next node.
+    next node. Release is rerunnable if its exact conditional delete succeeded
+    but the reply was lost; it re-proves the final Node before cleaning the
+    local receipt.
 
 If a TPM-bound service node from an older Bootie revision warm-rebooted into a
 failed first Ignition boot, keep it off and recover through the same operator
