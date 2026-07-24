@@ -35,13 +35,23 @@ Usage:
     --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
     --receipt-dir /dev/shm/fabric-az1-svc1-bootie-session \
     --confirm CLOSE-BOOTIE-SESSION:<node>:<secret-uid>
+  scripts/fabric-node-bootie-session abort-failed-install \
+    --lock-receipt /dev/shm/fabric-az1-svc1-day2-lock \
+    --receipt-dir /dev/shm/fabric-az1-svc1-bootie-session \
+    [--confirm ABORT-FAILED-INSTALL:<node>:<node-uid>:<secret-uid>:POWERED-OFF:<disk>]
 
 arm requires the stopped old Node to have been retired. It creates one exact
 cordoned placeholder, one immutable bootie/bootie-session Secret, and then
 atomically arms that placeholder. Bootie consumes the install response and
 Ignition token once. close is allowed only after the token was consumed; it
 UID/resourceVersion-deletes the Secret while retaining the non-secret receipt
-for finalization. Rerunning the same confirmed arm adopts only its exact safe
+for finalization. abort-failed-install is the service-node recovery path when
+PXE was consumed but destination Ignition was not: it requires a never-joined
+placeholder and explicit POWERED-OFF attestation, revokes the exact token,
+UID/resourceVersion-deletes the immutable Secret, and marks the receipt closed
+so the existing failed-firstboot retirement path can be reused. Omitting its
+confirmation is read-only and prints the exact value. Rerunning the same
+confirmed arm adopts only its exact safe
 discovery placeholder, immutable Secret bytes, or armed/consumed session and
 finishes the missing step or receipt. record remains available to reconstruct
 only the non-secret local receipt after a fully matching arm. There is no
@@ -63,7 +73,7 @@ receipt_dir=
 confirmation=
 case ${1:-} in
   --check) mode=check; shift ;;
-  arm | record | status | close) mode=$1; shift ;;
+  arm | record | status | close | abort-failed-install) mode=$1; shift ;;
   -h | --help) usage; exit 0 ;;
   *) usage; exit 2 ;;
 esac
@@ -84,14 +94,6 @@ for command in base64 bash chmod curl date find git id jq kubectl mktemp mv \
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 fabric_validate_node_inventory || die 'five-node inventory validation failed'
-if [[ $mode == check ]]; then
-  [[ -z $node && -z $lock_receipt && -z $handoff_dir && -z $output_dir &&
-     -z $receipt_dir && -z $confirmation ]] || die '--check accepts no other arguments'
-  bash -n "$script_path"
-  printf 'validated the UID-bound, one-use in-cluster Bootie session helper\n'
-  exit 0
-fi
-
 ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 
 validate_receipt() {
@@ -111,6 +113,153 @@ validate_receipt() {
     (.secret.resourceVersion | type == "string" and length > 0)
   ' "$receipt_dir/session.json" >/dev/null || die 'session receipt is malformed'
 }
+
+qualify_failed_install_abort_node() {
+  local candidate_json=$1 node_uid=$2 session_uid=$3 mac_label=$4 revision=$5
+  local ignition_sha=$6 disk=$7 image_digest=$8 image_revision=$9 phase=${10}
+  jq -e --arg uid "$node_uid" --arg session_uid "$session_uid" \
+    --arg mac "$mac_label" --arg revision "$revision" \
+    --arg ignition_sha "$ignition_sha" --arg disk "$disk" \
+    --arg image_digest "$image_digest" --arg image_revision "$image_revision" \
+    --arg phase "$phase" '
+    .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+    .metadata.labels["fabric.samcday.com/platform"] == "true" and
+    .metadata.labels["samcday.com/discovery"] == "false" and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+    (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+    (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+    .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+    .metadata.annotations["fabric.samcday.com/config-revision"] == $revision and
+    .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition_sha and
+    .metadata.annotations["fabric.samcday.com/bootie-image-digest"] == $image_digest and
+    .metadata.annotations["fabric.samcday.com/bootie-image-revision"] == $image_revision and
+    (if $phase == "issued" then
+      (.metadata.annotations["samcday.com/ignition-token"] |
+        type == "string" and length > 0) and
+      .metadata.annotations["samcday.com/ignition-mode"] == "install" and
+      .metadata.annotations["samcday.com/boot-device"] == $disk and
+      ((.metadata.annotations["fabric.samcday.com/aborted-session-uid"] // "") == "")
+    elif $phase == "revoked" then
+      ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+      ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+      ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+      .metadata.annotations["fabric.samcday.com/aborted-session-uid"] == $session_uid
+    else false end) and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    (.spec.unschedulable // false) == true and
+    ([.spec.taints[]? | select(
+      .key == "fabric.samcday.com/platform" and .value == "true" and
+      .effect == "NoSchedule")] | length) == 1 and
+    all(.spec.taints[]?;
+      (.key == "fabric.samcday.com/platform" and .value == "true" and
+        .effect == "NoSchedule") or
+      (.key == "node.kubernetes.io/unschedulable" and .effect == "NoSchedule") or
+      (.key == "node.kubernetes.io/unreachable" and
+        (.effect == "NoSchedule" or .effect == "NoExecute"))) and
+    ((.status.nodeInfo.machineID // "") == "") and
+    ([.status.addresses[]? | select(.type == "InternalIP")] | length) == 0 and
+    ([.status.conditions[]? |
+      select(.status != "Unknown" or .reason != "NodeStatusNeverUpdated")] |
+      length) == 0
+  ' <<<"$candidate_json" >/dev/null
+}
+
+qualify_abort_secret() {
+  local candidate_json=$1 node=$2 uid=$3 rv=$4 expected_session=$5
+  jq -e --arg node "$node" --arg uid "$uid" --arg rv "$rv" \
+    --argjson expected_session "$expected_session" '
+    .metadata.name == "bootie-session" and .metadata.namespace == "bootie" and
+    .metadata.uid == $uid and .metadata.resourceVersion == $rv and
+    .metadata.deletionTimestamp == null and .immutable == true and .type == "Opaque" and
+    .metadata.labels["fabric.samcday.com/node"] == $node and
+    .metadata.labels["fabric.samcday.com/purpose"] == "node-day-two" and
+    ((.data | keys | sort) == ([($node + ".ign"), "install-policy", "session.json"] | sort)) and
+    ((.data["session.json"] | @base64d | fromjson) == $expected_session)
+  ' <<<"$candidate_json" >/dev/null
+}
+
+if [[ $mode == check ]]; then
+  [[ -z $node && -z $lock_receipt && -z $handoff_dir && -z $output_dir &&
+     -z $receipt_dir && -z $confirmation ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+  fixture_node_uid=11111111-2222-3333-4444-555555555555
+  fixture_session_uid=22222222-3333-4444-5555-666666666666
+  fixture_revision=$(printf 'a%.0s' {1..40})
+  fixture_ignition=$(printf 'b%.0s' {1..64})
+  fixture_image_digest=sha256:$(printf 'c%.0s' {1..64})
+  fixture_image_revision=$(printf 'd%.0s' {1..40})
+  fixture_disk=/dev/disk/by-id/example
+  fixture_mac=00-00-5e-00-53-71
+  fixture_node=$(jq -cn --arg uid "$fixture_node_uid" \
+    --arg session_uid "$fixture_session_uid" --arg revision "$fixture_revision" \
+    --arg ignition "$fixture_ignition" --arg image_digest "$fixture_image_digest" \
+    --arg image_revision "$fixture_image_revision" --arg disk "$fixture_disk" \
+    --arg mac "$fixture_mac" '{
+      metadata:{uid:$uid,deletionTimestamp:null,labels:{
+        "fabric.samcday.com/bootstrap-placeholder":"true",
+        "fabric.samcday.com/platform":"true","samcday.com/discovery":"false",
+        "samcday.com/mac":$mac},annotations:{
+        "fabric.samcday.com/bootie-session-uid":$session_uid,
+        "fabric.samcday.com/bootstrap-state":"install-response-issued",
+        "fabric.samcday.com/config-revision":$revision,
+        "fabric.samcday.com/ignition-sha256":$ignition,
+        "fabric.samcday.com/bootie-image-digest":$image_digest,
+        "fabric.samcday.com/bootie-image-revision":$image_revision,
+        "samcday.com/ignition-token":"token","samcday.com/ignition-mode":"install",
+        "samcday.com/boot-device":$disk}},
+      spec:{unschedulable:true,taints:[
+        {key:"fabric.samcday.com/platform",value:"true",effect:"NoSchedule"},
+        {key:"node.kubernetes.io/unreachable",effect:"NoExecute"}]},
+      status:{nodeInfo:{machineID:""},conditions:[{
+        type:"Ready",status:"Unknown",reason:"NodeStatusNeverUpdated"}]}
+    }')
+  qualify_failed_install_abort_node "$fixture_node" "$fixture_node_uid" \
+    "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
+    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" issued ||
+    die 'issued failed-install fixture was rejected'
+  fixture_revoked=$(jq -c --arg session_uid "$fixture_session_uid" '
+    del(.metadata.annotations["samcday.com/ignition-token"]) |
+    del(.metadata.annotations["samcday.com/ignition-mode"]) |
+    del(.metadata.annotations["samcday.com/boot-device"]) |
+    .metadata.annotations["fabric.samcday.com/aborted-session-uid"] = $session_uid
+  ' <<<"$fixture_node")
+  qualify_failed_install_abort_node "$fixture_revoked" "$fixture_node_uid" \
+    "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
+    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" revoked ||
+    die 'revoked failed-install fixture was rejected'
+  for unsafe_fixture in \
+    "$(jq -c '.status.nodeInfo.machineID="unexpected"' <<<"$fixture_node")" \
+    "$(jq -c '.status.addresses=[{type:"InternalIP",address:"10.66.1.10"}]' <<<"$fixture_node")" \
+    "$(jq -c '.metadata.labels["node-role.kubernetes.io/worker"]="true"' <<<"$fixture_node")" \
+    "$(jq -c 'del(.metadata.annotations["samcday.com/ignition-token"])' <<<"$fixture_node")"; do
+    ! qualify_failed_install_abort_node "$unsafe_fixture" "$fixture_node_uid" \
+      "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
+      "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" issued ||
+      die 'failed-install qualification accepted an unsafe issued fixture'
+  done
+  fixture_session=$(jq -cn --arg node_uid "$fixture_node_uid" \
+    --arg session_uid "$fixture_session_uid" '{
+      schema:1,purpose:"fabric-node-day-two-session",node:"fabric-az1-svc1",
+      nodeUid:$node_uid,lockUid:$session_uid
+    }')
+  fixture_session_b64=$(printf '%s' "$fixture_session" | base64 -w0)
+  fixture_secret=$(jq -cn --arg uid "$fixture_session_uid" --arg session "$fixture_session_b64" '{
+    metadata:{name:"bootie-session",namespace:"bootie",uid:$uid,resourceVersion:"123",
+      deletionTimestamp:null,labels:{"fabric.samcday.com/node":"fabric-az1-svc1",
+        "fabric.samcday.com/purpose":"node-day-two"}},immutable:true,type:"Opaque",
+    data:{"fabric-az1-svc1.ign":"e30=","install-policy":"e30=","session.json":$session}
+  }')
+  qualify_abort_secret "$fixture_secret" fabric-az1-svc1 "$fixture_session_uid" 123 \
+    "$fixture_session" || die 'immutable failed-install Secret fixture was rejected'
+  ! qualify_abort_secret "$(jq -c '.metadata.resourceVersion="124"' <<<"$fixture_secret")" \
+    fabric-az1-svc1 "$fixture_session_uid" 123 "$fixture_session" ||
+    die 'replacement failed-install Secret fixture was accepted'
+  printf 'validated the UID-bound, one-use in-cluster Bootie session helper\n'
+  exit 0
+fi
 
 if [[ $mode == arm ]]; then
   [[ -n $node && -n $lock_receipt && -n $handoff_dir && -n $output_dir &&
@@ -516,23 +665,122 @@ if [[ $mode == status ]]; then
   exit 0
 fi
 
-[[ -n $lock_receipt && -n $confirmation ]] || { usage; exit 2; }
+[[ -n $lock_receipt ]] || { usage; exit 2; }
+if [[ $mode == close && -z $confirmation ]]; then
+  usage
+  exit 2
+fi
 lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
 [[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" &&
    $(jq -r '.lock.uid' "$lock_receipt/lock.json") == "$(jq -r '.session.lockUid' "$receipt")" ]] ||
   die 'maintenance lock and session receipt do not match'
-[[ $confirmation == "CLOSE-BOOTIE-SESSION:$node:$secret_uid" ]] ||
-  die "exact --confirm CLOSE-BOOTIE-SESSION:$node:$secret_uid is required"
-jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
-  .metadata.uid == $uid and
-  .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
-  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
-  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
-  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
-  ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
-  ((.metadata.annotations["samcday.com/install"] // "") == "")
-' <<<"$node_json" >/dev/null || die 'one-use Ignition has not been fully consumed'
+
+if [[ $mode == abort-failed-install ]]; then
+  [[ $(jq -r '.session.role' "$receipt") == service ]] ||
+    die 'failed-install abort is restricted to service nodes'
+  if jq -e '
+    (.closedAt | type == "string" and length > 0) and
+    .aborted.kind == "failed-live-install"
+  ' "$receipt" >/dev/null; then
+    [[ $live_secret_uid == absent ]] ||
+      die 'aborted receipt has a live same-name Bootie Secret'
+    printf 'ALREADY ABORTED %s session-uid=%s; immutable Secret is absent\n' \
+      "$node" "$secret_uid"
+    exit 0
+  fi
+  [[ -z $(jq -r '.closedAt // ""' "$receipt") ]] ||
+    die 'closed non-abort receipt cannot be reused for a failed-install abort'
+  mac_label=${FABRIC_NODE_MAC//:/-}
+  session_revision=$(jq -r '.session.repoCommit' "$receipt")
+  session_ignition=$(jq -r '.session.ignitionSha256' "$receipt")
+  session_disk=$(jq -r '.session.bootDevice' "$receipt")
+  session_image_digest=$(jq -r '.session.bootieImageDigest' "$receipt")
+  session_image_revision=$(jq -r '.session.bootieImageRevision' "$receipt")
+  [[ $session_disk == "$FABRIC_NODE_DISK" ]] ||
+    die 'failed-install receipt names another destination disk'
+  abort_phase=
+  if qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
+    "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
+    "$session_image_digest" "$session_image_revision" issued; then
+    abort_phase=issued
+  elif qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
+    "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
+    "$session_image_digest" "$session_image_revision" revoked; then
+    abort_phase=revoked
+  else
+    die 'target is not an exact never-joined failed-install placeholder'
+  fi
+  nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
+  for inventory_node in $(yq -r '.nodes[].name' "$repo_root/fabric/inventory/nodes.yaml"); do
+    [[ $inventory_node == "$node" ]] && continue
+    jq -e --arg node "$inventory_node" '
+      [.items[] | select(.metadata.name == $node)] as $matches |
+      ($matches | length) == 1 and
+      ([ $matches[0].status.conditions[]? |
+        select(.type == "Ready" and .status == "True") ] | length) == 1
+    ' <<<"$nodes_json" >/dev/null || die "non-target Node is not Ready: $inventory_node"
+  done
+  [[ -z $("${ik[@]}" --namespace kube-node-lease get lease "$node" \
+    --ignore-not-found --output=name) ]] ||
+    die 'failed-install placeholder has a kubelet Lease'
+  [[ -z $("${ik[@]}" --namespace kube-system get secret "$node.node-password.k3s" \
+    --ignore-not-found --output=name) ]] ||
+    die 'failed-install placeholder has a K3s node-password Secret'
+  if [[ $live_secret_uid != absent ]]; then
+    [[ $live_secret_uid == "$secret_uid" ]] ||
+      die 'live Secret UID differs from the session receipt'
+    qualify_abort_secret "$secret_json" "$node" "$secret_uid" "$secret_rv" \
+      "$(jq -c '.session' "$receipt")" ||
+      die 'live immutable Secret differs from the failed-install receipt'
+  elif [[ $abort_phase == issued ]]; then
+    die 'issued failed-install session lost its immutable Secret before revocation'
+  fi
+  expected_confirmation="ABORT-FAILED-INSTALL:$node:$node_uid:$secret_uid:POWERED-OFF:$session_disk"
+  if [[ -z $confirmation ]]; then
+    printf 'FAILED INSTALL ABORT READY node=%s node-uid=%s session-uid=%s phase=%s\n' \
+      "$node" "$node_uid" "$secret_uid" "$abort_phase"
+    printf 'Exact live confirmation: %s\n' "$expected_confirmation"
+    exit 0
+  fi
+  [[ $confirmation == "$expected_confirmation" ]] ||
+    die "exact --confirm $expected_confirmation is required"
+  if [[ $abort_phase == issued ]]; then
+    node_rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+    patch=$(jq -cn --arg uid "$node_uid" --arg rv "$node_rv" \
+      --arg session_uid "$secret_uid" --arg token "$token" --arg disk "$session_disk" '[
+      {"op":"test","path":"/metadata/uid","value":$uid},
+      {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
+      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+      {"op":"test","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
+      {"op":"test","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"},
+      {"op":"test","path":"/metadata/annotations/samcday.com~1boot-device","value":$disk},
+      {"op":"add","path":"/metadata/annotations/fabric.samcday.com~1aborted-session-uid","value":$session_uid},
+      {"op":"remove","path":"/metadata/annotations/samcday.com~1ignition-token"},
+      {"op":"remove","path":"/metadata/annotations/samcday.com~1ignition-mode"},
+      {"op":"remove","path":"/metadata/annotations/samcday.com~1boot-device"}
+    ]')
+    node_json=$("${ik[@]}" patch node "$node" --type=json --patch "$patch" --output=json) ||
+      die 'exact failed-install token revocation raced or failed'
+    qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
+      "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
+      "$session_image_digest" "$session_image_revision" revoked ||
+      die 'failed-install token revocation returned an unexpected Node'
+  fi
+else
+  [[ $confirmation == "CLOSE-BOOTIE-SESSION:$node:$secret_uid" ]] ||
+    die "exact --confirm CLOSE-BOOTIE-SESSION:$node:$secret_uid is required"
+  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
+    .metadata.uid == $uid and
+    .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "")
+  ' <<<"$node_json" >/dev/null || die 'one-use Ignition has not been fully consumed'
+fi
 
 if jq -e '.closedAt | type == "string" and length > 0' "$receipt" >/dev/null; then
   [[ $live_secret_uid == absent ]] || die 'closed receipt has a live same-name Bootie Secret'
@@ -586,7 +834,27 @@ if [[ $live_secret_uid != absent ]]; then
 fi
 tmp=$(mktemp -- "$receipt_dir/.session.json.XXXXXXXX")
 chmod 0600 "$tmp"
-jq --arg closed "$(date --utc --iso-8601=seconds)" '.closedAt = $closed' "$receipt" >"$tmp"
+closed=$(date --utc --iso-8601=seconds)
+if [[ $mode == abort-failed-install ]]; then
+  jq --arg closed "$closed" --arg node_uid "$node_uid" \
+    --arg session_uid "$secret_uid" --arg disk "$session_disk" '
+    .closedAt = $closed |
+    .aborted = {
+      kind: "failed-live-install",
+      nodeUid: $node_uid,
+      sessionUid: $session_uid,
+      bootDevice: $disk,
+      abortedAt: $closed
+    }
+  ' "$receipt" >"$tmp"
+else
+  jq --arg closed "$closed" '.closedAt = $closed' "$receipt" >"$tmp"
+fi
 mv -f -- "$tmp" "$receipt"
-printf 'CLOSED %s session-uid=%s; immutable Secret deleted after one-use consumption\n' \
-  "$node" "$secret_uid"
+if [[ $mode == abort-failed-install ]]; then
+  printf 'ABORTED FAILED INSTALL %s node-uid=%s session-uid=%s; token revoked and immutable Secret deleted\n' \
+    "$node" "$node_uid" "$secret_uid"
+else
+  printf 'CLOSED %s session-uid=%s; immutable Secret deleted after one-use consumption\n' \
+    "$node" "$secret_uid"
+fi

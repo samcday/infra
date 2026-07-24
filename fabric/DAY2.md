@@ -41,9 +41,12 @@ For one node, the flow is:
    its temporary DHCP address, while the first local boot must use the node's
    inventoried address before Ignition fetches router assets; no
    temporary-address router aperture is part of day two.
-7. `status` reports `install-response-issued`; after the one-use Ignition fetch,
+7. `status` reports `install-response-issued`; after the destination-Ignition
+   request consumes the one-use token, `status` reports that token absent and
    `close` conditionally deletes the exact session Secret. Rerunning it after a
-   lost delete reply safely records the already-absent Secret as closed.
+   lost delete reply safely records the already-absent Secret as closed. Do not
+   infer install completion from a silent console, lost video, or network
+   silence: token consumption is the positive installer-side gate.
 8. A successfully installed service node powers off instead of warm-rebooting.
    Remove AC power from only that node for at least 30 seconds, then restore it;
    this is the explicit TPM first-boot gate. A failed install remains on its
@@ -76,6 +79,20 @@ The current service-node install will power off at the cold gate before its
 first TPM-bound local boot. Do not clear and reacquire the lock: ordinary
 acquisition intentionally requires the target to exist in the healthy five-node
 preflight set.
+
+If PXE served the live installer but the destination-Ignition token was never
+consumed, the disk was not successfully replaced and the ordinary session
+cannot be closed. First prove the target is physically powered off; lost video,
+ping failure, or an idle Bootie log is not proof. Run `abort-failed-install`
+without `--confirm` to qualify the exact never-joined service placeholder and
+print its UID-bound `POWERED-OFF` confirmation, then rerun it with that exact
+value. It atomically revokes the outstanding token, conditionally deletes only
+the receipt-bound immutable Secret, and records an aborted closed receipt. Use
+that receipt with `retire plan/apply --failed-firstboot`, then
+`lock advance-failed-firstboot`, `prepare`, and `arm` as above. This recovery is
+restricted to service placeholders with no Lease, node-password Secret,
+machine ID, InternalIP, or real kubelet status; it cannot abort a joined node or
+a control-plane session.
 
 All mutating phases require the same UID-bound lock receipt and an exact
 confirmation. An interruption deliberately leaves a visible receipt and a
