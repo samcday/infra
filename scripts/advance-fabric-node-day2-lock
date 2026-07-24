@@ -112,6 +112,13 @@ qualify_surviving_nodes() {
   ' <<<"$nodes" >/dev/null
 }
 
+expected_survivor_names() {
+  local inventory=$1 target=$2
+  yq -o=json -I=0 '.' "$inventory" |
+    jq -c --arg target "$target" \
+      '[.nodes[].name | select(. != $target)] | sort'
+}
+
 qualify_flux() {
   local source=$1 kustomizations=$2 revision=$3 required=$4
   jq -e --arg revision "$revision" '
@@ -166,6 +173,9 @@ if $check_only; then
   rm -f -- "$fixture_session.tmp"
 
   fixture_survivors='["fabric-az1-cp1","fabric-az1-cp2","fabric-az1-cp3","fabric-az1-svc2"]'
+  [[ $(expected_survivor_names "$repo_root/fabric/inventory/nodes.yaml" \
+    fabric-az1-svc1) == "$fixture_survivors" ]] ||
+    die 'service-node survivor inventory projection was incorrect'
   fixture_nodes=$(jq -cn --argjson names "$fixture_survivors" '{items:($names | map({
     metadata:{name:., deletionTimestamp:null},
     status:{conditions:[{type:"Ready",status:"True"}]}
@@ -262,9 +272,8 @@ ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
   --ignore-not-found --output=name) ]] || die 'a live Bootie session still exists'
 
 nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
-# shellcheck disable=SC2016 # $node is a yq variable supplied with --arg.
-expected_survivors=$(yq -o=json -I=0 --arg node "$node" \
-  '[.nodes[].name | select(. != $node)] | sort' "$repo_root/fabric/inventory/nodes.yaml")
+expected_survivors=$(expected_survivor_names \
+  "$repo_root/fabric/inventory/nodes.yaml" "$node")
 qualify_surviving_nodes "$nodes_json" "$node" "$expected_survivors" ||
   die 'live Node set is not exactly the four Ready non-target inventory nodes'
 
