@@ -76,8 +76,9 @@ done
 fabric_validate_node_inventory || die 'five-node inventory validation failed'
 
 qualify_failed_firstboot_node() {
-  local candidate_json=$1 expected_uid=$2 expected_mac=$3
-  jq -e --arg uid "$expected_uid" --arg mac "$expected_mac" '
+  local candidate_json=$1 expected_uid=$2 expected_mac=$3 expected_revision=$4
+  jq -e --arg uid "$expected_uid" --arg mac "$expected_mac" \
+    --arg revision "$expected_revision" '
     .metadata.uid == $uid and .metadata.deletionTimestamp == null and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["fabric.samcday.com/platform"] == "true" and
@@ -89,8 +90,7 @@ qualify_failed_firstboot_node() {
     .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
     (.metadata.annotations["fabric.samcday.com/bootie-session-uid"] |
       test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
-    (.metadata.annotations["fabric.samcday.com/config-revision"] |
-      test("^[0-9a-f]{40}$")) and
+    .metadata.annotations["fabric.samcday.com/config-revision"] == $revision and
     (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
       test("^[0-9a-f]{64}$")) and
     (.metadata.annotations["fabric.samcday.com/bootie-image-digest"] |
@@ -126,14 +126,16 @@ if [[ $mode == check ]]; then
   bash -n "$script_path"
   fixture_uid=01234567-89ab-cdef-0123-456789abcdef
   fixture_mac=00-00-5e-00-53-71
-  fixture=$(jq -cn --arg uid "$fixture_uid" --arg mac "$fixture_mac" '{
+  fixture_revision=$(printf 'a%.0s' {1..40})
+  fixture=$(jq -cn --arg uid "$fixture_uid" --arg mac "$fixture_mac" \
+    --arg revision "$fixture_revision" '{
     metadata:{uid:$uid, deletionTimestamp:null, labels:{
       "fabric.samcday.com/bootstrap-placeholder":"true",
       "fabric.samcday.com/platform":"true", "samcday.com/discovery":"false",
       "samcday.com/mac":$mac}, annotations:{
       "fabric.samcday.com/bootstrap-state":"install-response-issued",
       "fabric.samcday.com/bootie-session-uid":"11111111-2222-3333-4444-555555555555",
-      "fabric.samcday.com/config-revision":("a" * 40),
+      "fabric.samcday.com/config-revision":$revision,
       "fabric.samcday.com/ignition-sha256":("b" * 64),
       "fabric.samcday.com/bootie-image-digest":("sha256:" + ("c" * 64)),
       "fabric.samcday.com/bootie-image-revision":("d" * 40)}},
@@ -143,15 +145,18 @@ if [[ $mode == check ]]; then
     status:{nodeInfo:{machineID:""}, conditions:[{
       type:"Ready",status:"Unknown",reason:"NodeStatusNeverUpdated"}]}
   }')
-  qualify_failed_firstboot_node "$fixture" "$fixture_uid" "$fixture_mac" ||
+  qualify_failed_firstboot_node "$fixture" "$fixture_uid" "$fixture_mac" \
+    "$fixture_revision" ||
     die 'failed-firstboot safe-state fixture was rejected'
   for unsafe_fixture in \
     "$(jq -c '.status.nodeInfo.machineID="unexpected"' <<<"$fixture")" \
     "$(jq -c '.status.addresses=[{type:"InternalIP",address:"10.66.1.10"}]' <<<"$fixture")" \
     "$(jq -c '.status.conditions[0].reason="KubeletStoppedPosting"' <<<"$fixture")" \
     "$(jq -c '.metadata.annotations["samcday.com/ignition-token"]="live"' <<<"$fixture")" \
+    "$(jq -c '.metadata.annotations["fabric.samcday.com/config-revision"]=("e" * 40)' <<<"$fixture")" \
     "$(jq -c '.metadata.labels["node-role.kubernetes.io/worker"]="true"' <<<"$fixture")"; do
-    ! qualify_failed_firstboot_node "$unsafe_fixture" "$fixture_uid" "$fixture_mac" ||
+    ! qualify_failed_firstboot_node "$unsafe_fixture" "$fixture_uid" "$fixture_mac" \
+      "$fixture_revision" ||
       die 'failed-firstboot qualification accepted an unsafe fixture'
   done
   printf 'validated the stopped-node exact-UID retirement helper\n'
@@ -200,7 +205,13 @@ node_json=$(jq -ce --arg node "$node" '.items[] | select(.metadata.name == $node
   <<<"$nodes_json") || die 'target Node is already absent'
 node_uid=$(jq -r '.metadata.uid' <<<"$node_json")
 node_rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
-[[ $node_uid == "$receipt_node_uid" ]] || die 'target Node UID differs from lock acquisition'
+if $failed_firstboot; then
+  [[ $node_uid != "$receipt_node_uid" ]] ||
+    die 'failed-firstboot target is still the Node from lock acquisition'
+else
+  [[ $node_uid == "$receipt_node_uid" ]] ||
+    die 'target Node UID differs from lock acquisition'
+fi
 jq -e '
   .metadata.deletionTimestamp == null and
   (.spec.unschedulable // false) == true and
@@ -252,11 +263,12 @@ if $failed_firstboot; then
     --ignore-not-found --output=name) ]] ||
     die 'failed-firstboot recovery requires the consumed Bootie session to be closed'
   mac_label=${FABRIC_NODE_MAC//:/-}
-  qualify_failed_firstboot_node "$node_json" "$node_uid" "$mac_label" ||
-    die 'target is not the exact consumed, never-joined failed-firstboot placeholder'
+  lock_revision=$(jq -r '.repoCommit' "$receipt")
+  qualify_failed_firstboot_node "$node_json" "$node_uid" "$mac_label" \
+    "$lock_revision" ||
+    die 'target is not the exact lock-bound, consumed, never-joined failed-firstboot placeholder'
   failed_image_revision=$(jq -r \
     '.metadata.annotations["fabric.samcday.com/bootie-image-revision"]' <<<"$node_json")
-  lock_revision=$(jq -r '.repoCommit' "$receipt")
   git -C "$repo_root" merge-base --is-ancestor "$failed_image_revision" "$lock_revision" ||
     die 'failed Bootie source revision is not an ancestor of the held recovery revision'
   expected_confirmation="RETIRE-FAILED-FIRSTBOOT:$node:$node_uid:POWERED-OFF:$FABRIC_NODE_DISK"
