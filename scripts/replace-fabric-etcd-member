@@ -42,11 +42,16 @@ Lease and four healthy non-target Kubernetes Nodes. Through one pinned healthy
 root SSH hop it verifies the two surviving voters, saves and validates a
 durable snapshot, removes only the target's exact same-name member, and adds
 that same name/peer URL back as a learner. It leaves etcd-member.json beside
-the immutable day-two lock receipt.
+the immutable day-two lock receipt. The snapshot-bound replacement intent is
+written before the first membership change, so the same plan/confirmation can
+resume safely from the old voter, two-survivor, or learner topology.
 
 After Bootie starts the replacement member, promote verifies all three exact
 endpoints, the learner ID/name/peer URL, empty alarms, and etcd 3.6.13 before
-promoting it. Both phases keep the shared maintenance lock. Credentials are
+promoting it. A promotion intent likewise makes the same command safe to retry
+whether the target is still a learner or is already the receipt-bound voter.
+Confirmation hashes contain stable topology and identity fields, not live KV
+or Raft counters. Both phases keep the shared maintenance lock. Credentials are
 the offline root identity decrypted only on local verified tmpfs; all network
 access uses supervised loopback-only SSH forwards. Snapshot storage must be a
 caller-owned mode-0700 directory outside Git on encrypted durable storage.
@@ -56,6 +61,70 @@ EOF
 die() {
   printf 'replace-fabric-etcd-member: %s\n' "$*" >&2
   exit 1
+}
+
+classify_membership() {
+  local membership=$1 target_node=$2 target_peer=$3 survivor_peers=$4
+  jq -er --arg node "$target_node" --arg peer "$target_peer" \
+    --argjson survivors "$survivor_peers" '
+    ([.members[].peerURLs[]] | sort) as $peers |
+    ([.members[] | select(.peerURLs == [$peer])]) as $target |
+    ([.members[] | select(.peerURLs != [$peer])]) as $others |
+    if (.members | length) == 3 and
+       $peers == (($survivors + [$peer]) | sort) and
+       ($target | length) == 1 and ($others | length) == 2 and
+       all($others[]; (.isLearner // false) == false) and
+       (($target[0].isLearner // false) == true)
+    then "learner"
+    elif (.members | length) == 3 and
+         $peers == (($survivors + [$peer]) | sort) and
+         ($target | length) == 1 and $target[0].name == $node and
+         all(.members[]; (.isLearner // false) == false)
+    then "voter"
+    elif (.members | length) == 2 and $peers == ($survivors | sort) and
+         ($target | length) == 0 and
+         all(.members[]; (.isLearner // false) == false)
+    then "absent"
+    else empty
+    end
+  ' <<<"$membership"
+}
+
+replacement_prestate_json() {
+  local target_node=$1 old_id=$2 target_peer=$3 commit=$4 lock_uid=$5
+  local members=$6 status=$7
+  jq -cnS --arg node "$target_node" --arg old_id "$old_id" \
+    --arg peer "$target_peer" --arg commit "$commit" --arg lock_uid "$lock_uid" \
+    --argjson members "$members" --argjson status "$status" '{
+      node:$node, oldMemberId:$old_id, peerURL:$peer, repoCommit:$commit,
+      lockUid:$lock_uid,
+      members:([$members.members[] | {
+        id:.ID, name, peerURLs, clientURLs,
+        isLearner:(.isLearner // false)
+      }] | sort_by(.peerURLs[0])),
+      survivorStatus:([$status[] | {
+        endpoint:.Endpoint, clusterId:.Status.header.cluster_id,
+        memberId:.Status.header.member_id, version:.Status.version
+      }] | sort_by(.endpoint))
+    }'
+}
+
+promotion_prestate_json() {
+  local target_node=$1 learner_id=$2 commit=$3 lock_uid=$4 members=$5 status=$6
+  jq -cnS --arg node "$target_node" --arg learner "$learner_id" \
+    --arg commit "$commit" --arg lock_uid "$lock_uid" \
+    --argjson members "$members" --argjson status "$status" '{
+      node:$node, learnerMemberId:$learner, repoCommit:$commit, lockUid:$lock_uid,
+      members:([$members.members[] | {
+        id:.ID, name, peerURLs, clientURLs,
+        isLearner:(.isLearner // false)
+      }] | sort_by(.peerURLs[0])),
+      status:([$status[] | {
+        endpoint:.Endpoint, clusterId:.Status.header.cluster_id,
+        memberId:.Status.header.member_id, version:.Status.version,
+        isLearner:(.Status.isLearner // false)
+      }] | sort_by(.endpoint))
+    }'
 }
 
 mode=
@@ -96,6 +165,55 @@ if [[ $mode == check ]]; then
   ' "$repo_root/fabric/router/data-files.txt")
   [[ $pinned == "$archive_name"$'\n'"https://github.com/etcd-io/etcd/releases/download/v3.6.13/$archive_name"$'\n'"$archive_sha256" ]] ||
     die 'repository etcd archive pin differs from this helper'
+  fixture_survivors='["https://fabric-az1-cp2.fabric.internal:2380","https://fabric-az1-cp3.fabric.internal:2380"]'
+  fixture_members=$(jq -cn '{members:[
+    {name:"fabric-az1-cp1",peerURLs:["https://fabric-az1-cp1.fabric.internal:2380"]},
+    {name:"fabric-az1-cp2",peerURLs:["https://fabric-az1-cp2.fabric.internal:2380"]},
+    {name:"fabric-az1-cp3",peerURLs:["https://fabric-az1-cp3.fabric.internal:2380"]}
+  ]}')
+  [[ $(classify_membership "$fixture_members" fabric-az1-cp1 \
+    https://fabric-az1-cp1.fabric.internal:2380 "$fixture_survivors") == voter ]] ||
+    die 'three-voter membership fixture was rejected'
+  [[ $(classify_membership "$(jq '.members[0].isLearner=true | .members[0].name=""' \
+    <<<"$fixture_members")" fabric-az1-cp1 \
+    https://fabric-az1-cp1.fabric.internal:2380 "$fixture_survivors") == learner ]] ||
+    die 'two-voter-plus-learner membership fixture was rejected'
+  [[ $(classify_membership "$(jq '.members |= map(select(.name != "fabric-az1-cp1"))' \
+    <<<"$fixture_members")" fabric-az1-cp1 \
+    https://fabric-az1-cp1.fabric.internal:2380 "$fixture_survivors") == absent ]] ||
+    die 'two-survivor membership fixture was rejected'
+  ! classify_membership "$(jq '.members[0].peerURLs=["https://unexpected.invalid:2380"]' \
+    <<<"$fixture_members")" fabric-az1-cp1 \
+    https://fabric-az1-cp1.fabric.internal:2380 "$fixture_survivors" >/dev/null ||
+    die 'unexpected membership fixture was accepted'
+  fixture_status='[
+    {"Endpoint":"https://127.0.0.1:42380","Status":{"header":{"cluster_id":1,"member_id":2,"revision":10},"version":"3.6.13","leader":2,"raftIndex":20}},
+    {"Endpoint":"https://127.0.0.1:42381","Status":{"header":{"cluster_id":1,"member_id":3,"revision":10},"version":"3.6.13","leader":2,"raftIndex":20}}
+  ]'
+  fixture_changed_status=$(jq 'map(.Status.header.revision=999 | .Status.leader=3 | .Status.raftIndex=999)' \
+    <<<"$fixture_status")
+  fixture_replace_prestate=$(replacement_prestate_json fabric-az1-cp1 \
+    1111111111111111 https://fabric-az1-cp1.fabric.internal:2380 \
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
+    "$fixture_members" "$fixture_status")
+  [[ $fixture_replace_prestate == "$(replacement_prestate_json fabric-az1-cp1 \
+    1111111111111111 https://fabric-az1-cp1.fabric.internal:2380 \
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
+    "$fixture_members" "$fixture_changed_status")" ]] ||
+    die 'replacement confirmation prestate includes volatile etcd counters'
+  fixture_learner_members=$(jq '.members[0].isLearner=true' <<<"$fixture_members")
+  fixture_learner_status=$(jq '.[0].Status.isLearner=true' <<<"$fixture_status")
+  fixture_changed_learner_status=$(jq \
+    'map(.Status.header.revision=999 | .Status.leader=3 | .Status.raftIndex=999)' \
+    <<<"$fixture_learner_status")
+  fixture_promote_prestate=$(promotion_prestate_json fabric-az1-cp1 3333333333333333 \
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
+    "$fixture_learner_members" "$fixture_learner_status")
+  [[ $fixture_promote_prestate == "$(promotion_prestate_json fabric-az1-cp1 \
+    3333333333333333 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    22222222-3333-4444-5555-666666666666 "$fixture_learner_members" \
+    "$fixture_changed_learner_status")" ]] ||
+    die 'promotion confirmation prestate includes volatile etcd counters'
   printf 'validated the snapshot-backed same-name etcd learner replacement helper\n'
   exit 0
 fi
@@ -229,8 +347,6 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
     [[ $inventory_node == "$node" ]] && continue
     node_is_ready "$inventory_node" || die "non-target Node is not Ready: $inventory_node"
   done
-  [[ ! -e $lock_receipt/etcd-member.json && ! -L $lock_receipt/etcd-member.json ]] ||
-    die 'an etcd member receipt already exists for this ceremony'
 fi
 
 gateway=
@@ -284,9 +400,18 @@ assert_tunnel() {
 }
 
 case $node in
-  fabric-az1-cp1) survivor_endpoints=https://127.0.0.1:42380,https://127.0.0.1:42381 ;;
-  fabric-az1-cp2) survivor_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42381 ;;
-  fabric-az1-cp3) survivor_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42380 ;;
+  fabric-az1-cp1)
+    survivor_endpoints=https://127.0.0.1:42380,https://127.0.0.1:42381
+    survivor_peers='["https://fabric-az1-cp2.fabric.internal:2380","https://fabric-az1-cp3.fabric.internal:2380"]'
+    ;;
+  fabric-az1-cp2)
+    survivor_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42381
+    survivor_peers='["https://fabric-az1-cp1.fabric.internal:2380","https://fabric-az1-cp3.fabric.internal:2380"]'
+    ;;
+  fabric-az1-cp3)
+    survivor_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42380
+    survivor_peers='["https://fabric-az1-cp1.fabric.internal:2380","https://fabric-az1-cp2.fabric.internal:2380"]'
+    ;;
 esac
 ctl=(env -i LC_ALL=C "$etcdctl" --cacert="$work/ca.pem" --cert="$work/root.pem"
   --key="$work/root-key.pem" --dial-timeout=3s --command-timeout=15s)
@@ -342,106 +467,162 @@ jq -e '.roles == ["root"]' <<<"$root_user" >/dev/null ||
 if [[ $mode == plan-replace || $mode == replace ]]; then
   survivor_status=$(assert_survivors) || die 'surviving etcd voters are degraded'
   assert_empty_alarms "$survivor_endpoints" || die 'etcd alarm state is not empty'
-  jq -e --arg node "$node" --arg peer "$target_peer_url" '
-    (.members | length) == 3 and
-    ([.members[] | select((.isLearner // false) == true)] | length) == 0 and
-    ([.members[] | select(.name == $node and .peerURLs == [$peer])] | length) == 1 and
-    ([.members[].peerURLs[]] | sort) == [
-      "https://fabric-az1-cp1.fabric.internal:2380",
-      "https://fabric-az1-cp2.fabric.internal:2380",
-      "https://fabric-az1-cp3.fabric.internal:2380"
-    ]
-  ' <<<"$member_json" >/dev/null ||
-    die 'pre-replacement membership is not the exact three-voter Fabric contract'
-  old_member_id=$(awk -F', *' -v node="$node" '$3 == node {print $1}' \
-    <<<"$member_table")
-  [[ $old_member_id =~ ^[0-9a-f]{16}$ ]] ||
-    die 'could not bind the target member exact hexadecimal ID'
-  prestate=$(jq -cnS --arg node "$node" --arg old_id "$old_member_id" \
-    --arg peer "$target_peer_url" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
-    --argjson members "$member_json" --argjson status "$survivor_status" '{
-      node:$node, oldMemberId:$old_id, peerURL:$peer, repoCommit:$commit,
-      lockUid:$lock_uid, members:$members,
-      survivorStatus:[$status[] | {
-        endpoint:.Endpoint, clusterId:.Status.header.cluster_id,
-        memberId:.Status.header.member_id, leader:.Status.leader,
-        revision:.Status.header.revision, version:.Status.version
-      }]
-    }')
-  prestate_sha256=$(printf '%s' "$prestate" | sha256sum | awk '{print $1}')
-  expected_confirmation="REPLACE-ETCD-MEMBER:$node:$old_member_id:$prestate_sha256"
-
   snapshot_dir=$(realpath -e -- "$snapshot_dir")
   [[ -d $snapshot_dir && ! -L $snapshot_dir &&
      $(stat -Lc '%u:%g:%a' "$snapshot_dir") == "$(id -u):$(id -g):700" ]] ||
     die 'snapshot directory must be caller-owned mode-0700 durable storage'
   case $snapshot_dir in "$repo_root" | "$repo_root"/*) die 'snapshot directory must remain outside Git' ;; esac
+  member_receipt=$lock_receipt/etcd-member.json
+  if [[ -e $member_receipt || -L $member_receipt ]]; then
+    [[ -f $member_receipt && ! -L $member_receipt &&
+       $(stat -Lc '%u:%g:%a:%h' "$member_receipt") == "$(id -u):$(id -g):600:1" ]] ||
+      die 'etcd replacement intent receipt is unsafe'
+    jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
+      --arg peer "$target_peer_url" '
+      .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+      (.state == "replacement-planned" or .state == "learner-added") and
+      .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
+      .peerURL == $peer and (.removedMemberId | test("^[0-9a-f]{16}$")) and
+      (.replacePrestateSha256 | test("^[0-9a-f]{64}$")) and
+      (.snapshot.path | type == "string" and length > 0) and
+      (.snapshot.sha256 | test("^[0-9a-f]{64}$")) and
+      (if .state == "learner-added" then
+        (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+        .learnerMemberId != .removedMemberId
+      else (.learnerMemberId // null) == null end)
+    ' "$member_receipt" >/dev/null || die 'etcd replacement intent differs from this ceremony'
+    old_member_id=$(jq -r '.removedMemberId' "$member_receipt")
+    prestate_sha256=$(jq -r '.replacePrestateSha256' "$member_receipt")
+    snapshot_path=$(realpath -e -- "$(jq -r '.snapshot.path' "$member_receipt")")
+    [[ $(dirname -- "$snapshot_path") == "$snapshot_dir" &&
+       -f $snapshot_path && ! -L $snapshot_path &&
+       $(stat -Lc '%u:%g:%a:%h' "$snapshot_path") == "$(id -u):$(id -g):600:1" &&
+       $(sha256sum "$snapshot_path" | awk '{print $1}') == \
+         "$(jq -r '.snapshot.sha256' "$member_receipt")" ]] ||
+      die 'durable replacement snapshot differs from its intent receipt'
+    replacement_state=$(jq -r '.state' "$member_receipt")
+  else
+    replacement_state=unplanned
+    [[ $(classify_membership "$member_json" "$node" "$target_peer_url" \
+      "$survivor_peers") == voter ]] ||
+      die 'pre-replacement membership is not the exact three-voter Fabric contract'
+    old_member_id=$(awk -F', *' -v peer="$target_peer_url" \
+      'index($4, peer) {print $1}' <<<"$member_table")
+    [[ $old_member_id =~ ^[0-9a-f]{16}$ ]] ||
+      die 'could not bind the target member exact hexadecimal ID'
+    prestate=$(replacement_prestate_json "$node" "$old_member_id" "$target_peer_url" \
+      "$repo_commit" "$lock_uid" "$member_json" "$survivor_status")
+    prestate_sha256=$(printf '%s' "$prestate" | sha256sum | awk '{print $1}')
+  fi
+  expected_confirmation="REPLACE-ETCD-MEMBER:$node:$old_member_id:$prestate_sha256"
   if [[ $mode == plan-replace ]]; then
-    printf 'ETCD REPLACE READY node=%s old-id=%s gateway=%s\n' \
-      "$node" "$old_member_id" "$gateway"
+    printf 'ETCD REPLACE READY node=%s old-id=%s gateway=%s state=%s\n' \
+      "$node" "$old_member_id" "$gateway" "$replacement_state"
     printf 'Exact live confirmation: %s\n' "$expected_confirmation"
     exit 0
   fi
   [[ $confirmation == "$expected_confirmation" ]] ||
     die "exact --confirm $expected_confirmation is required"
   "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
-  [[ $(assert_survivors) == "$survivor_status" ]] ||
-    die 'surviving voter status changed after confirmation'
-  [[ $(query "$survivor_endpoints" --write-out=json member list | jq -cS .) == \
-     "$(jq -cS . <<<"$member_json")" ]] || die 'membership changed after confirmation'
-  assert_empty_alarms "$survivor_endpoints" || die 'alarm appeared after confirmation'
 
-  snapshot_name="fabric-etcd-before-${node}-$(date --utc +%Y%m%dT%H%M%SZ).db"
-  snapshot_path=$snapshot_dir/$snapshot_name
-  [[ ! -e $snapshot_path && ! -L $snapshot_path ]] || die 'snapshot output already exists'
-  snapshot_endpoint=${survivor_endpoints%%,*}
-  query "$snapshot_endpoint" snapshot save "$snapshot_path" >/dev/null ||
-    die 'pre-replacement etcd snapshot failed'
-  chmod 0600 "$snapshot_path"
-  snapshot_status=$("$etcdutl" snapshot status "$snapshot_path" --write-out=json) ||
-    die 'saved snapshot did not validate with pinned etcdutl'
-  jq -e '.revision > 0 and .totalKey > 0 and .totalSize > 0' \
-    <<<"$snapshot_status" >/dev/null || die 'saved snapshot status is empty or invalid'
-  snapshot_sha256=$(sha256sum "$snapshot_path" | awk '{print $1}')
+  if [[ $replacement_state == unplanned ]]; then
+    assert_survivors >/dev/null || die 'surviving voters degraded after confirmation'
+    recheck_members=$(query "$survivor_endpoints" --write-out=json member list) ||
+      die 'cannot re-read membership after confirmation'
+    recheck_table=$(query "$survivor_endpoints" member list) ||
+      die 'cannot bind target member after confirmation'
+    recheck_target_id=$(awk -F', *' -v peer="$target_peer_url" \
+      'index($4, peer) {print $1}' <<<"$recheck_table")
+    [[ $(classify_membership "$recheck_members" "$node" "$target_peer_url" \
+      "$survivor_peers") == voter && $recheck_target_id == "$old_member_id" ]] ||
+      die 'membership changed after confirmation'
+    assert_empty_alarms "$survivor_endpoints" || die 'alarm appeared after confirmation'
 
-  query "$survivor_endpoints" member remove "$old_member_id" >/dev/null ||
-    die 'target member removal failed; keep the maintenance lock for inspection'
-  add_json=$(query "$survivor_endpoints" --write-out=json member add "$node" \
-    --peer-urls="$target_peer_url" --learner) ||
-    die 'target member was removed but learner add failed; keep the lock and recover immediately'
-  member_table_after=$(query "$survivor_endpoints" member list) ||
-    die 'cannot list membership after learner add'
-  member_json_after=$(query "$survivor_endpoints" --write-out=json member list) ||
-    die 'cannot read structured membership after learner add'
-  jq -e --arg peer "$target_peer_url" '
-    (.members | length) == 3 and
-    ([.members[] | select((.isLearner // false) == true and .peerURLs == [$peer])] |
-      length) == 1 and
-    ([.members[] | select((.isLearner // false) == false)] | length) == 2
-  ' <<<"$member_json_after" >/dev/null ||
-    die 'post-add membership is not exactly two voters plus the target learner'
+    snapshot_name="fabric-etcd-before-${node}-$(date --utc +%Y%m%dT%H%M%SZ).db"
+    snapshot_path=$snapshot_dir/$snapshot_name
+    [[ ! -e $snapshot_path && ! -L $snapshot_path ]] || die 'snapshot output already exists'
+    snapshot_endpoint=${survivor_endpoints%%,*}
+    query "$snapshot_endpoint" snapshot save "$snapshot_path" >/dev/null ||
+      die 'pre-replacement etcd snapshot failed'
+    chmod 0600 "$snapshot_path"
+    snapshot_status=$("$etcdutl" snapshot status "$snapshot_path" --write-out=json) ||
+      die 'saved snapshot did not validate with pinned etcdutl'
+    jq -e '.revision > 0 and .totalKey > 0 and .totalSize > 0' \
+      <<<"$snapshot_status" >/dev/null || die 'saved snapshot status is empty or invalid'
+    snapshot_sha256=$(sha256sum "$snapshot_path" | awk '{print $1}')
+
+    member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")
+    chmod 0600 "$member_receipt_tmp"
+    jq -n --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
+      --arg removed_id "$old_member_id" --arg peer "$target_peer_url" \
+      --arg snapshot "$snapshot_path" --arg snapshot_sha "$snapshot_sha256" \
+      --arg prestate_sha "$prestate_sha256" \
+      --arg planned "$(date --utc --iso-8601=seconds)" '{
+        schema:1, purpose:"fabric-etcd-member-day-two", state:"replacement-planned",
+        node:$node, repoCommit:$commit, lockUid:$lock_uid,
+        removedMemberId:$removed_id, peerURL:$peer,
+        snapshot:{path:$snapshot, sha256:$snapshot_sha},
+        replacePrestateSha256:$prestate_sha, replacementPlannedAt:$planned
+      }' >"$member_receipt_tmp"
+    mv -f -- "$member_receipt_tmp" "$member_receipt"
+    replacement_state=replacement-planned
+    "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+  fi
+
+  member_table=$(query "$survivor_endpoints" member list) ||
+    die 'cannot list membership while resuming replacement'
+  member_json=$(query "$survivor_endpoints" --write-out=json member list) ||
+    die 'cannot read structured membership while resuming replacement'
+  membership_state=$(classify_membership "$member_json" "$node" "$target_peer_url" \
+    "$survivor_peers") || die 'live membership is outside the resumable replacement states'
+  live_target_id=$(awk -F', *' -v peer="$target_peer_url" \
+    'index($4, peer) {print $1}' <<<"$member_table")
+
+  if [[ $replacement_state == learner-added ]]; then
+    learner_member_id=$(jq -r '.learnerMemberId' "$member_receipt")
+    [[ $membership_state == learner && $live_target_id == "$learner_member_id" ]] ||
+      die 'recorded learner no longer matches exact live membership'
+    printf 'LEARNER ALREADY ADDED node=%s learner-id=%s; receipt is complete\n' \
+      "$node" "$learner_member_id"
+    exit 0
+  fi
+
+  if [[ $membership_state == voter ]]; then
+    [[ $live_target_id == "$old_member_id" ]] ||
+      die 'live target voter ID differs from the replacement intent'
+    query "$survivor_endpoints" member remove "$old_member_id" >/dev/null ||
+      die 'target member removal did not complete; rerun the same replace command'
+    member_json=$(query "$survivor_endpoints" --write-out=json member list) ||
+      die 'cannot read membership after target removal'
+    membership_state=$(classify_membership "$member_json" "$node" "$target_peer_url" \
+      "$survivor_peers") || die 'membership is invalid after target removal'
+  fi
+  if [[ $membership_state == absent ]]; then
+    query "$survivor_endpoints" --write-out=json member add "$node" \
+      --peer-urls="$target_peer_url" --learner >/dev/null ||
+      die 'learner add did not complete; rerun the same replace command'
+    member_json=$(query "$survivor_endpoints" --write-out=json member list) ||
+      die 'cannot read membership after learner add'
+    membership_state=$(classify_membership "$member_json" "$node" "$target_peer_url" \
+      "$survivor_peers") || die 'membership is invalid after learner add'
+  fi
+  [[ $membership_state == learner ]] ||
+    die 'replacement did not converge to exactly two voters plus the target learner'
+  member_table=$(query "$survivor_endpoints" member list) ||
+    die 'cannot bind learner ID after replacement'
   learner_member_id=$(awk -F', *' -v peer="$target_peer_url" \
-    'index($4, peer) {print $1}' <<<"$member_table_after")
+    'index($4, peer) {print $1}' <<<"$member_table")
   [[ $learner_member_id =~ ^[0-9a-f]{16}$ && $learner_member_id != "$old_member_id" ]] ||
     die 'could not bind the new learner exact hexadecimal ID'
-  jq -e --arg peer "$target_peer_url" '
-    .member.peerURLs == [$peer] and (.member.isLearner // false) == true
-  ' <<<"$add_json" >/dev/null || die 'member-add response did not describe the target learner'
 
   member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")
   chmod 0600 "$member_receipt_tmp"
-  jq -n --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
-    --arg removed_id "$old_member_id" --arg learner_id "$learner_member_id" \
-    --arg peer "$target_peer_url" --arg snapshot "$snapshot_path" \
-    --arg snapshot_sha "$snapshot_sha256" --arg prestate_sha "$prestate_sha256" \
-    --arg changed "$(date --utc --iso-8601=seconds)" '{
-      schema:1, purpose:"fabric-etcd-member-day-two", state:"learner-added",
-      node:$node, repoCommit:$commit, lockUid:$lock_uid,
-      removedMemberId:$removed_id, learnerMemberId:$learner_id, peerURL:$peer,
-      snapshot:{path:$snapshot, sha256:$snapshot_sha},
-      replacePrestateSha256:$prestate_sha, learnerAddedAt:$changed
-    }' >"$member_receipt_tmp"
-  mv -f -- "$member_receipt_tmp" "$lock_receipt/etcd-member.json"
+  jq --arg learner_id "$learner_member_id" \
+    --arg changed "$(date --utc --iso-8601=seconds)" '
+    .state = "learner-added" | .learnerMemberId = $learner_id |
+    .learnerAddedAt = $changed
+  ' "$member_receipt" >"$member_receipt_tmp"
+  mv -f -- "$member_receipt_tmp" "$member_receipt"
   "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
   printf 'LEARNER ADDED node=%s old-id=%s learner-id=%s snapshot=%s\n' \
     "$node" "$old_member_id" "$learner_member_id" "$snapshot_path"
@@ -454,65 +635,102 @@ member_receipt=$lock_receipt/etcd-member.json
 jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
   --arg peer "$target_peer_url" '
   .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
-  .state == "learner-added" and .node == $node and .repoCommit == $commit and
-  .lockUid == $lock_uid and .peerURL == $peer and
-  (.learnerMemberId | test("^[0-9a-f]{16}$"))
+  (.state == "learner-added" or .state == "promotion-planned" or
+    .state == "promoted") and
+  .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
+  .peerURL == $peer and (.removedMemberId | test("^[0-9a-f]{16}$")) and
+  (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+  .learnerMemberId != .removedMemberId and
+  (if .state == "learner-added" then (.promotePrestateSha256 // null) == null
+   else (.promotePrestateSha256 | test("^[0-9a-f]{64}$")) end)
 ' "$member_receipt" >/dev/null || die 'learner receipt does not match this ceremony'
 learner_member_id=$(jq -r '.learnerMemberId' "$member_receipt")
+promotion_state=$(jq -r '.state' "$member_receipt")
 health_all=$(query "$endpoints_all" --write-out=json endpoint health) ||
   die 'all three exact endpoints are not yet reachable'
 jq -e 'type == "array" and length == 3 and all(.health == true)' <<<"$health_all" >/dev/null ||
   die 'all three exact endpoints are not healthy'
 status_all=$(query "$endpoints_all" --write-out=json endpoint status) ||
   die 'cannot read all three endpoint statuses'
-jq -e --arg target "https://127.0.0.1:$target_port" '
+membership_state=$(classify_membership "$member_json" "$node" "$target_peer_url" \
+  "$survivor_peers") || die 'live membership is outside the resumable promotion states'
+[[ $membership_state == learner || $membership_state == voter ]] ||
+  die 'target member is absent while promotion receipt exists'
+jq -e --arg target "https://127.0.0.1:$target_port" --arg state "$membership_state" '
   type == "array" and length == 3 and
   ([.[].Status.header.cluster_id] | unique | length) == 1 and
   ([.[].Status.header.member_id] | unique | length) == 3 and
   ([.[].Status.leader] | unique | length) == 1 and
   all(.Status.version == "3.6.13") and all(.Status.leader > 0) and
-  ([.[] | select(.Endpoint == $target and (.Status.isLearner // false) == true)] |
-    length) == 1
-' <<<"$status_all" >/dev/null || die 'target endpoint is not the one healthy learner'
+  if $state == "learner" then
+    ([.[] | select(.Endpoint == $target and (.Status.isLearner // false) == true)] |
+      length) == 1 and
+    ([.[] | select(.Endpoint != $target and (.Status.isLearner // false) == false)] |
+      length) == 2
+  else all(.[]; (.Status.isLearner // false) == false) end
+' <<<"$status_all" >/dev/null || die 'target endpoint role differs from live membership'
 assert_empty_alarms "$endpoints_all" || die 'etcd alarm state is not empty'
-jq -e --arg peer "$target_peer_url" '
-  (.members | length) == 3 and
-  ([.members[] | select((.isLearner // false) == true and .peerURLs == [$peer])] |
-    length) == 1 and
-  ([.members[] | select((.isLearner // false) == false)] | length) == 2
-' <<<"$member_json" >/dev/null || die 'live membership differs from the learner receipt'
-live_learner_id=$(awk -F', *' -v peer="$target_peer_url" \
+live_target_id=$(awk -F', *' -v peer="$target_peer_url" \
   'index($4, peer) {print $1}' <<<"$member_table")
-[[ $live_learner_id == "$learner_member_id" ]] ||
-  die 'live learner hexadecimal ID differs from the receipt'
+[[ $live_target_id == "$learner_member_id" ]] ||
+  die 'live target member hexadecimal ID differs from the receipt'
+case $promotion_state:$membership_state in
+  learner-added:learner | promotion-planned:learner | promotion-planned:voter | promoted:voter) ;;
+  *) die 'receipt state and live target role are not a resumable promotion pair' ;;
+esac
 
-promote_prestate=$(jq -cnS --arg node "$node" --arg learner "$learner_member_id" \
-  --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
-  --argjson members "$member_json" --argjson status "$status_all" '{
-    node:$node, learnerMemberId:$learner, repoCommit:$commit, lockUid:$lock_uid,
-    members:$members, status:$status
-  }')
-promote_prestate_sha256=$(printf '%s' "$promote_prestate" | sha256sum | awk '{print $1}')
+if [[ $promotion_state == learner-added ]]; then
+  promote_prestate=$(promotion_prestate_json "$node" "$learner_member_id" \
+    "$repo_commit" "$lock_uid" "$member_json" "$status_all")
+  promote_prestate_sha256=$(printf '%s' "$promote_prestate" | sha256sum | awk '{print $1}')
+else
+  promote_prestate_sha256=$(jq -r '.promotePrestateSha256' "$member_receipt")
+fi
 expected_confirmation="PROMOTE-ETCD-MEMBER:$node:$learner_member_id:$promote_prestate_sha256"
 if [[ $mode == plan-promote ]]; then
-  printf 'ETCD PROMOTION READY node=%s learner-id=%s gateway=%s\n' \
-    "$node" "$learner_member_id" "$gateway"
+  printf 'ETCD PROMOTION READY node=%s learner-id=%s gateway=%s state=%s live-role=%s\n' \
+    "$node" "$learner_member_id" "$gateway" "$promotion_state" "$membership_state"
   printf 'Exact live confirmation: %s\n' "$expected_confirmation"
   exit 0
 fi
 [[ $confirmation == "$expected_confirmation" ]] ||
   die "exact --confirm $expected_confirmation is required"
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
-query "$survivor_endpoints" member promote "$learner_member_id" >/dev/null ||
-  die 'learner promotion failed (it may not be caught up yet); keep the lock and retry plan-promote'
+
+if [[ $promotion_state == promoted ]]; then
+  printf 'ALREADY PROMOTED %s member-id=%s; receipt is complete\n' \
+    "$node" "$learner_member_id"
+  exit 0
+fi
+
+if [[ $promotion_state == learner-added ]]; then
+  member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")
+  chmod 0600 "$member_receipt_tmp"
+  jq --arg planned "$(date --utc --iso-8601=seconds)" \
+    --arg prestate "$promote_prestate_sha256" '
+    .state = "promotion-planned" | .promotePrestateSha256 = $prestate |
+    .promotionPlannedAt = $planned
+  ' "$member_receipt" >"$member_receipt_tmp"
+  mv -f -- "$member_receipt_tmp" "$member_receipt"
+  promotion_state=promotion-planned
+  "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+fi
+if [[ $membership_state == learner ]]; then
+  query "$survivor_endpoints" member promote "$learner_member_id" >/dev/null ||
+    die 'learner promotion did not complete; rerun the same promote command'
+fi
 member_json_after=$(query "$endpoints_all" --write-out=json member list) ||
   die 'cannot read membership after promotion'
+member_table_after=$(query "$endpoints_all" member list) ||
+  die 'cannot bind target member after promotion'
 status_after=$(query "$endpoints_all" --write-out=json endpoint status) ||
   die 'cannot read endpoint status after promotion'
-jq -e '
-  (.members | length) == 3 and
-  ([.members[] | select((.isLearner // false) == true)] | length) == 0
-' <<<"$member_json_after" >/dev/null || die 'membership is not three voters after promotion'
+[[ $(classify_membership "$member_json_after" "$node" "$target_peer_url" \
+  "$survivor_peers") == voter ]] || die 'membership is not three voters after promotion'
+promoted_target_id=$(awk -F', *' -v peer="$target_peer_url" \
+  'index($4, peer) {print $1}' <<<"$member_table_after")
+[[ $promoted_target_id == "$learner_member_id" ]] ||
+  die 'promoted target member ID differs from the learner receipt'
 jq -e '
   type == "array" and length == 3 and
   ([.[].Status.header.cluster_id] | unique | length) == 1 and
@@ -525,9 +743,9 @@ assert_empty_alarms "$endpoints_all" || die 'an etcd alarm exists after promotio
 
 member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")
 chmod 0600 "$member_receipt_tmp"
-jq --arg promoted "$(date --utc --iso-8601=seconds)" \
-  --arg prestate "$promote_prestate_sha256" \
-  '.state = "promoted" | .promotePrestateSha256 = $prestate | .promotedAt = $promoted' \
+jq --arg promoted "$(date --utc --iso-8601=seconds)" '
+  .state = "promoted" | .promotedAt = $promoted
+' \
   "$member_receipt" >"$member_receipt_tmp"
 mv -f -- "$member_receipt_tmp" "$member_receipt"
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null

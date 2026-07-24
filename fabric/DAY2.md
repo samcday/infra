@@ -17,7 +17,10 @@ For one node, the flow is:
 1. `preflight`, then `lock acquire` using the printed main revision.
 2. `drain`, then `quiesce`, using the lock-bound Node UID.
 3. On a control-plane node only, `etcd plan-replace` and `etcd replace` add the
-   same-name member back as a learner after a validated snapshot.
+   same-name member back as a learner after a validated snapshot. The helper
+   writes its snapshot-bound intent before changing membership; rerun the same
+   command and confirmation after an interruption. It resumes only from the
+   exact old-voter, two-survivor, or receipt-bound learner topology.
 4. `retire plan` and `retire apply` delete only the stopped Node/password
    receipt UIDs.
 5. `prepare` renders the selected node's Ignition on tmpfs. For a service node
@@ -43,8 +46,9 @@ For one node, the flow is:
    live console for diagnosis. This cold cycle is the one physical exception
    for a full service-node reprovision, not a normal package/config upgrade.
 9. On a control-plane node, `etcd plan-promote` and `etcd promote` restore the
-   third voter. Then `finalize` attests and uncordons the same Node UID and destroys
-   the secret-bearing tmpfs handoff.
+   third voter. Promotion is also intent-backed and rerunnable if the API reply
+   or local process is lost. Then `finalize` attests and uncordons the same Node
+   UID and destroys the secret-bearing tmpfs handoff.
 10. `lock release`, then `qualify --revision <main-commit>` before selecting the
     next node.
 
