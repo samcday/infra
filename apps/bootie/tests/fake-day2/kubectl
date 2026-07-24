@@ -28,13 +28,20 @@ case $joined in
       mode=install
       boot_device=${FAKE_BOOT_DEVICE-$boot_device}
     fi
+    fake_session=$(printf '%s' "${FAKE_SESSION_B64:?}" | base64 -d)
+    repo_commit=$(jq -er '.repoCommit' <<<"$fake_session")
+    ignition_sha=$(jq -er '.ignitionSha256' <<<"$fake_session")
+    image_digest=$(jq -er '.bootieImageDigest' <<<"$fake_session")
+    image_revision=$(jq -er '.bootieImageRevision' <<<"$fake_session")
     jq -n \
       --arg uid "${FAKE_NODE_UID:-01234567-89ab-cdef-0123-456789abcdef}" \
       --arg rv "${FAKE_NODE_RV:-12345}" \
       --arg install "$install" --arg token "$token" --arg mode "$mode" \
       --arg node "$requested_node" --arg mac "$mac" --arg device "$boot_device" \
       --arg root_consensus "$root_consensus" \
-      --arg session_uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" '
+      --arg session_uid "${FAKE_SESSION_UID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}" \
+      --arg repo_commit "$repo_commit" --arg ignition_sha "$ignition_sha" \
+      --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
       {
         apiVersion:"v1", kind:"Node",
         metadata:{name:$node,uid:$uid,resourceVersion:$rv,
@@ -48,6 +55,10 @@ case $joined in
             "fabric.samcday.com/bootstrap-state":
               (if $token == "" then "install-armed" else "install-response-issued" end),
             "fabric.samcday.com/bootie-session-uid":$session_uid,
+            "fabric.samcday.com/config-revision":$repo_commit,
+            "fabric.samcday.com/ignition-sha256":$ignition_sha,
+            "fabric.samcday.com/bootie-image-digest":$image_digest,
+            "fabric.samcday.com/bootie-image-revision":$image_revision,
             "samcday.com/boot-device":$device,
             "samcday.com/install":$install,
             "samcday.com/ignition-token":$token,
@@ -71,9 +82,14 @@ case $joined in
       --arg session "${FAKE_SESSION_B64:?}" \
       --arg policy "${FAKE_POLICY_B64:?}" \
       --arg ignition "${FAKE_IGNITION_B64:?}" \
-      --arg ignition_key "$session_node.ign" '{
+      --arg session_node "$session_node" \
+      --arg ignition_key "$session_node.ign" \
+      --argjson immutable "${FAKE_SECRET_IMMUTABLE:-true}" '{
         apiVersion:"v1",kind:"Secret",
-        metadata:{name:"bootie-session",namespace:"bootie",uid:$uid},
+        immutable:$immutable,type:"Opaque",
+        metadata:{name:"bootie-session",namespace:"bootie",uid:$uid,labels:{
+          "fabric.samcday.com/purpose":"node-day-two",
+          "fabric.samcday.com/node":$session_node}},
         data:{"session.json":$session,"install-policy":$policy,
           ($ignition_key):$ignition}
       }'

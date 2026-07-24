@@ -334,8 +334,11 @@ grep -Fqx '    location ~ "^/static/[0-9a-f]{32,64}\.img$" {' \
   "$script_dir/../nginx-http.conf" ||
   fail 'Nginx no longer denies capability-shaped files through /static'
 [[ $(grep -Fc 'fastcgi_pass unix:/run/bootie/fcgi.sock;' \
-  "$script_dir/../nginx-http.conf") == 4 ]] ||
-  fail 'Nginx does not route all four CGI endpoints through the pod-local Unix socket'
+  "$script_dir/../nginx-http.conf") == 5 ]] ||
+  fail 'Nginx does not route all five CGI endpoints through the pod-local Unix socket'
+grep -Fq 'SCRIPT_FILENAME /usr/local/bin/generate-live-ignition-day2;' \
+  "$script_dir/../nginx-http.conf" ||
+  fail 'Nginx does not route token-bound day-two live Ignition'
 ! grep -Fq '127.0.0.1:9000' "$script_dir/../nginx-http.conf" ||
   fail 'Nginx still depends on the restart-sensitive host-network FastCGI TCP port'
 for runner in run.sh run-cluster.sh; do

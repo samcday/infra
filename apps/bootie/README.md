@@ -11,13 +11,24 @@ Nginx and fcgiwrap communicate over a pod-local Unix socket, so replacing the
 host-networked Pod cannot inherit a loopback TCP `TIME_WAIT` bind conflict from
 its predecessor.
 
-An armed service-node response also loads the image-embedded public
-`fabric-day2-service-live.ign` and appends `coreos.inst.skip_reboot`. Its
-coreos-installer post-install unit powers the machine off only after a
-successful install, so a TPM-bound first local boot cannot accidentally follow
-a warm reboot. The operator then removes AC power from that service node for at
-least 30 seconds before restoring it. Control-plane responses do not use this
-worker-only poweroff policy.
+Every armed day-two response first loads a token-bound, non-consuming live
+Ignition. That handler extracts the one exact MAC-bound NetworkManager profile
+from the session's digest-bound destination Ignition and configures
+coreos-installer to copy it to the installed boot partition. The boot response
+also carries `rd.net.timeout.carrier=60`; the stock FCOS installer service
+therefore writes first-boot-only `rd.neednet=1` with that recognized network
+argument. Ignition activates the copied static profile before fetching any
+router-hosted destination assets. The destination Ignition endpoint remains
+the separate one-use secret consumer; the live response cannot consume or
+re-arm the session.
+
+For a service node, the generated live Ignition additionally embeds the
+image-pinned `fabric-day2-service-live.ign` and the boot response appends
+`coreos.inst.skip_reboot`. Its coreos-installer post-install unit powers the
+machine off only after a successful install, so a TPM-bound first local boot
+cannot accidentally follow a warm reboot. The operator then removes AC power
+from that service node for at least 30 seconds before restoring it.
+Control-plane responses do not use this worker-only poweroff policy.
 
 An installation response exists only while all of these agree: the exact
 inventory record, the replacement Kubernetes Node UID, a short-lived
@@ -30,7 +41,7 @@ after that one fetch. Set `BOOTIE_DAY2_MODE=true` only through
 `/bin/run-cluster`; the original generic and attended-station modes remain for
 offline recovery.
 
-It has four HTTP endpoints:
+It has five HTTP endpoints:
 
  * `/boot.ipxe?mac=&serial=`. iPXE clients chain this URL and receive
    instructions to boot FCOS. If no k8s Node yet exists matching the MAC or
@@ -40,9 +51,14 @@ It has four HTTP endpoints:
    example `(http,10.66.0.2)/static`; `FCOS_BASE` remains the ordinary URL used
    in the FCOS rootfs kernel argument.
  * `/ignition/<node>`. This generates the appropriate Ignition config to
-   provision the Node. It's assumes that an `/ignition` directory exists
+   provision the Node. It assumes that an `/ignition` directory exists
    which contains, at a minimum, a `base.ign` config. Additional profiles
    can be selected by annotating the node with `samcday.com/boot-profiles`.
+ * `/live-ignition/<node>`. In day-two mode this returns the session-bound
+   installer network handoff without consuming the install token. It accepts
+   only the exact response-issued Node/session/disk tuple and refuses any
+   destination Ignition graph containing zero, duplicate, remote, or
+   identity-mismatched NetworkManager profiles.
  * `/custom-initramfs/<capability>`. A bounded worker-install ceremony uses
    this instead of `/ignition`: the handler revalidates and streams the exact
    customized PXE initramfs selected by the one-use boot response.

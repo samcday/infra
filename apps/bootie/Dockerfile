@@ -83,6 +83,7 @@ COPY run.sh /bin/run
 COPY run-cluster.sh /bin/run-cluster
 COPY generate-ignition.sh /usr/local/bin/generate-ignition
 COPY generate-ignition-day2.sh /usr/local/bin/generate-ignition-day2
+COPY generate-live-ignition-day2.sh /usr/local/bin/generate-live-ignition-day2
 COPY boot-request.sh /usr/local/bin/boot-request
 COPY boot-request-day2.sh /usr/local/bin/boot-request-day2
 COPY serve-custom-initramfs.sh /usr/local/bin/serve-custom-initramfs
@@ -107,5 +108,6 @@ RUN chmod +x \
         /usr/local/bin/boot-request-day2 \
         /usr/local/bin/generate-ignition \
         /usr/local/bin/generate-ignition-day2 \
+        /usr/local/bin/generate-live-ignition-day2 \
         /usr/local/bin/serve-custom-initramfs
 ENTRYPOINT ["/bin/run"]

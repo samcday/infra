@@ -25,6 +25,14 @@ For one node, the flow is:
 6. `arm` publishes one immutable in-cluster session, then `reboot` persists
    PXE-first and restarts the host. Exact confirmation strings are printed or
    derivable from the preceding receipt; there is no broad or name-only arm.
+   Bootie first serves a non-consuming live profile that copies the exact
+   MAC-bound static connection into the installed system. Its live boot also
+   carries the recognized `rd.net.timeout.carrier=60` network argument, so the
+   stock FCOS installer writes first-boot-only `rd.neednet=1`. The later
+   destination-Ignition request consumes the one-use token. Thus PXE may use
+   its temporary DHCP address, while the first local boot must use the node's
+   inventoried address before Ignition fetches router assets; no
+   temporary-address router aperture is part of day two.
 7. `status` reports `install-response-issued`; after the one-use Ignition fetch,
    `close` conditionally deletes the exact session Secret.
 8. A successfully installed service node powers off instead of warm-rebooting.

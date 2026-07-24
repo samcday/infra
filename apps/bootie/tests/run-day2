@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 boot_request=$script_dir/../boot-request-day2.sh
 ignition_request=$script_dir/../generate-ignition-day2.sh
+live_ignition_request=$script_dir/../generate-live-ignition-day2.sh
 export PATH="$script_dir/fake-day2:$PATH"
 
 work=$(mktemp -d)
@@ -22,7 +23,38 @@ fabric-az1-svc1 service 10.66.1.10 6c:4b:90:50:9f:0d /dev/disk/by-id/ata-test-sv
 fabric-az1-svc2 service 10.66.1.11 6c:4b:90:6e:ab:ee /dev/disk/by-id/ata-test-svc2 10.66.1.105
 EOF
 ignition=$work/fabric-az1-cp1.ign
-printf '%s\n' '{"ignition":{"version":"3.4.0"}}' >"$ignition"
+write_destination_ignition() {
+  local output=$1 network_path=$2 connection_id=$3 uuid=$4 mac=$5 address=$6 gateway=$7
+  local network=$output.network
+  cat >"$network" <<EOF
+[connection]
+id=$connection_id
+uuid=$uuid
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+
+[ethernet]
+mac-address=$mac
+
+[ipv4]
+method=manual
+address1=$address/24,$gateway
+may-fail=false
+
+[ipv6]
+method=disabled
+EOF
+  jq -n --arg path "$network_path" \
+    --arg source "data:;base64,$(base64 -w0 "$network")" '{
+      ignition:{version:"3.4.0"},
+      storage:{files:[{path:$path,mode:384,contents:{source:$source}}]}
+    }' >"$output"
+}
+write_destination_ignition "$ignition" \
+  /etc/NetworkManager/system-connections/fabric-static.nmconnection \
+  fabric-static b8ee0dd1-ff31-4bd6-8901-660000000010 \
+  6c:4b:90:76:c6:00 10.66.0.10 10.66.0.1
 policy=$work/install-policy
 printf '%s\n' 'fabric-az1-cp1 /dev/disk/by-id/nvme-test-cp1' >"$policy"
 ignition_sha=$(sha256sum "$ignition" | awk '{print $1}')
@@ -55,6 +87,11 @@ export BOOTIE_SESSION_SECRET=bootie-session
 export FCOS_BASE=http://10.66.1.10/static
 export FCOS_GRUB_BASE='(http,10.66.1.10)/static'
 export FCOS_VERSION=44.test
+export BOOTIE_RUNTIME_DIR=$work/runtime
+mkdir "$BOOTIE_RUNTIME_DIR"
+service_live=$work/fabric-day2-service-live.ign
+printf '%s\n' '{"ignition":{"version":"3.5.0"}}' >"$service_live"
+export BOOTIE_SERVICE_LIVE_IGNITION_FILE=$service_live
 
 fail() { printf 'day-two Bootie test failed: %s\n' "$*" >&2; exit 1; }
 contains() { grep -Fq -- "$2" <<<"$1" || fail "missing output: $2"; }
@@ -72,7 +109,11 @@ excludes "$local_boot" 'coreos.inst.install_dev='
 armed=$(BOOT_FORMAT=grub QUERY_STRING='mac=6c:4b:90:76:c6:00' "$boot_request")
 contains "$armed" 'coreos.inst.install_dev=/dev/disk/by-id/nvme-test-cp1'
 contains "$armed" 'coreos.inst.ignition_url=http://10.66.1.10/ignition/fabric-az1-cp1?token='
-excludes "$armed" 'fabric-day2-service-live.ign'
+contains "$armed" 'ignition.firstboot ignition.platform.id=metal'
+contains "$armed" \
+  'ignition.config.url=http://10.66.1.10/live-ignition/fabric-az1-cp1?token='
+contains "$armed" 'rd.net.timeout.carrier=60'
+contains "$armed" 'systemd.show_status=false'
 excludes "$armed" 'coreos.inst.skip_reboot'
 grep -Fq '"path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"' "$log" ||
   fail 'install response was not Node-UID bound'
@@ -86,9 +127,75 @@ contains "$wrong_uid" 'Status: 409 Conflict'
 excludes "$wrong_uid" 'coreos.inst.install_dev='
 
 : >"$log"
-ignition_response=$(FAKE_NODE_STATE=response REQUEST_METHOD=GET \
+request_token=$(printf 'd%.0s' {1..32})
+live_response=$(FAKE_NODE_STATE=response FAKE_IGNITION_TOKEN=$request_token REQUEST_METHOD=GET \
+  REQUEST_URI=/live-ignition/fabric-az1-cp1 \
+  QUERY_STRING="token=$request_token" "$live_ignition_request")
+contains "$live_response" 'content-type: application/json'
+live_body=${live_response#*$'\n\n'}
+[[ $(jq '.ignition.config.merge | length' <<<"$live_body") == 0 ]] ||
+  fail 'control-plane live Ignition unexpectedly has a role merge'
+network_source=$(jq -er '.storage.files[] | select(.path | endswith("fabric-static.nmconnection")) | .contents.source' \
+  <<<"$live_body")
+printf '%s' "${network_source#data:;base64,}" | base64 -d | \
+  cmp - "$ignition.network" || fail 'live Ignition changed the exact control-plane network profile'
+installer_source=$(jq -er '.storage.files[] | select(.path | endswith("0000-fabric-day2-network.yaml")) | .contents.source' \
+  <<<"$live_body")
+installer=$(printf '%s' "${installer_source#data:;base64,}" | base64 -d)
+[[ $installer == $'copy-network: true\nnetwork-dir: /etc/NetworkManager/system-connections' ]] ||
+  fail 'live Ignition installer config does not copy the exact live network profile'
+[[ -z $(grep '^patch ' "$log" || true) ]] ||
+  fail 'the live Ignition read consumed or mutated the one-use session'
+
+expect_live_refusal() {
+  local candidate=$1 expected=$2
+  local candidate_sha candidate_session candidate_session_b64 candidate_b64 response
+  candidate_sha=$(sha256sum "$candidate" | awk '{print $1}')
+  candidate_session=$(jq -c --arg sha "$candidate_sha" '.ignitionSha256=$sha' <<<"$session")
+  candidate_session_b64=$(printf '%s' "$candidate_session" | base64 -w0)
+  candidate_b64=$(base64 -w0 "$candidate")
+  : >"$log"
+  response=$(FAKE_SESSION_B64="$candidate_session_b64" FAKE_IGNITION_B64="$candidate_b64" \
+    FAKE_NODE_STATE=response FAKE_IGNITION_TOKEN="$request_token" REQUEST_METHOD=GET \
+    REQUEST_URI=/live-ignition/fabric-az1-cp1 QUERY_STRING="token=$request_token" \
+    "$live_ignition_request" 2>&1)
+  contains "$response" 'Status: 409 Conflict'
+  contains "$response" "$expected"
+  [[ -z $(grep '^patch ' "$log" || true) ]] ||
+    fail 'a refused live Ignition request mutated the replacement Node'
+}
+
+zero_network=$work/zero-network.ign
+jq '.storage.files=[]' "$ignition" >"$zero_network"
+expect_live_refusal "$zero_network" 'destination Ignition has no exact network profile'
+
+duplicate_network=$work/duplicate-network.ign
+jq '.storage.files += [.storage.files[0]]' "$ignition" >"$duplicate_network"
+expect_live_refusal "$duplicate_network" 'destination Ignition contains duplicate network profiles'
+
+remote_child=$work/remote-child.ign
+jq '.ignition.config.merge=[{source:"https://router.invalid/child.ign"}]' \
+  "$ignition" >"$remote_child"
+expect_live_refusal "$remote_child" 'destination Ignition contains a non-embedded child'
+
+mismatched_network=$work/mismatched-network.ign
+write_destination_ignition "$mismatched_network" \
+  /etc/NetworkManager/system-connections/fabric-static.nmconnection \
+  fabric-static b8ee0dd1-ff31-4bd6-8901-660000000010 \
+  00:11:22:33:44:55 10.66.0.10 10.66.0.1
+expect_live_refusal "$mismatched_network" \
+  'destination network profile has an invalid ethernet.mac-address'
+
+immutable_refusal=$(FAKE_SECRET_IMMUTABLE=false FAKE_NODE_STATE=response \
+  FAKE_IGNITION_TOKEN="$request_token" REQUEST_METHOD=GET \
+  REQUEST_URI=/live-ignition/fabric-az1-cp1 QUERY_STRING="token=$request_token" \
+  "$live_ignition_request" 2>&1)
+contains "$immutable_refusal" 'active Bootie session Secret is not exact and immutable'
+
+: >"$log"
+ignition_response=$(FAKE_NODE_STATE=response FAKE_IGNITION_TOKEN=$request_token REQUEST_METHOD=GET \
   REQUEST_URI=/ignition/fabric-az1-cp1 \
-  QUERY_STRING='token=test-token&install=1' "$ignition_request")
+  QUERY_STRING="token=$request_token&install=1" "$ignition_request")
 contains "$ignition_response" 'content-type: application/json'
 body=${ignition_response#*$'\n\n'}
 [[ $(printf '%s\n' "$body" | jq -r '.ignition.version') == 3.4.0 ]] ||
@@ -98,7 +205,10 @@ grep -Fq '"path":"/metadata/annotations/samcday.com~1boot-device"' "$log" ||
 
 service_ignition=$work/fabric-az1-svc1.ign
 service_policy=$work/service-install-policy
-printf '%s\n' '{"ignition":{"version":"3.4.0"}}' >"$service_ignition"
+write_destination_ignition "$service_ignition" \
+  /etc/NetworkManager/system-connections/fabric-services.nmconnection \
+  fabric-services b8ee0dd1-ff31-4bd6-8901-660000000110 \
+  6c:4b:90:50:9f:0d 10.66.1.10 10.66.1.1
 printf '%s\n' 'fabric-az1-svc1 /dev/disk/by-id/ata-test-svc1' >"$service_policy"
 service_ignition_sha=$(sha256sum "$service_ignition" | awk '{print $1}')
 service_policy_sha=$(sha256sum "$service_policy" | awk '{print $1}')
@@ -125,14 +235,29 @@ service_armed=$(BOOT_FORMAT=grub QUERY_STRING='mac=6c:4b:90:50:9f:0d' "$boot_req
 contains "$service_armed" 'coreos.inst.install_dev=/dev/disk/by-id/ata-test-svc1'
 contains "$service_armed" 'ignition.firstboot ignition.platform.id=metal'
 contains "$service_armed" \
-  'ignition.config.url=http://10.66.1.10/static/fabric-day2-service-live.ign'
-contains "$service_armed" 'coreos.inst.skip_reboot systemd.show_status=false'
+  'ignition.config.url=http://10.66.1.10/live-ignition/fabric-az1-svc1?token='
+contains "$service_armed" 'rd.net.timeout.carrier=60 systemd.show_status=false coreos.inst.skip_reboot'
 grub2-script-check /dev/stdin <<<"${service_armed#*$'\n\n'}"
 
 service_armed_ipxe=$(BOOT_FORMAT=ipxe QUERY_STRING='mac=6c:4b:90:50:9f:0d' "$boot_request")
 contains "$service_armed_ipxe" '#!ipxe'
 contains "$service_armed_ipxe" \
-  'ignition.config.url=http://10.66.1.10/static/fabric-day2-service-live.ign'
-contains "$service_armed_ipxe" 'coreos.inst.skip_reboot systemd.show_status=false'
+  'ignition.config.url=http://10.66.1.10/live-ignition/fabric-az1-svc1?token='
+contains "$service_armed_ipxe" 'rd.net.timeout.carrier=60 systemd.show_status=false coreos.inst.skip_reboot'
+
+: >"$log"
+service_live_response=$(FAKE_NODE_STATE=response FAKE_IGNITION_TOKEN=$request_token \
+  REQUEST_METHOD=GET REQUEST_URI=/live-ignition/fabric-az1-svc1 \
+  QUERY_STRING="token=$request_token" "$live_ignition_request")
+service_live_body=${service_live_response#*$'\n\n'}
+service_merge_source=$(jq -er '.ignition.config.merge[0].source' <<<"$service_live_body")
+printf '%s' "${service_merge_source#data:;base64,}" | base64 -d | cmp - "$service_live" ||
+  fail 'service live Ignition did not preserve the install-poweroff gate'
+service_network_source=$(jq -er '.storage.files[] | select(.path | endswith("fabric-services.nmconnection")) | .contents.source' \
+  <<<"$service_live_body")
+printf '%s' "${service_network_source#data:;base64,}" | base64 -d | \
+  cmp - "$service_ignition.network" || fail 'service live Ignition changed the exact network profile'
+[[ -z $(grep '^patch ' "$log" || true) ]] ||
+  fail 'the service live Ignition read consumed or mutated the one-use session'
 
 printf 'day-two Bootie request tests passed\n'
