@@ -22,6 +22,11 @@ Usage:
     --confirm LOCK:fabric-az1-cp1:<main-commit>
   scripts/fabric-node-day2-lock verify \
     --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock
+  scripts/fabric-node-day2-lock advance-failed-firstboot \
+    --receipt-dir /dev/shm/fabric-az1-svc1-day2-lock \
+    --session-receipt /dev/shm/fabric-az1-svc1-bootie-session \
+    --output-dir /dev/shm/fabric-az1-svc1-day2-lock-retry \
+    [--confirm ADVANCE-FAILED-FIRSTBOOT-LOCK:<node>:<lock-uid>:<old-revision>:<new-revision>]
   scripts/fabric-node-day2-lock abort \
     --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock \
     --confirm ABORT:fabric-az1-cp1:<lock-uid>
@@ -53,6 +58,10 @@ receipt_dir=
 confirmation=
 case ${1:-} in
   --check) mode=check; shift ;;
+  advance-failed-firstboot)
+    shift
+    exec "$script_dir/advance-fabric-node-day2-lock" "$@"
+    ;;
   acquire | verify | abort | release) mode=$1; shift ;;
   -h | --help) usage; exit 0 ;;
   *) usage; exit 2 ;;
@@ -77,6 +86,7 @@ if [[ $mode == check ]]; then
   [[ -z $node && -z $output_dir && -z $receipt_dir && -z $confirmation ]] ||
     die '--check accepts no other arguments'
   bash -n "$script_path"
+  "$script_dir/advance-fabric-node-day2-lock" --check >/dev/null
   printf 'validated the UID-bound Fabric node day-two maintenance lock\n'
   exit 0
 fi

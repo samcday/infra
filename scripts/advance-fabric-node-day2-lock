@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+readonly lock_name=fabric-maintenance-lock
+readonly lock_namespace=kube-system
+readonly -a required_kustomizations=(
+  fabric-root
+  fabric-foundation
+  fabric-platform
+  fabric-bootie
+)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/fabric-node-day2-lock advance-failed-firstboot \
+    --receipt-dir /dev/shm/fabric-az1-svc1-day2-lock \
+    --session-receipt /dev/shm/fabric-az1-svc1-bootie-session \
+    --output-dir /dev/shm/fabric-az1-svc1-day2-lock-retry \
+    [--confirm ADVANCE-FAILED-FIRSTBOOT-LOCK:<node>:<lock-uid>:<old-revision>:<new-revision>]
+
+Advance one retained service-node maintenance lock after its exact consumed,
+never-joined placeholder has been retired. With no --confirm this is read-only
+and prints the exact confirmation. The attended mutation preserves the lock UID
+and original target Node UID, advances only its holder/revision, and writes a
+new immutable receipt on tmpfs. It does not create a Node or Bootie session,
+render Ignition, reboot a host, or write a disk.
+EOF
+}
+
+die() {
+  printf 'advance-fabric-node-day2-lock: %s\n' "$*" >&2
+  exit 1
+}
+
+check_only=false
+receipt_dir=
+session_receipt=
+output_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --check) check_only=true; shift ;;
+    --receipt-dir)
+      (($# >= 2)) || die '--receipt-dir requires a value'
+      receipt_dir=$2
+      shift 2
+      ;;
+    --session-receipt)
+      (($# >= 2)) || die '--session-receipt requires a value'
+      session_receipt=$2
+      shift 2
+      ;;
+    --output-dir)
+      (($# >= 2)) || die '--output-dir requires a value'
+      output_dir=$2
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || die '--confirm requires a value'
+      confirmation=$2
+      shift 2
+      ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for command in bash chmod date find git hostname id jq kubectl mktemp mv \
+  realpath rm stat wc yq; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_validate_node_inventory || die 'five-node inventory validation failed'
+
+qualify_closed_session() {
+  local lock_file=$1 session_file=$2
+  jq -e --slurpfile lock "$lock_file" '
+    ($lock | length) == 1 and
+    .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
+    .session.schema == 1 and .session.purpose == "fabric-node-day-two-session" and
+    .session.node == $lock[0].node and .session.role == "service" and
+    .session.repoCommit == $lock[0].repoCommit and
+    .session.lockUid == $lock[0].lock.uid and
+    .session.nodeUid != $lock[0].targetNodeUid and
+    (.session.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.session.bootDevice | type == "string" and startswith("/dev/disk/by-id/")) and
+    .secret.namespace == "bootie" and .secret.name == "bootie-session" and
+    (.secret.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+    (.secret.resourceVersion | type == "string" and test("^[1-9][0-9]*$")) and
+    (.closedAt | type == "string" and length > 0)
+  ' "$session_file" >/dev/null
+}
+
+qualify_surviving_nodes() {
+  local nodes=$1 target=$2 expected_names=$3
+  jq -e --arg target "$target" --argjson expected "$expected_names" '
+    ([.items[].metadata.name] | sort) == $expected and
+    all(.items[];
+      .metadata.name != $target and
+      .metadata.deletionTimestamp == null and
+      ([.status.conditions[]? |
+        select(.type == "Ready" and .status == "True")] | length) == 1)
+  ' <<<"$nodes" >/dev/null
+}
+
+qualify_flux() {
+  local source=$1 kustomizations=$2 revision=$3 required=$4
+  jq -e --arg revision "$revision" '
+    .metadata.name == "infra" and .metadata.namespace == "flux-system" and
+    .metadata.generation == .status.observedGeneration and
+    .status.artifact.revision == ("main@sha1:" + $revision) and
+    ([.status.conditions[]? |
+      select(.type == "Ready" and .status == "True")] | length) == 1
+  ' <<<"$source" >/dev/null &&
+    jq -e --arg revision "$revision" --argjson required "$required" '
+      ([.items[] | select(.metadata.name as $name | $required | index($name)) |
+        .metadata.name] | sort) == ($required | sort) and
+      all(.items[] | select(.metadata.name as $name | $required | index($name));
+        .spec.suspend != true and
+        .metadata.generation == .status.observedGeneration and
+        .status.lastAppliedRevision == ("main@sha1:" + $revision) and
+        .status.lastAttemptedRevision == ("main@sha1:" + $revision) and
+        ([.status.conditions[]? |
+          select(.type == "Ready" and .status == "True")] | length) == 1)
+    ' <<<"$kustomizations" >/dev/null
+}
+
+if $check_only; then
+  [[ -z $receipt_dir && -z $session_receipt && -z $output_dir &&
+     -z $confirmation ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+
+  fixture_revision=$(printf 'a%.0s' {1..40})
+  fixture_lock=$(mktemp)
+  fixture_session=$(mktemp)
+  trap 'rm -f -- "$fixture_lock" "$fixture_session"' EXIT
+  jq -n --arg revision "$fixture_revision" '{
+    schema:1, purpose:"fabric-node-day-two", node:"fabric-az1-svc1", role:"service",
+    targetNodeUid:"11111111-2222-3333-4444-555555555555", repoCommit:$revision,
+    lock:{uid:"22222222-3333-4444-5555-666666666666"}
+  }' >"$fixture_lock"
+  jq -n --arg revision "$fixture_revision" '{
+    schema:1, purpose:"fabric-node-day-two-session-receipt", closedAt:"2026-01-01T00:00:00Z",
+    session:{schema:1, purpose:"fabric-node-day-two-session", node:"fabric-az1-svc1",
+      role:"service", repoCommit:$revision,
+      lockUid:"22222222-3333-4444-5555-666666666666",
+      nodeUid:"33333333-4444-5555-6666-777777777777",
+      bootDevice:"/dev/disk/by-id/example"},
+    secret:{namespace:"bootie", name:"bootie-session",
+      uid:"44444444-5555-6666-7777-888888888888", resourceVersion:"123"}
+  }' >"$fixture_session"
+  qualify_closed_session "$fixture_lock" "$fixture_session" ||
+    die 'closed failed-firstboot session fixture was rejected'
+  jq '.closedAt = null' "$fixture_session" >"$fixture_session.tmp"
+  ! qualify_closed_session "$fixture_lock" "$fixture_session.tmp" ||
+    die 'unclosed session fixture was accepted'
+  rm -f -- "$fixture_session.tmp"
+
+  fixture_survivors='["fabric-az1-cp1","fabric-az1-cp2","fabric-az1-cp3","fabric-az1-svc2"]'
+  fixture_nodes=$(jq -cn --argjson names "$fixture_survivors" '{items:($names | map({
+    metadata:{name:., deletionTimestamp:null},
+    status:{conditions:[{type:"Ready",status:"True"}]}
+  }))}')
+  qualify_surviving_nodes "$fixture_nodes" fabric-az1-svc1 "$fixture_survivors" ||
+    die 'four-Ready-survivor fixture was rejected'
+  ! qualify_surviving_nodes "$(jq '.items[0].status.conditions[0].status="False"' \
+    <<<"$fixture_nodes")" fabric-az1-svc1 "$fixture_survivors" ||
+    die 'non-Ready survivor fixture was accepted'
+
+  fixture_required=$(printf '%s\n' "${required_kustomizations[@]}" |
+    jq -Rsc 'split("\n")[:-1]')
+  fixture_source=$(jq -cn --arg revision "$fixture_revision" '{
+    metadata:{name:"infra",namespace:"flux-system",generation:1},
+    status:{observedGeneration:1,artifact:{revision:("main@sha1:" + $revision)},
+      conditions:[{type:"Ready",status:"True"}]}
+  }')
+  fixture_kustomizations=$(jq -cn --arg revision "$fixture_revision" \
+    --argjson required "$fixture_required" '{items:($required | map({
+      metadata:{name:.,generation:1}, spec:{}, status:{observedGeneration:1,
+        lastAppliedRevision:("main@sha1:" + $revision),
+        lastAttemptedRevision:("main@sha1:" + $revision),
+        conditions:[{type:"Ready",status:"True"}]}
+    }))}')
+  qualify_flux "$fixture_source" "$fixture_kustomizations" "$fixture_revision" \
+    "$fixture_required" || die 'current foundational Flux fixture was rejected'
+  ! qualify_flux "$fixture_source" \
+    "$(jq '.items[0].status.conditions[0].status="False"' <<<"$fixture_kustomizations")" \
+    "$fixture_revision" "$fixture_required" ||
+    die 'non-Ready foundational Flux fixture was accepted'
+  printf 'validated the failed-firstboot maintenance-lock advance helper\n'
+  exit 0
+fi
+
+[[ -n $receipt_dir && -n $session_receipt && -n $output_dir ]] || {
+  usage
+  exit 2
+}
+
+receipt_dir=$(realpath -e -- "$receipt_dir")
+"$script_dir/fabric-node-day2-lock" verify --receipt-dir "$receipt_dir" >/dev/null
+lock_file=$receipt_dir/lock.json
+node=$(jq -er '.node' "$lock_file")
+role=$(jq -er '.role' "$lock_file")
+old_revision=$(jq -er '.repoCommit' "$lock_file")
+lock_uid=$(jq -er '.lock.uid' "$lock_file")
+old_rv=$(jq -er '.lock.resourceVersion' "$lock_file")
+old_holder=$(jq -er '.holder' "$lock_file")
+[[ $role == service && ! -e $receipt_dir/etcd-member.json ]] ||
+  die 'failed-firstboot lock advance is restricted to a service node'
+fabric_load_node_inventory "$node" || die 'lock node is outside the exact Fabric inventory'
+
+session_receipt=$(realpath -e -- "$session_receipt")
+[[ -d $session_receipt && ! -L $session_receipt &&
+   $(stat --file-system --format=%T -- "$session_receipt") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$session_receipt") == "$(id -u):$(id -g):700" &&
+   -f $session_receipt/session.json && ! -L $session_receipt/session.json &&
+   $(stat -Lc '%u:%g:%a:%h' "$session_receipt/session.json") == \
+     "$(id -u):$(id -g):600:1" &&
+   $(find "$session_receipt" -mindepth 1 -maxdepth 1 | wc -l) == 1 ]] ||
+  die 'closed session receipt must be one caller-owned mode-0600 file on mode-0700 tmpfs'
+qualify_closed_session "$lock_file" "$session_receipt/session.json" ||
+  die 'closed session receipt does not bind the retained service-node lock'
+[[ $(jq -r '.session.bootDevice' "$session_receipt/session.json") == \
+   "$FABRIC_NODE_DISK" ]] || die 'closed session receipt names another destination disk'
+
+[[ $(git -C "$repo_root" branch --show-current) == main &&
+   -z $(git -C "$repo_root" status --porcelain=v1 --untracked-files=all) ]] ||
+  die 'lock advance requires a clean main worktree'
+git -C "$repo_root" fetch --quiet origin main || die 'could not refresh origin/main'
+new_revision=$(git -C "$repo_root" rev-parse HEAD)
+[[ $new_revision == "$(git -C "$repo_root" rev-parse origin/main)" ]] ||
+  die 'lock advance requires HEAD exactly at fetched origin/main'
+[[ $new_revision != "$old_revision" ]] || die 'retained lock is already at current main'
+git -C "$repo_root" merge-base --is-ancestor "$old_revision" "$new_revision" ||
+  die 'retained lock revision is not an ancestor of current main'
+
+output_dir=$(realpath -m -- "$output_dir")
+case $output_dir in
+  "$repo_root" | "$repo_root"/*) die 'replacement receipt must remain outside Git' ;;
+esac
+[[ ! -e $output_dir && ! -L $output_dir ]] ||
+  die 'replacement lock receipt output already exists'
+output_parent=$(dirname -- "$output_dir")
+[[ -d $output_parent && ! -L $output_parent &&
+   $(stat --file-system --format=%T -- "$output_parent") == tmpfs ]] ||
+  die 'replacement receipt parent must be an existing tmpfs directory'
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+[[ $("${ik[@]}" get --raw=/readyz) == ok ]] || die 'Fabric API is not ready'
+[[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
+  die 'failed-firstboot placeholder must be retired before lock advance'
+[[ -z $("${ik[@]}" --namespace bootie get secret bootie-session \
+  --ignore-not-found --output=name) ]] || die 'a live Bootie session still exists'
+
+nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
+# shellcheck disable=SC2016 # $node is a yq variable supplied with --arg.
+expected_survivors=$(yq -o=json -I=0 --arg node "$node" \
+  '[.nodes[].name | select(. != $node)] | sort' "$repo_root/fabric/inventory/nodes.yaml")
+qualify_surviving_nodes "$nodes_json" "$node" "$expected_survivors" ||
+  die 'live Node set is not exactly the four Ready non-target inventory nodes'
+
+source_json=$("${ik[@]}" --namespace flux-system get \
+  gitrepository.source.toolkit.fluxcd.io/infra --output=json) ||
+  die 'could not read Fabric Flux source'
+kustomizations_json=$("${ik[@]}" --namespace flux-system get \
+  kustomizations.kustomize.toolkit.fluxcd.io --output=json) ||
+  die 'could not read Fabric Flux Kustomizations'
+required_json=$(printf '%s\n' "${required_kustomizations[@]}" | jq -Rsc 'split("\n")[:-1]')
+qualify_flux "$source_json" "$kustomizations_json" "$new_revision" "$required_json" ||
+  die 'Fabric root/foundation/platform/Bootie have not all applied current main'
+
+expected_confirmation="ADVANCE-FAILED-FIRSTBOOT-LOCK:$node:$lock_uid:$old_revision:$new_revision"
+if [[ -z $confirmation ]]; then
+  printf 'LOCK ADVANCE READY node=%s uid=%s old=%s new=%s\n' \
+    "$node" "$lock_uid" "$old_revision" "$new_revision"
+  printf 'Exact live confirmation: %s\n' "$expected_confirmation"
+  exit 0
+fi
+[[ $confirmation == "$expected_confirmation" ]] ||
+  die "exact --confirm $expected_confirmation is required"
+
+# Re-prove the physical target still has no live Kubernetes identity immediately
+# before changing the retained lock. Any same-name Node or new session wins the
+# race and leaves the old lock untouched.
+[[ -z $("${ik[@]}" get node "$node" --ignore-not-found --output=name) ]] ||
+  die 'target Node appeared after qualification; retained lock was not changed'
+[[ -z $("${ik[@]}" --namespace bootie get secret bootie-session \
+  --ignore-not-found --output=name) ]] ||
+  die 'Bootie session appeared after qualification; retained lock was not changed'
+nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not re-read Fabric Nodes'
+qualify_surviving_nodes "$nodes_json" "$node" "$expected_survivors" ||
+  die 'surviving Node state changed after qualification; retained lock was not changed'
+
+new_holder="$(hostname):$$:node-day2-retry:$node:$new_revision"
+patch=$(jq -cn --arg uid "$lock_uid" --arg rv "$old_rv" \
+  --arg old_holder "$old_holder" --arg old_revision "$old_revision" \
+  --arg node "$node" --arg new_holder "$new_holder" --arg new_revision "$new_revision" '[
+    {"op":"test","path":"/metadata/uid","value":$uid},
+    {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1purpose","value":"node-day-two"},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1node","value":$node},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1revision","value":$old_revision},
+    {"op":"test","path":"/data/holder","value":$old_holder},
+    {"op":"replace","path":"/metadata/labels/fabric.samcday.com~1revision","value":$new_revision},
+    {"op":"replace","path":"/data/holder","value":$new_holder}
+  ]')
+updated_lock=$("${ik[@]}" --namespace "$lock_namespace" patch configmap "$lock_name" \
+  --type=json --patch "$patch" --output=json) ||
+  die 'exact retained-lock advance raced or failed'
+new_rv=$(jq -er --arg uid "$lock_uid" --arg node "$node" \
+  --arg holder "$new_holder" --arg revision "$new_revision" '
+  select(.metadata.uid == $uid and .metadata.resourceVersion != null and
+    .metadata.labels["fabric.samcday.com/purpose"] == "node-day-two" and
+    .metadata.labels["fabric.samcday.com/node"] == $node and
+    .metadata.labels["fabric.samcday.com/revision"] == $revision and
+    .data.holder == $holder) | .metadata.resourceVersion
+' <<<"$updated_lock") || die 'advanced lock response was unexpected'
+[[ $new_rv != "$old_rv" ]] || die 'advanced lock resourceVersion did not change'
+
+work=$(mktemp -d -- "$output_parent/.fabric-node-day2-lock-retry.XXXXXXXX")
+chmod 0700 "$work"
+jq --arg new_revision "$new_revision" --arg new_holder "$new_holder" \
+  --arg new_rv "$new_rv" --arg old_revision "$old_revision" \
+  --arg old_holder "$old_holder" --arg old_rv "$old_rv" \
+  --arg placeholder_uid "$(jq -r '.session.nodeUid' "$session_receipt/session.json")" \
+  --arg session_uid "$(jq -r '.secret.uid' "$session_receipt/session.json")" \
+  --arg advanced_at "$(date --utc --iso-8601=seconds)" '
+  .repoCommit = $new_revision |
+  .holder = $new_holder |
+  .lock.resourceVersion = $new_rv |
+  .recovery = {
+    kind:"failed-firstboot", fromRepoCommit:$old_revision,
+    fromHolder:$old_holder, fromResourceVersion:$old_rv,
+    failedPlaceholderNodeUid:$placeholder_uid, closedSessionUid:$session_uid,
+    advancedAt:$advanced_at
+  }
+' "$lock_file" >"$work/lock.json"
+chmod 0600 "$work/lock.json"
+mv -T -- "$work" "$output_dir"
+"$script_dir/fabric-node-day2-lock" verify --receipt-dir "$output_dir" >/dev/null
+printf 'LOCK ADVANCED %s uid=%s revision=%s receipt=%s\n' \
+  "$node" "$lock_uid" "$new_revision" "$output_dir"

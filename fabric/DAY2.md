@@ -48,13 +48,20 @@ For one node, the flow is:
 
 If a TPM-bound service node from an older Bootie revision warm-rebooted into a
 failed first Ignition boot, keep it off and recover through the same operator
-surface. After inspecting and conditionally clearing any stale maintenance lock,
-run a fresh `preflight` and `lock acquire`, then use `retire plan/apply` with
-`--failed-firstboot`. That mode accepts only the exact consumed placeholder with
-no Lease, node-password Secret, machine ID, InternalIP, or non-synthetic status;
-its confirmation binds the admitted disk and explicitly attests `POWERED-OFF`.
-Continue with ordinary `prepare` and `arm`. The current service-node install
-will power off at the cold gate before its first TPM-bound local boot.
+surface. Retain its existing maintenance lock and closed session receipt. Use
+`retire plan/apply --failed-firstboot` to remove only the exact consumed
+placeholder: it must have no Lease, node-password Secret, machine ID,
+InternalIP, or non-synthetic status, and the confirmation binds the admitted
+disk plus an explicit `POWERED-OFF` attestation. Then run
+`lock advance-failed-firstboot` with the old lock and closed session receipts.
+It requires the other four nodes to be Ready and the Fabric root, foundation,
+platform, and Bootie Flux paths to have applied current pushed `main`; its exact
+confirmation preserves the global lock UID while producing a new revision-bound
+tmpfs receipt. Continue with ordinary `prepare` and `arm` using that receipt.
+The current service-node install will power off at the cold gate before its
+first TPM-bound local boot. Do not clear and reacquire the lock: ordinary
+acquisition intentionally requires the target to exist in the healthy five-node
+preflight set.
 
 All mutating phases require the same UID-bound lock receipt and an exact
 confirmation. An interruption deliberately leaves a visible receipt and a
