@@ -22,9 +22,11 @@ For one node, the flow is:
    receipt UIDs.
 5. `prepare` renders the selected node's Ignition on tmpfs. For a service node
    it reads the current agent token through one healthy pinned root.
-6. `arm` publishes one immutable in-cluster session, then `reboot` persists
-   PXE-first and restarts the host. Exact confirmation strings are printed or
-   derivable from the preceding receipt; there is no broad or name-only arm.
+6. `arm` publishes one immutable in-cluster session, then `reboot` binds its
+   local receipt to the exact live Secret and armed placeholder, persists
+   PXE-first, and restarts the host. Its confirmation includes the session UID.
+   Exact confirmation strings are printed or derivable from the preceding
+   receipt; there is no broad or name-only arm or reboot.
    Bootie first serves a non-consuming live profile that copies the exact
    MAC-bound static connection into the installed system. Its live boot also
    carries the recognized `rd.net.timeout.carrier=60` network argument, so the

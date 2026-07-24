@@ -8,14 +8,18 @@ die() {
   exit 1
 }
 
-[[ $# -eq 4 ]] || die 'expected node, role, MAC, and exact confirmation'
+[[ $# -eq 5 ]] || die 'expected node, role, MAC, session UID, and exact confirmation'
 node=$1
 role=$2
 mac=$3
-confirmation=$4
+session_uid=$4
+confirmation=$5
 [[ $(hostname) == "$node" ]] || die 'remote hostname differs from the selected inventory node'
 [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die 'inventory MAC is malformed'
-[[ $confirmation == "REBOOT-PXE:$node:$mac" ]] || die 'exact PXE reboot confirmation is absent'
+[[ $session_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+  die 'session UID is malformed'
+[[ $confirmation == "REBOOT-PXE:$node:$mac:$session_uid" ]] ||
+  die 'exact session-bound PXE reboot confirmation is absent'
 case $role in
   control-plane)
     ! systemctl is-active --quiet etcd.service || die 'etcd.service must be stopped first'

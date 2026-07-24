@@ -14,10 +14,12 @@ Usage:
   scripts/reboot-fabric-node-to-pxe \
     --node fabric-az1-cp1 \
     --lock-receipt /dev/shm/fabric-az1-cp1-day2-lock \
-    --confirm REBOOT-PXE:fabric-az1-cp1:6c:4b:90:76:c6:00
+    --session-receipt /dev/shm/fabric-az1-cp1-bootie-session \
+    --confirm REBOOT-PXE:<node>:<mac>:<session-uid>
 
-Run only after the exact Bootie install arm is live. This verifies the global
-day-two lock, uses strict pinned SSH, proves K3s (and etcd on a root) are
+Run only after the exact Bootie install arm is live. This binds the lock, local
+session receipt, immutable live Secret UID, and armed placeholder UID before it
+uses strict pinned SSH. The remote half proves K3s (and etcd on a root) are
 stopped, discovers exactly one IPv4 UEFI entry matching the inventoried MAC,
 moves that entry to the front of persistent BootOrder, and reboots. The new
 Ignition enforces the same PXE-first invariant on every local boot; no firmware
@@ -41,24 +43,97 @@ fi
 
 node=
 lock_receipt=
+session_receipt=
 confirmation=
 while (($#)); do
   case $1 in
     --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
     --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --session-receipt) (($# >= 2)) || die '--session-receipt requires a value'; session_receipt=$2; shift 2 ;;
     --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n $node && -n $lock_receipt && -n $confirmation ]] || { usage; exit 2; }
+[[ -n $node && -n $lock_receipt && -n $session_receipt &&
+   -n $confirmation ]] || { usage; exit 2; }
+for command in find id jq realpath stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
 fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
-[[ $confirmation == "REBOOT-PXE:$node:$FABRIC_NODE_MAC" ]] ||
-  die "exact --confirm REBOOT-PXE:$node:$FABRIC_NODE_MAC is required"
 lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
-[[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" ]] ||
-  die 'maintenance lock receipt belongs to another node'
+lock_json=$lock_receipt/lock.json
+repo_commit=$(jq -r '.repoCommit' "$lock_json")
+lock_uid=$(jq -r '.lock.uid' "$lock_json")
+[[ $(jq -r '.node' "$lock_json") == "$node" &&
+   $(jq -r '.role' "$lock_json") == "$FABRIC_NODE_ROLE" ]] ||
+  die 'maintenance lock receipt belongs to another node or role'
+
+session_receipt=$(realpath -e -- "$session_receipt")
+[[ -d $session_receipt && ! -L $session_receipt &&
+   $(stat --file-system --format=%T -- "$session_receipt") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$session_receipt") == "$(id -u):$(id -g):700" &&
+   -f $session_receipt/session.json && ! -L $session_receipt/session.json &&
+   $(stat -Lc '%u:%g:%a:%h' "$session_receipt/session.json") == \
+     "$(id -u):$(id -g):600:1" &&
+   $(find "$session_receipt" -mindepth 1 -maxdepth 1 | wc -l) == 1 ]] ||
+  die 'session receipt must be one caller-owned mode-0600 file on mode-0700 tmpfs'
+receipt=$session_receipt/session.json
+jq -e --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
+  --arg address "$FABRIC_NODE_ADDRESS" --arg mac "$FABRIC_NODE_MAC" \
+  --arg disk "$FABRIC_NODE_DISK" --arg repo "$repo_commit" --arg lock_uid "$lock_uid" '
+  .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
+  .session.schema == 1 and .session.purpose == "fabric-node-day-two-session" and
+  .session.node == $node and .session.role == $role and
+  .session.address == $address and .session.mac == $mac and
+  .session.bootDevice == $disk and .session.repoCommit == $repo and
+  .session.lockUid == $lock_uid and
+  (.session.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+  .secret.namespace == "bootie" and .secret.name == "bootie-session" and
+  (.secret.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+  (.secret.resourceVersion | type == "string" and test("^[1-9][0-9]*$")) and
+  (has("closedAt") | not)
+' "$receipt" >/dev/null || die 'open session receipt does not match the lock and inventory'
+node_uid=$(jq -r '.session.nodeUid' "$receipt")
+session_uid=$(jq -r '.secret.uid' "$receipt")
+[[ $confirmation == "REBOOT-PXE:$node:$FABRIC_NODE_MAC:$session_uid" ]] ||
+  die "exact --confirm REBOOT-PXE:$node:$FABRIC_NODE_MAC:$session_uid is required"
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+secret_identity=$("${ik[@]}" --namespace bootie get secret bootie-session \
+  -o jsonpath='{.metadata.uid}{"\t"}{.immutable}') || die 'live Bootie session Secret is absent'
+[[ $secret_identity == "$session_uid"$'\t'true ]] ||
+  die 'live Bootie session is not the exact immutable receipt-bound Secret'
+node_json=$("${ik[@]}" get node "$node" --output=json) || die 'armed placeholder is absent'
+mac_label=${FABRIC_NODE_MAC//:/-}
+jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg session_uid "$session_uid" \
+  --arg disk "$FABRIC_NODE_DISK" '
+  .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+  .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
+  .metadata.labels["samcday.com/discovery"] == "false" and
+  .metadata.labels["samcday.com/mac"] == $mac and
+  .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-armed" and
+  .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+  .metadata.annotations["samcday.com/boot-device"] == $disk and
+  .metadata.annotations["samcday.com/install"] == "true" and
+  ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+  ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  (.spec.unschedulable // false) == true and
+  ((.status.nodeInfo.machineID // "") == "") and
+  ([.status.addresses[]? | select(.type == "InternalIP")] | length) == 0 and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+    length) == 0
+' <<<"$node_json" >/dev/null || die 'placeholder is not the exact unconsumed armed session'
+
+# Re-read the two live identities immediately before the only remote mutation.
+expected_node_identity="$node_uid"$'\t'install-armed$'\t'"$session_uid"$'\t'"$FABRIC_NODE_DISK"$'\t'true
+[[ $("${ik[@]}" --namespace bootie get secret bootie-session \
+  -o jsonpath='{.metadata.uid}{"\t"}{.immutable}') == "$secret_identity" &&
+   $("${ik[@]}" get node "$node" \
+     -o jsonpath='{.metadata.uid}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootstrap-state}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootie-session-uid}{"\t"}{.metadata.annotations.samcday\.com/boot-device}{"\t"}{.metadata.annotations.samcday\.com/install}') == \
+     "$expected_node_identity" ]] ||
+  die 'armed session identity changed before reboot'
 "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive /usr/bin/bash -s -- \
-  "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_MAC" "$confirmation" \
+  "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_MAC" "$session_uid" "$confirmation" \
   <"$script_dir/lib/fabric-node-pxe-reboot-remote"
