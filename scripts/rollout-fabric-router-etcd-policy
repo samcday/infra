@@ -1058,6 +1058,23 @@ assert_target_section() {
   assert_uci "firewall.$section.target" "$target"
 }
 
+assert_root_bootie_section() {
+  assert_uci firewall.fabric_flat_roots_bootie rule
+  assert_option_keys fabric_flat_roots_bootie \
+    'dest dest_ip dest_port family name proto src src_ip target'
+  assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie
+  assert_uci firewall.fabric_flat_roots_bootie.src lan
+  assert_uci firewall.fabric_flat_roots_bootie.dest lan
+  assert_uci firewall.fabric_flat_roots_bootie.family ipv4
+  assert_uci firewall.fabric_flat_roots_bootie.src_ip \
+    '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+  assert_uci firewall.fabric_flat_roots_bootie.dest_ip \
+    '10.66.1.10/32 10.66.1.11/32'
+  assert_uci firewall.fabric_flat_roots_bootie.proto tcp
+  assert_uci firewall.fabric_flat_roots_bootie.dest_port 80
+  assert_uci firewall.fabric_flat_roots_bootie.target ACCEPT
+}
+
 assert_live_rule() {
   rule_name=$1
   verdict=$2
@@ -1398,6 +1415,7 @@ fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
 fabric_flat_services_kubelet
 fabric_flat_roots_kubelet
+fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
 fabric_flat_reject_services_roots
@@ -1420,6 +1438,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -1428,6 +1447,8 @@ Reject-other-roots-to-services'
 assert_target_section fabric_flat_services_root_metrics \
   Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
 assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan' no
+assert_root_bootie_section
+assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan' no
 
 case $phase in
   pre | fenced)
@@ -1437,8 +1458,8 @@ $common_suffix"
     expected_forward="$forward_prefix
 Reject-services-to-root-etcd
 $forward_suffix"
-    expected_rule_count=26
-    expected_chain_count=16
+    expected_rule_count=27
+    expected_chain_count=17
     assert_target_section fabric_flat_reject_services_etcd \
       Reject-services-to-root-etcd '2379 2380' REJECT
     assert_uci_absent firewall.fabric_flat_services_etcd_client
@@ -1456,8 +1477,8 @@ $common_suffix"
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
 $forward_suffix"
-    expected_rule_count=27
-    expected_chain_count=17
+    expected_rule_count=28
+    expected_chain_count=18
     assert_target_section fabric_flat_services_etcd_client \
       Allow-platform-to-root-etcd-client 2379 ACCEPT
     assert_target_section fabric_flat_reject_services_etcd_internal \
@@ -2499,6 +2520,7 @@ fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
 fabric_flat_services_kubelet
 fabric_flat_roots_kubelet
+fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
 fabric_flat_reject_services_roots
@@ -2756,6 +2778,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -2768,7 +2791,7 @@ Reject-other-roots-to-services'
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 17 ] || return 1
+  ')" -eq 18 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3137,6 +3160,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -3150,7 +3174,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 16 ] || return 1
+  [ "$rule_count" -eq 17 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3268,6 +3292,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -3281,7 +3306,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 17 ] || return 1
+  [ "$rule_count" -eq 18 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3930,6 +3955,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -3943,7 +3969,7 @@ actual_chain_count=$(printf '%s\n' "$live" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 17 ]
+[ "$actual_chain_count" -eq 18 ]
 terminal_rule=$(printf '%s\n' "$live" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
@@ -4073,7 +4099,7 @@ accepted_open_exact() {
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 17 ] || return 1
+  ')" -eq 18 ] || return 1
   aoe_terminal=$(printf '%s\n' "$aoe_live" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }

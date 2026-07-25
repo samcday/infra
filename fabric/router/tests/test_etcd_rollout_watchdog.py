@@ -669,6 +669,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 "Allow-roots-to-services-VXLAN",
                 "Allow-services-to-root-kubelets",
                 "Allow-roots-to-service-kubelets",
+                "Allow-roots-to-Bootie",
                 "Allow-observer-to-services-SSH",
                 "Allow-services-to-Bootie-rootfs",
                 "Reject-other-services-to-roots",
@@ -679,7 +680,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 f'  counter comment "!fw4: {name}" # handle {index}'
                 for index, name in enumerate(closed_order, start=1)
             )
-            lan_lines.extend(("  jump reject_to_lan # handle 16", "}"))
+            lan_lines.extend(("  jump reject_to_lan # handle 17", "}"))
             lan_fixture.write_text("\n".join(lan_lines) + "\n", encoding="utf-8")
             open_order = (
                 "Block-fabric-to-private-WAN",
@@ -694,6 +695,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 "Allow-roots-to-services-VXLAN",
                 "Allow-services-to-root-kubelets",
                 "Allow-roots-to-service-kubelets",
+                "Allow-roots-to-Bootie",
                 "Allow-observer-to-services-SSH",
                 "Allow-services-to-Bootie-rootfs",
                 "Reject-other-services-to-roots",
@@ -704,7 +706,7 @@ class RouterRolloutWatchdogTests(unittest.TestCase):
                 f'  counter comment "!fw4: {name}" # handle {index}'
                 for index, name in enumerate(open_order, start=1)
             )
-            open_lan_lines.extend(("  jump reject_to_lan # handle 17", "}"))
+            open_lan_lines.extend(("  jump reject_to_lan # handle 18", "}"))
             open_lan_fixture.write_text(
                 "\n".join(open_lan_lines) + "\n", encoding="utf-8"
             )

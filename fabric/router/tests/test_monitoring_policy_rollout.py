@@ -120,13 +120,18 @@ class MonitoringPolicyRolloutTests(unittest.TestCase):
         self.assertIn(
             "assert_absent firewall.fabric_flat_services_root_metrics", self.helper
         )
-        self.assertIn("expected_rules=26", self.helper)
-        self.assertIn("expected_chain=16", self.helper)
         self.assertIn("expected_rules=27", self.helper)
         self.assertIn("expected_chain=17", self.helper)
+        self.assertIn("expected_rules=28", self.helper)
+        self.assertIn("expected_chain=18", self.helper)
         self.assertIn(
             "assert_uci firewall.fabric_flat_services_root_metrics.dest_port "
             "'2112 2381 9100'",
+            self.helper,
+        )
+        self.assertIn("assert_uci firewall.fabric_flat_roots_bootie rule", self.helper)
+        self.assertIn(
+            "assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie",
             self.helper,
         )
 

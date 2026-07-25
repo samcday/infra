@@ -1284,6 +1284,8 @@ guard_live
             "assert_target_section fabric_flat_reject_services_etcd_internal",
             "Reject-services-to-root-etcd-internal 2380 REJECT",
             "Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT",
+            "assert_root_bootie_section",
+            "assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan' no",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd",
             '[ "$actual_rules" = "$expected_rules" ]',
             '[ "$actual_forward" = "$expected_forward" ]',
@@ -1293,6 +1295,30 @@ guard_live
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.helper)
+
+        self.assertEqual(
+            self.helper.count(
+                "Allow-roots-to-service-kubelets\n"
+                "Allow-roots-to-Bootie\n"
+                "Allow-observer-to-services-SSH"
+            ),
+            5,
+        )
+        self.assertEqual(
+            self.helper.count(
+                "fabric_flat_roots_kubelet\n"
+                "fabric_flat_roots_bootie\n"
+                "fabric_flat_observer_services_ssh"
+            ),
+            2,
+        )
+        for required in (
+            "expected_rule_count=27",
+            "expected_chain_count=17",
+            "expected_rule_count=28",
+            "expected_chain_count=18",
+        ):
+            self.assertIn(required, self.helper)
 
     def test_candidate_and_apply_are_byte_exact_and_syntax_checked(self) -> None:
         for required in (
