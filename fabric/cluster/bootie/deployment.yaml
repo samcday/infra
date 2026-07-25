@@ -35,7 +35,7 @@ spec:
           value: "true"
       containers:
         - name: bootie
-          image: ghcr.io/samcday/infra-bootie@sha256:6d4198883fba3234c4d6aafa688f8524def220b04203d183308bea95bec7936e
+          image: ghcr.io/samcday/infra-bootie@sha256:8d358a49010bc7ce0044878c6a67661013f8249a0b6ea4477bcb20db39ed702d
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
@@ -49,9 +49,9 @@ spec:
                   apiVersion: v1
                   fieldPath: status.hostIP
             - name: BOOTIE_IMAGE_DIGEST
-              value: sha256:6d4198883fba3234c4d6aafa688f8524def220b04203d183308bea95bec7936e
+              value: sha256:8d358a49010bc7ce0044878c6a67661013f8249a0b6ea4477bcb20db39ed702d
             - name: BOOTIE_IMAGE_REVISION
-              value: 0dcb8da60a17cbfda9157d6bc86082d5b6c0b675
+              value: 5a3aad455e31ed2539c8c0cb93e6de2aa96c2fe0
             - name: BOOTIE_NODE_INVENTORY_FILE
               value: /config/nodes.tsv
             - name: BOOTIE_SESSION_NAMESPACE
