@@ -524,12 +524,12 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
       (.state == "replacement-planned" or .state == "learner-added") and
       .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
       .peerURL == $peer and .authMode == $auth_mode and
-      (.removedMemberId | test("^[0-9a-f]{16}$")) and
+      (.removedMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
       (.replacePrestateSha256 | test("^[0-9a-f]{64}$")) and
       (.snapshot.path | type == "string" and length > 0) and
       (.snapshot.sha256 | test("^[0-9a-f]{64}$")) and
       (if .state == "learner-added" then
-        (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+        (.learnerMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
         .learnerMemberId != .removedMemberId
       else (.learnerMemberId // null) == null end)
     ' "$member_receipt" >/dev/null || die 'etcd replacement intent differs from this ceremony'
@@ -550,7 +550,7 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
       die 'pre-replacement membership is not the exact three-voter Fabric contract'
     old_member_id=$(awk -F', *' -v peer="$target_peer_url" \
       'index($4, peer) {print $1}' <<<"$member_table")
-    [[ $old_member_id =~ ^[0-9a-f]{16}$ ]] ||
+    [[ $old_member_id =~ ^[1-9a-f][0-9a-f]{0,15}$ ]] ||
       die 'could not bind the target member exact hexadecimal ID'
     prestate=$(replacement_prestate_json "$node" "$old_member_id" "$target_peer_url" \
       "$repo_commit" "$lock_uid" "$auth_mode" "$member_json" "$survivor_status")
@@ -654,7 +654,8 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
     die 'cannot bind learner ID after replacement'
   learner_member_id=$(awk -F', *' -v peer="$target_peer_url" \
     'index($4, peer) {print $1}' <<<"$member_table")
-  [[ $learner_member_id =~ ^[0-9a-f]{16}$ && $learner_member_id != "$old_member_id" ]] ||
+  [[ $learner_member_id =~ ^[1-9a-f][0-9a-f]{0,15}$ &&
+     $learner_member_id != "$old_member_id" ]] ||
     die 'could not bind the new learner exact hexadecimal ID'
 
   member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")
@@ -681,8 +682,8 @@ jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" 
     .state == "promoted") and
   .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
   .peerURL == $peer and .authMode == $auth_mode and
-  (.removedMemberId | test("^[0-9a-f]{16}$")) and
-  (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+  (.removedMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
+  (.learnerMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
   .learnerMemberId != .removedMemberId and
   (if .state == "learner-added" then (.promotePrestateSha256 // null) == null
    else (.promotePrestateSha256 | test("^[0-9a-f]{64}$")) end)

@@ -81,7 +81,8 @@ if [[ $role == control-plane ]]; then
     --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" '
     .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
     .node == $node and .repoCommit == $repo and .lockUid == $lock_uid and
-    .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
+    .state == "promoted" and
+    (.learnerMemberId | test("^[1-9a-f][0-9a-f]{0,15}$"))
   ' "$lock_receipt/etcd-member.json" >/dev/null ||
     die 'control-plane finalization requires the exact replacement learner promotion'
 fi

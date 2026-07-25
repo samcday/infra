@@ -16,6 +16,10 @@ For one node, the flow is:
 
 1. `preflight`, then `lock acquire` using the printed main revision.
 2. `drain`, then `quiesce`, using the lock-bound Node UID.
+   Quiesce stops the target services and their maintenance-time activators,
+   then explicitly releases kube-vip from a stopped root. This allows the
+   repository API tunnel to fail over to either surviving control plane while
+   the lock remains held; normal units return on the next boot.
 3. On a control-plane node only, `etcd plan-replace` and `etcd replace` add the
    same-name member back as a learner after a validated snapshot. The helper
    writes its snapshot-bound intent before changing membership; rerun the same

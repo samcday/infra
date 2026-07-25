@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+
+die() {
+  printf 'fabric-node-quiesce-remote: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -eq 4 ]] || die 'expected node, role, address, and exact confirmation'
+node=$1
+role=$2
+address=$3
+confirmation=$4
+[[ $(hostname) == "$node" ]] || die 'remote hostname differs from selected node'
+[[ $address =~ ^10\.66\.0\.(10|11|12)$ ||
+   $address =~ ^10\.66\.1\.(10|11)$ ]] || die 'inventory address is malformed'
+[[ $confirmation == QUIESCE:"$node":* ]] || die 'node-bound confirmation is absent'
+
+case $role in
+  control-plane) maintenance_units=(k3s.service etcd.service) ;;
+  service) maintenance_units=(k3s-agent.service) ;;
+  *) die 'inventory role is invalid' ;;
+esac
+
+systemctl stop "${maintenance_units[0]}"
+
+if [[ $role == control-plane ]]; then
+  # K3s leaves the DaemonSet container shim behind on these hosts. Terminating
+  # the one exact kube-vip manager makes it release the API VIP so another
+  # healthy root can acquire it before this member is replaced.
+  mapfile -t vip_pids < <(pgrep --exact kube-vip || true)
+  ((${#vip_pids[@]} <= 1)) || die 'more than one kube-vip manager exists'
+  if ((${#vip_pids[@]} == 1)); then
+    vip_pid=${vip_pids[0]}
+    [[ $(<"/proc/$vip_pid/comm") == kube-vip ]] ||
+      die 'resolved kube-vip PID has a different comm value'
+    kill -TERM "$vip_pid"
+    for _attempt in {1..50}; do
+      kill -0 "$vip_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$vip_pid" 2>/dev/null; then
+      kill -KILL "$vip_pid"
+      for _attempt in {1..20}; do
+        kill -0 "$vip_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+    fi
+    kill -0 "$vip_pid" 2>/dev/null && die 'kube-vip manager did not terminate'
+  fi
+  ! pgrep --exact kube-vip >/dev/null || die 'kube-vip manager remains after stop'
+
+  mapfile -t vip_interfaces < <(ip -o -4 address show |
+    awk '$4 == "10.66.0.254/32" {print $2}')
+  ((${#vip_interfaces[@]} <= 1)) || die 'API VIP exists on multiple interfaces'
+  if ((${#vip_interfaces[@]} == 1)); then
+    interface=${vip_interfaces[0]}
+    [[ $(ip -o -4 address show dev "$interface" |
+      awk -v wanted="$address/24" '$4 == wanted {count++} END {print count + 0}') == 1 ]] ||
+      die 'API VIP interface does not own the inventoried root address'
+    ip address del 10.66.0.254/32 dev "$interface"
+  fi
+  [[ -z $(ip -o -4 address show | awk '$4 == "10.66.0.254/32"') ]] ||
+    die 'API VIP remains on the quiesced root'
+  # This 15-second timer Wants=etcd.service and otherwise races the manual
+  # maintenance stop. It is enabled again normally on the next boot.
+  systemctl stop fabric-etcd-alarm-collector.timer
+  systemctl stop fabric-etcd-alarm-collector.service
+  systemctl stop etcd.service
+  for trigger in fabric-etcd-alarm-collector.timer \
+    fabric-etcd-alarm-collector.service; do
+    [[ $(systemctl is-active "$trigger" 2>/dev/null || true) == inactive ]] ||
+      die "$trigger remains active during maintenance"
+  done
+fi
+
+for unit in "${maintenance_units[@]}"; do
+  active=$(systemctl is-active "$unit" 2>/dev/null || true)
+  [[ $active == inactive ]] || die "$unit is not inactive"
+done
+printf 'REMOTE-QUIESCED %s; maintenance activators stopped until reboot\n' "$node"

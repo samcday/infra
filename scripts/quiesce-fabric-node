@@ -19,13 +19,14 @@ Usage:
     --confirm QUIESCE:fabric-az1-cp1:<node-uid>
 
 Run after kubectl drain has cordoned the target. Through strict pinned SSH this
-stops K3s, then the separate etcd member on a control-plane node, while leaving
-the host OS and SSH running. The sequential stops avoid a conflicting systemd
-transaction, and rerunning after a partial stop resumes from the same exact
-cordoned Node UID. It then waits until the target is non-Ready and its kubelet
-Lease is at least 90 seconds stale, while requiring every other Fabric Node to
-remain Ready. The host stays available for the final one-shot PXE reboot after
-the exact Bootie arm is ready.
+stops K3s plus the separate etcd member on a control-plane node, while leaving
+the host OS and SSH running. On a root it also terminates the stopped K3s
+kube-vip shim and stops the etcd alarm timer that would otherwise reactivate
+etcd. Both return normally on the next boot. Rerunning after a partial stop
+resumes from the same exact cordoned Node UID. It then waits until the target
+is non-Ready and its kubelet Lease is at least 90 seconds stale, while requiring
+every other Fabric Node to remain Ready. The host stays available for the final
+one-shot PXE reboot after the exact Bootie arm is ready.
 EOF
 }
 
@@ -36,8 +37,8 @@ die() {
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -eq 1 ]] || die '--check accepts no other arguments'
-  bash -n "$script_path"
-  shellcheck "$script_path"
+  bash -n "$script_path" "$script_dir/lib/fabric-node-quiesce-remote"
+  shellcheck "$script_path" "$script_dir/lib/fabric-node-quiesce-remote"
   fabric_validate_node_inventory
   printf 'validated the serial Fabric node quiesce helper\n'
   exit 0
@@ -73,21 +74,16 @@ jq -e --arg uid "$node_uid" '
 ' <<<"$node_json" >/dev/null ||
   die 'target must remain the exact cordoned Node before quiesce'
 
-case $FABRIC_NODE_ROLE in
-  control-plane)
-    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
-      /usr/bin/systemctl stop k3s.service
-    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
-      /usr/bin/systemctl stop etcd.service
-    ;;
-  service)
-    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
-      /usr/bin/systemctl stop k3s-agent.service
-    ;;
-esac
+"$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive /usr/bin/bash -s -- \
+  "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_ADDRESS" "$confirmation" \
+  <"$script_dir/lib/fabric-node-quiesce-remote"
 
 for _attempt in {1..75}; do
-  nodes_json=$("${ik[@]}" get nodes --output=json) || die 'lost Fabric API while quiescing'
+  nodes_json=$("${ik[@]}" get nodes --output=json 2>/dev/null || true)
+  if [[ -z $nodes_json ]]; then
+    sleep 2
+    continue
+  fi
   target_ready=$(jq -r --arg node "$node" '
     [.items[] | select(.metadata.name == $node).status.conditions[]? |
       select(.type == "Ready") | .status][0] // "Absent"
@@ -112,5 +108,8 @@ for inventory_node in $(yq -r '.nodes[].name' "$repo_root/fabric/inventory/nodes
        select(.type == "Ready" and .status == "True") ] | length) == 1
   ' <<<"$nodes_json" >/dev/null || die "non-target Node is not Ready: $inventory_node"
 done
+"$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive /usr/bin/bash -s -- \
+  "$node" "$FABRIC_NODE_ROLE" "$FABRIC_NODE_ADDRESS" "$confirmation" \
+  <"$script_dir/lib/fabric-node-quiesce-remote" >/dev/null
 printf 'QUIESCED %s uid=%s lease-age=%ss; host SSH remains available\n' \
   "$node" "$node_uid" "$lease_age"

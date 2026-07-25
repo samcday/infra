@@ -191,8 +191,8 @@ if [[ $FABRIC_NODE_ROLE == control-plane ]]; then
     .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
     .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
     .state == "learner-added" and
-    (.removedMemberId | test("^[0-9a-f]{16}$")) and
-    (.learnerMemberId | test("^[0-9a-f]{16}$")) and
+    (.removedMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
+    (.learnerMemberId | test("^[1-9a-f][0-9a-f]{0,15}$")) and
     .removedMemberId != .learnerMemberId
   ' "$member_receipt" >/dev/null ||
     die 'etcd member receipt does not bind the same-name learner replacement'
