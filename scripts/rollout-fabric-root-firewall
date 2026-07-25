@@ -572,7 +572,7 @@ verify_live_k3s_unit() {
   dropins=$("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=DropInPaths --value k3s.service) ||
     die "$full_node K3s service drop-ins cannot be resolved"
-  [[ $dropins == "$k3s_firewall_dropin_path $k3s_quorum_dropin_path $k3s_etcd_dropin_path $systemd_service_dropin_path" ]] ||
+  [[ $dropins == "$k3s_firewall_dropin_path $systemd_service_dropin_path $k3s_quorum_dropin_path $k3s_etcd_dropin_path" ]] ||
     die "$full_node K3s service does not load exactly the reviewed drop-ins: $dropins"
   requires=" $("${ssh[@]}" sudo --non-interactive /usr/bin/systemctl show \
     --property=Requires --value k3s.service) "
@@ -1385,7 +1385,7 @@ lease_tuple() {
 verify_k3s_dependency() {
   local after binds_to part_of requires requisite stop_propagated_from
   [[ $(systemctl show --property=FragmentPath --value k3s.service) == /etc/systemd/system/k3s.service ]]
-  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf" ]]
   requires=" $(systemctl show --property=Requires --value k3s.service) "
   after=" $(systemctl show --property=After --value k3s.service) "
   [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]
@@ -1923,7 +1923,7 @@ prove_lease_not_regressed() {
 verify_k3s_dependency() {
   local after binds_to part_of requires requisite stop_propagated_from
   [[ $(systemctl show --property=FragmentPath --value k3s.service) == /etc/systemd/system/k3s.service ]]
-  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf" ]]
   requires=" $(systemctl show --property=Requires --value k3s.service) "
   after=" $(systemctl show --property=After --value k3s.service) "
   [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]
@@ -2056,7 +2056,7 @@ prove_lease_not_regressed() {
 verify_k3s_dependency() {
   local after binds_to part_of requires requisite stop_propagated_from
   [[ $(systemctl show --property=FragmentPath --value k3s.service) == /etc/systemd/system/k3s.service ]]
-  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf" ]]
+  [[ $(systemctl show --property=DropInPaths --value k3s.service) == "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf /usr/lib/systemd/system/service.d/10-timeout-abort.conf /etc/systemd/system/k3s.service.d/20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/etcd.conf" ]]
   requires=" $(systemctl show --property=Requires --value k3s.service) "
   after=" $(systemctl show --property=After --value k3s.service) "
   [[ $requires == *" etcd.service "* && $requires == *" fabric-guard.service "* ]]

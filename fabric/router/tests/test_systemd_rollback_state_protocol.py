@@ -174,10 +174,10 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 'printf "/etc/systemd/system/k3s.service\\n" ;;\n'
                 '  "show --property=DropInPaths --value k3s.service") '
                 'printf "/etc/systemd/system/k3s.service.d/'
-                '10-fabric-guard.conf /etc/systemd/system/k3s.service.d/'
+                '10-fabric-guard.conf /usr/lib/systemd/system/service.d/'
+                '10-timeout-abort.conf /etc/systemd/system/k3s.service.d/'
                 '20-etcd-quorum.conf /etc/systemd/system/k3s.service.d/'
-                'etcd.conf /usr/lib/systemd/system/service.d/'
-                '10-timeout-abort.conf\\n" ;;\n'
+                'etcd.conf\\n" ;;\n'
                 '  "show --property=Requires --value k3s.service") '
                 'printf "etcd.service fabric-guard.service\\n" ;;\n'
                 '  "show --property=After --value k3s.service") '
@@ -1024,6 +1024,35 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                         f"/usr/bin/matchpathcon -V {path}",
                         program,
                     )
+
+    def test_k3s_dropins_follow_systemd_global_filename_order(self) -> None:
+        expected = (
+            "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf "
+            "/usr/lib/systemd/system/service.d/10-timeout-abort.conf "
+            "/etc/systemd/system/k3s.service.d/20-etcd-quorum.conf "
+            "/etc/systemd/system/k3s.service.d/etcd.conf"
+        )
+        stale = (
+            "/etc/systemd/system/k3s.service.d/10-fabric-guard.conf "
+            "/etc/systemd/system/k3s.service.d/20-etcd-quorum.conf "
+            "/etc/systemd/system/k3s.service.d/etcd.conf "
+            "/usr/lib/systemd/system/service.d/10-timeout-abort.conf"
+        )
+        dynamic_expected = (
+            '"$k3s_firewall_dropin_path $systemd_service_dropin_path '
+            '$k3s_quorum_dropin_path $k3s_etcd_dropin_path"'
+        )
+        dynamic_stale = (
+            '"$k3s_firewall_dropin_path $k3s_quorum_dropin_path '
+            '$k3s_etcd_dropin_path $systemd_service_dropin_path"'
+        )
+        for helper, contract in self.helpers.items():
+            text = contract["text"]
+            with self.subTest(helper=helper):
+                self.assertIn(expected, text)
+                self.assertNotIn(stale, text)
+                self.assertIn(dynamic_expected, text)
+                self.assertNotIn(dynamic_stale, text)
 
     def test_terminal_states_follow_live_proof_target_sync_and_deadline(
         self,
