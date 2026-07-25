@@ -1,0 +1,153 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/component: notification-check
+    app.kubernetes.io/name: fabric-monitoring
+    app.kubernetes.io/part-of: fabric-monitoring
+  name: fabric-monitoring-notification-check-v1
+  namespace: monitoring
+spec:
+  activeDeadlineSeconds: 900
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: notification-check
+        app.kubernetes.io/name: fabric-monitoring
+        app.kubernetes.io/part-of: fabric-monitoring
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: verifier
+          image: docker.io/curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ceu
+          args:
+            - |
+              query() {
+                endpoint=$1
+                expression=$2
+                response=$(curl \
+                  --fail \
+                  --get \
+                  --max-time 10 \
+                  --retry 2 \
+                  --retry-delay 1 \
+                  --show-error \
+                  --silent \
+                  --data-urlencode "query=$expression" \
+                  "http://$endpoint:9090/api/v1/query")
+                printf '%s\n' "$response" | grep -Fq '"status":"success"'
+                printf '%s\n' "$response" |
+                  sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
+              }
+
+              wait_minimum() {
+                endpoint=$1
+                label=$2
+                expression=$3
+                minimum=$4
+                attempts=$5
+                attempt=1
+                while [ "$attempt" -le "$attempts" ]; do
+                  value=$(query "$endpoint" "$expression")
+                  if [ -n "$value" ] && awk \
+                    -v value="$value" \
+                    -v minimum="$minimum" \
+                    'BEGIN { exit !(value >= minimum) }'; then
+                    printf '%s %s=%s\n' "$endpoint" "$label" "$value"
+                    return 0
+                  fi
+                  sleep 5
+                  attempt=$((attempt + 1))
+                done
+                printf '%s %s expected-at-least=%s actual=%s\n' \
+                  "$endpoint" "$label" "$minimum" "${value:-absent}" >&2
+                return 1
+              }
+
+              wait_exact() {
+                endpoint=$1
+                label=$2
+                expression=$3
+                expected=$4
+                attempts=$5
+                attempt=1
+                while [ "$attempt" -le "$attempts" ]; do
+                  value=$(query "$endpoint" "$expression")
+                  if [ "$value" = "$expected" ]; then
+                    printf '%s %s=%s\n' "$endpoint" "$label" "$value"
+                    return 0
+                  fi
+                  sleep 5
+                  attempt=$((attempt + 1))
+                done
+                printf '%s %s expected=%s actual=%s\n' \
+                  "$endpoint" "$label" "$expected" "${value:-absent}" >&2
+                return 1
+              }
+
+              prom0=prometheus-kube-prometheus-stack-prometheus-0.prometheus-operated.monitoring.svc
+              prom1=prometheus-kube-prometheus-stack-prometheus-1.prometheus-operated.monitoring.svc
+              firing='count(ALERTS{alertname="FabricPagerDutyDeliveryTest",alertstate="firing"}) or vector(0)'
+
+              for endpoint in "$prom0" "$prom1"; do
+                wait_exact "$endpoint" alertmanager-config-replicas \
+                  'count(alertmanager_config_last_reload_successful)' 2 60
+                wait_exact "$endpoint" alertmanager-config-reload-minimum \
+                  'min(alertmanager_config_last_reload_successful)' 1 60
+                wait_minimum "$endpoint" alertmanager-cluster-members \
+                  'min(alertmanager_cluster_members)' 2 60
+                wait_exact "$endpoint" pagerduty-test-firing "$firing" 1 120
+              done
+
+              wait_minimum "$prom0" pagerduty-notifications \
+                'sum(alertmanager_notifications_total{integration="pagerduty"}) or vector(0)' 1 120
+              wait_minimum "$prom0" deadman-notifications \
+                'sum(alertmanager_notifications_total{integration="webhook"}) or vector(0)' 1 120
+              wait_exact "$prom0" recent-notification-failures \
+                'sum(increase(alertmanager_notifications_failed_total{integration=~"pagerduty|webhook"}[5m])) or vector(0)' 0 1
+              printf 'FABRIC_MONITORING_NOTIFICATION_FIRE=pass\n'
+
+              for endpoint in "$prom0" "$prom1"; do
+                wait_exact "$endpoint" pagerduty-test-firing "$firing" 0 120
+              done
+              wait_minimum "$prom0" pagerduty-notifications-after-resolve \
+                'sum(alertmanager_notifications_total{integration="pagerduty"}) or vector(0)' 2 120
+              wait_exact "$prom0" recent-notification-failures \
+                'sum(increase(alertmanager_notifications_failed_total{integration=~"pagerduty|webhook"}[5m])) or vector(0)' 0 1
+              printf 'FABRIC_MONITORING_NOTIFICATION_RESOLVE=pass\n'
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      enableServiceLinks: false
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 102
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
