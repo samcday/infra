@@ -536,7 +536,7 @@ if [[ $mode == verify-remote ]]; then
   fabric_root_role_json=$(delegated_query fabric-root-role role get fabric-root)
   jq -e '
     ([.perm[] | {
-      permType,
+      permType: (.permType // 0),
       key: (.key | @base64d),
       range_end: (.range_end | @base64d)
     }] | sort_by(.key)) == [
@@ -869,7 +869,7 @@ fabric_root_contract() {
     --argjson roles "$(jq -cS '.roles' <<<"$user_json")" \
     --argjson permissions "$(jq -cS '
       [.perm[] | {
-        permType,
+        permType: (.permType // 0),
         key: (.key | @base64d),
         range_end: (.range_end | @base64d)
       }] | sort_by(.key)

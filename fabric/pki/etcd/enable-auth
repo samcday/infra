@@ -182,7 +182,7 @@ jq -e '.roles == ["fabric-root"]' <<<"$user_json" >/dev/null || {
 role_json=$(etcdctl_as root --write-out=json role get fabric-root)
 jq -e '
   ([.perm[] | {
-    permType,
+    permType: (.permType // 0),
     key: (.key | @base64d),
     range_end: (.range_end | @base64d)
   }] | sort_by(.key)) == [
