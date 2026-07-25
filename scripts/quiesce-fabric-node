@@ -19,11 +19,13 @@ Usage:
     --confirm QUIESCE:fabric-az1-cp1:<node-uid>
 
 Run after kubectl drain has cordoned the target. Through strict pinned SSH this
-stops K3s, plus the separate etcd member on a control-plane node, while leaving
-the host OS and SSH running. It then waits until the target is non-Ready and
-its kubelet Lease is at least 90 seconds stale, while requiring every other
-Fabric Node to remain Ready. The host stays available for the final one-shot
-PXE reboot after the exact Bootie arm is ready.
+stops K3s, then the separate etcd member on a control-plane node, while leaving
+the host OS and SSH running. The sequential stops avoid a conflicting systemd
+transaction, and rerunning after a partial stop resumes from the same exact
+cordoned Node UID. It then waits until the target is non-Ready and its kubelet
+Lease is at least 90 seconds stale, while requiring every other Fabric Node to
+remain Ready. The host stays available for the final one-shot PXE reboot after
+the exact Bootie arm is ready.
 EOF
 }
 
@@ -67,16 +69,16 @@ ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
 jq -e --arg uid "$node_uid" '
   .metadata.uid == $uid and .metadata.deletionTimestamp == null and
-  (.spec.unschedulable // false) == true and
-  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
-    length) == 1
+  (.spec.unschedulable // false) == true
 ' <<<"$node_json" >/dev/null ||
-  die 'target must be the exact Ready, cordoned Node before quiesce'
+  die 'target must remain the exact cordoned Node before quiesce'
 
 case $FABRIC_NODE_ROLE in
   control-plane)
     "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
-      /usr/bin/systemctl stop k3s.service etcd.service
+      /usr/bin/systemctl stop k3s.service
+    "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
+      /usr/bin/systemctl stop etcd.service
     ;;
   service)
     "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive \
