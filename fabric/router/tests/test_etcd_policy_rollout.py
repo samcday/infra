@@ -1320,6 +1320,12 @@ guard_live
         ):
             self.assertIn(required, self.helper)
 
+        self.assertIn(
+            'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } '
+            'counter accept comment "trusted platform monitoring"',
+            self.helper,
+        )
+
     def test_candidate_and_apply_are_byte_exact_and_syntax_checked(self) -> None:
         for required in (
             'mkdir "$work/candidate-save"',

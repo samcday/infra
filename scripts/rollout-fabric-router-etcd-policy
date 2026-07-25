@@ -1641,6 +1641,7 @@ ip saddr @root_nodes_v4 tcp dport { 2380, 6443 } counter accept comment "root pe
 ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLAN"
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
 ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
+ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
 ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 counter drop comment "deny all remaining input"'
   expected_live_forward_rules='ct state invalid counter drop comment "invalid conntrack state"
