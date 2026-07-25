@@ -148,10 +148,10 @@ install_firewall_rule fabric-bootie-dhcp \
 install_firewall_rule fabric-bootie-tftp \
   ip saddr '{ 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
   udp dport 69
-install_firewall_rule fabric-bootie-http \
-  ip saddr '{ 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
+install_firewall_rule fabric-bootie-http-v2 \
+  ip saddr '{ 10.66.0.10, 10.66.0.11, 10.66.0.12, 10.66.1.10, 10.66.1.11, 10.66.1.101, 10.66.1.102, 10.66.1.103, 10.66.1.104, 10.66.1.105 }' \
   tcp dport 80
-for comment in fabric-bootie-dhcp fabric-bootie-tftp fabric-bootie-http; do
+for comment in fabric-bootie-dhcp fabric-bootie-tftp fabric-bootie-http-v2; do
   nft -a list chain "${firewall_chain[@]}" |
     grep -F "comment \"$comment\"" >/dev/null ||
     die "host firewall admission is absent: $comment"

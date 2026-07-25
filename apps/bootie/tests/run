@@ -355,6 +355,13 @@ for runner in run.sh run-cluster.sh; do
   ! grep -Fq 'tcp:127.0.0.1:9000' "$script_dir/../$runner" ||
     fail "$runner still binds the restart-sensitive host-network FastCGI TCP port"
 done
+grep -Fq 'install_firewall_rule fabric-bootie-http-v2' \
+  "$script_dir/../run-cluster.sh" ||
+  fail 'cluster Bootie does not install the post-network-handoff HTTP rule'
+grep -Fq \
+  "10.66.0.10, 10.66.0.11, 10.66.0.12, 10.66.1.10, 10.66.1.11, 10.66.1.101" \
+  "$script_dir/../run-cluster.sh" ||
+  fail 'cluster Bootie does not admit both final and temporary source addresses'
 
 missing_custom_initramfs=$(
   BOOT_FORMAT=grub \

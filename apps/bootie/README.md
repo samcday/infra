@@ -34,6 +34,10 @@ argument. Ignition activates the copied static profile before fetching any
 router-hosted destination assets. The destination Ignition endpoint remains
 the separate one-use secret consumer; the live response cannot consume or
 re-arm the session.
+The service-host firewall admits Bootie HTTP from the five temporary PXE
+leases and the five final node addresses: the live profile intentionally
+activates the final address before coreos-installer fetches its destination
+Ignition. TFTP remains restricted to the temporary leases.
 
 For a service node, the generated live Ignition additionally embeds the
 image-pinned `fabric-day2-service-live.ign` and the boot response appends
