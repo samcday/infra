@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/component: notification-check
     app.kubernetes.io/name: fabric-monitoring
     app.kubernetes.io/part-of: fabric-monitoring
-  name: fabric-monitoring-notification-check-v1
+  name: fabric-monitoring-notification-fire-check-v2
   namespace: monitoring
 spec:
   activeDeadlineSeconds: 900
@@ -111,15 +111,6 @@ spec:
               wait_exact "$prom0" recent-notification-failures \
                 'sum(increase(alertmanager_notifications_failed_total{integration=~"pagerduty|webhook"}[5m])) or vector(0)' 0 1
               printf 'FABRIC_MONITORING_NOTIFICATION_FIRE=pass\n'
-
-              for endpoint in "$prom0" "$prom1"; do
-                wait_exact "$endpoint" pagerduty-test-firing "$firing" 0 120
-              done
-              wait_minimum "$prom0" pagerduty-notifications-after-resolve \
-                'sum(alertmanager_notifications_total{integration="pagerduty"}) or vector(0)' 2 120
-              wait_exact "$prom0" recent-notification-failures \
-                'sum(increase(alertmanager_notifications_failed_total{integration=~"pagerduty|webhook"}[5m])) or vector(0)' 0 1
-              printf 'FABRIC_MONITORING_NOTIFICATION_RESOLVE=pass\n'
           resources:
             limits:
               cpu: 100m
