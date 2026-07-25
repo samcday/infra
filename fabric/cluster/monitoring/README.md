@@ -56,6 +56,8 @@ The first reconciliation intentionally had no outbound Alertmanager receiver,
 preventing installation noise from paging while the root scrape path was
 qualified. PagerDuty is enabled after proving all nine root targets healthy on
 both Prometheus replicas and confirming no unexpected critical alert is firing.
+The Watchdog route uses a separate `fabric` Dead Man's Snitch so hub and Fabric
+cannot mask one another's total failure.
 
 1. Reconcile the operator and monitoring children and inspect all targets and
    active critical alerts.
