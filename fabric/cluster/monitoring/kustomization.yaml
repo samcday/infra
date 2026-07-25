@@ -3,5 +3,4 @@ kind: Kustomization
 resources:
   - release.yaml
   - flux-podmonitor.yaml
-  - activation-check.yaml
   - rules/
