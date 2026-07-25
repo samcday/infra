@@ -2,4 +2,4 @@ fabric-az1-cp1 control-plane 10.66.0.10 6c:4b:90:76:c6:00 /dev/disk/by-id/nvme-e
 fabric-az1-cp2 control-plane 10.66.0.11 c4:65:16:9e:9a:e6 /dev/disk/by-id/nvme-eui.002538b971048a4f 10.66.1.102
 fabric-az1-cp3 control-plane 10.66.0.12 6c:4b:90:54:2d:65 /dev/disk/by-id/nvme-eui.002538bb71b4bb45 10.66.1.103
 fabric-az1-svc1 service 10.66.1.10 6c:4b:90:6a:0c:8a /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182980802384 10.66.1.104
-fabric-az1-svc2 service 10.66.1.11 6c:4b:90:6e:ab:ee /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182995802922 10.66.1.105
+fabric-az1-svc2 service 10.66.1.11 6c:4b:90:3d:87:2c /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182995802922 10.66.1.105
