@@ -70,6 +70,14 @@ For one node, the flow is:
     but the reply was lost; it re-proves the final Node before cleaning the
     local receipt.
 
+When a later commit changes only operator, router, or documentation inputs,
+do not reinstall an otherwise current node merely to move its revision label.
+Acquire the normal one-node lock and run `prepare`, then `attest`. It advances
+the exact Ready Node UID only if the newly rendered Ignition SHA is byte-for-byte
+identical to the node's existing attestation. The helper writes its intent
+before the atomic metadata patch and destroys the handoff afterward. Any
+Ignition difference is a hard refusal and uses the full Bootie flow above.
+
 For a planned service-node chassis replacement, drain and retire the old exact
 Node under its existing lock, then admit one candidate MAC through
 `bootie/discovery.tsv`. That override serves only a non-installing live FCOS;

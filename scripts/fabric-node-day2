@@ -26,6 +26,7 @@ Usage:
   scripts/fabric-node-day2 reboot ...
   scripts/fabric-node-day2 etcd <plan-replace|replace|plan-promote|promote> ...
   scripts/fabric-node-day2 finalize ...
+  scripts/fabric-node-day2 attest ...
   scripts/fabric-node-day2 qualify --revision 0123456789abcdef0123456789abcdef01234567
 
 preflight is read-only. It requires the API, all four non-target nodes, and all
@@ -36,6 +37,10 @@ phase; it does not cordon, stop, delete, reboot, or arm Bootie.
 qualify is read-only. It proves all five inventoried Nodes are Ready with their
 exact addresses, roles, taints, and day-two revision attestation, and that the
 active fabric Flux Kustomizations have applied that revision.
+
+attest is the no-reboot convergence path for a Ready node whose freshly
+prepared current-revision Ignition is byte-identical to its existing
+attestation. Any byte change is refused and requires the normal Bootie flow.
 EOF
 }
 
@@ -76,6 +81,10 @@ case ${1:-} in
   finalize)
     shift
     exec "$script_dir/finalize-fabric-node-bootstrap" "$@"
+    ;;
+  attest)
+    shift
+    exec "$script_dir/advance-fabric-node-config-attestation" "$@"
     ;;
 esac
 
@@ -152,6 +161,7 @@ if [[ $mode == check ]]; then
   "$script_dir/reboot-fabric-node-to-pxe" --check >/dev/null
   "$script_dir/replace-fabric-etcd-member" --check >/dev/null
   "$script_dir/finalize-fabric-node-bootstrap" --check >/dev/null
+  "$script_dir/advance-fabric-node-config-attestation" --check >/dev/null
   printf 'validated the five-node day-two operator workflow and qualifier\n'
   exit 0
 fi

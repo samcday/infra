@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL=C
+umask 077
+
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+repo_root=$(realpath -e -- "$script_dir/..")
+# shellcheck disable=SC1091
+source "$script_dir/lib/fabric-node-inventory.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/advance-fabric-node-config-attestation --check
+  scripts/advance-fabric-node-config-attestation \
+    --node fabric-az1-cp1 \
+    --lock-receipt /dev/shm/fabric-az1-cp1-day2-lock \
+    --handoff-dir /dev/shm/fabric-az1-cp1-bootie-handoff \
+    --confirm ATTEST-UNCHANGED:<node>:<node-uid>:<old-revision>:<new-revision>:<ignition-sha256>
+
+Use only after lock acquisition and `prepare` on an already Ready node. The
+helper advances the node's revision metadata without rebooting only when the
+current revision renders exactly the Ignition SHA already attested by that
+same Node UID. It writes a resumable intent before the atomic metadata patch,
+then destroys the secret-bearing handoff. A byte change is a hard refusal and
+must use the normal Bootie reprovision path.
+EOF
+}
+
+die() {
+  printf 'advance-fabric-node-config-attestation: %s\n' "$*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -eq 1 ]] || die '--check accepts no other arguments'
+  bash -n "$script_path"
+  shellcheck "$script_path"
+  fabric_validate_node_inventory
+  printf 'validated unchanged-Ignition Fabric node attestation helper\n'
+  exit 0
+fi
+
+node=
+lock_receipt=
+handoff_dir=
+confirmation=
+while (($#)); do
+  case $1 in
+    --node) (($# >= 2)) || die '--node requires a value'; node=$2; shift 2 ;;
+    --lock-receipt) (($# >= 2)) || die '--lock-receipt requires a value'; lock_receipt=$2; shift 2 ;;
+    --handoff-dir) (($# >= 2)) || die '--handoff-dir requires a value'; handoff_dir=$2; shift 2 ;;
+    --confirm) (($# >= 2)) || die '--confirm requires a value'; confirmation=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[[ -n $node && -n $lock_receipt && -n $handoff_dir && -n $confirmation ]] ||
+  { usage; exit 2; }
+for command in chmod date find git id jq mktemp mv realpath rmdir sha256sum stat wc; do
+  command -v "$command" >/dev/null || die "missing required command: $command"
+done
+fabric_load_node_inventory "$node" || die '--node is not in exact Fabric inventory'
+role=$FABRIC_NODE_ROLE
+mac_label=${FABRIC_NODE_MAC//:/-}
+
+lock_receipt=$(realpath -e -- "$lock_receipt")
+"$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
+lock_json=$lock_receipt/lock.json
+repo_commit=$(jq -r '.repoCommit' "$lock_json")
+lock_uid=$(jq -r '.lock.uid' "$lock_json")
+node_uid=$(jq -r '.targetNodeUid' "$lock_json")
+[[ $(jq -r '.node' "$lock_json") == "$node" &&
+   $(jq -r '.role' "$lock_json") == "$role" ]] ||
+  die 'maintenance lock receipt belongs to another node or role'
+
+handoff_dir=$(realpath -m -- "$handoff_dir")
+case $handoff_dir in "$repo_root" | "$repo_root"/*) die 'handoff must remain outside Git' ;; esac
+handoff_json=$handoff_dir/handoff.json
+ignition=$handoff_dir/$node.ign
+[[ -d $handoff_dir && ! -L $handoff_dir &&
+   $(stat --file-system --format=%T -- "$handoff_dir") == tmpfs &&
+   $(stat -Lc '%u:%g:%a' "$handoff_dir") == "$(id -u):$(id -g):700" &&
+   $(find "$handoff_dir" -mindepth 1 -maxdepth 1 | wc -l) == 3 &&
+   -f $handoff_json && ! -L $handoff_json &&
+   -f $ignition && ! -L $ignition &&
+   -f $handoff_dir/install-policy && ! -L $handoff_dir/install-policy ]] ||
+  die 'secret-bearing handoff directory is not the exact safe three-file set'
+ignition_sha=$(sha256sum "$ignition" | awk '{print $1}')
+policy_sha=$(sha256sum "$handoff_dir/install-policy" | awk '{print $1}')
+jq -e --arg node "$node" --arg role "$role" --arg address "$FABRIC_NODE_ADDRESS" \
+  --arg mac "$FABRIC_NODE_MAC" --arg disk "$FABRIC_NODE_DISK" \
+  --arg repo "$repo_commit" --arg lock_uid "$lock_uid" \
+  --arg ignition_sha "$ignition_sha" --arg policy_sha "$policy_sha" '
+  .schema == 1 and .purpose == "fabric-node-day-two-handoff" and
+  .node == $node and .role == $role and .address == $address and .mac == $mac and
+  .bootDevice == $disk and .repoCommit == $repo and .lockUid == $lock_uid and
+  .ignition.file == ($node + ".ign") and .ignition.sha256 == $ignition_sha and
+  .installPolicy.file == "install-policy" and .installPolicy.sha256 == $policy_sha
+' "$handoff_json" >/dev/null || die 'handoff does not match the lock and inventory'
+[[ $(<"$handoff_dir/install-policy") == "$node $FABRIC_NODE_DISK" ]] ||
+  die 'handoff install policy differs from exact inventory'
+
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+qualify_node() {
+  local candidate=$1 revision=$2
+  jq -e --arg node "$node" --arg uid "$node_uid" --arg role "$role" \
+    --arg ip "$FABRIC_NODE_ADDRESS" --arg mac "$mac_label" \
+    --arg revision "$revision" --arg ignition_sha "$ignition_sha" '
+    .metadata.name == $node and .metadata.uid == $uid and
+    .metadata.deletionTimestamp == null and
+    .metadata.labels["samcday.com/mac"] == $mac and
+    .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+    .metadata.annotations["fabric.samcday.com/config-revision"] == $revision and
+    .metadata.annotations["fabric.samcday.com/ignition-sha256"] == $ignition_sha and
+    ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
+    ((.metadata.labels["samcday.com/discovery"] // "") == "") and
+    ((.metadata.annotations["fabric.samcday.com/bootstrap-state"] // "") == "") and
+    ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "") and
+    ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
+    ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
+    ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    (.spec.unschedulable // false) == false and
+    ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
+      length) == 1 and
+    (.status.nodeInfo.machineID | type == "string" and length > 0) and
+    if $role == "control-plane" then
+      .metadata.labels["fabric.samcday.com/root-consensus"] == "true" and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane")) and
+      (.metadata.labels | has("node-role.kubernetes.io/worker") | not) and
+      (.metadata.labels | has("fabric.samcday.com/platform") | not) and
+      (.spec.taints | length) == 2 and
+      ([.spec.taints[]? | select(.key == "fabric.samcday.com/root-consensus")] == [{
+        effect:"NoSchedule", key:"fabric.samcday.com/root-consensus", value:"true"
+      }]) and
+      ([.spec.taints[]? | select(.key == "node-role.kubernetes.io/control-plane")] == [{
+        effect:"NoSchedule", key:"node-role.kubernetes.io/control-plane", value:"true"
+      }])
+    else
+      .metadata.labels["fabric.samcday.com/platform"] == "true" and
+      .metadata.labels["node-role.kubernetes.io/worker"] == "true" and
+      (.metadata.labels | has("fabric.samcday.com/root-consensus") | not) and
+      (.metadata.labels | has("node-role.kubernetes.io/control-plane") | not) and
+      .spec.taints == [{
+        effect:"NoSchedule", key:"fabric.samcday.com/platform", value:"true"
+      }]
+    end
+  ' <<<"$candidate" >/dev/null
+}
+
+intent=$lock_receipt/config-attestation.json
+node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
+if [[ -e $intent ]]; then
+  [[ -f $intent && ! -L $intent &&
+     $(stat -Lc '%u:%g:%a:%h' "$intent") == "$(id -u):$(id -g):600:1" ]] ||
+    die 'attestation intent is unsafe'
+  jq -e --arg node "$node" --arg role "$role" --arg uid "$node_uid" \
+    --arg repo "$repo_commit" --arg lock_uid "$lock_uid" --arg sha "$ignition_sha" '
+    .schema == 1 and .purpose == "fabric-node-unchanged-config-attestation" and
+    (.state == "planned" or .state == "advanced") and
+    .node == $node and .role == $role and .nodeUid == $uid and
+    .toRevision == $repo and .lockUid == $lock_uid and .ignitionSha256 == $sha and
+    (.fromRevision | test("^[0-9a-f]{40}$")) and .fromRevision != .toRevision
+  ' "$intent" >/dev/null || die 'attestation intent differs from this ceremony'
+  from_revision=$(jq -r '.fromRevision' "$intent")
+else
+  from_revision=$(jq -er '.metadata.labels["fabric.samcday.com/config-revision"]' \
+    <<<"$node_json") || die 'target has no prior config revision to advance'
+  [[ $from_revision =~ ^[0-9a-f]{40}$ && $from_revision != "$repo_commit" ]] ||
+    die 'prior config revision is malformed or already current'
+  git -C "$repo_root" merge-base --is-ancestor "$from_revision" "$repo_commit" ||
+    die 'prior config revision is not an ancestor of the lock revision'
+  qualify_node "$node_json" "$from_revision" ||
+    die 'target is not the exact Ready prior-revision node with unchanged Ignition'
+  [[ $confirmation == \
+    "ATTEST-UNCHANGED:$node:$node_uid:$from_revision:$repo_commit:$ignition_sha" ]] ||
+    die "exact unchanged-Ignition confirmation is required"
+  intent_tmp=$(mktemp -- "$lock_receipt/.config-attestation.json.XXXXXXXX")
+  chmod 0600 "$intent_tmp"
+  jq -n --arg node "$node" --arg role "$role" --arg uid "$node_uid" \
+    --arg from "$from_revision" --arg to "$repo_commit" --arg lock_uid "$lock_uid" \
+    --arg sha "$ignition_sha" --arg planned "$(date --utc --iso-8601=seconds)" '{
+      schema:1, purpose:"fabric-node-unchanged-config-attestation", state:"planned",
+      node:$node, role:$role, nodeUid:$uid, fromRevision:$from, toRevision:$to,
+      lockUid:$lock_uid, ignitionSha256:$sha, plannedAt:$planned
+    }' >"$intent_tmp"
+  mv -- "$intent_tmp" "$intent"
+fi
+
+[[ $confirmation == \
+  "ATTEST-UNCHANGED:$node:$node_uid:$from_revision:$repo_commit:$ignition_sha" ]] ||
+  die 'exact receipt-bound unchanged-Ignition confirmation is required'
+if ! qualify_node "$node_json" "$repo_commit"; then
+  qualify_node "$node_json" "$from_revision" ||
+    die 'live Node is neither the exact prior nor advanced attestation state'
+  rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
+  patch=$(jq -cn --arg rv "$rv" --arg uid "$node_uid" --arg from "$from_revision" \
+    --arg to "$repo_commit" --arg sha "$ignition_sha" '[
+    {"op":"test","path":"/metadata/resourceVersion","value":$rv},
+    {"op":"test","path":"/metadata/uid","value":$uid},
+    {"op":"test","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$from},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1config-revision","value":$from},
+    {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1ignition-sha256","value":$sha},
+    {"op":"replace","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$to},
+    {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1config-revision","value":$to}
+  ]')
+  "${ik[@]}" patch node "$node" --type=json --patch "$patch" >/dev/null ||
+    die 'atomic unchanged-config attestation raced or was rejected'
+fi
+node_json=$("${ik[@]}" get node "$node" --output=json)
+qualify_node "$node_json" "$repo_commit" || die 'advanced Node differs from exact contract'
+
+if [[ $(jq -r '.state' "$intent") == planned ]]; then
+  intent_tmp=$(mktemp -- "$lock_receipt/.config-attestation.json.XXXXXXXX")
+  chmod 0600 "$intent_tmp"
+  jq --arg advanced "$(date --utc --iso-8601=seconds)" \
+    '.state = "advanced" | .advancedAt = $advanced' "$intent" >"$intent_tmp"
+  mv -- "$intent_tmp" "$intent"
+fi
+find "$handoff_dir" -xdev -mindepth 1 -delete
+rmdir "$handoff_dir"
+printf 'ATTESTED-UNCHANGED %s uid=%s %s -> %s ignition=%s; handoff destroyed\n' \
+  "$node" "$node_uid" "$from_revision" "$repo_commit" "$ignition_sha"

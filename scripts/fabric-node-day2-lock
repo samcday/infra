@@ -45,8 +45,10 @@ on that immutable receipt and refuses until the selected Node is Ready and
 attested at the receipt's revision. If the conditional delete reply was lost,
 rerunning release cleans its receipt only after proving the lock is absent and
 the same final Node contract still holds. An interrupted ceremony deliberately
-keeps the lock for inspection. Abort is available only while the original Node UID
-is still Ready and no Bootie session or etcd replacement exists; it atomically
+keeps the lock for inspection. A completed unchanged-Ignition attestation is
+also a valid release receipt for the original exact Node UID. Abort is
+available only while the original Node UID is still Ready and no Bootie
+session, etcd replacement, or attestation intent exists; it atomically
 uncordons that UID before conditionally deleting the lock. There is no
 automatic or name-only cleanup.
 EOF
@@ -139,11 +141,18 @@ validate_receipt_dir() {
   [[ $entry_count == 1 || $entry_count == 2 ]] ||
     die 'lock receipt directory has an unexpected entry count'
   if [[ $entry_count == 2 ]]; then
-    [[ -f $receipt_dir/etcd-member.json && ! -L $receipt_dir/etcd-member.json &&
-       $(stat -Lc '%u:%g:%a:%h' "$receipt_dir/etcd-member.json") == \
-         "$(id -u):$(id -g):600:1" &&
-       $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]] ||
-      die 'only a safe control-plane etcd-member.json may accompany lock.json'
+    if [[ -f $receipt_dir/etcd-member.json && ! -L $receipt_dir/etcd-member.json ]]; then
+      [[ $(stat -Lc '%u:%g:%a:%h' "$receipt_dir/etcd-member.json") == \
+           "$(id -u):$(id -g):600:1" &&
+         $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]] ||
+        die 'control-plane etcd-member.json beside lock.json is unsafe'
+    else
+      [[ -f $receipt_dir/config-attestation.json &&
+         ! -L $receipt_dir/config-attestation.json &&
+         $(stat -Lc '%u:%g:%a:%h' "$receipt_dir/config-attestation.json") == \
+           "$(id -u):$(id -g):600:1" ]] ||
+        die 'only one safe ceremony receipt may accompany lock.json'
+    fi
   fi
 }
 
@@ -248,6 +257,7 @@ if [[ $mode == abort ]]; then
   [[ $confirmation == "ABORT:$node:$lock_uid" ]] ||
     die "exact --confirm ABORT:$node:$lock_uid is required"
   [[ ! -e $receipt_dir/etcd-member.json &&
+     ! -e $receipt_dir/config-attestation.json &&
      -z $("${ik[@]}" --namespace bootie get secret bootie-session \
        --ignore-not-found --output=name 2>/dev/null) ]] ||
     die 'abort is forbidden after an etcd replacement or Bootie session exists'
@@ -272,7 +282,21 @@ if [[ $mode == abort ]]; then
 else
   [[ $confirmation == "UNLOCK:$node:$lock_uid" ]] ||
     die "exact --confirm UNLOCK:$node:$lock_uid is required"
-  if [[ $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]]; then
+  if [[ -e $receipt_dir/config-attestation.json ]]; then
+    jq -e --arg node "$node" --arg role "$(jq -r '.role' "$receipt_dir/lock.json")" \
+      --arg uid "$(jq -r '.targetNodeUid' "$receipt_dir/lock.json")" \
+      --arg revision "$repo_commit" --arg lock_uid "$lock_uid" '
+      .schema == 1 and .purpose == "fabric-node-unchanged-config-attestation" and
+      .state == "advanced" and .node == $node and .role == $role and
+      .nodeUid == $uid and .toRevision == $revision and .lockUid == $lock_uid and
+      (.fromRevision | test("^[0-9a-f]{40}$")) and
+      (.ignitionSha256 | test("^[0-9a-f]{64}$"))
+    ' "$receipt_dir/config-attestation.json" >/dev/null ||
+      die 'unchanged-config attestation is not complete'
+    [[ $(jq -r '.metadata.uid' <<<"$node_json") == \
+       "$(jq -r '.targetNodeUid' "$receipt_dir/lock.json")" ]] ||
+      die 'unchanged-config attestation cannot release a replacement Node UID'
+  elif [[ $(jq -r '.role' "$receipt_dir/lock.json") == control-plane ]]; then
     jq -e --arg node "$node" --arg revision "$repo_commit" --arg lock_uid "$lock_uid" '
       .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
       .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
