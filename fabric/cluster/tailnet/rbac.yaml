@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fabric-subnet-router-svc1
+  namespace: fabric-tailnet
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fabric-subnet-router-svc2
+  namespace: fabric-tailnet
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fabric-subnet-router-svc1-state
+  namespace: fabric-tailnet
+rules:
+  - apiGroups: [""]
+    resourceNames: [fabric-subnet-router-svc1-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fabric-subnet-router-svc2-state
+  namespace: fabric-tailnet
+rules:
+  - apiGroups: [""]
+    resourceNames: [fabric-subnet-router-svc2-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fabric-subnet-router-svc1-state
+  namespace: fabric-tailnet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fabric-subnet-router-svc1-state
+subjects:
+  - kind: ServiceAccount
+    name: fabric-subnet-router-svc1
+    namespace: fabric-tailnet
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fabric-subnet-router-svc2-state
+  namespace: fabric-tailnet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fabric-subnet-router-svc2-state
+subjects:
+  - kind: ServiceAccount
+    name: fabric-subnet-router-svc2
+    namespace: fabric-tailnet

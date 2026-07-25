@@ -1,0 +1,209 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fabric-subnet-router-svc1
+  namespace: fabric-tailnet
+  labels:
+    app.kubernetes.io/component: subnet-router
+    app.kubernetes.io/instance: svc1
+    app.kubernetes.io/name: fabric-tailnet
+    app.kubernetes.io/part-of: fabric
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: subnet-router
+      app.kubernetes.io/instance: svc1
+      app.kubernetes.io/name: fabric-tailnet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: subnet-router
+        app.kubernetes.io/instance: svc1
+        app.kubernetes.io/name: fabric-tailnet
+        app.kubernetes.io/part-of: fabric
+    spec:
+      automountServiceAccountToken: true
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5@sha256:9e2bfdd9e2ce724df53f976d06a4a9933aa730dc655ace42798f4c73735d1cac
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "true"
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net --advertise-tags=tag:fabric-subnet-router --accept-routes=false --ssh=false
+            - name: TS_HOSTNAME
+              value: fabric-subnet-router-svc1
+            - name: TS_KUBE_SECRET
+              value: fabric-subnet-router-svc1-state
+            - name: TS_ROUTES
+              value: 10.66.0.0/24,10.66.1.0/24
+            - name: TS_TAILSCALED_EXTRA_ARGS
+              value: --no-logs-no-support
+            - name: TS_USERSPACE
+              value: "true"
+          ports:
+            - containerPort: 9002
+              name: health
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/run/tailscale
+              name: run
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/hostname: fabric-az1-svc1
+      serviceAccountName: fabric-subnet-router-svc1
+      terminationGracePeriodSeconds: 60
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+      volumes:
+        - emptyDir: {}
+          name: run
+        - emptyDir: {}
+          name: tmp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fabric-subnet-router-svc2
+  namespace: fabric-tailnet
+  labels:
+    app.kubernetes.io/component: subnet-router
+    app.kubernetes.io/instance: svc2
+    app.kubernetes.io/name: fabric-tailnet
+    app.kubernetes.io/part-of: fabric
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: subnet-router
+      app.kubernetes.io/instance: svc2
+      app.kubernetes.io/name: fabric-tailnet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: subnet-router
+        app.kubernetes.io/instance: svc2
+        app.kubernetes.io/name: fabric-tailnet
+        app.kubernetes.io/part-of: fabric
+    spec:
+      automountServiceAccountToken: true
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5@sha256:9e2bfdd9e2ce724df53f976d06a4a9933aa730dc655ace42798f4c73735d1cac
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "true"
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net --advertise-tags=tag:fabric-subnet-router --accept-routes=false --ssh=false
+            - name: TS_HOSTNAME
+              value: fabric-subnet-router-svc2
+            - name: TS_KUBE_SECRET
+              value: fabric-subnet-router-svc2-state
+            - name: TS_ROUTES
+              value: 10.66.0.0/24,10.66.1.0/24
+            - name: TS_TAILSCALED_EXTRA_ARGS
+              value: --no-logs-no-support
+            - name: TS_USERSPACE
+              value: "true"
+          ports:
+            - containerPort: 9002
+              name: health
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/run/tailscale
+              name: run
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/hostname: fabric-az1-svc2
+      serviceAccountName: fabric-subnet-router-svc2
+      terminationGracePeriodSeconds: 60
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+      volumes:
+        - emptyDir: {}
+          name: run
+        - emptyDir: {}
+          name: tmp

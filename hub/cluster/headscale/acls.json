@@ -32,6 +32,13 @@
         "tag:cloud-cluster-node": [],
         "tag:edge-au-east-apiserver": [],
         "tag:edge-au-east-node": [],
+        "tag:fabric-subnet-router": ["sam@"],
         "tag:labgrid-coordinator": []
+    },
+    "autoApprovers": {
+        "routes": {
+            "10.66.0.0/24": ["tag:fabric-subnet-router"],
+            "10.66.1.0/24": ["tag:fabric-subnet-router"]
+        }
     }
 }

@@ -53,6 +53,16 @@ The three root nodes remain consensus-only after workers arrive. Ceph,
 KubeVirt/CDI, hosted control planes, monitoring storage, and applications are
 worker workloads and are never scheduled on the root trio.
 
+Remote administration enters through two userspace Headscale subnet routers,
+one pinned to each service node. They advertise the exact root and service
+prefixes, retain separate Kubernetes-backed node identities, and use Headscale
+route approval and ACLs rather than installing Tailscale on a consensus root or
+physical router. Default subnet-route SNAT deliberately makes admitted traffic
+arrive from the reviewed service-node addresses; the destination host guards
+remain the final port boundary. The routers do not accept Tailnet routes or act
+as exit nodes. Their interactive first enrollment keeps reusable auth keys out
+of Git and cluster Secrets.
+
 ## Reconciliation order
 
 The one-time attended bootstrap is deliberately staged:
