@@ -726,14 +726,14 @@ printf 'DATA_MOUNT source=%s type=%s options=%s\n' \
 
 assert_section_count defaults 1
 assert_section_count zone 2
-assert_section_count rule 27
+assert_section_count rule 28
 assert_section_count forwarding 0
 assert_section_count redirect 0
 assert_section_count nat 0
 assert_section_count include 0
 firewall_section_count=$(uci -q show firewall |
   awk -F= '$1 ~ /^firewall\.[^.]+$/ { count++ } END { print count + 0 }')
-[ "$firewall_section_count" -eq 30 ] ||
+[ "$firewall_section_count" -eq 31 ] ||
   fail 'firewall contains an unexpected section type'
 
 defaults_section=$(sections_of_type defaults)
@@ -784,6 +784,7 @@ fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
 fabric_flat_services_kubelet
 fabric_flat_roots_kubelet
+fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
 fabric_flat_reject_services_roots
@@ -818,6 +819,7 @@ for exact_flat_forward in \
   fabric_flat_roots_vxlan \
   fabric_flat_services_kubelet \
   fabric_flat_roots_kubelet \
+  fabric_flat_roots_bootie \
   fabric_flat_observer_services_ssh \
   fabric_flat_services_bootie_rootfs; do
   assert_firewall_option_keys "$exact_flat_forward" \
@@ -948,6 +950,8 @@ assert_flat_rule fabric_flat_services_kubelet \
   Allow-services-to-root-kubelets "$service_nodes" "$root_nodes" tcp 10250 ACCEPT
 assert_flat_rule fabric_flat_roots_kubelet \
   Allow-roots-to-service-kubelets "$root_nodes" "$service_nodes" tcp 10250 ACCEPT
+assert_flat_rule fabric_flat_roots_bootie \
+  Allow-roots-to-Bootie "$root_nodes" "$service_nodes" tcp 80 ACCEPT
 assert_flat_rule fabric_flat_observer_services_ssh \
   Allow-observer-to-services-SSH 10.66.0.2/32 "$service_nodes" tcp 22 ACCEPT
 assert_flat_rule fabric_flat_services_bootie_rootfs \
@@ -1203,6 +1207,8 @@ assert_live_fw4_rule forward_lan Allow-services-to-root-kubelets 1 \
   'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Allow-roots-to-service-kubelets 1 \
   'ip saddr' 'jump accept_to_lan'
+assert_live_fw4_rule forward_lan Allow-roots-to-Bootie 1 \
+  'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Allow-observer-to-services-SSH 1 \
   'ip saddr' 'jump accept_to_lan'
 assert_live_fw4_rule forward_lan Allow-services-to-Bootie-rootfs 1 \
@@ -1231,7 +1237,7 @@ assert_live_fw4_rule input_lan Reject-other-fabric-router-input 1 \
 assert_live_fw4_chain input_wan 3 'jump reject_from_wan' \
   'Allow-WAN-DHCPv4-replies
 Reject-other-WAN-input'
-assert_live_fw4_chain forward_lan 17 'jump reject_to_lan' \
+assert_live_fw4_chain forward_lan 18 'jump reject_to_lan' \
   'Block-fabric-to-private-WAN
 Allow-roots-to-public-WAN
 Allow-services-to-public-Web
@@ -1244,6 +1250,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots

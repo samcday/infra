@@ -46,10 +46,12 @@ the immutable day-two lock receipt. The snapshot-bound replacement intent is
 written before the first membership change, so the same plan/confirmation can
 resume safely from the old voter, two-survivor, or learner topology.
 
-After Bootie starts the replacement member, promote verifies all three exact
-endpoints, the learner ID/name/peer URL, empty alarms, and etcd 3.6.13 before
-promoting it. A promotion intent likewise makes the same command safe to retry
-whether the target is still a learner or is already the receipt-bound voter.
+After Bootie starts the replacement member, promote verifies both voters are
+healthy and all three exact endpoint statuses are reachable and consistent,
+then binds the learner ID/name/peer URL, empty alarms, and etcd 3.6.13 before
+promoting it. It requires all three endpoints healthy after promotion. A
+promotion intent likewise makes the same command safe to retry whether the
+target is still a learner or is already the receipt-bound voter.
 Confirmation hashes contain stable topology and identity fields, not live KV
 or Raft counters. The observed etcd auth mode is bound into both intents and
 must remain unchanged. When auth is enabled the offline TLS-CN root user must
@@ -687,16 +689,31 @@ jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" 
 ' "$member_receipt" >/dev/null || die 'learner receipt does not match this ceremony'
 learner_member_id=$(jq -r '.learnerMemberId' "$member_receipt")
 promotion_state=$(jq -r '.state' "$member_receipt")
-health_all=$(query "$endpoints_all" --write-out=json endpoint health) ||
-  die 'all three exact endpoints are not yet reachable'
-jq -e 'type == "array" and length == 3 and all(.health == true)' <<<"$health_all" >/dev/null ||
-  die 'all three exact endpoints are not healthy'
 status_all=$(query "$endpoints_all" --write-out=json endpoint status) ||
   die 'cannot read all three endpoint statuses'
 membership_state=$(classify_membership "$member_json" "$node" "$target_peer_url" \
   "$survivor_peers") || die 'live membership is outside the resumable promotion states'
 [[ $membership_state == learner || $membership_state == voter ]] ||
   die 'target member is absent while promotion receipt exists'
+# etcdctl endpoint health performs a KV range. etcd 3.6 learners reject that
+# RPC with FailedPrecondition even when their endpoint and Raft stream are
+# healthy, so status is the three-endpoint reachability gate until promotion.
+# On a resumed already-promoted topology, all three endpoints must be healthy.
+if [[ $membership_state == voter ]]; then
+  health_before=$(query "$endpoints_all" --write-out=json endpoint health) ||
+    die 'all three promoted endpoints are not reachable'
+  jq -e 'type == "array" and length == 3 and all(.health == true)' \
+    <<<"$health_before" >/dev/null || die 'all three promoted endpoints are not healthy'
+  alarm_endpoints=$endpoints_all
+else
+  survivor_health=$(query "$survivor_endpoints" --write-out=json endpoint health) ||
+    die 'both surviving voter endpoints are not reachable'
+  jq -e 'type == "array" and length == 2 and all(.health == true)' \
+    <<<"$survivor_health" >/dev/null || die 'both surviving voter endpoints are not healthy'
+  # Alarm status is cluster-wide, while the learner rejects the maintenance
+  # Alarm RPC until it becomes a voter. Read it redundantly from both voters.
+  alarm_endpoints=$survivor_endpoints
+fi
 jq -e --arg target "https://127.0.0.1:$target_port" --arg state "$membership_state" '
   type == "array" and length == 3 and
   ([.[].Status.header.cluster_id] | unique | length) == 1 and
@@ -710,7 +727,7 @@ jq -e --arg target "https://127.0.0.1:$target_port" --arg state "$membership_sta
       length) == 2
   else all(.[]; (.Status.isLearner // false) == false) end
 ' <<<"$status_all" >/dev/null || die 'target endpoint role differs from live membership'
-assert_empty_alarms "$endpoints_all" || die 'etcd alarm state is not empty'
+assert_empty_alarms "$alarm_endpoints" || die 'etcd alarm state is not empty'
 live_target_id=$(awk -F', *' -v peer="$target_peer_url" \
   'index($4, peer) {print $1}' <<<"$member_table")
 [[ $live_target_id == "$learner_member_id" ]] ||
@@ -767,6 +784,8 @@ member_table_after=$(query "$endpoints_all" member list) ||
   die 'cannot bind target member after promotion'
 status_after=$(query "$endpoints_all" --write-out=json endpoint status) ||
   die 'cannot read endpoint status after promotion'
+health_after=$(query "$endpoints_all" --write-out=json endpoint health) ||
+  die 'cannot read all three endpoint health responses after promotion'
 [[ $(classify_membership "$member_json_after" "$node" "$target_peer_url" \
   "$survivor_peers") == voter ]] || die 'membership is not three voters after promotion'
 promoted_target_id=$(awk -F', *' -v peer="$target_peer_url" \
@@ -781,6 +800,8 @@ jq -e '
   all(.Status.version == "3.6.13") and all(.Status.leader > 0) and
   all((.Status.isLearner // false) == false)
 ' <<<"$status_after" >/dev/null || die 'three-voter endpoint status is degraded after promotion'
+jq -e 'type == "array" and length == 3 and all(.health == true)' \
+  <<<"$health_after" >/dev/null || die 'three-voter endpoint health is degraded after promotion'
 assert_empty_alarms "$endpoints_all" || die 'an etcd alarm exists after promotion'
 
 member_receipt_tmp=$(mktemp -- "$lock_receipt/.etcd-member.json.XXXXXXXX")

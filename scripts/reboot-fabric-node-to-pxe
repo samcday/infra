@@ -21,9 +21,11 @@ Run only after the exact Bootie install arm is live. This binds the lock, local
 session receipt, immutable live Secret UID, and armed placeholder UID before it
 uses strict pinned SSH. The remote half proves K3s (and etcd on a root) are
 stopped, discovers exactly one IPv4 UEFI entry matching the inventoried MAC,
-moves that entry to the front of persistent BootOrder, and reboots. The new
-Ignition enforces the same PXE-first invariant on every local boot; no firmware
-entry number is hard-coded.
+moves that entry to the front of persistent BootOrder, selects the same exact
+entry as one-shot BootNext, and reboots. BootNext prevents firmware from
+preferring a previously successful local entry for this armed transition. The
+new Ignition enforces the same PXE-first invariant on every later local boot;
+no firmware entry number is hard-coded.
 EOF
 }
 

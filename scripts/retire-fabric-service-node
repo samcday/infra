@@ -188,7 +188,7 @@ if [[ $FABRIC_NODE_ROLE == control-plane ]]; then
     die 'control-plane retirement requires one safe etcd-member.json receipt'
   jq -e --arg node "$node" --arg revision "$(jq -r '.repoCommit' "$receipt")" \
     --arg lock_uid "$(jq -r '.lock.uid' "$receipt")" '
-    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+    .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
     .node == $node and .repoCommit == $revision and .lockUid == $lock_uid and
     .state == "learner-added" and
     (.removedMemberId | test("^[0-9a-f]{16}$")) and

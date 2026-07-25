@@ -244,10 +244,11 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "flat_l2_sysctl=/etc/sysctl.d/90-fabric-flat-l2.conf",
             "net.ipv6.conf.all.accept_source_route=-1",
             "SYSCTL_POLICY=image-owned-no-preserved-overrides-live-exact",
-            "assert_section_count rule 27",
-            "assert_live_fw4_chain forward_lan 17",
+            "assert_section_count rule 28",
+            "assert_live_fw4_chain forward_lan 18",
             "assert_live_fw4_chain input_lan 11",
             "Allow-observer-to-services-SSH",
+            "Allow-roots-to-Bootie",
             "Allow-services-to-Bootie-rootfs",
             "Allow-platform-to-root-etcd-client",
             "Reject-services-to-root-etcd-internal",
@@ -378,6 +379,31 @@ class FlatL2FirewallTests(unittest.TestCase):
             "fabric_flat_reject_roots_services",
             **self.routed_flow("10.66.0.2", "10.66.1.12", "tcp", 22),
         )
+
+    def test_only_exact_roots_can_fetch_from_bootie_service_hosts(self) -> None:
+        for root in ("10.66.0.10", "10.66.0.11", "10.66.0.12"):
+            for service in ("10.66.1.10", "10.66.1.11"):
+                self.assert_flow(
+                    "ACCEPT",
+                    "fabric_flat_roots_bootie",
+                    **self.routed_flow(root, service, "tcp", 80),
+                )
+                for protocol, port in (("tcp", 443), ("udp", 80)):
+                    self.assert_flow(
+                        "REJECT",
+                        "fabric_flat_reject_roots_services",
+                        **self.routed_flow(root, service, protocol, port),
+                    )
+        for source, destination in (
+            ("10.66.0.2", "10.66.1.10"),
+            ("10.66.0.13", "10.66.1.10"),
+            ("10.66.0.10", "10.66.1.12"),
+        ):
+            self.assert_flow(
+                "REJECT",
+                "fabric_flat_reject_roots_services",
+                **self.routed_flow(source, destination, "tcp", 80),
+            )
 
     def test_only_service_nodes_can_fetch_bootie_rootfs_after_readdressing(self) -> None:
         for service in ("10.66.1.10", "10.66.1.11"):
@@ -531,6 +557,7 @@ class FlatL2FirewallTests(unittest.TestCase):
                 "fabric_flat_roots_vxlan",
                 "fabric_flat_services_kubelet",
                 "fabric_flat_roots_kubelet",
+                "fabric_flat_roots_bootie",
                 "fabric_flat_observer_services_ssh",
                 "fabric_flat_services_bootie_rootfs",
             },

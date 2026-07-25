@@ -31,7 +31,10 @@ For one node, the flow is:
    it reads the current agent token through one healthy pinned root.
 6. `arm` publishes one immutable in-cluster session, then `reboot` binds its
    local receipt to the exact live Secret and armed placeholder, persists
-   PXE-first, and restarts the host. Its confirmation includes the session UID.
+   PXE-first, selects the same MAC-bound entry as one-shot UEFI `BootNext`, and
+   restarts the host. The one-shot selection keeps firmware from preferring a
+   previously successful local entry during this armed transition. Its
+   confirmation includes the session UID.
    Exact confirmation strings are printed or derivable from the preceding
    receipt; there is no broad or name-only arm or reboot. If `arm` is
    interrupted, rerun the same command: it adopts only the exact lock/handoff

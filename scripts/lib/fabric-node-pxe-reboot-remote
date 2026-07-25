@@ -53,6 +53,12 @@ efibootmgr --bootorder "$new_order" >/dev/null ||
 verified_order=$(efibootmgr | awk '/^BootOrder:/ {print toupper($2)}')
 [[ ${verified_order%%,*} == "$pxe_entry" ]] ||
   die 'UEFI BootOrder did not retain IPv4 PXE first'
+efibootmgr --bootnext "$pxe_entry" >/dev/null ||
+  die 'could not select the exact IPv4 PXE entry for the next boot'
+verified_next=$(efibootmgr | awk '/^BootNext:/ {print toupper($2)}')
+[[ $verified_next == "$pxe_entry" ]] ||
+  die 'UEFI BootNext did not retain the exact IPv4 PXE entry'
 sync
-printf 'REBOOTING %s with persistent IPv4 PXE entry %s first\n' "$node" "$pxe_entry"
+printf 'REBOOTING %s with one-shot and persistent IPv4 PXE entry %s\n' \
+  "$node" "$pxe_entry"
 systemctl reboot

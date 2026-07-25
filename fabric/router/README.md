@@ -131,7 +131,9 @@ defense in depth. The two IPv4 prefixes route through the same LAN zone; exact
 address-pinned rules permit API TCP/6443 from the two service nodes only to the
 VIP `10.66.0.254` and the three K3s server addresses `10.66.0.10-.12`, plus
 bidirectional Flannel UDP/8472, bidirectional kubelet TCP/10250, and attended
-observer `10.66.0.2` SSH to the two exact service addresses. The direct API
+observer `10.66.0.2` SSH to the two exact service addresses. The three exact
+root addresses may also reach in-cluster Bootie on the two exact service
+addresses over TCP/80 for a one-node day-two install. The direct API
 destinations are required because the K3s supervisor advertises its individual
 server endpoints after an agent initially joins through the VIP. During one
 attended install, those two service addresses may also fetch the live rootfs
@@ -305,8 +307,9 @@ the active inventory address `10.66.0.100`, another unauthorized address in
 each prefix, and a controlled WAN-side client. It must prove router-service
 source restrictions, observer and unauthorized forwarding denial, exact
 API/VXLAN/kubelet plus observer-to-service SSH same-interface forwarding, and
-service-node TCP/80 to the exact Bootie observer address while adjacent ports,
-hosts, and unauthorized sources fail. It must also prove explicit etcd denial,
+service-node TCP/80 to the exact recovery Bootie observer address plus each
+root's TCP/80 access to the two in-cluster Bootie host addresses, while
+adjacent ports, hosts, and unauthorized sources fail. It must also prove explicit etcd denial,
 root public egress, service-only public TCP/80+443 egress, private and CGNAT
 denial, WAN-input denial, and WAN-to-fabric denial using known-live
 destinations plus deltas on the corresponding named fw4 counters. Do not claim
@@ -695,19 +698,16 @@ curl --fail --head http://10.66.0.1/static/k3s
 curl --fail --head http://10.66.1.1/static/k3s
 ```
 
-The router itself keeps DHCP/TFTP PXE disabled. The separately authenticated,
-attended Bootie worker station may temporarily serve one MAC-pinned service
-candidate on this trusted L2; it must live off the consensus nodes, possess no
-root Ignition, and tear down after each one-use install. Broadcast DHCP on this
-flat domain is an attended migration exception, not a permanent router role.
-GRUB, the kernel, and the capability-named custom initramfs are fetched while
-the candidate still owns `10.66.0.100`. The embedded network profile then
-adopts `10.66.1.10` or `.11`; the only remaining station request is dracut's
-`coreos.live.rootfs_url` fetch from `10.66.0.2:80`. Install Ignition is embedded
-in that custom initramfs, and later pinned assets come from `10.66.1.1:80`, so
-no other post-profile Bootie allowance is required. The router rule is an
-exact L3/L4 source, destination, protocol, and port admission; Bootie's
-one-use lifecycle and HTTP configuration remain responsible for URL paths.
+The router itself keeps DHCP/TFTP PXE disabled. Day-two PXE is served by the
+singleton in-cluster Bootie workload on `10.66.1.10` or `.11`; its ordinary
+answer is `exit`, and one exact lock-bound session enables a one-use install.
+A root initially PXE-boots on temporary service-prefix `.101-.103`, then adopts
+its final root address before destination Ignition is fetched, which is why the
+exact root-to-Bootie TCP/80 rule is required. The separately authenticated
+observer-host station remains only for full-cluster/offline recovery. Its
+embedded network profile and exact service-to-`10.66.0.2:80` rule retain that
+recovery path without broadening normal day two. Bootie's one-use lifecycle and
+HTTP configuration remain responsible for URL paths.
 
 The image is not ready to flash merely because it builds: first verify the
 router hardware revision and SHA256 of the selected artifact, then follow a

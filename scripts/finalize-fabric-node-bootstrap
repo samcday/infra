@@ -79,7 +79,7 @@ repo_commit=$(jq -r '.repoCommit' "$lock_json")
 if [[ $role == control-plane ]]; then
   jq -e --arg node "$node" --arg repo "$repo_commit" \
     --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" '
-    .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+    .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
     .node == $node and .repoCommit == $repo and .lockUid == $lock_uid and
     .state == "promoted" and (.learnerMemberId | test("^[0-9a-f]{16}$"))
   ' "$lock_receipt/etcd-member.json" >/dev/null ||

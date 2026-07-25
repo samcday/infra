@@ -277,6 +277,25 @@ set firewall.fabric_flat_roots_kubelet.proto='tcp'
 set firewall.fabric_flat_roots_kubelet.dest_port='10250'
 set firewall.fabric_flat_roots_kubelet.target='ACCEPT'
 
+# A root that is being reinstalled first PXE-boots with its temporary
+# service-prefix address, then adopts its final root address before destination
+# Ignition is fetched. Admit only the three root identities to Bootie's two
+# possible host-network locations on HTTP; both host firewalls independently
+# enforce the same exact source set and Bootie constrains the one-use paths.
+set firewall.fabric_flat_roots_bootie='rule'
+set firewall.fabric_flat_roots_bootie.name='Allow-roots-to-Bootie'
+set firewall.fabric_flat_roots_bootie.src='lan'
+set firewall.fabric_flat_roots_bootie.dest='lan'
+set firewall.fabric_flat_roots_bootie.family='ipv4'
+add_list firewall.fabric_flat_roots_bootie.src_ip='10.66.0.10/32'
+add_list firewall.fabric_flat_roots_bootie.src_ip='10.66.0.11/32'
+add_list firewall.fabric_flat_roots_bootie.src_ip='10.66.0.12/32'
+add_list firewall.fabric_flat_roots_bootie.dest_ip='10.66.1.10/32'
+add_list firewall.fabric_flat_roots_bootie.dest_ip='10.66.1.11/32'
+set firewall.fabric_flat_roots_bootie.proto='tcp'
+set firewall.fabric_flat_roots_bootie.dest_port='80'
+set firewall.fabric_flat_roots_bootie.target='ACCEPT'
+
 # Preserve the existing attended operator path after a service node adopts its
 # final address. The service host firewall independently accepts SSH only from
 # this observer address; no other observer forwarding is admitted here.
