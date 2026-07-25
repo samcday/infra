@@ -362,6 +362,7 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
+        self.assertEqual(self.script.count("(.spec.hostNetwork // false) == false"), 2)
         self.assertNotIn("kind: \"Namespace\"", self.script)
         self.assertNotIn("create namespace", self.script)
 

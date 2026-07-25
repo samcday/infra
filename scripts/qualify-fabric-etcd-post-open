@@ -1482,7 +1482,7 @@ wait_probe_pod() {
         "fabric.samcday.com/purpose": "etcd-post-open-acceptance",
         "fabric.samcday.com/revision": $revision
       } and
-      .spec.nodeName == $node and .spec.hostNetwork == false and
+      .spec.nodeName == $node and (.spec.hostNetwork // false) == false and
       .spec.automountServiceAccountToken == false and
       .status.phase == "Succeeded" and .status.hostIP == $hostIp and
       .status.podIP == $podIp and $podIp != $hostIp and
@@ -1511,7 +1511,7 @@ wait_probe_pod() {
           ((keys | sort) == ["effect", "key", "operator", "tolerationSeconds"]));
       .spec.activeDeadlineSeconds == 240 and
       .spec.automountServiceAccountToken == false and .spec.enableServiceLinks == false and
-      .spec.hostNetwork == false and (.spec.hostPID // false) == false and
+      (.spec.hostNetwork // false) == false and (.spec.hostPID // false) == false and
       (.spec.hostIPC // false) == false and (.spec.shareProcessNamespace // false) == false and
       .spec.nodeName == $node and .spec.restartPolicy == "Never" and
       .spec.terminationGracePeriodSeconds == 1 and .spec.serviceAccountName == "default" and
