@@ -130,6 +130,18 @@ class MonitoringPolicyRolloutTests(unittest.TestCase):
             self.helper,
         )
 
+    def test_wired_observer_can_be_selected_without_weakening_verification(self) -> None:
+        observer = re.search(
+            r"(?ms)^observer_verify\(\) \{\n(?P<body>.*?)^\}$", self.helper
+        )
+        self.assertIsNotNone(observer)
+        body = observer.group("body")
+        self.assertIn('"$repo_root/fabric/observer/verify-wired-netns"', body)
+        self.assertIn('--interface "$wired_observer_interface"', body)
+        self.assertIn('--permanent-mac "$wired_observer_permanent_mac"', body)
+        self.assertIn('"$repo_root/fabric/observer/fabric-observer-netns"', body)
+        self.assertEqual(self.helper.count("observer_verify || die"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

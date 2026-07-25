@@ -23,12 +23,16 @@ Read-only preflight:
   sudo scripts/rollout-fabric-router-monitoring-policy \\
     --check \\
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \\
+    --wired-observer-interface enp50s0u2 \\
+    --wired-observer-permanent-mac 00:e0:4c:68:05:36 \\
     --identity /var/home/sam/.ssh/id_ed25519
 
 Attended rollout:
   sudo scripts/rollout-fabric-router-monitoring-policy \\
     --run \\
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \\
+    --wired-observer-interface enp50s0u2 \\
+    --wired-observer-permanent-mac 00:e0:4c:68:05:36 \\
     --identity /var/home/sam/.ssh/id_ed25519 \\
     --confirm '$confirmation_prefix:<pushed-main-commit>:$payload_sha256'
 
@@ -87,6 +91,18 @@ validate_identity() {
     die 'identity must be an absolute, regular, non-symlink file'
   [[ $(stat -Lc '%u:%a:%h' -- "$identity") == "$operator_uid:600:1" ]] ||
     die 'identity must be operator-owned mode-0600 with one link'
+}
+
+observer_verify() {
+  if [[ -n $wired_observer_interface ]]; then
+    timeout --kill-after=2s 15s \
+      "$repo_root/fabric/observer/verify-wired-netns" \
+        --interface "$wired_observer_interface" \
+        --permanent-mac "$wired_observer_permanent_mac" >/dev/null
+  else
+    timeout --kill-after=2s 15s \
+      "$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+  fi
 }
 
 acquire_local_lock() {
@@ -533,6 +549,8 @@ REMOTE_ROLLBACK_NOW
 
 mode=
 serial_fingerprint=
+wired_observer_interface=
+wired_observer_permanent_mac=
 identity=
 confirm=
 while (($#)); do
@@ -552,6 +570,20 @@ while (($#)); do
       identity=$2
       shift 2
       ;;
+    --wired-observer-interface)
+      (($# >= 2)) || die '--wired-observer-interface needs a value'
+      [[ -z $wired_observer_interface ]] ||
+        die '--wired-observer-interface may be specified only once'
+      wired_observer_interface=$2
+      shift 2
+      ;;
+    --wired-observer-permanent-mac)
+      (($# >= 2)) || die '--wired-observer-permanent-mac needs a value'
+      [[ -z $wired_observer_permanent_mac ]] ||
+        die '--wired-observer-permanent-mac may be specified only once'
+      wired_observer_permanent_mac=${2,,}
+      shift 2
+      ;;
     --confirm)
       (($# >= 2)) || die '--confirm needs a value'
       confirm=$2
@@ -563,6 +595,12 @@ while (($#)); do
 done
 [[ $mode == check || $mode == run ]] || die 'select --check or --run'
 [[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+if [[ -n $wired_observer_interface || -n $wired_observer_permanent_mac ]]; then
+  [[ $wired_observer_interface =~ ^[A-Za-z0-9_.-]{1,15}$ ]] ||
+    die 'wired observer interface has an invalid shape'
+  [[ $wired_observer_permanent_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+    die 'wired observer permanent MAC has an invalid shape'
+fi
 valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
 if [[ $mode == check ]]; then
   [[ -z $confirm ]] || die '--confirm is invalid with --check'
@@ -616,8 +654,7 @@ evidence_dir=$(fabric_secure_tmpdir fabric-router-monitoring-policy 4194304) ||
 chmod 0700 -- "$evidence_dir"
 router_known_hosts=$evidence_dir/router-known-hosts
 prepare_router_ssh
-timeout --kill-after=2s 15s "$repo_root/fabric/observer/fabric-observer-netns" \
-  verify-isolation >/dev/null || die 'Fabric observer isolation verification failed'
+observer_verify || die 'Fabric observer isolation verification failed'
 validate_remote_phase pre "$evidence_dir/router-preflight.txt"
 
 if [[ $mode == check ]]; then
@@ -660,8 +697,7 @@ rollout_token=$head:$payload_sha256
 stage_and_apply
 assert_cluster_lock
 validate_remote_phase post "$evidence_dir/router-post-apply.txt"
-timeout --kill-after=2s 15s "$repo_root/fabric/observer/fabric-observer-netns" \
-  verify-isolation >/dev/null || die 'Fabric observer isolation failed after apply'
+observer_verify || die 'Fabric observer isolation failed after apply'
 finalize_remote
 validate_remote_phase post "$evidence_dir/router-final.txt"
 assert_cluster_lock
