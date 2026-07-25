@@ -495,6 +495,17 @@ assert_target_section fabric_flat_reject_services_etcd_internal \
   Reject-services-to-root-etcd-internal 2380 REJECT
 assert_target_section fabric_flat_services_root_metrics \
   Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
+assert_uci firewall.fabric_flat_roots_bootie rule
+assert_option_keys fabric_flat_roots_bootie 'dest dest_ip dest_port family name proto src src_ip target'
+assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie
+assert_uci firewall.fabric_flat_roots_bootie.src lan
+assert_uci firewall.fabric_flat_roots_bootie.dest lan
+assert_uci firewall.fabric_flat_roots_bootie.family ipv4
+assert_uci firewall.fabric_flat_roots_bootie.src_ip '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'
+assert_uci firewall.fabric_flat_roots_bootie.dest_ip '10.66.1.10/32 10.66.1.11/32'
+assert_uci firewall.fabric_flat_roots_bootie.proto tcp
+assert_uci firewall.fabric_flat_roots_bootie.dest_port 80
+assert_uci firewall.fabric_flat_roots_bootie.target ACCEPT
 assert_uci_absent firewall.fabric_flat_reject_services_etcd
 assert_uci firewall.fabric_router_services_http rule
 assert_option_keys fabric_router_services_http 'dest_ip dest_port family name proto src src_ip target'
@@ -509,6 +520,7 @@ assert_uci firewall.fabric_router_services_http.target ACCEPT
 assert_live_rule Allow-platform-to-root-etcd-client 'jump accept_to_lan'
 assert_live_rule Reject-services-to-root-etcd-internal 'jump reject_to_lan'
 assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan'
+assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan'
 if printf '%s\n' "$live_table" | grep -F 'comment "!fw4: Reject-services-to-root-etcd"' >/dev/null; then
   fail 'obsolete live all-port etcd reject is present'
 fi
@@ -546,6 +558,7 @@ fabric_flat_services_vxlan
 fabric_flat_roots_vxlan
 fabric_flat_services_kubelet
 fabric_flat_roots_kubelet
+fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
 fabric_flat_reject_services_roots
@@ -560,9 +573,9 @@ fabric_router_ssh
 fabric_reject_other_fabric_router_input'
 actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)='rule'$/\\1/p")
 [ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
-[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 27 ] ||
+[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 28 ] ||
   fail 'firewall rule count is not exact'
-[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 30 ] ||
+[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 31 ] ||
   fail 'firewall contains an unexpected non-rule section'
 
 expected_forward='Block-fabric-to-private-WAN
@@ -577,6 +590,7 @@ Allow-services-to-root-VXLAN
 Allow-roots-to-services-VXLAN
 Allow-services-to-root-kubelets
 Allow-roots-to-service-kubelets
+Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
 Reject-other-services-to-roots
@@ -590,7 +604,7 @@ actual_chain_count=$(printf '%s\n' "$live_chain" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 17 ] || fail 'live forward_lan rule count is not exact'
+[ "$actual_chain_count" -eq 18 ] || fail 'live forward_lan rule count is not exact'
 terminal=$(printf '%s\n' "$live_chain" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
