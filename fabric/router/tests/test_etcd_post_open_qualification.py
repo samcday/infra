@@ -312,6 +312,8 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             image,
             "sha256:7a3ebe5bfd1a4a19797d20b0c0bb39d44393e9a03fd852c0865b0f540d868df0",
             "sha256:db287cb6be81219cd18c1d82b70908f5d33eb028568b456f78eedff2ff2930e4",
+            '--arg imageIndex "$probe_index_sha256"',
+            '(.imageID | endswith("@" + $imageIndex))',
             archive_hash,
             "etcdctl version: 3.6.13",
             "API version: 3.6",
@@ -320,6 +322,9 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
+        capture = self.script.index('printf \'%s\\n\' "$pod" >"$evidence_dir/$name.json"')
+        attestation = self.script.index("probe Pod $name was not the exact ordinary successful Pod")
+        self.assertLess(capture, attestation)
         self.assertIn(archive_hash, self.data_files)
 
     def test_network_policy_and_pods_are_narrow_and_restricted(self) -> None:

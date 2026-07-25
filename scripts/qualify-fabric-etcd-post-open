@@ -19,6 +19,7 @@ readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
 readonly fabric_network_cluster_lock=fabric-maintenance-lock
 readonly confirmation_prefix=QUALIFY-FABRIC-ETCD-POST-OPEN
 readonly probe_image='docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
+readonly probe_index_sha256=sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
 readonly probe_amd64_manifest_sha256=sha256:7a3ebe5bfd1a4a19797d20b0c0bb39d44393e9a03fd852c0865b0f540d868df0
 readonly probe_amd64_config_sha256=sha256:db287cb6be81219cd18c1d82b70908f5d33eb028568b456f78eedff2ff2930e4
 readonly etcd_archive=etcd-v3.6.13-linux-amd64.tar.gz
@@ -1464,11 +1465,15 @@ wait_probe_pod() {
     sleep 1
   done
   [[ $phase == Succeeded ]] || die "probe Pod $name did not complete within 240 seconds"
+  printf '%s\n' "$pod" >"$evidence_dir/$name.json"
+  operator_kubectl --namespace "$namespace" logs "$name" >"$evidence_dir/$name.log"
+  chmod 0600 -- "$evidence_dir/$name.json" "$evidence_dir/$name.log"
   pod_ip=$(jq -er '.status.podIP' <<<"$pod") || die "probe Pod $name has no Pod IP"
   jq -e \
     --arg name "$name" --arg node "$node" --arg hostIp "$address" \
     --arg podIp "$pod_ip" --arg uid "${pod_uids[$index]}" \
     --arg image "$probe_image" --arg revision "$head" --arg secret "$secret_name" \
+    --arg imageIndex "$probe_index_sha256" \
     --arg imageManifest "$probe_amd64_manifest_sha256" \
     --arg imageConfig "$probe_amd64_config_sha256" '
       .metadata.name == $name and .metadata.namespace == "etcdetcetc-smoke" and
@@ -1487,7 +1492,8 @@ wait_probe_pod() {
       any(.status.containerStatuses[]?;
         .name == "probe" and .state.terminated.reason == "Completed" and
         .state.terminated.exitCode == 0 and
-        ((.imageID | endswith("@" + $imageManifest)) or
+        ((.imageID | endswith("@" + $imageIndex)) or .imageID == $imageIndex or
+         (.imageID | endswith("@" + $imageManifest)) or
          (.imageID | endswith("@" + $imageConfig)) or .imageID == $imageConfig)
       )
     ' <<<"$pod" >/dev/null ||
@@ -1561,9 +1567,6 @@ wait_probe_pod() {
       ]
     ' <<<"$pod" >/dev/null ||
     die "probe Pod $name command, security, resource, or volume contract was mutated"
-  printf '%s\n' "$pod" >"$evidence_dir/$name.json"
-  operator_kubectl --namespace "$namespace" logs "$name" >"$evidence_dir/$name.log"
-  chmod 0600 -- "$evidence_dir/$name.json" "$evidence_dir/$name.log"
   expected_log="ETCDCTL_PIN=pass node=$node version=3.6.13
 TCP_BOUNDARY=pass node=$node roots=3 client=reachable metrics=reachable peer=blocked
 MTLS_BOUNDARY=pass node=$node roots=3 no_client_cert=rejected tenant_client=accepted
