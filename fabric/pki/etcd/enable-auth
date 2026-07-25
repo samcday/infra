@@ -98,6 +98,18 @@ etcdctl_as() {
     "$@"
 }
 
+etcdctl_one_as() {
+  local identity=$1
+  local endpoint=$2
+  shift 2
+  etcdctl \
+    --endpoints="$endpoint" \
+    --cacert="$work/ca.pem" \
+    --cert="$work/$identity.pem" \
+    --key="$work/$identity-key.pem" \
+    "$@"
+}
+
 outside_read_key=
 cleanup() {
   if [[ -n $outside_read_key ]]; then
@@ -201,8 +213,7 @@ jq -e '(.roles // []) == []' <<<"$observer_user_json" >/dev/null || {
 # read or write any key.
 etcdctl_as fabric-observer --write-out=json alarm list | jq -e \
   '((.alarms // []) | type) == "array"' >/dev/null
-etcdctl_as fabric-observer \
-  --endpoints=https://10.66.0.10:2379 \
+etcdctl_one_as fabric-observer https://10.66.0.10:2379 \
   --write-out=json endpoint status | jq -e \
   'type == "array" and length == 1' >/dev/null
 

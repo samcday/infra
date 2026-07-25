@@ -12,6 +12,7 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[4]
 ROLLOUT = REPO / "scripts" / "rollout-fabric-etcd-client-trust"
 ADMIN = REPO / "fabric" / "pki" / "etcd" / "manage-etcdetcetc-admin"
+ENABLE_AUTH = REPO / "fabric" / "pki" / "etcd" / "enable-auth"
 ETCD_PROFILE = REPO / "fabric" / "butane" / "etcd.yaml"
 FIREWALL_PROFILE = REPO / "fabric" / "butane" / "firewall.yaml"
 ETCD_RUNBOOK = REPO / "fabric" / "pki" / "etcd" / "README.md"
@@ -34,6 +35,22 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+class EnableAuthHelperTests(unittest.TestCase):
+    def test_single_endpoint_observer_probe_does_not_accumulate_endpoints(self) -> None:
+        source = ENABLE_AUTH.read_text()
+        self.assertIn("etcdctl_one_as()", source)
+        self.assertIn(
+            "etcdctl_one_as fabric-observer https://10.66.0.10:2379 \\\n"
+            "  --write-out=json endpoint status",
+            source,
+        )
+        self.assertNotIn(
+            "etcdctl_as fabric-observer \\\n"
+            "  --endpoints=https://10.66.0.10:2379",
+            source,
+        )
 
 
 class TrustRolloutTests(unittest.TestCase):
