@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly api_url=https://headscale.tail22d0a0.ts.net/api/v1/node/register
+readonly namespace=fabric-tailnet
+readonly -a instances=(svc1 svc2)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/register-fabric-tailnet
+
+Enroll both Fabric subnet-router Pods through Headscale's public API. The API
+key is read silently from the terminal, used only in memory, and never written
+to Kubernetes. Already-Ready routers are left alone.
+EOF
+}
+
+die() {
+  printf 'register-fabric-tailnet: %s\n' "$*" >&2
+  exit 1
+}
+
+case ${1:-} in
+  '') ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+for command in curl jq sed; do
+  command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
+
+declare -A complete
+for instance in "${instances[@]}"; do
+  pod_json=$("${ik[@]}" --namespace "$namespace" get pods \
+    --selector="app.kubernetes.io/name=fabric-tailnet,app.kubernetes.io/instance=$instance" \
+    --output=json) || die "cannot read $instance Pod"
+  jq -e --arg node "fabric-az1-$instance" '
+    (.items | length) == 1 and
+    .items[0].spec.nodeName == $node and
+    .items[0].metadata.deletionTimestamp == null
+  ' <<<"$pod_json" >/dev/null || die "$instance is not the exact live Pod on fabric-az1-$instance"
+  if jq -e '.items[0].status.containerStatuses[0].ready == true' <<<"$pod_json" >/dev/null; then
+    complete[$instance]=1
+    printf '%s is already Ready\n' "$instance"
+  fi
+done
+
+if [[ ${complete[svc1]:-} == 1 && ${complete[svc2]:-} == 1 ]]; then
+  exit 0
+fi
+
+[[ -t 0 ]] || die 'standard input must be a terminal for the silent API-key prompt'
+read -r -s -p 'Headscale API key: ' headscale_api_key
+printf '\n'
+[[ $headscale_api_key == hskey-api-* ]] || die 'input does not look like a Headscale API key'
+trap 'unset headscale_api_key' EXIT
+
+declare -A last_key
+deadline=$((SECONDS + 600))
+while ((SECONDS < deadline)); do
+  for instance in "${instances[@]}"; do
+    [[ ${complete[$instance]:-} == 1 ]] && continue
+
+    pod_name=$("${ik[@]}" --namespace "$namespace" get pods \
+      --selector="app.kubernetes.io/name=fabric-tailnet,app.kubernetes.io/instance=$instance" \
+      --output=jsonpath='{.items[0].metadata.name}')
+    running_since=$("${ik[@]}" --namespace "$namespace" get pod "$pod_name" \
+      --output=jsonpath='{.status.containerStatuses[0].state.running.startedAt}')
+    [[ -n $running_since ]] || continue
+
+    registration_key=$("${ik[@]}" --namespace "$namespace" logs "$pod_name" --tail=160 2>/dev/null |
+      sed -n 's#.*AuthURL is https://headscale.tail22d0a0.ts.net/register/\([^[:space:]]*\).*#\1#p' |
+      tail -1)
+    [[ ${#registration_key} == 24 ]] || continue
+    [[ ${last_key[$instance]:-} == "$registration_key" ]] && continue
+    last_key[$instance]=$registration_key
+
+    response=$(curl --fail-with-body --silent --show-error \
+      --connect-timeout 5 --max-time 15 --request POST --get \
+      --header "Authorization: Bearer $headscale_api_key" \
+      --data-urlencode user=sam \
+      --data-urlencode "key=$registration_key" \
+      "$api_url") || die "Headscale rejected $instance enrollment"
+    jq -e --arg name "fabric-subnet-router-$instance" '
+      .node |
+      .name == $name and
+      .user.name == "sam" and
+      (.tags | index("tag:fabric-subnet-router")) != null and
+      ((.availableRoutes | sort) == (["10.66.0.0/24", "10.66.1.0/24"] | sort))
+    ' <<<"$response" >/dev/null || die "Headscale returned an unexpected $instance identity"
+    complete[$instance]=1
+    printf '%s registration accepted\n' "$instance"
+  done
+
+  [[ ${complete[svc1]:-} == 1 && ${complete[svc2]:-} == 1 ]] && break
+  sleep 2
+done
+
+[[ ${complete[svc1]:-} == 1 && ${complete[svc2]:-} == 1 ]] ||
+  die 'timed out waiting for both live registration IDs'
+
+for _ in {1..24}; do
+  ready=$("${ik[@]}" --namespace "$namespace" get pods \
+    --selector=app.kubernetes.io/name=fabric-tailnet --output=json |
+    jq '[.items[] | select(.status.containerStatuses[0].ready == true)] | length')
+  [[ $ready == 2 ]] && break
+  sleep 5
+done
+[[ $ready == 2 ]] || die 'both registrations landed, but the Pods did not become Ready'
+
+printf 'both Fabric subnet routers are enrolled and Ready\n'
