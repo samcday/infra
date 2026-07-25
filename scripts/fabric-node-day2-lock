@@ -27,6 +27,10 @@ Usage:
     --session-receipt /dev/shm/fabric-az1-svc1-bootie-session \
     --output-dir /dev/shm/fabric-az1-svc1-day2-lock-retry \
     [--confirm ADVANCE-FAILED-FIRSTBOOT-LOCK:<node>:<lock-uid>:<old-revision>:<new-revision>]
+  scripts/fabric-node-day2-lock advance-replacement-discovery \
+    --receipt-dir /dev/shm/fabric-az1-svc2-day2-lock \
+    --output-dir /dev/shm/fabric-az1-svc2-day2-lock-replacement \
+    [--confirm ADVANCE-REPLACEMENT-DISCOVERY-LOCK:<node>:<lock-uid>:<old-revision>:<new-revision>]
   scripts/fabric-node-day2-lock abort \
     --receipt-dir /dev/shm/fabric-az1-cp1-day2-lock \
     --confirm ABORT:fabric-az1-cp1:<lock-uid>
@@ -63,6 +67,11 @@ case ${1:-} in
   advance-failed-firstboot)
     shift
     exec "$script_dir/advance-fabric-node-day2-lock" "$@"
+    ;;
+  advance-replacement-discovery)
+    shift
+    exec "$script_dir/advance-fabric-node-day2-lock" \
+      --replacement-discovery "$@"
     ;;
   acquire | verify | abort | release) mode=$1; shift ;;
   -h | --help) usage; exit 0 ;;

@@ -63,6 +63,19 @@ For one node, the flow is:
     but the reply was lost; it re-proves the final Node before cleaning the
     local receipt.
 
+For a planned service-node chassis replacement, drain and retire the old exact
+Node under its existing lock, then admit one candidate MAC through
+`bootie/discovery.tsv`. That override serves only a non-installing live FCOS;
+capture its read-only inventory, commit the reviewed chassis/TPM/MAC and disk
+identity as the canonical node, and remove the override. Run
+`lock advance-replacement-discovery` after Fabric root and Bootie have applied
+that commit. It requires the target Node and Bootie session to be absent and
+all four peers Ready, but deliberately does not require the aggregate
+foundation path to be Ready: one CoreDNS replica is expected to remain Pending
+while a service node is absent. The transaction preserves the lock and original
+Node UID evidence, then ordinary `prepare` and `arm` create the replacement
+placeholder and one-use install.
+
 If a TPM-bound service node from an older Bootie revision warm-rebooted into a
 failed first Ignition boot, keep it off and recover through the same operator
 surface. Retain its existing maintenance lock and closed session receipt. Use
