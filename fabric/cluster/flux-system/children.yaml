@@ -147,7 +147,6 @@ spec:
     kind: GitRepository
     name: infra
     namespace: flux-system
-  suspend: true
   timeout: 10m
   wait: true
 ---

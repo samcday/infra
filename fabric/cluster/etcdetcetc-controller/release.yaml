@@ -32,9 +32,6 @@ spec:
     remediation:
       retries: 3
   interval: 1h
-  # Activation remains attended; keep both this release and its parent
-  # Kustomization suspended until the live configuration gates pass.
-  suspend: true
   timeout: 5m
   upgrade:
     cleanupOnFail: true
