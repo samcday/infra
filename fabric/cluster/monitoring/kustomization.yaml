@@ -5,7 +5,6 @@ resources:
   - flux-podmonitor.yaml
   - dms.yaml
   - dms-secret.yaml
-  - notification-audit.yaml
   - pagerduty.yaml
   - pagerduty-secret.yaml
   - rules/
