@@ -280,6 +280,8 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
+        self.assertIn('\\)=rule$/\\\\1/p")', self.script)
+        self.assertNotIn("='rule'$/", self.script)
 
     def test_root_guards_accept_exact_service_nodes_on_client_and_metrics_ports(self) -> None:
         for required in (

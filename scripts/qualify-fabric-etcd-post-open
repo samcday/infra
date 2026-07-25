@@ -571,7 +571,7 @@ fabric_router_services_ntp
 fabric_router_services_http
 fabric_router_ssh
 fabric_reject_other_fabric_router_input'
-actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)='rule'$/\\1/p")
+actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)=rule$/\\1/p")
 [ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
 [ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 28 ] ||
   fail 'firewall rule count is not exact'
