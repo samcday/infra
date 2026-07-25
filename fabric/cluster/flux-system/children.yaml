@@ -20,8 +20,9 @@ metadata:
   name: fabric-bootie
   namespace: flux-system
 spec:
-  dependsOn:
-    - name: fabric-foundation
+  # Bootie is the recovery plane for a service node. It must remain
+  # reconcilable while foundation is deliberately degraded to one CoreDNS
+  # replica during a serial service-node replacement.
   interval: 10m
   path: ./fabric/cluster/bootie
   prune: true
