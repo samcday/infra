@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/component: activation-check
     app.kubernetes.io/name: fabric-monitoring
     app.kubernetes.io/part-of: fabric-monitoring
-  name: fabric-monitoring-activation-check-adc0410
+  name: fabric-monitoring-activation-check-adc0410-v2
   namespace: monitoring
 spec:
   activeDeadlineSeconds: 300
@@ -93,7 +93,9 @@ spec:
         fabric.samcday.com/platform: "true"
       restartPolicy: Never
       securityContext:
+        runAsGroup: 102
         runAsNonRoot: true
+        runAsUser: 101
         seccompProfile:
           type: RuntimeDefault
       tolerations:
