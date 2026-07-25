@@ -743,8 +743,10 @@ grep -Fxq 'API version: 3.6' <<<"$version"
 IFS=, read -r -a endpoint_list <<<"$endpoints"
 [[ ${#endpoint_list[@]} -eq 3 ]]
 for endpoint in "${endpoint_list[@]}"; do
-  count=$($ctl --endpoints="$endpoint" --cacert="$cacert" --cert="$cert" --key="$key" \
-    --dial-timeout=3s --command-timeout=5s get /fabric-root/ --prefix --limit=1 --count-only)
+  fields=$($ctl --endpoints="$endpoint" --cacert="$cacert" --cert="$cert" --key="$key" \
+    --dial-timeout=3s --command-timeout=5s get /fabric-root/ --prefix --limit=1 \
+    --count-only --write-out=fields)
+  count=$(awk -F ' : ' '$1 == "\"Count\"" && $2 ~ /^[0-9]+$/ { print $2 }' <<<"$fields")
   [[ $count =~ ^[0-9]+$ && $count -gt 0 ]]
 done
 printf 'FABRIC_ROOT_CONTINUITY=pass\n'

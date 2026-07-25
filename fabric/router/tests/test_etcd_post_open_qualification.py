@@ -296,6 +296,10 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.script)
 
+    def test_fabric_root_continuity_uses_etcdctl_3_6_fields_output(self) -> None:
+        self.assertIn("--count-only --write-out=fields", self.script)
+        self.assertIn("'$1 == \"\\\"Count\\\"\" && $2 ~ /^[0-9]+$/", self.script)
+
     def test_probe_toolchain_is_immutable_and_runtime_verified(self) -> None:
         image = (
             "docker.io/library/busybox:1.37.0@sha256:"
