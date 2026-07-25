@@ -107,7 +107,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-etcdctl_as root endpoint health --cluster
+etcdctl_as root endpoint health
 
 # K3s external-datastore mode keeps one token-derived bootstrap object outside
 # kube-apiserver's configured etcd prefix. Enabling auth without preserving
