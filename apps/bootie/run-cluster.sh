@@ -6,7 +6,7 @@ die() {
   exit 1
 }
 
-for name in BOOTIE_HOST_IP BOOTIE_NODE_INVENTORY_FILE \
+for name in BOOTIE_HOST_IP BOOTIE_NODE_INVENTORY_FILE BOOTIE_DISCOVERY_FILE \
   BOOTIE_IMAGE_DIGEST BOOTIE_IMAGE_REVISION FCOS_VERSION; do
   [[ -n ${!name:-} ]] || die "$name is required"
 done
@@ -19,14 +19,49 @@ done
 [[ $FCOS_VERSION =~ ^[0-9][0-9A-Za-z.-]+$ ]] || die 'FCOS_VERSION is malformed'
 [[ -f $BOOTIE_NODE_INVENTORY_FILE && ! -L $BOOTIE_NODE_INVENTORY_FILE ]] ||
   die 'the exact node inventory file is unavailable'
+[[ -f $BOOTIE_DISCOVERY_FILE && ! -L $BOOTIE_DISCOVERY_FILE ]] ||
+  die 'the replacement discovery inventory file is unavailable'
 
 mapfile -t nodes < <(awk 'NF && $1 !~ /^#/ {print}' "$BOOTIE_NODE_INVENTORY_FILE")
 ((${#nodes[@]} == 5)) || die 'the PXE inventory must contain exactly five nodes'
 
 declare -A seen_nodes=() seen_macs=() seen_addresses=()
+declare -A discovery_macs=()
 dnsmasq_config=/run/bootie/dnsmasq.conf
 install -d -o root -g nginx -m 2770 /run/bootie
 install -d -m 0755 /run/bootie/tftp/EFI/BOOT
+for record in "${nodes[@]}"; do
+  read -r node role address mac disk pxe_address extra <<<"$record"
+  [[ -z ${extra:-} && $node =~ ^fabric-az1-(cp[123]|svc[12])$ &&
+     $role =~ ^(control-plane|service)$ &&
+     $address =~ ^10\.66\.[01]\.[0-9]{1,3}$ &&
+     $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ &&
+     $disk == /dev/disk/by-id/* &&
+     $pxe_address =~ ^10\.66\.1\.10[1-5]$ ]] ||
+    die "malformed PXE inventory record for ${node:-unknown}"
+  [[ -z ${seen_nodes[$node]:-} && -z ${seen_macs[$mac]:-} &&
+     -z ${seen_addresses[$pxe_address]:-} ]] ||
+    die 'PXE inventory contains a duplicate node, MAC, or lease address'
+  seen_nodes[$node]=1
+  seen_macs[$mac]=1
+  seen_addresses[$pxe_address]=1
+done
+
+discovery_records=0
+while read -r node mac extra; do
+  [[ -n ${node:-} && $node != \#* ]] || continue
+  [[ -z ${extra:-} && $node =~ ^fabric-az1-(cp[123]|svc[12])$ &&
+     $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+    die "malformed replacement discovery record for ${node:-unknown}"
+  [[ -n ${seen_nodes[$node]:-} && -z ${seen_macs[$mac]:-} &&
+     -z ${discovery_macs[$node]:-} ]] ||
+    die 'replacement discovery record is duplicate or outside node inventory'
+  ((discovery_records += 1))
+  ((discovery_records <= 1)) ||
+    die 'only one replacement discovery admission may be active'
+  discovery_macs[$node]=$mac
+done <"$BOOTIE_DISCOVERY_FILE"
+
 {
   cat <<EOF
 port=0
@@ -48,22 +83,10 @@ log-dhcp
 log-facility=-
 EOF
   for record in "${nodes[@]}"; do
-    read -r node role address mac disk pxe_address extra <<<"$record"
-    [[ -z ${extra:-} && $node =~ ^fabric-az1-(cp[123]|svc[12])$ &&
-       $role =~ ^(control-plane|service)$ &&
-       $address =~ ^10\.66\.[01]\.[0-9]{1,3}$ &&
-       $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ &&
-       $disk == /dev/disk/by-id/* &&
-       $pxe_address =~ ^10\.66\.1\.10[1-5]$ ]] ||
-      die "malformed PXE inventory record for ${node:-unknown}"
-    [[ -z ${seen_nodes[$node]:-} && -z ${seen_macs[$mac]:-} &&
-       -z ${seen_addresses[$pxe_address]:-} ]] ||
-      die 'PXE inventory contains a duplicate node, MAC, or lease address'
-    seen_nodes[$node]=1
-    seen_macs[$mac]=1
-    seen_addresses[$pxe_address]=1
+    read -r node _role _address mac _disk pxe_address _extra <<<"$record"
+    effective_mac=${discovery_macs[$node]:-$mac}
     printf 'dhcp-host=%s,set:fabric-node,%s,%s,infinite\n' \
-      "$mac" "$pxe_address" "$node"
+      "$effective_mac" "$pxe_address" "$node"
   done
 } >"$dnsmasq_config"
 chmod 0600 "$dnsmasq_config"
@@ -138,6 +161,7 @@ export BOOTIE_DAY2_MODE=true
 export BOOTIE_PUBLIC_ORIGIN="http://$BOOTIE_HOST_IP"
 export FCOS_BASE="http://$BOOTIE_HOST_IP/static"
 export FCOS_GRUB_BASE="(http,$BOOTIE_HOST_IP)/static"
+export BOOTIE_DISCOVERY_IGNITION_FILE=/pxe/fabric-day2-discovery-live.ign
 
 fcgi_socket=/run/bootie/fcgi.sock
 [[ ! -e $fcgi_socket && ! -L $fcgi_socket ]] ||

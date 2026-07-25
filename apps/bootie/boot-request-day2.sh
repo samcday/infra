@@ -24,7 +24,8 @@ boot_local() {
 
 case ${BOOT_FORMAT:-grub} in grub | ipxe) ;; *) booterr 'unsupported boot response format' ;; esac
 for name in BOOTIE_HOST_IP BOOTIE_IMAGE_DIGEST BOOTIE_IMAGE_REVISION \
-  BOOTIE_NODE_INVENTORY_FILE BOOTIE_SESSION_NAMESPACE BOOTIE_SESSION_SECRET \
+  BOOTIE_NODE_INVENTORY_FILE BOOTIE_DISCOVERY_FILE BOOTIE_DISCOVERY_IGNITION_FILE \
+  BOOTIE_SESSION_NAMESPACE BOOTIE_SESSION_SECRET \
   BOOTIE_PUBLIC_ORIGIN FCOS_BASE FCOS_GRUB_BASE FCOS_VERSION; do
   [[ -n ${!name:-} ]] || booterr "$name is required"
 done
@@ -40,17 +41,45 @@ query_mac=${query_mac,,}
 query_mac=${query_mac//:/-}
 [[ $query_mac =~ ^([0-9a-f]{2}-){5}[0-9a-f]{2}$ ]] || boot_local
 
+discovery_node=
+discovery_mac=
+discovery_records=0
+while read -r candidate_node candidate_mac extra; do
+  [[ -n ${candidate_node:-} && $candidate_node != \#* ]] || continue
+  [[ -z ${extra:-} && $candidate_node =~ ^fabric-az1-(cp[123]|svc[12])$ &&
+     $candidate_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+    booterr 'the replacement discovery inventory is malformed'
+  ((discovery_records += 1))
+  ((discovery_records <= 1)) ||
+    booterr 'more than one replacement discovery admission is active'
+  discovery_node=$candidate_node
+  discovery_mac=$candidate_mac
+done <"$BOOTIE_DISCOVERY_FILE"
+
 node=
 role=
 address=
 mac=
 boot_device=
+discovery=false
 records=0
 while read -r candidate_node candidate_role candidate_address candidate_mac \
   candidate_disk _candidate_pxe extra; do
   [[ -n ${candidate_node:-} && $candidate_node != \#* ]] || continue
   [[ -z ${extra:-} ]] || booterr 'the node inventory is malformed'
   ((records += 1))
+  if [[ -n $discovery_node && $candidate_node == "$discovery_node" ]]; then
+    if [[ ${discovery_mac//:/-} == "$query_mac" ]]; then
+      [[ -z $node ]] || booterr 'the request MAC is duplicated in inventory'
+      node=$candidate_node
+      role=$candidate_role
+      address=$candidate_address
+      mac=$discovery_mac
+      boot_device=$candidate_disk
+      discovery=true
+    fi
+    continue
+  fi
   if [[ ${candidate_mac//:/-} == "$query_mac" ]]; then
     [[ -z $node ]] || booterr 'the request MAC is duplicated in inventory'
     node=$candidate_node
@@ -62,6 +91,34 @@ while read -r candidate_node candidate_role candidate_address candidate_mac \
 done <"$BOOTIE_NODE_INVENTORY_FILE"
 ((records == 5)) || booterr 'the node inventory does not contain exactly five records'
 [[ -n $node ]] || boot_local
+
+if $discovery; then
+  [[ -f $BOOTIE_DISCOVERY_IGNITION_FILE &&
+     ! -L $BOOTIE_DISCOVERY_IGNITION_FILE &&
+     ${BOOTIE_DISCOVERY_IGNITION_FILE##*/} == fabric-day2-discovery-live.ign ]] ||
+    booterr 'the replacement discovery Ignition is unavailable'
+  if kubectl --namespace "$BOOTIE_SESSION_NAMESPACE" get \
+    "secret/$BOOTIE_SESSION_SECRET" --output=json >/dev/null 2>&1; then
+    booterr 'replacement discovery is blocked while a Bootie session is active'
+  fi
+  discovery_ignition_url="$BOOTIE_PUBLIC_ORIGIN/discovery-ignition/$node?mac=${mac//:/-}"
+  kernel_args="coreos.live.rootfs_url=$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-rootfs.x86_64.img"
+  kernel_args+=" ignition.firstboot ignition.platform.id=metal ignition.config.url=$discovery_ignition_url"
+  kernel_args+=" rd.net.timeout.carrier=60 nomodeset systemd.show_status=false"
+  printf 'content-type: text/plain\n\n'
+  if [[ ${BOOT_FORMAT:-grub} == grub ]]; then
+    printf 'linux %s/fedora-coreos-%s-live-kernel.x86_64 %s\n' \
+      "$FCOS_GRUB_BASE" "$FCOS_VERSION" "${kernel_args//&/\\&}"
+    printf 'initrd %s/fedora-coreos-%s-live-initramfs.x86_64.img\nboot\n' \
+      "$FCOS_GRUB_BASE" "$FCOS_VERSION"
+  else
+    printf '#!ipxe\n\nkernel %s/fedora-coreos-%s-live-kernel.x86_64 initrd=main %s\n' \
+      "$FCOS_BASE" "$FCOS_VERSION" "$kernel_args"
+    printf 'initrd --name main %s/fedora-coreos-%s-live-initramfs.x86_64.img\nboot\n' \
+      "$FCOS_BASE" "$FCOS_VERSION"
+  fi
+  exit
+fi
 
 node_json=$(kubectl get "node/$node" --output=json 2>/dev/null) || boot_local
 secret_json=$(kubectl --namespace "$BOOTIE_SESSION_NAMESPACE" get \

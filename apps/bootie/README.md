@@ -11,6 +11,17 @@ Nginx and fcgiwrap communicate over a pod-local Unix socket, so replacing the
 host-networked Pod cannot inherit a loopback TCP `TIME_WAIT` bind conflict from
 its predecessor.
 
+Hardware replacement starts with one non-secret record in the separate
+discovery inventory: the existing logical node name and the candidate's
+permanent MAC. That one MAC temporarily replaces the retired MAC in DHCP and
+receives a non-installing FCOS live profile at the node's vacant final address.
+The profile contains only Sam's SSH key, a MAC-bound network connection, and a
+warning banner; it has no destination disk, cluster credential, or installer
+argument. Only one discovery override may exist, and any live `bootie-session`
+blocks it. After read-only inventory, commit the reviewed hardware identity to
+the canonical inventory and remove the override before an install can be
+armed.
+
 Every armed day-two response first loads a token-bound, non-consuming live
 Ignition. That handler extracts the one exact MAC-bound NetworkManager profile
 from the session's digest-bound destination Ignition and configures
@@ -43,7 +54,7 @@ after that one fetch. Set `BOOTIE_DAY2_MODE=true` only through
 `/bin/run-cluster`; the original generic and attended-station modes remain for
 offline recovery.
 
-It has five HTTP endpoints:
+It has six HTTP endpoints:
 
  * `/boot.ipxe?mac=&serial=`. iPXE clients chain this URL and receive
    instructions to boot FCOS. If no k8s Node yet exists matching the MAC or
@@ -61,6 +72,11 @@ It has five HTTP endpoints:
    only the exact response-issued Node/session/disk tuple and refuses any
    destination Ignition graph containing zero, duplicate, remote, or
    identity-mismatched NetworkManager profiles.
+ * `/discovery-ignition/<node>`. In day-two mode this returns only the public,
+   non-installing live profile for the one exact candidate MAC in the
+   replacement discovery inventory. Its network profile moves the live system
+   from the temporary PXE lease to the node's vacant final address for SSH
+   inventory.
  * `/custom-initramfs/<capability>`. A bounded worker-install ceremony uses
    this instead of `/ignition`: the handler revalidates and streams the exact
    customized PXE initramfs selected by the one-use boot response.

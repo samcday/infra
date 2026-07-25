@@ -5,6 +5,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 boot_request=$script_dir/../boot-request-day2.sh
 ignition_request=$script_dir/../generate-ignition-day2.sh
 live_ignition_request=$script_dir/../generate-live-ignition-day2.sh
+discovery_ignition_request=$script_dir/../generate-discovery-ignition-day2.sh
 export PATH="$script_dir/fake-day2:$PATH"
 
 work=$(mktemp -d)
@@ -22,6 +23,8 @@ fabric-az1-cp3 control-plane 10.66.0.12 6c:4b:90:54:2d:65 /dev/disk/by-id/nvme-t
 fabric-az1-svc1 service 10.66.1.10 6c:4b:90:50:9f:0d /dev/disk/by-id/ata-test-svc1 10.66.1.104
 fabric-az1-svc2 service 10.66.1.11 6c:4b:90:6e:ab:ee /dev/disk/by-id/ata-test-svc2 10.66.1.105
 EOF
+discovery_inventory=$work/discovery.tsv
+: >"$discovery_inventory"
 ignition=$work/fabric-az1-cp1.ign
 write_destination_ignition() {
   local output=$1 network_path=$2 connection_id=$3 uuid=$4 mac=$5 address=$6 gateway=$7
@@ -81,6 +84,7 @@ export BOOTIE_HOST_IP=10.66.1.10
 export BOOTIE_IMAGE_DIGEST=$image_digest
 export BOOTIE_IMAGE_REVISION=$image_revision
 export BOOTIE_NODE_INVENTORY_FILE=$inventory
+export BOOTIE_DISCOVERY_FILE=$discovery_inventory
 export BOOTIE_PUBLIC_ORIGIN=http://10.66.1.10
 export BOOTIE_SESSION_NAMESPACE=bootie
 export BOOTIE_SESSION_SECRET=bootie-session
@@ -92,6 +96,10 @@ mkdir "$BOOTIE_RUNTIME_DIR"
 service_live=$work/fabric-day2-service-live.ign
 printf '%s\n' '{"ignition":{"version":"3.5.0"}}' >"$service_live"
 export BOOTIE_SERVICE_LIVE_IGNITION_FILE=$service_live
+discovery_live=$work/fabric-day2-discovery-live.ign
+printf '%s\n' '{"ignition":{"version":"3.5.0"},"passwd":{"users":[{"name":"core"}]}}' \
+  >"$discovery_live"
+export BOOTIE_DISCOVERY_IGNITION_FILE=$discovery_live
 
 fail() { printf 'day-two Bootie test failed: %s\n' "$*" >&2; exit 1; }
 contains() { grep -Fq -- "$2" <<<"$1" || fail "missing output: $2"; }
@@ -260,5 +268,49 @@ printf '%s' "${service_network_source#data:;base64,}" | base64 -d | \
   cmp - "$service_ignition.network" || fail 'service live Ignition changed the exact network profile'
 [[ -z $(grep '^patch ' "$log" || true) ]] ||
   fail 'the service live Ignition read consumed or mutated the one-use session'
+
+printf '%s\n' 'fabric-az1-svc1 6c:4b:90:6a:0c:8a' >"$discovery_inventory"
+: >"$log"
+discovery_grub=$(FAKE_SECRET_ABSENT=true BOOT_FORMAT=grub \
+  QUERY_STRING='mac=6c:4b:90:6a:0c:8a' "$boot_request")
+contains "$discovery_grub" \
+  'ignition.config.url=http://10.66.1.10/discovery-ignition/fabric-az1-svc1?mac=6c-4b-90-6a-0c-8a'
+contains "$discovery_grub" 'nomodeset'
+excludes "$discovery_grub" 'coreos.inst.install_dev='
+excludes "$discovery_grub" 'coreos.inst.ignition_url='
+[[ -z $(grep '^patch ' "$log" || true) ]] ||
+  fail 'a discovery boot response mutated a Node'
+grub2-script-check /dev/stdin <<<"${discovery_grub#*$'\n\n'}"
+
+old_identity=$(FAKE_SECRET_ABSENT=true BOOT_FORMAT=grub \
+  QUERY_STRING='mac=6c:4b:90:50:9f:0d' "$boot_request")
+contains "$old_identity" 'not armed'
+excludes "$old_identity" 'live-rootfs'
+
+active_session_discovery=$(BOOT_FORMAT=grub \
+  QUERY_STRING='mac=6c:4b:90:6a:0c:8a' "$boot_request" 2>&1)
+contains "$active_session_discovery" 'Status: 409 Conflict'
+contains "$active_session_discovery" \
+  'replacement discovery is blocked while a Bootie session is active'
+
+discovery_response=$(REQUEST_METHOD=GET \
+  REQUEST_URI=/discovery-ignition/fabric-az1-svc1 \
+  QUERY_STRING='mac=6c-4b-90-6a-0c-8a' "$discovery_ignition_request")
+contains "$discovery_response" 'content-type: application/json'
+discovery_body=${discovery_response#*$'\n\n'}
+[[ $(jq -r '.ignition.version' <<<"$discovery_body") == 3.5.0 ]] ||
+  fail 'discovery response has an unexpected Ignition version'
+[[ $(jq '.ignition.config.merge | length' <<<"$discovery_body") == 1 ]] ||
+  fail 'discovery response did not merge the reviewed SSH base'
+discovery_network_source=$(jq -er \
+  '.storage.files[] | select(.path | endswith("fabric-services.nmconnection")) | .contents.source' \
+  <<<"$discovery_body")
+discovery_network=$(printf '%s' "${discovery_network_source#data:;base64,}" | base64 -d)
+grep -Fxq 'mac-address=6c:4b:90:6a:0c:8a' <<<"$discovery_network" ||
+  fail 'discovery network is not bound to the candidate MAC'
+grep -Eq '^uuid=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$' \
+  <<<"$discovery_network" || fail 'discovery network has no deterministic valid UUID'
+grep -Fxq 'address1=10.66.1.10/24,10.66.1.1' <<<"$discovery_network" ||
+  fail 'discovery network does not use the vacant final service address'
 
 printf 'day-two Bootie request tests passed\n'

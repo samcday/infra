@@ -6,6 +6,14 @@ Bootie offers each MAC its own temporary address, signed shim/GRUB, and an HTTP
 decision. With no active session the decision is only `exit`, so UEFI continues
 to the local FCOS disk.
 
+For a chassis replacement, `discovery.tsv` may contain one logical node name
+and candidate permanent MAC. Bootie substitutes that MAC only in its DHCP
+admission and live-boots a public, non-installing discovery profile. The
+canonical MAC and disk remain unchanged until the candidate has been inspected
+over SSH; a discovery response contains neither a disk target nor Kubernetes
+credentials. Remove the override while committing the reviewed identity, then
+use the ordinary maintenance-lock/session path to install it.
+
 The destructive response requires one global maintenance lock and one
 short-lived `bootie/bootie-session` Secret. The Secret binds an exact
 replacement Node UID, its inventoried disk and MAC, one Ignition digest, the

@@ -84,6 +84,7 @@ COPY run-cluster.sh /bin/run-cluster
 COPY generate-ignition.sh /usr/local/bin/generate-ignition
 COPY generate-ignition-day2.sh /usr/local/bin/generate-ignition-day2
 COPY generate-live-ignition-day2.sh /usr/local/bin/generate-live-ignition-day2
+COPY generate-discovery-ignition-day2.sh /usr/local/bin/generate-discovery-ignition-day2
 COPY boot-request.sh /usr/local/bin/boot-request
 COPY boot-request-day2.sh /usr/local/bin/boot-request-day2
 COPY serve-custom-initramfs.sh /usr/local/bin/serve-custom-initramfs
@@ -92,6 +93,7 @@ COPY --from=fcos /out/pxe /pxe
 COPY --from=fcos /out/tftp /usr/share/bootie/tftp
 COPY --from=fcos /out/SHA256SUMS /usr/share/bootie/FCOS-SHA256SUMS
 COPY day2-service-live.bu /tmp/day2-service-live.bu
+COPY day2-discovery-live.bu /tmp/day2-discovery-live.bu
 
 RUN set -eux; \
     butane --strict </tmp/day2-service-live.bu \
@@ -99,7 +101,12 @@ RUN set -eux; \
     chmod 0644 /pxe/fabric-day2-service-live.ign; \
     sha256sum /pxe/fabric-day2-service-live.ign | \
       sed 's#  /pxe/#  static/#' >>/usr/share/bootie/FCOS-SHA256SUMS; \
-    rm /tmp/day2-service-live.bu
+    butane --strict </tmp/day2-discovery-live.bu \
+      >/pxe/fabric-day2-discovery-live.ign; \
+    chmod 0644 /pxe/fabric-day2-discovery-live.ign; \
+    sha256sum /pxe/fabric-day2-discovery-live.ign | \
+      sed 's#  /pxe/#  static/#' >>/usr/share/bootie/FCOS-SHA256SUMS; \
+    rm /tmp/day2-service-live.bu /tmp/day2-discovery-live.bu
 
 RUN chmod +x \
         /bin/run \
@@ -109,5 +116,6 @@ RUN chmod +x \
         /usr/local/bin/generate-ignition \
         /usr/local/bin/generate-ignition-day2 \
         /usr/local/bin/generate-live-ignition-day2 \
+        /usr/local/bin/generate-discovery-ignition-day2 \
         /usr/local/bin/serve-custom-initramfs
 ENTRYPOINT ["/bin/run"]

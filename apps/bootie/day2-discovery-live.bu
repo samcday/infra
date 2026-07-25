@@ -1,0 +1,22 @@
+variant: fcos
+version: 1.6.0
+
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+
+storage:
+  files:
+    - path: /etc/motd.d/90-fabric-day2-discovery
+      mode: 0644
+      contents:
+        inline: |
+          FABRIC DAY-TWO DISCOVERY
+
+          This is a non-installing FCOS live boot. No destination disk was
+          selected and Bootie cannot install while this candidate override is
+          present. Inspect hardware read-only, then commit the reviewed MAC
+          and whole-disk /dev/disk/by-id identity before arming installation.
+
