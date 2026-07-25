@@ -9,6 +9,7 @@ configMapGenerator:
     namespace: bootie
     files:
       - nodes.tsv
+      - discovery.tsv
     options:
       immutable: true
       labels:

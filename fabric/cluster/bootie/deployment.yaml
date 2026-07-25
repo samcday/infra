@@ -35,7 +35,7 @@ spec:
           value: "true"
       containers:
         - name: bootie
-          image: ghcr.io/samcday/infra-bootie@sha256:8d358a49010bc7ce0044878c6a67661013f8249a0b6ea4477bcb20db39ed702d
+          image: ghcr.io/samcday/infra-bootie@sha256:b131d37fc3d1337ad5ceb0287d01c560ef53c0c3f2a1b076e4bd54b5919d8457
           imagePullPolicy: IfNotPresent
           command:
             - /bin/bash
@@ -49,11 +49,13 @@ spec:
                   apiVersion: v1
                   fieldPath: status.hostIP
             - name: BOOTIE_IMAGE_DIGEST
-              value: sha256:8d358a49010bc7ce0044878c6a67661013f8249a0b6ea4477bcb20db39ed702d
+              value: sha256:b131d37fc3d1337ad5ceb0287d01c560ef53c0c3f2a1b076e4bd54b5919d8457
             - name: BOOTIE_IMAGE_REVISION
-              value: 5a3aad455e31ed2539c8c0cb93e6de2aa96c2fe0
+              value: acc49913b931995f8dac2d36cb79e60302cd66f3
             - name: BOOTIE_NODE_INVENTORY_FILE
               value: /config/nodes.tsv
+            - name: BOOTIE_DISCOVERY_FILE
+              value: /config/discovery.tsv
             - name: BOOTIE_SESSION_NAMESPACE
               value: bootie
             - name: BOOTIE_SESSION_SECRET
@@ -120,6 +122,10 @@ spec:
               mountPath: /config/nodes.tsv
               readOnly: true
               subPath: nodes.tsv
+            - name: inventory
+              mountPath: /config/discovery.tsv
+              readOnly: true
+              subPath: discovery.tsv
             - name: run
               mountPath: /run
             - name: nginx-cache
@@ -135,6 +141,8 @@ spec:
             items:
               - key: nodes.tsv
                 path: nodes.tsv
+              - key: discovery.tsv
+                path: discovery.tsv
             defaultMode: 292
         - name: run
           emptyDir:
