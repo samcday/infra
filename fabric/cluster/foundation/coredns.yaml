@@ -56,9 +56,13 @@ metadata:
   namespace: kube-system
 data:
   # K3s' NodeHosts controller is disabled together with its packaged CoreDNS
-  # Addon. Keep the projected file present while leaving node-host aliases out
-  # of this intentionally minimal DNS foundation.
-  NodeHosts: ""
+  # Addon. Keep only the physical etcd client endpoints in this declarative
+  # file: controller and tenant Pods must verify their DNS SANs while the
+  # routed service-to-root boundary continues to enforce reachability.
+  NodeHosts: |
+    10.66.0.10 fabric-az1-cp1.fabric.internal
+    10.66.0.11 fabric-az1-cp2.fabric.internal
+    10.66.0.12 fabric-az1-cp3.fabric.internal
   Corefile: |
     .:53 {
         errors
