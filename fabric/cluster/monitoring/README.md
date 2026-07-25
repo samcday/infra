@@ -66,9 +66,8 @@ both Prometheus replicas and confirming no unexpected critical alert is firing.
 4. Add `pagerduty.yaml` and `pagerduty-secret.yaml` to `kustomization.yaml`,
    then prove the critical-alert fire and resolve path.
 5. Create a unique `fabric` Dead Man's Snitch, encrypt its callback into this
-   namespace, and add `dms.yaml` only after an additional snitch is available.
-   The current DMS account's one-snitch plan is already consumed by hub; never
-   reuse that callback because either cluster could mask the other's failure.
+   namespace, and add `dms.yaml`. Never reuse hub's callback because either
+   cluster could mask the other's failure.
 
 Do not create the snitch substantially before step 5: its hourly missed-check
 clock begins at creation. Never open the root/router metrics aperture before all
