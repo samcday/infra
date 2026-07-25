@@ -540,11 +540,12 @@ if [[ $mode == verify-remote ]]; then
       key: (.key | @base64d),
       range_end: (.range_end | @base64d)
     }] | sort_by(.key)) == [
+      {permType: 0, key: "/bootstrap", range_end: "/bootstraq"},
       {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
       {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
     ]
   ' <<<"$fabric_root_role_json" >/dev/null ||
-    die 'fabric-root role differs from the exact two-prefix contract'
+    die 'fabric-root role differs from the exact K3s datastore contract'
   admin_user_json=$(delegated_query admin-user user get fabric-etcdetcetc)
   jq -e '.roles == ["root"]' <<<"$admin_user_json" >/dev/null ||
     die 'delegated administrator does not have exactly the built-in root role'
@@ -881,11 +882,12 @@ assert_fabric_root_exact() {
   jq -e '
     .roles == ["fabric-root"] and
     .permissions == [
+      {permType: 0, key: "/bootstrap", range_end: "/bootstraq"},
       {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
       {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
     ]
   ' <<<"$contract" >/dev/null ||
-    die 'existing fabric-root user/role differs from the exact two-prefix contract'
+    die 'existing fabric-root user/role differs from the exact K3s datastore contract'
 }
 
 assert_cluster_health

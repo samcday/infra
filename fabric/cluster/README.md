@@ -32,7 +32,8 @@ or tenant workloads yet.
 
 External etcd has a 2 GiB backend quota. Mutual TLS is enabled at bootstrap;
 the guarded offline-root procedure then enables RBAC and confines K3s to
-`/fabric-root/` plus K3s' required `/bootstrap/` prefix. Successful negative
+`/fabric-root/`, its `/bootstrap/` keys, and the read-only `/bootstrap` scan
+required by K3s startup. Successful negative
 authorization tests, a controlled K3s restart/rejoin and token-rotation test,
 negative tests of the installed host guard, and a routed service-policy test
 are hard gates before the first service node joins. Physical VLAN isolation

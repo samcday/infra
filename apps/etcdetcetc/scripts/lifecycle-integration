@@ -402,11 +402,12 @@ assert_fabric_root_exact() {
   jq -e '
     .roles == ["fabric-root"] and
     .permissions == [
+      {permType: 0, key: "/bootstrap", range_end: "/bootstraq"},
       {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
       {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
     ]
   ' <<<"$contract" >/dev/null ||
-    die 'lifecycle fabric-root differs from the exact two-prefix contract'
+    die 'lifecycle fabric-root differs from the exact K3s datastore contract'
 }
 
 deadline=$((SECONDS + 60))
@@ -419,6 +420,7 @@ etcd_admin user add root --no-password >/dev/null
 etcd_admin user grant-role root root >/dev/null
 etcd_admin role add fabric-root >/dev/null
 etcd_admin role grant-permission fabric-root --prefix=true readwrite /fabric-root/ >/dev/null
+etcd_admin role grant-permission fabric-root --prefix=true read /bootstrap >/dev/null
 etcd_admin role grant-permission fabric-root --prefix=true readwrite /bootstrap/ >/dev/null
 etcd_admin user add fabric-root --no-password >/dev/null
 etcd_admin user grant-role fabric-root fabric-root >/dev/null
@@ -1283,8 +1285,8 @@ fabric_root_after=$(fabric_root_contract)
 assert_fabric_root_exact "$fabric_root_after"
 [[ $fabric_root_after == "$fabric_root_before" ]] ||
   die 'tenant lifecycle changed the retained fabric-root authorization contract'
-etcd_fabric_root get /bootstrap/ --prefix --limit=1 >/dev/null ||
-  die 'retained fabric-root credential lost bootstrap-prefix access'
+etcd_fabric_root get /bootstrap --prefix --limit=1 >/dev/null ||
+  die 'retained fabric-root credential lost K3s bootstrap scan access'
 
 physical_members_after=$(physical_member_contract)
 printf '%s\n' "$physical_members_after" >"$work/physical-members-after.json"

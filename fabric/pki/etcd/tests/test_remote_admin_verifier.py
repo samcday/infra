@@ -183,6 +183,11 @@ class RemoteAdminVerifierFixtureTests(unittest.TestCase):
                 "fabric-root-role": {
                     "perm": [
                         {
+                            "permType": 0,
+                            "key": base64.b64encode(b"/bootstrap").decode(),
+                            "range_end": base64.b64encode(b"/bootstraq").decode(),
+                        },
+                        {
                             "permType": 2,
                             "key": base64.b64encode(b"/fabric-root/").decode(),
                             "range_end": base64.b64encode(b"/fabric-root0").decode(),

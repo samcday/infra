@@ -915,6 +915,7 @@ class AdminHelperTests(unittest.TestCase):
             "HEAD must exactly match freshly fetched origin/main",
             '.roles == ["root"]',
             '.roles == ["fabric-root"]',
+            'key: "/bootstrap", range_end: "/bootstraq"',
             'key: "/bootstrap/", range_end: "/bootstrap0"',
             'key: "/fabric-root/", range_end: "/fabric-root0"',
             "fabric-root user/role changed",

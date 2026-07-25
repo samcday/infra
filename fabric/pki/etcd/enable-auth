@@ -20,10 +20,11 @@ observer TCP/2379 in steady state; see fabric/pki/etcd/README.md.
 
 This mutates etcd. It creates passwordless TLS-CN users `root`, `fabric-root`,
 and `fabric-observer`; grants `fabric-root` read/write access to the Kubernetes
-`/fabric-root/` prefix and K3s's separate `/bootstrap/` prefix; leaves the
-observer with no key-space role; enables authentication; and proves the exact
-positive and negative permissions. Plaintext credentials exist only in a
-mode-0700 directory on verified tmpfs.
+`/fabric-root/` prefix and K3s's separate `/bootstrap/` keys; permits K3s's
+read-only prefix scan beginning at `/bootstrap`; leaves the observer with no
+key-space role; enables authentication; and proves the exact positive and
+negative permissions. Plaintext credentials exist only in a mode-0700
+directory on verified tmpfs.
 EOF
 }
 
@@ -126,7 +127,7 @@ etcdctl_as root endpoint health
 # this access breaks server restart, join, and token rotation. Do not create a
 # synthetic key below /bootstrap/: K3s treats multiple bootstrap keys as an
 # invalid state.
-bootstrap_count=$(etcdctl_as root --write-out=json get /bootstrap/ --prefix | jq -r '.count')
+bootstrap_count=$(etcdctl_as root --write-out=json get /bootstrap --prefix | jq -r '.count')
 [[ $bootstrap_count == 1 ]] || {
   echo "expected exactly one existing K3s bootstrap key; found $bootstrap_count" >&2
   exit 1
@@ -141,6 +142,7 @@ if ! etcdctl_as root role get fabric-root >/dev/null 2>&1; then
   etcdctl_as root role add fabric-root
 fi
 etcdctl_as root role grant-permission fabric-root --prefix=true readwrite /fabric-root/
+etcdctl_as root role grant-permission fabric-root --prefix=true read /bootstrap
 etcdctl_as root role grant-permission fabric-root --prefix=true readwrite /bootstrap/
 
 if ! etcdctl_as root user get fabric-root >/dev/null 2>&1; then
@@ -165,7 +167,7 @@ etcdctl_as fabric-root put "$smoke_key" ok >/dev/null
 [[ $(etcdctl_as fabric-root get "$smoke_key" --print-value-only) == ok ]]
 etcdctl_as fabric-root del "$smoke_key" >/dev/null
 
-bootstrap_count=$(etcdctl_as fabric-root --write-out=json get /bootstrap/ --prefix | jq -r '.count')
+bootstrap_count=$(etcdctl_as fabric-root --write-out=json get /bootstrap --prefix | jq -r '.count')
 [[ $bootstrap_count == 1 ]] || {
   echo "K3s identity cannot read exactly one bootstrap key after auth; found $bootstrap_count" >&2
   exit 1
@@ -184,11 +186,12 @@ jq -e '
     key: (.key | @base64d),
     range_end: (.range_end | @base64d)
   }] | sort_by(.key)) == [
+    {permType: 0, key: "/bootstrap", range_end: "/bootstraq"},
     {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
     {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
   ]
 ' <<<"$role_json" >/dev/null || {
-  echo 'RBAC verification failed: fabric-root role is not the exact two-prefix read/write role' >&2
+  echo 'RBAC verification failed: fabric-root role is not the exact K3s datastore role' >&2
   exit 1
 }
 
@@ -227,7 +230,7 @@ if etcdctl_as fabric-observer put /fabric-observer-must-deny denied >/dev/null 2
   exit 1
 fi
 
-for outside_key in /fabric-root-escape /fabric-rbac-must-deny; do
+for outside_key in /bootstrap-escape /fabric-root-escape /fabric-rbac-must-deny; do
   if etcdctl_as fabric-root put "$outside_key" denied >/dev/null 2>&1; then
     etcdctl_as root del "$outside_key" >/dev/null || true
     echo "RBAC verification failed: fabric-root wrote outside its prefix: $outside_key" >&2

@@ -52,9 +52,11 @@ the repository.
 Mutual TLS rejects clients without a trusted certificate, but etcd key prefixes
 are not authorization boundaries until authentication and RBAC are enabled.
 Kube-apiserver stores Kubernetes objects under `/fabric-root/`; K3s itself also
-stores one token-derived bootstrap object under `/bootstrap/`. Its datastore
-identity needs read/write access to both prefixes for restart, server join, and
-token rotation. Never add a synthetic bootstrap smoke-test key because K3s
+stores one token-derived bootstrap object under `/bootstrap/`. K3s scans from
+`/bootstrap` without the trailing slash during restart and token migration. Its
+datastore identity therefore needs read-only access to that enclosing scan
+range, read/write access to the actual `/bootstrap/` keys, and read/write access
+to `/fabric-root/`. Never add a synthetic bootstrap smoke-test key because K3s
 expects exactly one bootstrap object.
 
 Once K3s is healthy through the API VIP and all three etcd endpoints are
@@ -93,10 +95,10 @@ firewall reload clears it. This is an attended break-glass path, not permission
 to add observer `.2` to the persistent etcd allow-list.
 
 The guarded helper uses the offline `root` identity to create passwordless
-TLS-CN users, grants only `/fabric-root/` and `/bootstrap/` to `fabric-root`,
-leaves `fabric-observer` with zero roles, refuses to proceed unless exactly one
-K3s bootstrap object already exists, enables auth, and verifies both identities'
-positive and negative permissions.
+TLS-CN users, grants the exact K3s datastore ranges described above to
+`fabric-root`, leaves `fabric-observer` with zero roles, refuses to proceed
+unless exactly one K3s bootstrap object already exists, enables auth, and
+verifies both identities' positive and negative permissions.
 
 That command is only the first half of the original cluster admission gate.
 Afterwards restart one K3s server at a time, confirm the API remains healthy,
@@ -194,8 +196,8 @@ marks provisioning in progress before sending the add RPC. If that RPC commits
 but its response is lost, failure cleanup queries the reserved name and removes
 only a zero-role or root-only state attributable to this invocation; ambiguity
 or an unexpected role binding leaves the global lock for recovery. Before and
-after the mutation it proves that `fabric-root` still has exactly one role with only the
-`/bootstrap/` and `/fabric-root/` read/write permissions. It also proves the
+after the mutation it proves that `fabric-root` still has exactly one role with
+only the K3s bootstrap scan/key ranges and `/fabric-root/` permissions. It also proves the
 reserved `root` user, auth state, cluster ID, member IDs, endpoint health, and
 an exactly empty alarm list. The normalized empty alarm state is part of the
 confirmation pre-state and is read back after mutation.

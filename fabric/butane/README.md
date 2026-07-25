@@ -266,8 +266,8 @@ etcd auth/RBAC and negative host-policy tests are hard gates before the two
 named service agents use the bounded flat-L2 exception. The worker/inter-VLAN
 consensus boundary remains a hard gate before any other worker, child etcd
 identity, or tenant workload.
-The K3s client is limited to `/fabric-root/` and its required `/bootstrap/`
-prefix; TCP/2380 is peer-only.
+The K3s client is limited to `/fabric-root/`, its required `/bootstrap/` keys,
+and K3s's read-only `/bootstrap` scan range; TCP/2380 is peer-only.
 A controlled K3s restart, server rejoin, and token-rotation test must pass after
 authorization is enabled. Ceph, KubeVirt, hosted control planes, and
 applications never run on these three nodes.

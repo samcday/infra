@@ -590,10 +590,11 @@ healthy, use the guarded `fabric/pki/etcd/enable-auth` helper with the offline
 
 - enable etcd authentication;
 - reserve the `root` identity for offline recovery and administration;
-- grant the K3s `fabric-root` identity read/write access only below the API
-  server prefix `/fabric-root/` and K3s' required server-bootstrap prefix
-  `/bootstrap/`; and
-- verify that `fabric-root` cannot read or write outside those two prefixes.
+- grant the K3s `fabric-root` identity read/write access below the API server
+  prefix `/fabric-root/` and the actual `/bootstrap/` keys, plus read-only
+  access to K3s's enclosing `/bootstrap` scan range; and
+- verify that `fabric-root` cannot write outside the two stored-key prefixes or
+  read outside the explicitly required scan range.
 
 Record the successful negative tests as acceptance evidence. Every future
 child receives a distinct identity and prefix-scoped role; it does not reuse
