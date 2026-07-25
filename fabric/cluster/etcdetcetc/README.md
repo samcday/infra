@@ -255,11 +255,13 @@ confirmation:
 sudo scripts/rollout-fabric-router-etcd-policy \
   --fence-check \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519
 
 sudo scripts/rollout-fabric-router-etcd-policy \
   --fence-run \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519 \
   --confirm 'FENCE-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<fence-contract-sha256>'
 ~~~

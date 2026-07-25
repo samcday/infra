@@ -8,6 +8,8 @@ readonly router_address=10.66.0.1
 readonly observer_namespace=fabric-observer
 readonly fabric_network_lock=/run/lock/fabric-network-operation.lock
 readonly fabric_network_cluster_lock=fabric-maintenance-lock
+readonly etcdctl_binary_sha256=83040f35846861c2b121a599d7066cf847436dd63b623a91b203ee7db209c6df
+readonly etcdctl_version=3.6.13
 readonly confirmation_prefix=ROLLOUT-FABRIC-ROUTER-ETCD-POLICY
 readonly pod_source_confirmation_prefix=QUALIFY-FABRIC-ETCD-POD-SOURCES
 readonly transition_sha256=d00a40a79f6dd61a47ba993eabd23492a9b0ecec06c90f4ba2f1c9f878295f2c
@@ -33,12 +35,14 @@ Read-only preflight (prints the exact revision-and-payload confirmation):
   sudo scripts/rollout-fabric-router-etcd-policy \
     --check \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
     --identity /var/home/sam/.ssh/id_ed25519
 
 Attended transition:
   sudo scripts/rollout-fabric-router-etcd-policy \
     --run \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
     --identity /var/home/sam/.ssh/id_ed25519 \
     --confirm '$confirmation_prefix:<pushed-main-commit>:$transition_sha256'
 
@@ -46,12 +50,14 @@ Read-only emergency-fence preflight from the exact opened state:
   sudo scripts/rollout-fabric-router-etcd-policy \
     --fence-check \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
     --identity /var/home/sam/.ssh/id_ed25519
 
 Attended persistent emergency fence:
   sudo scripts/rollout-fabric-router-etcd-policy \
     --fence-run \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
     --identity /var/home/sam/.ssh/id_ed25519 \
     --confirm '$fence_confirmation_prefix:<pushed-main-commit>:$fence_contract_sha256'
 
@@ -127,6 +133,36 @@ validate_identity() {
     die 'router SSH identity must be operator-owned mode-0600 single-link file'
 }
 
+validate_etcdctl() {
+  local directory_metadata etcdctl_output file_metadata
+  [[ $etcdctl == /* && ${etcdctl##*/} == etcdctl ]] ||
+    die '--etcdctl must be an absolute path whose basename is etcdctl'
+  [[ -f $etcdctl && ! -L $etcdctl && -x $etcdctl ]] ||
+    die 'etcdctl must be an executable regular, non-symlink file'
+  etcdctl=$(realpath -e -- "$etcdctl") || die 'cannot resolve etcdctl'
+  etcdctl_dir=$(dirname -- "$etcdctl")
+  [[ ! -L $etcdctl_dir ]] || die 'etcdctl directory must not be a symlink'
+  file_metadata=$(stat -Lc '%u:%g:%a:%F:%h' -- "$etcdctl") ||
+    die 'cannot inspect etcdctl'
+  [[ $file_metadata == "$operator_uid:$operator_gid:755:regular file:1" ]] ||
+    die 'etcdctl must be operator-owned mode-0755 single-link file'
+  directory_metadata=$(stat -Lc '%u:%g:%a:%F' -- "$etcdctl_dir") ||
+    die 'cannot inspect etcdctl directory'
+  [[ $directory_metadata == "$operator_uid:$operator_gid:700:directory" ]] ||
+    die 'etcdctl directory must be an operator-owned mode-0700 directory'
+  [[ $(stat --file-system --format=%T -- "$etcdctl_dir") == tmpfs ]] ||
+    die 'etcdctl directory must be on tmpfs'
+  [[ $(sha256sum -- "$etcdctl" | awk '{print $1}') == "$etcdctl_binary_sha256" ]] ||
+    die "etcdctl bytes differ from the checksum-pinned $etcdctl_version binary"
+  etcdctl_output=$(sudo --non-interactive --user "$operator_user" -- \
+    env -i LC_ALL=C "$etcdctl" version 2>&1) ||
+    die 'etcdctl version check failed'
+  [[ $(awk '/^etcdctl version:/ { print $3; exit }' <<<"$etcdctl_output") == \
+     "$etcdctl_version" ]] || die "etcdctl $etcdctl_version is required"
+  grep -Fxq 'API version: 3.6' <<<"$etcdctl_output" ||
+    die 'etcdctl must report API version 3.6'
+}
+
 operator_git() {
   sudo --non-interactive --user "$operator_user" -- \
     env HOME="$operator_home" USER="$operator_user" LOGNAME="$operator_user" \
@@ -174,6 +210,7 @@ operator_pre_open() {
       USER="$operator_user" \
       LOGNAME="$operator_user" \
       XDG_RUNTIME_DIR="$operator_runtime" \
+      PATH="$etcdctl_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
       FABRIC_INFRA_ROOT="$repo_root" \
       FABRIC_SSH_IDENTITY="$identity" \
       "$repo_root/scripts/verify-fabric-etcd-pre-open" "$@"
@@ -1644,6 +1681,8 @@ counter drop comment "deny all new forwarding"'
 
 mode=
 serial_fingerprint=
+etcdctl=
+etcdctl_dir=
 identity=/var/home/sam/.ssh/id_ed25519
 confirm=
 
@@ -1666,6 +1705,12 @@ while (($#)); do
       identity=$2
       shift 2
       ;;
+    --etcdctl)
+      (($# >= 2)) || die '--etcdctl requires a path'
+      [[ -z $etcdctl ]] || die '--etcdctl may be specified only once'
+      etcdctl=$2
+      shift 2
+      ;;
     --confirm)
       (($# >= 2)) || die '--confirm requires a value'
       [[ -z $confirm ]] || die '--confirm may be specified only once'
@@ -1685,6 +1730,7 @@ done
   exit 2
 }
 [[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+[[ -n $etcdctl ]] || die '--etcdctl is required'
 valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
 case $mode in
   check | fence-check) check_only=true ;;
@@ -1714,12 +1760,14 @@ operator_user=sam
 operator_home=$(getent passwd "$operator_user" | awk -F: 'NR == 1 { print $6 }')
 [[ -n $operator_home && -d $operator_home ]] || die 'cannot resolve operator home directory'
 operator_uid=$(id -u "$operator_user") || die 'cannot resolve operator UID'
+operator_gid=$(id -g "$operator_user") || die 'cannot resolve operator GID'
 operator_runtime=/run/user/$operator_uid
 [[ -d $operator_runtime && ! -L $operator_runtime ]] ||
   die 'operator runtime directory is missing or unsafe'
 [[ $(stat -Lc '%u:%a' -- "$operator_runtime") == "$operator_uid:700" ]] ||
   die 'operator runtime directory has unsafe ownership or mode'
 validate_identity
+validate_etcdctl
 validate_committed_transition
 validate_committed_fence_guard
 

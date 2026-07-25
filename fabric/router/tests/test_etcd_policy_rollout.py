@@ -1167,6 +1167,32 @@ guard_live
             operator.group("body"),
         )
         self.assertIn('FABRIC_SSH_IDENTITY="$identity"', operator.group("body"))
+        self.assertIn(
+            'PATH="$etcdctl_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:'
+            '/usr/bin:/sbin:/bin"',
+            operator.group("body"),
+        )
+
+    def test_etcdctl_is_explicit_ephemeral_and_checksum_pinned(self) -> None:
+        for required in (
+            "readonly etcdctl_binary_sha256="
+            "83040f35846861c2b121a599d7066cf847436dd63b623a91b203ee7db209c6df",
+            "readonly etcdctl_version=3.6.13",
+            "[[ -n $etcdctl ]] || die '--etcdctl is required'",
+            "${etcdctl##*/} == etcdctl",
+            '"$operator_uid:$operator_gid:755:regular file:1"',
+            '"$operator_uid:$operator_gid:700:directory"',
+            'stat --file-system --format=%T -- "$etcdctl_dir"',
+            'sha256sum -- "$etcdctl"',
+            'env -i LC_ALL=C "$etcdctl" version',
+            "grep -Fxq 'API version: 3.6'",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.helper)
+
+        validate = self.helper.index("\nvalidate_etcdctl\n")
+        preflight = self.helper.index("\nverify_pre_open_contract preflight\n")
+        self.assertLess(validate, preflight)
 
     def test_check_path_cannot_launch_mutating_source_qualification(self) -> None:
         check_block = re.search(

@@ -406,17 +406,24 @@ of those steps. Only then perform the final network-open transition:
 sudo scripts/rollout-fabric-router-etcd-policy \
   --check \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519
 
 # Copy the revision-and-payload confirmation printed by --check exactly.
 sudo scripts/rollout-fabric-router-etcd-policy \
   --run \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519 \
   --confirm 'ROLLOUT-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<payload-sha256>'
 ```
 
-Both modes require a clean checkout exactly at fetched `origin/main`, run the
+`--etcdctl` must name the 3.6.13 binary extracted by the operator into a
+private mode-0700 tmpfs directory. The helper requires the binary itself to be
+operator-owned, mode 0755, single-link, and byte-identical to the repository's
+checksum-pinned archive before placing that directory first in the
+unprivileged verifier's explicit PATH. Both modes require a clean checkout
+exactly at fetched `origin/main`, run the
 complete read-only `verify-fabric-etcd-pre-open` contract, prove the committed
 and live root guards, verify observer isolation, pin the first SSH connection
 to the ED25519 fingerprint read over serial, and require the exact legacy UCI
@@ -515,11 +522,13 @@ revision-and-contract confirmation:
 sudo scripts/rollout-fabric-router-etcd-policy \
   --fence-check \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519
 
 sudo scripts/rollout-fabric-router-etcd-policy \
   --fence-run \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
   --identity /var/home/sam/.ssh/id_ed25519 \
   --confirm 'FENCE-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<fence-contract-sha256>'
 ~~~
