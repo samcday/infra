@@ -5,6 +5,7 @@ metadata:
     app.kubernetes.io/component: alerting
     app.kubernetes.io/name: fabric-monitoring
     app.kubernetes.io/part-of: fabric-monitoring
+    release: kube-prometheus-stack
   name: fabric-pagerduty-delivery-test
   namespace: monitoring
 spec:
