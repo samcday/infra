@@ -58,6 +58,10 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
 lock_json=$lock_receipt/lock.json
 node_uid=$(jq -r '.targetNodeUid' "$lock_json")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_json") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 [[ $(jq -r '.node' "$lock_json") == "$node" &&
    $(jq -r '.role' "$lock_json") == "$role" &&
    $confirmation == "DRAIN:$node:$node_uid" ]] ||
@@ -65,10 +69,12 @@ node_uid=$(jq -r '.targetNodeUid' "$lock_json")
 
 ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 nodes_json=$("${ik[@]}" get nodes --output=json) || die 'could not read Fabric Nodes'
-jq -e --arg node "$node" --arg uid "$node_uid" '
+jq -e --arg node "$node" --arg uid "$node_uid" --arg pod_cidr "$pod_cidr" '
   [.items[] | select(.metadata.name == $node)] as $matches |
   ($matches | length) == 1 and $matches[0].metadata.uid == $uid and
   $matches[0].metadata.deletionTimestamp == null and
+  $matches[0].spec.podCIDR == $pod_cidr and
+  $matches[0].spec.podCIDRs == [$pod_cidr] and
   ([ $matches[0].status.conditions[]? |
     select(.type == "Ready" and .status == "True") ] | length) == 1
 ' <<<"$nodes_json" >/dev/null || die 'target is not the exact lock-bound Ready Node'
@@ -85,8 +91,9 @@ done
 "${ik[@]}" drain "$node" --ignore-daemonsets --delete-emptydir-data \
   --grace-period=60 --timeout=10m
 node_json=$("${ik[@]}" get node "$node" --output=json)
-jq -e --arg uid "$node_uid" '
-  .metadata.uid == $uid and (.spec.unschedulable // false) == true
+jq -e --arg uid "$node_uid" --arg pod_cidr "$pod_cidr" '
+  .metadata.uid == $uid and .spec.podCIDR == $pod_cidr and
+  .spec.podCIDRs == [$pod_cidr] and (.spec.unschedulable // false) == true
 ' <<<"$node_json" >/dev/null || die 'target did not remain exact and cordoned after drain'
 
 if [[ $role == service ]]; then

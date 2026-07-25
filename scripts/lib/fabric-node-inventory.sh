@@ -9,6 +9,24 @@ FABRIC_NODE_MAC=
 FABRIC_NODE_DISK=
 FABRIC_NODE_SHORT=
 
+fabric_validate_node_pod_cidr() {
+  (($# == 1)) || {
+    fabric_node_inventory_die 'fabric_validate_node_pod_cidr requires one CIDR'
+    return 2
+  }
+
+  local pod_cidr=$1 subnet_octet
+  [[ $pod_cidr =~ ^172\.22\.([0-9]{1,3})\.0/24$ ]] || {
+    fabric_node_inventory_die "invalid Fabric node PodCIDR: $pod_cidr"
+    return 1
+  }
+  subnet_octet=${BASH_REMATCH[1]}
+  ((10#$subnet_octet <= 255)) || {
+    fabric_node_inventory_die "Fabric node PodCIDR is outside 172.22.0.0/16: $pod_cidr"
+    return 1
+  }
+}
+
 fabric_node_inventory_die() {
   printf 'fabric node inventory: %s\n' "$*" >&2
   return 1

@@ -68,6 +68,10 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
 lock_json=$lock_receipt/lock.json
 repo_commit=$(jq -r '.repoCommit' "$lock_json")
 lock_uid=$(jq -r '.lock.uid' "$lock_json")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_json") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 [[ $(jq -r '.node' "$lock_json") == "$node" &&
    $(jq -r '.role' "$lock_json") == "$FABRIC_NODE_ROLE" ]] ||
   die 'maintenance lock receipt belongs to another node or role'
@@ -84,13 +88,14 @@ session_receipt=$(realpath -e -- "$session_receipt")
 receipt=$session_receipt/session.json
 jq -e --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
   --arg address "$FABRIC_NODE_ADDRESS" --arg mac "$FABRIC_NODE_MAC" \
-  --arg disk "$FABRIC_NODE_DISK" --arg repo "$repo_commit" --arg lock_uid "$lock_uid" '
+  --arg disk "$FABRIC_NODE_DISK" --arg repo "$repo_commit" --arg lock_uid "$lock_uid" \
+  --arg pod_cidr "$pod_cidr" '
   .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
   .session.schema == 1 and .session.purpose == "fabric-node-day-two-session" and
   .session.node == $node and .session.role == $role and
   .session.address == $address and .session.mac == $mac and
   .session.bootDevice == $disk and .session.repoCommit == $repo and
-  .session.lockUid == $lock_uid and
+  .session.lockUid == $lock_uid and .session.podCIDR == $pod_cidr and
   (.session.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
   .secret.namespace == "bootie" and .secret.name == "bootie-session" and
   (.secret.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
@@ -110,7 +115,7 @@ secret_identity=$("${ik[@]}" --namespace bootie get secret bootie-session \
 node_json=$("${ik[@]}" get node "$node" --output=json) || die 'armed placeholder is absent'
 mac_label=${FABRIC_NODE_MAC//:/-}
 jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg session_uid "$session_uid" \
-  --arg disk "$FABRIC_NODE_DISK" '
+  --arg disk "$FABRIC_NODE_DISK" --arg pod_cidr "$pod_cidr" '
   .metadata.uid == $uid and .metadata.deletionTimestamp == null and
   .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
   .metadata.labels["samcday.com/discovery"] == "false" and
@@ -119,6 +124,7 @@ jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg session_uid "$session_u
   .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
   .metadata.annotations["samcday.com/boot-device"] == $disk and
   .metadata.annotations["samcday.com/install"] == "true" and
+  .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
   ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
   (.spec.unschedulable // false) == true and
@@ -129,11 +135,11 @@ jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg session_uid "$session_u
 ' <<<"$node_json" >/dev/null || die 'placeholder is not the exact unconsumed armed session'
 
 # Re-read the two live identities immediately before the only remote mutation.
-expected_node_identity="$node_uid"$'\t'install-armed$'\t'"$session_uid"$'\t'"$FABRIC_NODE_DISK"$'\t'true
+expected_node_identity="$node_uid"$'\t'install-armed$'\t'"$session_uid"$'\t'"$FABRIC_NODE_DISK"$'\t'true$'\t'"$pod_cidr"$'\t'"$pod_cidr"
 [[ $("${ik[@]}" --namespace bootie get secret bootie-session \
   -o jsonpath='{.metadata.uid}{"\t"}{.immutable}') == "$secret_identity" &&
    $("${ik[@]}" get node "$node" \
-     -o jsonpath='{.metadata.uid}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootstrap-state}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootie-session-uid}{"\t"}{.metadata.annotations.samcday\.com/boot-device}{"\t"}{.metadata.annotations.samcday\.com/install}') == \
+     -o jsonpath='{.metadata.uid}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootstrap-state}{"\t"}{.metadata.annotations.fabric\.samcday\.com/bootie-session-uid}{"\t"}{.metadata.annotations.samcday\.com/boot-device}{"\t"}{.metadata.annotations.samcday\.com/install}{"\t"}{.spec.podCIDR}{"\t"}{.spec.podCIDRs[0]}') == \
      "$expected_node_identity" ]] ||
   die 'armed session identity changed before reboot'
 "$repo_root/scripts/fabric-ssh" "$node" sudo --non-interactive /usr/bin/bash -s -- \

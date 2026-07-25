@@ -77,8 +77,9 @@ fabric_validate_node_inventory || die 'five-node inventory validation failed'
 
 qualify_failed_firstboot_node() {
   local candidate_json=$1 expected_uid=$2 expected_mac=$3 expected_revision=$4
+  local expected_pod_cidr=$5
   jq -e --arg uid "$expected_uid" --arg mac "$expected_mac" \
-    --arg revision "$expected_revision" '
+    --arg revision "$expected_revision" --arg pod_cidr "$expected_pod_cidr" '
     .metadata.uid == $uid and .metadata.deletionTimestamp == null and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["fabric.samcday.com/platform"] == "true" and
@@ -101,6 +102,7 @@ qualify_failed_firstboot_node() {
     ((.metadata.annotations["samcday.com/install"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == true and
     ([.spec.taints[]? | select(
       .key == "fabric.samcday.com/platform" and .value == "true" and
@@ -127,6 +129,7 @@ if [[ $mode == check ]]; then
   fixture_uid=01234567-89ab-cdef-0123-456789abcdef
   fixture_mac=00-00-5e-00-53-71
   fixture_revision=$(printf 'a%.0s' {1..40})
+  fixture_pod_cidr=172.22.2.0/24
   fixture=$(jq -cn --arg uid "$fixture_uid" --arg mac "$fixture_mac" \
     --arg revision "$fixture_revision" '{
     metadata:{uid:$uid, deletionTimestamp:null, labels:{
@@ -139,14 +142,15 @@ if [[ $mode == check ]]; then
       "fabric.samcday.com/ignition-sha256":("b" * 64),
       "fabric.samcday.com/bootie-image-digest":("sha256:" + ("c" * 64)),
       "fabric.samcday.com/bootie-image-revision":("d" * 40)}},
-    spec:{unschedulable:true, taints:[
+    spec:{podCIDR:"172.22.2.0/24",podCIDRs:["172.22.2.0/24"],
+      unschedulable:true, taints:[
       {key:"fabric.samcday.com/platform",value:"true",effect:"NoSchedule"},
       {key:"node.kubernetes.io/unreachable",effect:"NoExecute"}]},
     status:{nodeInfo:{machineID:""}, conditions:[{
       type:"Ready",status:"Unknown",reason:"NodeStatusNeverUpdated"}]}
   }')
   qualify_failed_firstboot_node "$fixture" "$fixture_uid" "$fixture_mac" \
-    "$fixture_revision" ||
+    "$fixture_revision" "$fixture_pod_cidr" ||
     die 'failed-firstboot safe-state fixture was rejected'
   for unsafe_fixture in \
     "$(jq -c '.status.nodeInfo.machineID="unexpected"' <<<"$fixture")" \
@@ -154,9 +158,10 @@ if [[ $mode == check ]]; then
     "$(jq -c '.status.conditions[0].reason="KubeletStoppedPosting"' <<<"$fixture")" \
     "$(jq -c '.metadata.annotations["samcday.com/ignition-token"]="live"' <<<"$fixture")" \
     "$(jq -c '.metadata.annotations["fabric.samcday.com/config-revision"]=("e" * 40)' <<<"$fixture")" \
+    "$(jq -c '.spec.podCIDRs=["172.22.99.0/24"]' <<<"$fixture")" \
     "$(jq -c '.metadata.labels["node-role.kubernetes.io/worker"]="true"' <<<"$fixture")"; do
     ! qualify_failed_firstboot_node "$unsafe_fixture" "$fixture_uid" "$fixture_mac" \
-      "$fixture_revision" ||
+      "$fixture_revision" "$fixture_pod_cidr" ||
       die 'failed-firstboot qualification accepted an unsafe fixture'
   done
   printf 'validated the stopped-node exact-UID retirement helper\n'
@@ -181,6 +186,10 @@ receipt=$lock_receipt/lock.json
    $(jq -r '.role' "$receipt") == "$FABRIC_NODE_ROLE" ]] ||
   die 'maintenance lock receipt is for another node or role'
 receipt_node_uid=$(jq -r '.targetNodeUid' "$receipt")
+receipt_pod_cidr=$(jq -er '.targetNodePodCIDR' "$receipt") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$receipt_pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 if [[ $FABRIC_NODE_ROLE == control-plane ]]; then
   member_receipt=$lock_receipt/etcd-member.json
   [[ -f $member_receipt && ! -L $member_receipt &&
@@ -212,8 +221,9 @@ else
   [[ $node_uid == "$receipt_node_uid" ]] ||
     die 'target Node UID differs from lock acquisition'
 fi
-jq -e '
+jq -e --arg pod_cidr "$receipt_pod_cidr" '
   .metadata.deletionTimestamp == null and
+  .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
   (.spec.unschedulable // false) == true and
   ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
     length) == 0
@@ -265,7 +275,7 @@ if $failed_firstboot; then
   mac_label=${FABRIC_NODE_MAC//:/-}
   lock_revision=$(jq -r '.repoCommit' "$receipt")
   qualify_failed_firstboot_node "$node_json" "$node_uid" "$mac_label" \
-    "$lock_revision" ||
+    "$lock_revision" "$receipt_pod_cidr" ||
     die 'target is not the exact lock-bound, consumed, never-joined failed-firstboot placeholder'
   failed_image_revision=$(jq -r \
     '.metadata.annotations["fabric.samcday.com/bootie-image-revision"]' <<<"$node_json")

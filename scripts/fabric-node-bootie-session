@@ -109,19 +109,24 @@ validate_receipt() {
   jq -e '
     .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
     (.session.nodeUid | test("^[0-9a-f-]{36}$")) and
+    (.session.podCIDR | type == "string") and
     (.secret.uid | test("^[0-9a-f-]{36}$")) and
     (.secret.resourceVersion | type == "string" and length > 0)
   ' "$receipt_dir/session.json" >/dev/null || die 'session receipt is malformed'
+  fabric_validate_node_pod_cidr \
+    "$(jq -r '.session.podCIDR' "$receipt_dir/session.json")" ||
+    die 'session receipt target Node PodCIDR is invalid'
 }
 
 qualify_failed_install_abort_node() {
   local candidate_json=$1 node_uid=$2 session_uid=$3 mac_label=$4 revision=$5
-  local ignition_sha=$6 disk=$7 image_digest=$8 image_revision=$9 phase=${10}
+  local ignition_sha=$6 disk=$7 image_digest=$8 image_revision=$9 pod_cidr=${10}
+  local phase=${11}
   jq -e --arg uid "$node_uid" --arg session_uid "$session_uid" \
     --arg mac "$mac_label" --arg revision "$revision" \
     --arg ignition_sha "$ignition_sha" --arg disk "$disk" \
     --arg image_digest "$image_digest" --arg image_revision "$image_revision" \
-    --arg phase "$phase" '
+    --arg pod_cidr "$pod_cidr" --arg phase "$phase" '
     .metadata.uid == $uid and .metadata.deletionTimestamp == null and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["fabric.samcday.com/platform"] == "true" and
@@ -149,6 +154,7 @@ qualify_failed_install_abort_node() {
       .metadata.annotations["fabric.samcday.com/aborted-session-uid"] == $session_uid
     else false end) and
     ((.metadata.annotations["samcday.com/install"] // "") == "") and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == true and
     ([.spec.taints[]? | select(
       .key == "fabric.samcday.com/platform" and .value == "true" and
@@ -193,6 +199,7 @@ if [[ $mode == check ]]; then
   fixture_image_revision=$(printf 'd%.0s' {1..40})
   fixture_disk=/dev/disk/by-id/example
   fixture_mac=00-00-5e-00-53-71
+  fixture_pod_cidr=172.22.2.0/24
   fixture_node=$(jq -cn --arg uid "$fixture_node_uid" \
     --arg session_uid "$fixture_session_uid" --arg revision "$fixture_revision" \
     --arg ignition "$fixture_ignition" --arg image_digest "$fixture_image_digest" \
@@ -210,7 +217,8 @@ if [[ $mode == check ]]; then
         "fabric.samcday.com/bootie-image-revision":$image_revision,
         "samcday.com/ignition-token":"token","samcday.com/ignition-mode":"install",
         "samcday.com/boot-device":$disk}},
-      spec:{unschedulable:true,taints:[
+      spec:{podCIDR:"172.22.2.0/24",podCIDRs:["172.22.2.0/24"],
+        unschedulable:true,taints:[
         {key:"fabric.samcday.com/platform",value:"true",effect:"NoSchedule"},
         {key:"node.kubernetes.io/unreachable",effect:"NoExecute"}]},
       status:{nodeInfo:{machineID:""},conditions:[{
@@ -218,7 +226,8 @@ if [[ $mode == check ]]; then
     }')
   qualify_failed_install_abort_node "$fixture_node" "$fixture_node_uid" \
     "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
-    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" issued ||
+    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" \
+    "$fixture_pod_cidr" issued ||
     die 'issued failed-install fixture was rejected'
   fixture_revoked=$(jq -c --arg session_uid "$fixture_session_uid" '
     del(.metadata.annotations["samcday.com/ignition-token"]) |
@@ -228,16 +237,19 @@ if [[ $mode == check ]]; then
   ' <<<"$fixture_node")
   qualify_failed_install_abort_node "$fixture_revoked" "$fixture_node_uid" \
     "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
-    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" revoked ||
+    "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" \
+    "$fixture_pod_cidr" revoked ||
     die 'revoked failed-install fixture was rejected'
   for unsafe_fixture in \
     "$(jq -c '.status.nodeInfo.machineID="unexpected"' <<<"$fixture_node")" \
     "$(jq -c '.status.addresses=[{type:"InternalIP",address:"10.66.1.10"}]' <<<"$fixture_node")" \
     "$(jq -c '.metadata.labels["node-role.kubernetes.io/worker"]="true"' <<<"$fixture_node")" \
+    "$(jq -c '.spec.podCIDR="172.22.99.0/24"' <<<"$fixture_node")" \
     "$(jq -c 'del(.metadata.annotations["samcday.com/ignition-token"])' <<<"$fixture_node")"; do
     ! qualify_failed_install_abort_node "$unsafe_fixture" "$fixture_node_uid" \
       "$fixture_session_uid" "$fixture_mac" "$fixture_revision" "$fixture_ignition" \
-      "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" issued ||
+      "$fixture_disk" "$fixture_image_digest" "$fixture_image_revision" \
+      "$fixture_pod_cidr" issued ||
       die 'failed-install qualification accepted an unsafe issued fixture'
   done
   fixture_session=$(jq -cn --arg node_uid "$fixture_node_uid" \
@@ -275,6 +287,10 @@ if [[ $mode == arm ]]; then
   lock_json=$lock_receipt/lock.json
   repo_commit=$(jq -r '.repoCommit' "$lock_json")
   lock_uid=$(jq -r '.lock.uid' "$lock_json")
+  pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_json") ||
+    die 'maintenance lock has no target Node PodCIDR'
+  fabric_validate_node_pod_cidr "$pod_cidr" ||
+    die 'maintenance lock target Node PodCIDR is invalid'
   [[ $(jq -r '.node' "$lock_json") == "$node" &&
      $(jq -r '.role' "$lock_json") == "$role" ]] ||
     die 'maintenance lock receipt belongs to another node or role'
@@ -370,10 +386,12 @@ if [[ $mode == arm ]]; then
       "node-role.kubernetes.io/control-plane":"true"
     }')
   fi
-  placeholder=$(jq -cn --arg node "$node" --argjson labels "$labels" --argjson taints "$taints" '{
+  placeholder=$(jq -cn --arg node "$node" --arg pod_cidr "$pod_cidr" \
+    --argjson labels "$labels" --argjson taints "$taints" '{
     apiVersion:"v1", kind:"Node", metadata:{name:$node, labels:$labels,
       annotations:{"fabric.samcday.com/bootstrap-state":"discovery"}},
-    spec:{unschedulable:true, taints:$taints}
+    spec:{podCIDR:$pod_cidr, podCIDRs:[$pod_cidr],
+      unschedulable:true, taints:$taints}
   }')
   live_node=$("${ik[@]}" get node "$node" --ignore-not-found --output=json) ||
     die 'could not inspect target placeholder state'
@@ -386,13 +404,14 @@ if [[ $mode == arm ]]; then
       die 'exact bootstrap placeholder creation failed'
     node_uid=$(jq -er '.metadata.uid' <<<"$created_node")
   else
-    jq -e --arg mac "$mac_label" --arg role "$role" '
+    jq -e --arg mac "$mac_label" --arg role "$role" --arg pod_cidr "$pod_cidr" '
       .metadata.deletionTimestamp == null and
       .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
       .metadata.labels["samcday.com/mac"] == $mac and
       (.metadata.annotations["fabric.samcday.com/bootstrap-state"] as $state |
         $state == "discovery" or $state == "install-armed" or
         $state == "install-response-issued") and
+      .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
       (.spec.unschedulable // false) == true and
       ((.status.nodeInfo.machineID // "") == "") and
       ([.status.addresses[]? | select(.type == "InternalIP")] | length) == 0 and
@@ -425,11 +444,13 @@ if [[ $mode == arm ]]; then
 
   session_payload=$(jq -cn --arg node "$node" --arg role "$role" --arg address "$address" \
     --arg mac "$mac" --arg disk "$disk" --arg node_uid "$node_uid" \
+    --arg pod_cidr "$pod_cidr" \
     --arg repo "$repo_commit" --arg ignition_sha "$ignition_sha" \
     --arg policy_sha "$policy_sha" --arg image_digest "$image_digest" \
     --arg image_revision "$image_revision" --arg lock_uid "$lock_uid" '{
       schema:1, purpose:"fabric-node-day-two-session", node:$node, role:$role,
       address:$address, mac:$mac, bootDevice:$disk, nodeUid:$node_uid,
+      podCIDR:$pod_cidr,
       repoCommit:$repo, ignitionSha256:$ignition_sha,
       installPolicySha256:$policy_sha, bootieImageDigest:$image_digest,
       bootieImageRevision:$image_revision, lockUid:$lock_uid
@@ -486,12 +507,13 @@ if [[ $mode == arm ]]; then
   bootstrap_state=$(jq -r '.metadata.annotations["fabric.samcday.com/bootstrap-state"]' \
     <<<"$live_node")
   if [[ $bootstrap_state == discovery ]]; then
-    jq -e --arg uid "$node_uid" --arg mac "$mac_label" '
+    jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg pod_cidr "$pod_cidr" '
     .metadata.uid == $uid and
     .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true" and
     .metadata.labels["samcday.com/discovery"] == "true" and
     .metadata.labels["samcday.com/mac"] == $mac and
     .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "discovery" and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == true and
     ((.metadata.annotations["fabric.samcday.com/bootie-session-uid"] // "") == "") and
     ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and
@@ -524,6 +546,7 @@ if [[ $mode == arm ]]; then
     die 'placeholder disappeared after the exact arm'
   jq -e --arg uid "$node_uid" --arg mac "$mac_label" --arg role "$role" \
     --arg session_uid "$secret_uid" --arg disk "$disk" \
+    --arg pod_cidr "$pod_cidr" \
     --arg repo "$repo_commit" --arg ignition "$ignition_sha" \
     --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
     .metadata.uid == $uid and .metadata.deletionTimestamp == null and
@@ -531,6 +554,7 @@ if [[ $mode == arm ]]; then
     .metadata.labels["samcday.com/discovery"] == "false" and
     .metadata.labels["samcday.com/mac"] == $mac and
     .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == true and
     (if $role == "service" then
       .metadata.labels["fabric.samcday.com/platform"] == "true" and
@@ -582,6 +606,10 @@ if [[ $mode == record ]]; then
   "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
   lock_uid=$(jq -r '.lock.uid' "$lock_receipt/lock.json")
   repo_commit=$(jq -r '.repoCommit' "$lock_receipt/lock.json")
+  pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_receipt/lock.json") ||
+    die 'maintenance lock has no target Node PodCIDR'
+  fabric_validate_node_pod_cidr "$pod_cidr" ||
+    die 'maintenance lock target Node PodCIDR is invalid'
   [[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" ]] ||
     die 'maintenance lock belongs to another node'
   handoff_dir=$(realpath -e -- "$handoff_dir")
@@ -601,17 +629,21 @@ if [[ $mode == record ]]; then
   jq -e --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
     --arg address "$FABRIC_NODE_ADDRESS" --arg mac "$FABRIC_NODE_MAC" \
     --arg disk "$FABRIC_NODE_DISK" --arg node_uid "$node_uid" \
+    --arg pod_cidr "$pod_cidr" \
     --arg repo "$repo_commit" --arg lock_uid "$lock_uid" \
     --arg ignition_sha "$ignition_sha" --arg policy_sha "$policy_sha" '
     .schema == 1 and .purpose == "fabric-node-day-two-session" and
     .node == $node and .role == $role and .address == $address and .mac == $mac and
-    .bootDevice == $disk and .nodeUid == $node_uid and .repoCommit == $repo and
+    .bootDevice == $disk and .nodeUid == $node_uid and .podCIDR == $pod_cidr and
+    .repoCommit == $repo and
     .lockUid == $lock_uid and .ignitionSha256 == $ignition_sha and
     .installPolicySha256 == $policy_sha
   ' <<<"$session_payload" >/dev/null || die 'live session differs from handoff, lock, or inventory'
-  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
+  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" \
+    --arg pod_cidr "$pod_cidr" '
     .metadata.uid == $uid and
     .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.metadata.annotations["fabric.samcday.com/bootstrap-state"] as $state |
       $state == "install-armed" or $state == "install-response-issued")
   ' <<<"$node_json" >/dev/null ||
@@ -673,8 +705,12 @@ fi
 lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
 [[ $(jq -r '.node' "$lock_receipt/lock.json") == "$node" &&
-   $(jq -r '.lock.uid' "$lock_receipt/lock.json") == "$(jq -r '.session.lockUid' "$receipt")" ]] ||
+   $(jq -r '.lock.uid' "$lock_receipt/lock.json") == "$(jq -r '.session.lockUid' "$receipt")" &&
+   $(jq -r '.targetNodePodCIDR' "$lock_receipt/lock.json") == \
+     "$(jq -r '.session.podCIDR' "$receipt")" ]] ||
   die 'maintenance lock and session receipt do not match'
+pod_cidr=$(jq -er '.session.podCIDR' "$receipt") || die 'session has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" || die 'session target Node PodCIDR is invalid'
 
 if [[ $mode == abort-failed-install ]]; then
   [[ $(jq -r '.session.role' "$receipt") == service ]] ||
@@ -702,11 +738,11 @@ if [[ $mode == abort-failed-install ]]; then
   abort_phase=
   if qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
     "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
-    "$session_image_digest" "$session_image_revision" issued; then
+      "$session_image_digest" "$session_image_revision" "$pod_cidr" issued; then
     abort_phase=issued
   elif qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
     "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
-    "$session_image_digest" "$session_image_revision" revoked; then
+      "$session_image_digest" "$session_image_revision" "$pod_cidr" revoked; then
     abort_phase=revoked
   else
     die 'target is not an exact never-joined failed-install placeholder'
@@ -765,16 +801,18 @@ if [[ $mode == abort-failed-install ]]; then
       die 'exact failed-install token revocation raced or failed'
     qualify_failed_install_abort_node "$node_json" "$node_uid" "$secret_uid" \
       "$mac_label" "$session_revision" "$session_ignition" "$session_disk" \
-      "$session_image_digest" "$session_image_revision" revoked ||
+      "$session_image_digest" "$session_image_revision" "$pod_cidr" revoked ||
       die 'failed-install token revocation returned an unexpected Node'
   fi
 else
   [[ $confirmation == "CLOSE-BOOTIE-SESSION:$node:$secret_uid" ]] ||
     die "exact --confirm CLOSE-BOOTIE-SESSION:$node:$secret_uid is required"
-  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" '
+  jq -e --arg uid "$node_uid" --arg session_uid "$secret_uid" \
+    --arg pod_cidr "$pod_cidr" '
     .metadata.uid == $uid and
     .metadata.annotations["fabric.samcday.com/bootie-session-uid"] == $session_uid and
     .metadata.annotations["fabric.samcday.com/bootstrap-state"] == "install-response-issued" and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
     ((.metadata.annotations["samcday.com/boot-device"] // "") == "") and

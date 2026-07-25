@@ -277,6 +277,10 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
 lock_json=$lock_receipt/lock.json
 repo_commit=$(jq -r '.repoCommit' "$lock_json")
 lock_uid=$(jq -r '.lock.uid' "$lock_json")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_json") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 [[ $(jq -r '.node' "$lock_json") == "$node" &&
    $(jq -r '.role' "$lock_json") == control-plane ]] ||
   die 'maintenance lock receipt is for another node or role'
@@ -368,8 +372,9 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
   [[ $(jq -r '.metadata.uid' <<<"$target_json") == \
      "$(jq -r '.targetNodeUid' "$lock_json")" ]] ||
     die 'target Kubernetes Node UID changed after lock acquisition'
-  jq -e '
+  jq -e --arg pod_cidr "$pod_cidr" '
     .metadata.deletionTimestamp == null and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == true and
     ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
       length) == 0

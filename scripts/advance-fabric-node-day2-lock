@@ -97,6 +97,7 @@ qualify_closed_session() {
     .session.node == $lock[0].node and .session.role == "service" and
     .session.repoCommit == $lock[0].repoCommit and
     .session.lockUid == $lock[0].lock.uid and
+    .session.podCIDR == $lock[0].targetNodePodCIDR and
     .session.nodeUid != $lock[0].targetNodeUid and
     (.session.nodeUid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
     (.session.bootDevice | type == "string" and startswith("/dev/disk/by-id/")) and
@@ -160,7 +161,8 @@ if $check_only; then
   trap 'rm -f -- "$fixture_lock" "$fixture_session"' EXIT
   jq -n --arg revision "$fixture_revision" '{
     schema:1, purpose:"fabric-node-day-two", node:"fabric-az1-svc1", role:"service",
-    targetNodeUid:"11111111-2222-3333-4444-555555555555", repoCommit:$revision,
+    targetNodeUid:"11111111-2222-3333-4444-555555555555",
+    targetNodePodCIDR:"172.22.2.0/24", repoCommit:$revision,
     lock:{uid:"22222222-3333-4444-5555-666666666666"}
   }' >"$fixture_lock"
   jq -n --arg revision "$fixture_revision" '{
@@ -169,6 +171,7 @@ if $check_only; then
       role:"service", repoCommit:$revision,
       lockUid:"22222222-3333-4444-5555-666666666666",
       nodeUid:"33333333-4444-5555-6666-777777777777",
+      podCIDR:"172.22.2.0/24",
       bootDevice:"/dev/disk/by-id/example"},
     secret:{namespace:"bootie", name:"bootie-session",
       uid:"44444444-5555-6666-7777-888888888888", resourceVersion:"123"}
@@ -241,6 +244,10 @@ old_revision=$(jq -er '.repoCommit' "$lock_file")
 lock_uid=$(jq -er '.lock.uid' "$lock_file")
 old_rv=$(jq -er '.lock.resourceVersion' "$lock_file")
 old_holder=$(jq -er '.holder' "$lock_file")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_file") ||
+  die 'retained lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'retained lock target Node PodCIDR is invalid'
 [[ $role == service && ! -e $receipt_dir/etcd-member.json ]] ||
   die 'retained-lock advance is restricted to a service node'
 fabric_load_node_inventory "$node" || die 'lock node is outside the exact Fabric inventory'

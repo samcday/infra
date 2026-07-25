@@ -62,14 +62,19 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
 receipt=$lock_receipt/lock.json
 node_uid=$(jq -r '.targetNodeUid' "$receipt")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$receipt") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 [[ $(jq -r '.node' "$receipt") == "$node" &&
    $confirmation == "QUIESCE:$node:$node_uid" ]] ||
   die "exact --confirm QUIESCE:$node:$node_uid and matching lock receipt are required"
 
 ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
 node_json=$("${ik[@]}" get node "$node" --output=json) || die 'target Node is absent'
-jq -e --arg uid "$node_uid" '
+jq -e --arg uid "$node_uid" --arg pod_cidr "$pod_cidr" '
   .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+  .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
   (.spec.unschedulable // false) == true
 ' <<<"$node_json" >/dev/null ||
   die 'target must remain the exact cordoned Node before quiesce'

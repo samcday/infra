@@ -188,10 +188,20 @@ if [[ $mode == acquire ]]; then
   [[ $confirmation == "LOCK:$node:$repo_commit" ]] ||
     die "exact --confirm LOCK:$node:$repo_commit is required"
   "$repo_root/scripts/fabric-node-day2" preflight --node "$node" >/dev/null
-  target_uid=$("${ik[@]}" get node "$node" -o jsonpath='{.metadata.uid}') ||
+  target_node_json=$("${ik[@]}" get node "$node" --output=json) ||
+    die 'could not bind the target Node identity'
+  target_uid=$(jq -er '.metadata.uid' <<<"$target_node_json") ||
     die 'could not bind the target Node UID'
   [[ $target_uid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
     die 'target Node UID is malformed'
+  target_pod_cidr=$(jq -er '.spec.podCIDR' <<<"$target_node_json") ||
+    die 'target Node has no assigned PodCIDR'
+  fabric_validate_node_pod_cidr "$target_pod_cidr" ||
+    die 'target Node PodCIDR is outside the exact Fabric per-node range'
+  jq -e --arg pod_cidr "$target_pod_cidr" '
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr]
+  ' <<<"$target_node_json" >/dev/null ||
+    die 'target Node podCIDR and podCIDRs are not one exact IPv4 assignment'
   output_dir=$(realpath -m -- "$output_dir")
   case $output_dir in "$repo_root" | "$repo_root"/*) die 'lock receipt must remain outside Git' ;; esac
   [[ ! -e $output_dir && ! -L $output_dir ]] || die 'lock receipt output already exists'
@@ -216,11 +226,13 @@ if [[ $mode == acquire ]]; then
   work=$(mktemp -d -- "$output_parent/.fabric-node-day2-lock.XXXXXXXX")
   chmod 0700 "$work"
   jq -n --arg node "$node" --arg role "$FABRIC_NODE_ROLE" \
-    --arg target_uid "$target_uid" --arg commit "$repo_commit" --arg holder "$holder" \
+    --arg target_uid "$target_uid" --arg pod_cidr "$target_pod_cidr" \
+    --arg commit "$repo_commit" --arg holder "$holder" \
     --arg uid "$lock_uid" --arg rv "$lock_rv" \
     --arg acquired "$(date --utc --iso-8601=seconds)" '{
       schema: 1, purpose: "fabric-node-day-two", node: $node, role: $role,
-      targetNodeUid: $target_uid, repoCommit: $commit, holder: $holder,
+      targetNodeUid: $target_uid, targetNodePodCIDR: $pod_cidr,
+      repoCommit: $commit, holder: $holder,
       lock: {name: "fabric-maintenance-lock", namespace: "kube-system",
         uid: $uid, resourceVersion: $rv}, acquiredAt: $acquired
     }' >"$work/lock.json"
@@ -246,6 +258,10 @@ fi
 node=$(jq -r '.node' "$receipt_dir/lock.json")
 repo_commit=$(jq -r '.repoCommit' "$receipt_dir/lock.json")
 lock_uid=$(jq -r '.lock.uid' "$receipt_dir/lock.json")
+target_pod_cidr=$(jq -er '.targetNodePodCIDR' "$receipt_dir/lock.json") ||
+  die 'lock receipt has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$target_pod_cidr" ||
+  die 'lock receipt target Node PodCIDR is invalid'
 if [[ $mode == verify ]]; then
   [[ -z $confirmation ]] || die 'verify does not accept --confirm'
   printf 'LOCK VERIFIED node=%s uid=%s revision=%s\n' "$node" "$lock_uid" "$repo_commit"
@@ -262,8 +278,9 @@ if [[ $mode == abort ]]; then
        --ignore-not-found --output=name 2>/dev/null) ]] ||
     die 'abort is forbidden after an etcd replacement or Bootie session exists'
   target_uid=$(jq -r '.targetNodeUid' "$receipt_dir/lock.json")
-  jq -e --arg uid "$target_uid" '
+  jq -e --arg uid "$target_uid" --arg pod_cidr "$target_pod_cidr" '
     .metadata.uid == $uid and .metadata.deletionTimestamp == null and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     ((.metadata.labels["fabric.samcday.com/bootstrap-placeholder"] // "") == "") and
     ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
       length) == 1
@@ -314,6 +331,10 @@ else
       length) == 1
   ' <<<"$node_json" >/dev/null ||
     die 'target Node is not Ready at the receipt revision; refusing lock release'
+  jq -e --arg pod_cidr "$target_pod_cidr" '
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr]
+  ' <<<"$node_json" >/dev/null ||
+    die 'target Node did not preserve the lock-bound PodCIDR'
 fi
 
 if ! $lock_already_absent; then

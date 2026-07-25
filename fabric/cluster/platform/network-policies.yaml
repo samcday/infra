@@ -82,14 +82,15 @@ spec:
         - ipBlock:
             cidr: 10.66.0.254/32
         # A K3s server reaches remote Pod endpoints from its Flannel host
-        # address. Admit only the three root subnet-base addresses, never a
-        # root PodCIDR or the service-plane PodCIDRs.
+        # address. Admit only the three root subnet-base addresses. The day-two
+        # flow preserves each lock-bound Node PodCIDR across replacement, so
+        # this stays exact instead of widening to a PodCIDR or the service plane.
+        - ipBlock:
+            cidr: 172.22.10.0/32
         - ipBlock:
             cidr: 172.22.0.0/32
         - ipBlock:
             cidr: 172.22.1.0/32
-        - ipBlock:
-            cidr: 172.22.2.0/32
       ports:
         - port: 10250
           protocol: TCP

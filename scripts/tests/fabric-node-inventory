@@ -30,4 +30,15 @@ if fabric_load_node_inventory fabric-az1-nope >/dev/null 2>&1; then
   exit 1
 fi
 
+for valid_pod_cidr in 172.22.0.0/24 172.22.10.0/24 172.22.255.0/24; do
+  fabric_validate_node_pod_cidr "$valid_pod_cidr"
+done
+for invalid_pod_cidr in 172.22.0.1/24 172.22.256.0/24 172.23.1.0/24 \
+  172.22.1.0/25 ''; do
+  if fabric_validate_node_pod_cidr "$invalid_pod_cidr" >/dev/null 2>&1; then
+    printf 'invalid Fabric Node PodCIDR was accepted: %s\n' "$invalid_pod_cidr" >&2
+    exit 1
+  fi
+done
+
 printf 'validated the exact five-node Fabric day-two inventory\n'

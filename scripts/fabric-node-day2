@@ -152,6 +152,7 @@ if [[ $mode == check ]]; then
   bash -n "$script_path"
   [[ $(git -C "$repo_root" rev-parse --show-toplevel) == "$repo_root" ]] ||
     die 'script path does not resolve to the repository root'
+  "$script_dir/tests/fabric-node-inventory" >/dev/null
   "$script_dir/fabric-node-day2-lock" --check >/dev/null
   "$script_dir/drain-fabric-node" --check >/dev/null
   "$script_dir/quiesce-fabric-node" --check >/dev/null
@@ -181,6 +182,16 @@ expected_names=$(yq -o=json -I=0 '[.nodes[].name] | sort' \
 live_names=$(jq -c '[.items[].metadata.name] | sort' <<<"$nodes_json")
 [[ $live_names == "$expected_names" ]] ||
   die "live Node set differs from exact five-node inventory: $live_names"
+pod_cidrs=$(jq -r '.items[].spec.podCIDR' <<<"$nodes_json")
+while IFS= read -r pod_cidr; do
+  fabric_validate_node_pod_cidr "$pod_cidr" ||
+    die "live Node has an invalid Fabric PodCIDR: $pod_cidr"
+done <<<"$pod_cidrs"
+jq -e '
+  all(.items[]; .spec.podCIDRs == [.spec.podCIDR]) and
+  ([.items[].spec.podCIDR] | unique | length) == 5
+' <<<"$nodes_json" >/dev/null ||
+  die 'live Nodes do not have five unique, exact IPv4 PodCIDR assignments'
 
 node_ready() {
   local selected=$1
@@ -204,6 +215,7 @@ qualify_inventory_node() {
     ($matches[0] |
       .metadata.deletionTimestamp == null and
       .metadata.labels["fabric.samcday.com/config-revision"] == $revision and
+      .spec.podCIDRs == [.spec.podCIDR] and
       (.metadata.annotations["fabric.samcday.com/ignition-sha256"] |
         test("^[0-9a-f]{64}$")) and
       (.spec.unschedulable // false) == false and

@@ -73,6 +73,10 @@ lock_receipt=$(realpath -e -- "$lock_receipt")
 "$repo_root/scripts/fabric-node-day2-lock" verify --receipt-dir "$lock_receipt" >/dev/null
 lock_json=$lock_receipt/lock.json
 repo_commit=$(jq -r '.repoCommit' "$lock_json")
+pod_cidr=$(jq -er '.targetNodePodCIDR' "$lock_json") ||
+  die 'maintenance lock has no target Node PodCIDR'
+fabric_validate_node_pod_cidr "$pod_cidr" ||
+  die 'maintenance lock target Node PodCIDR is invalid'
 [[ $(jq -r '.node' "$lock_json") == "$node" &&
    $(jq -r '.role' "$lock_json") == "$role" ]] ||
   die 'maintenance lock receipt belongs to another node or role'
@@ -98,11 +102,12 @@ session_receipt=$(realpath -e -- "$session_receipt")
 receipt=$session_receipt/session.json
 jq -e --arg node "$node" --arg role "$role" --arg address "$expected_address" \
   --arg mac "$FABRIC_NODE_MAC" --arg repo "$repo_commit" \
-  --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" '
+  --arg lock_uid "$(jq -r '.lock.uid' "$lock_json")" --arg pod_cidr "$pod_cidr" '
   .schema == 1 and .purpose == "fabric-node-day-two-session-receipt" and
   .session.schema == 1 and .session.purpose == "fabric-node-day-two-session" and
   .session.node == $node and .session.role == $role and .session.address == $address and
   .session.mac == $mac and .session.repoCommit == $repo and .session.lockUid == $lock_uid and
+  .session.podCIDR == $pod_cidr and
   (.session.nodeUid | test("^[0-9a-f-]{36}$")) and
   (.session.ignitionSha256 | test("^[0-9a-f]{64}$")) and
   (.session.bootieImageDigest | test("^sha256:[0-9a-f]{64}$")) and
@@ -135,6 +140,7 @@ qualify_final_node() {
   local candidate=$1
   jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
     --arg mac "$mac_label" --arg role "$role" --arg repo "$repo_commit" \
+    --arg pod_cidr "$pod_cidr" \
     --arg ignition "$ignition_sha" --arg image_digest "$image_digest" \
     --arg image_revision "$image_revision" '
     .metadata.name == $node and .metadata.uid == $uid and
@@ -152,6 +158,7 @@ qualify_final_node() {
     ((.metadata.annotations["samcday.com/install"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
     ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+    .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
     (.spec.unschedulable // false) == false and
     ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
     ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] |
@@ -186,6 +193,7 @@ pre_final=false
 if jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
   --arg mac "$mac_label" --arg role "$role" --arg session_uid "$session_uid" \
   --arg repo "$repo_commit" --arg ignition "$ignition_sha" \
+  --arg pod_cidr "$pod_cidr" \
   --arg image_digest "$image_digest" --arg image_revision "$image_revision" '
   .metadata.name == $node and .metadata.uid == $uid and
   .metadata.deletionTimestamp == null and
@@ -202,6 +210,7 @@ if jq -e --arg node "$node" --arg uid "$node_uid" --arg ip "$expected_address" \
   ((.metadata.annotations["samcday.com/install"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-token"] // "") == "") and
   ((.metadata.annotations["samcday.com/ignition-mode"] // "") == "") and
+  .spec.podCIDR == $pod_cidr and .spec.podCIDRs == [$pod_cidr] and
   ([.status.addresses[]? | select(.type == "InternalIP") | .address] == [$ip]) and
   ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
   (.status.nodeInfo.machineID | type == "string" and length > 0) and
@@ -226,11 +235,13 @@ fi
 if $pre_final; then
   rv=$(jq -r '.metadata.resourceVersion' <<<"$node_json")
   patch=$(jq -cn --arg rv "$rv" --arg uid "$node_uid" --arg session_uid "$session_uid" \
-    --arg repo "$repo_commit" --arg role "$role" '[
+    --arg repo "$repo_commit" --arg role "$role" --arg pod_cidr "$pod_cidr" '[
       {"op":"test","path":"/metadata/resourceVersion","value":$rv},
       {"op":"test","path":"/metadata/uid","value":$uid},
       {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootie-session-uid","value":$session_uid},
       {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
+      {"op":"test","path":"/spec/podCIDR","value":$pod_cidr},
+      {"op":"test","path":"/spec/podCIDRs","value":[$pod_cidr]},
       {"op":"add","path":"/metadata/labels/fabric.samcday.com~1config-revision","value":$repo},
       {"op":"replace","path":"/spec/unschedulable","value":false}
     ] + (if $role == "service" then [{

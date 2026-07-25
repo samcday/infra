@@ -1407,9 +1407,9 @@ guard_live
                             {"ipBlock": {"cidr": "10.66.0.11/32"}},
                             {"ipBlock": {"cidr": "10.66.0.12/32"}},
                             {"ipBlock": {"cidr": "10.66.0.254/32"}},
+                            {"ipBlock": {"cidr": "172.22.10.0/32"}},
                             {"ipBlock": {"cidr": "172.22.0.0/32"}},
                             {"ipBlock": {"cidr": "172.22.1.0/32"}},
-                            {"ipBlock": {"cidr": "172.22.2.0/32"}},
                         ],
                         "ports": [{"port": 10250, "protocol": "TCP"}],
                     }

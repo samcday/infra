@@ -7,6 +7,13 @@ local FCOS disk. Reinstallation requires the global maintenance lock, a fresh
 placeholder Node UID, and one immutable `bootie/bootie-session` Secret. Bootie
 consumes both the install response and the Ignition token once.
 
+Lock acquisition also records the Node's exact assigned `/24` PodCIDR. The
+replacement placeholder carries that same `podCIDR`/`podCIDRs` pair before its
+kubelet joins, allowing NodeIPAM to occupy rather than reallocate it. Every
+retire, arm, reboot, close, finalize, unchanged-config attestation, and lock
+release binds the assignment. This keeps root Flannel source allowlists stable
+across Node UID replacement without admitting the whole cluster pod network.
+
 The normal operator surface is `scripts/fabric-node-day2`. Run one node at a
 time, in the order `svc1`, `svc2`, `cp1`, `cp2`, `cp3` for the first rollout.
 The NanoKVM is useful observation for cp1, but no routine step depends on a
