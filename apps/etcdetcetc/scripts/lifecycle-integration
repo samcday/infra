@@ -78,7 +78,7 @@ while (($#)); do
 done
 [[ -n $mode ]] || die 'choose exactly one of --check or --run'
 
-for command in base64 cargo curl docker jq kind kubectl openssl python3 sha256sum tar; do
+for command in base64 cargo curl docker jq kind kubectl openssl python3 sha256sum tar yq; do
   command -v "$command" >/dev/null || die "required command is unavailable: $command"
 done
 
@@ -93,8 +93,20 @@ $etcd_archive_url
 $etcd_archive_sha256" ]] || die 'repository etcd 3.6.13 archive pin differs from the lifecycle gate'
 
 [[ -f $app_dir/dev/certificate-crd.yaml ]] || die 'minimal Certificate CRD is absent'
-kubectl apply --dry-run=client --validate=false -f "$app_dir/dev/certificate-crd.yaml" \
-  >/dev/null || die 'minimal Certificate CRD is not valid Kubernetes YAML'
+yq -e '
+  .apiVersion == "apiextensions.k8s.io/v1" and
+  .kind == "CustomResourceDefinition" and
+  .metadata.name == "certificates.cert-manager.io" and
+  .spec.group == "cert-manager.io" and
+  .spec.scope == "Namespaced" and
+  .spec.names.kind == "Certificate" and
+  .spec.names.plural == "certificates" and
+  ([.spec.versions[] | select(
+    .name == "v1" and .served == true and .storage == true and
+    (.schema.openAPIV3Schema.type == "object")
+  )] | length) == 1
+' "$app_dir/dev/certificate-crd.yaml" >/dev/null ||
+  die 'minimal Certificate CRD differs from the exact local lifecycle fixture contract'
 
 if [[ $mode == check ]]; then
   printf 'validated lifecycle gate pins: etcd %s archive %s, kind %s image %s\n' \
