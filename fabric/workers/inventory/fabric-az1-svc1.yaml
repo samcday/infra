@@ -1,11 +1,11 @@
 node: fabric-az1-svc1
 state: admitted
 evidence:
-  inventory_sha256: 49b91c2a0698158f99f63e7b972281efeb3434055bbd8700af1c681e2497ef47
+  inventory_sha256: a55f49368569e4115a4a06482f82a458ecbd8e42cde9a4b7afc9f2460ddb6edf
 identity:
-  chassis_serial: S4FH7998
-  product_uuid: f3808900-3826-11e8-93aa-be5debc04900
-  permanent_mac: 6c:4b:90:50:9f:0d
+  chassis_serial: PC0UU0WD
+  product_uuid: d4168600-5a8b-11e8-a294-4d4c81794f00
+  permanent_mac: 6c:4b:90:6a:0c:8a
   tpm2_usable: true
 root_disk:
   by_id: /dev/disk/by-id/ata-SanDisk_SD9SB8W128G1001_182980802384
