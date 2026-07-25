@@ -11,6 +11,9 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 VERIFIER = REPO / "scripts" / "verify-fabric-etcd-pre-open"
 ROOT_POLICY = REPO / "scripts" / "rollout-fabric-root-firewall"
 ROUTER_POLICY = REPO / "scripts" / "rollout-fabric-router-etcd-policy"
+ADMIN_CERTIFICATE = (
+    REPO / "fabric" / "cluster" / "etcdetcetc" / "admin-certificate.yaml"
+)
 
 
 class EtcdPreOpenVerifierTests(unittest.TestCase):
@@ -120,6 +123,16 @@ class EtcdPreOpenVerifierTests(unittest.TestCase):
         self.assertIn("{.data.ca\\.crt}", self.source)
         self.assertNotIn("{.data.tls\\.key}", self.source)
         self.assertNotIn("tls.key}'", self.source)
+
+    def test_admin_leaf_lifetimes_match_the_committed_api_form(self) -> None:
+        certificate = ADMIN_CERTIFICATE.read_text(encoding="utf-8")
+        for manifest_value, live_predicate in (
+            ("duration: 24h", '.spec.duration == "24h"'),
+            ("renewBefore: 8h", '.spec.renewBefore == "8h"'),
+        ):
+            with self.subTest(manifest_value=manifest_value):
+                self.assertIn(manifest_value, certificate)
+                self.assertIn(live_predicate, self.source)
 
     def test_router_owned_lock_is_rechecked_at_both_boundaries(self) -> None:
         self.assertEqual(self.source.count("verify_lock_contract\n"), 2)
