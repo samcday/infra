@@ -3,4 +3,6 @@ kind: Kustomization
 resources:
   - release.yaml
   - flux-podmonitor.yaml
+  - pagerduty.yaml
+  - pagerduty-secret.yaml
   - rules/

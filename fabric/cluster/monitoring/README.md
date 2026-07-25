@@ -50,11 +50,12 @@ preflight and has no event-disable flag; that permission is intentionally
 denied, so it logs one startup warning and runs with Kubernetes event emission
 disabled rather than gaining cluster-wide write access.
 
-## Staged first activation
+## First activation
 
-The first reconciliation intentionally has no outbound Alertmanager receiver.
-`dms.yaml`, `pagerduty.yaml`, and the PagerDuty SOPS Secret are committed but
-omitted from `kustomization.yaml`, preventing installation noise from paging.
+The first reconciliation intentionally had no outbound Alertmanager receiver,
+preventing installation noise from paging while the root scrape path was
+qualified. PagerDuty is enabled after proving all nine root targets healthy on
+both Prometheus replicas and confirming no unexpected critical alert is firing.
 
 1. Reconcile the operator and monitoring children and inspect all targets and
    active critical alerts.
@@ -62,12 +63,13 @@ omitted from `kustomization.yaml`, preventing installation noise from paging.
    a time while the router still blocks the new aperture.
 3. Run `scripts/rollout-fabric-router-monitoring-policy` last, then prove all
    nine root targets are healthy and the root visibility alerts have cleared.
-4. Create the unique `fabric` Dead Man's Snitch, encrypt its callback into this
-   namespace, and add `dms.yaml` together with `pagerduty.yaml` and
-   `pagerduty-secret.yaml` to `kustomization.yaml`.
-5. Prove both Alertmanager replicas can notify, the Watchdog check-in is fresh,
-   and no unexpected critical alert is firing before calling activation done.
+4. Add `pagerduty.yaml` and `pagerduty-secret.yaml` to `kustomization.yaml`,
+   then prove the critical-alert fire and resolve path.
+5. Create a unique `fabric` Dead Man's Snitch, encrypt its callback into this
+   namespace, and add `dms.yaml` only after an additional snitch is available.
+   The current DMS account's one-snitch plan is already consumed by hub; never
+   reuse that callback because either cluster could mask the other's failure.
 
-Do not create the snitch substantially before step 4: its hourly missed-check
-clock begins at creation. Never open the root/router metrics aperture before
-all three root guards have accepted the same pushed policy revision.
+Do not create the snitch substantially before step 5: its hourly missed-check
+clock begins at creation. Never open the root/router metrics aperture before all
+three root guards have accepted the same pushed policy revision.
