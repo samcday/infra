@@ -315,6 +315,17 @@ grep -Fxq \
   echo 'K3s SELinux layering is not pinned to the offline RPM cache' >&2
   exit 1
 }
+verify_k3s_selinux_unit=$(yq -er '
+  .systemd.units[]
+  | select(.name == "verify-k3s-selinux.service")
+  | .contents
+' "$workdir/base.yaml")
+grep -Fxq \
+  'ExecStart=/usr/sbin/restorecon -RF /etc/systemd/system/k3s.service.d' \
+  <<<"$verify_k3s_selinux_unit" || {
+  echo 'K3s SELinux activation does not relabel the reviewed systemd drop-ins' >&2
+  exit 1
+}
 
 if [[ $(grep -Fc "Environment=CLUSTER_STATE=$cluster_state" "$workdir/etcd.yaml") != 1 ]]; then
   echo "etcd.yaml does not declare the selected cluster state: $cluster_state" >&2

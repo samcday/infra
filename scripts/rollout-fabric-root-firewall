@@ -550,8 +550,12 @@ verify_installed_dropin() {
     die "$full_node installed systemd drop-in cannot be hashed: $target"
   [[ $installed_hash == "$expected_hash" ]] ||
     die "$full_node installed systemd drop-in differs from Git: $target"
-  "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V "$target" \
-    >/dev/null || die "$full_node installed systemd drop-in has the wrong security context: $target"
+  if ! "${ssh[@]}" sudo --non-interactive /usr/bin/matchpathcon -V "$target" \
+      >/dev/null; then
+    $allow_k3s_dropin_context_repair ||
+      die "$full_node installed systemd drop-in has the wrong security context: $target"
+    k3s_dropin_context_repair_required=true
+  fi
 }
 
 verify_live_k3s_unit() {
@@ -595,6 +599,28 @@ verify_live_k3s_unit() {
   [[ -z $binds_to && -z $part_of && -z $requisite &&
      -z $stop_propagated_from ]] ||
     die "$full_node K3s service has an unreviewed reverse-stop dependency"
+}
+
+allow_k3s_dropin_context_repair=false
+k3s_dropin_context_repair_required=false
+
+repair_k3s_dropin_contexts() {
+  local target
+  $k3s_dropin_context_repair_required || return 0
+
+  # Recheck every immutable property under the global maintenance lock before
+  # making the monotonic policy-default label repair. A failed later policy
+  # rollout may leave these labels corrected; it never restores a stale label.
+  allow_k3s_dropin_context_repair=true
+  verify_live_k3s_unit
+  allow_k3s_dropin_context_repair=false
+  for target in "$k3s_firewall_dropin_path" "$k3s_quorum_dropin_path" \
+      "$k3s_etcd_dropin_path"; do
+    "${ssh[@]}" sudo --non-interactive /usr/sbin/restorecon -F "$target" \
+      >/dev/null || die "$full_node could not repair the reviewed K3s drop-in context: $target"
+  done
+  k3s_dropin_context_repair_required=false
+  verify_live_k3s_unit
 }
 
 lease_proof_uid=
@@ -862,7 +888,9 @@ firewall_file_metadata_before=$("${ssh[@]}" sudo --non-interactive /usr/bin/stat
 [[ $firewall_file_metadata_before == '0:0:644:1:regular file' ]] ||
   die "$full_node installed firewall policy metadata is unsafe before rollout: $firewall_file_metadata_before"
 
+allow_k3s_dropin_context_repair=true
 assert_control_plane_health
+allow_k3s_dropin_context_repair=false
 validate_service_route
 route_interface_before=$route_interface
 [[ $("${ssh[@]}" /usr/sbin/sysctl -n net.ipv4.ip_forward) == 1 ]] ||
@@ -1049,6 +1077,7 @@ trap 'exit 143' TERM
 
 # Revalidate every preflight that protects the mutation after acquiring the
 # global lock; an earlier probe may have overlapped a just-finishing operation.
+repair_k3s_dropin_contexts
 assert_firewall_loader_provenance
 assert_maintenance_window_closed
 assert_control_plane_health

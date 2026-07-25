@@ -1054,6 +1054,25 @@ class SystemdRollbackStateProtocolTests(unittest.TestCase):
                 self.assertIn(dynamic_expected, text)
                 self.assertNotIn(dynamic_stale, text)
 
+    def test_root_firewall_repairs_only_exact_k3s_dropin_contexts_under_lock(self) -> None:
+        text = self.helpers["root-firewall"]["text"]
+        repair = self.function(text, "repair_k3s_dropin_contexts")
+        for path in (
+            '"$k3s_firewall_dropin_path"',
+            '"$k3s_quorum_dropin_path"',
+            '"$k3s_etcd_dropin_path"',
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, repair)
+        self.assertIn("verify_live_k3s_unit", repair)
+        self.assertIn('/usr/sbin/restorecon -F "$target"', repair)
+        self.assertIn("k3s_dropin_context_repair_required=false", repair)
+        preflight = text.index("allow_k3s_dropin_context_repair=true\n")
+        lock = text.index('create configmap "$lock_name"', preflight)
+        repair_call = text.index("\nrepair_k3s_dropin_contexts\n", lock)
+        self.assertLess(preflight, lock)
+        self.assertLess(lock, repair_call)
+
     def test_terminal_states_follow_live_proof_target_sync_and_deadline(
         self,
     ) -> None:

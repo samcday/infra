@@ -36,7 +36,7 @@ storage:
           mode: 384
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:PGM3g6q5IBZD+M4y6+ZnCkiVoYiAgQxFinczB/L6JXxv+zZwEwhOUDc4/cE5rGi3tCrK4Ky9z18Hz4DLCYLQsxY=,iv:zMH1E3IHZ568AIoc7M60H70lukhous6yD9hKqvlXcU8=,tag:4Zlya88i543lSCGWkbQxCw==,type:str]
+            inline: ENC[AES256_GCM,data:8kOsPyiVgg2TyYMjCvX5u+Ym+juDt/yFuWw9jcB0GV/0b/1Kzom7lD4uhOxKrXggnbnlEzwEQX5WOxkWqDYOc/0=,iv:lzs2lgwdnTpw7hHcdPltrVBV4TzKtwtbFLT5BLfUdEs=,tag:v5EE7tI0OAhpxFdUSAvWaA==,type:str]
         - path: /usr/local/sbin/enroll-fabric-root-recovery
           overwrite: true
           mode: 493
@@ -239,6 +239,7 @@ systemd:
             ExecStart=/usr/bin/test -s /usr/share/selinux/packages/k3s.pp
             ExecStart=/usr/bin/sh -ceu '/usr/sbin/semodule -l | /usr/bin/grep -Eq "^k3s([[:space:]]|$)"'
             ExecStart=/usr/sbin/restorecon -F /usr/local/bin/k3s
+            ExecStart=/usr/sbin/restorecon -RF /etc/systemd/system/k3s.service.d
             ExecStart=/usr/bin/touch /var/lib/fabric/k3s-selinux-ready
 
             [Install]
@@ -267,13 +268,13 @@ sops:
         - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBIbVV6dkZYSUk2VFhkbGZi
-            bEtyVVBVNlFKbGgrU3RNTUpialhmNk94VVNRCisyU3hncFI3dVB2UUoza2JMWnhi
-            R0dYR1YydTVkeHc5dXlIcGpOYWxmWTgKLS0tIEdMSXFidGZsRG9KRms0SGJScXNh
-            RW56UGZlelpueUhFZ2VCemh3UGVzMXcKpjjTGYCgH21UHls+jcG3dGIKZjKwdmB+
-            NxzfonJeicQUbUoRgiVnkOkVDjvRvrGxhp79u10g9savw0lJkO648Q==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBjbkQwOWU4MTI4UmRTdDlW
+            RkhSZVczK2g4aCt6QnhWYzJQMFh1dFVsclNFCk1wWkFNWmt4bFNZUzh1Q0NGV2hy
+            MFZOTkxSY0plY1UvNElpeUpNWUFzNHcKLS0tIC9jdmRFZ0U2Y0M2SGN0ZUxUNDNK
+            WSs3UC9QanYxN3A5clhLNUJTZ1RNdDQKowDc44HkPEFnC23Nq4e6o8d7yTNAAi/G
+            HhYPvi5J5rGCsccsW/H8fwyt67LY3bCwVjgdf5oG9B0Mcas3BTod2g==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-07-20T07:32:01Z"
-    mac: ENC[AES256_GCM,data:BatvaveRqNQso4YTSbcgcO5d8oa5hizXeno+W+ZVpY/CXmstVtzzqmmmDxTaqSZic5Tq9kboq8Z1eHfKJsN20QHpBp3Lz7UCUIDVM9bO6UyrVS4xLnT9D+iyd0ueCcp7wOUfFSgGCZpvY5GT1CrHD7QI406Yv7y61y1O7A9H/i0=,iv:AphXzZhypJyqwDbhXrzspnf034VWnYEgPBu1mAaYP+w=,tag:ND+mh1Uswb7/P8wI9w4F6A==,type:str]
+    lastmodified: "2026-07-25T07:11:28Z"
+    mac: ENC[AES256_GCM,data:AX6JRI9zhyrvbTib1T8/+W4RLT+EEbcocIRnDGJFAcLPSDRivLNwOlVgUzC5z1VlOGEYk37hBbBzZ5HCsOPxFbzgvzPmVveTEWaGcq0d+3Imb/77RYDCOrcPeirSref5ENU/XOP6CBeG4tjkthZ6vgLDj0nm3DOx+n6o5LuYrIU=,iv:tLe1wPdPqmRlh3N3eDr6OdnjV29Ym9R3PGeAly7qxOI=,tag:qkyZzP158PtaaNM6wECvew==,type:str]
     encrypted_comment_regex: cryptme
     version: 3.11.0
