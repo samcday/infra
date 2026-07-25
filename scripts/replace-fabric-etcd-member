@@ -51,8 +51,12 @@ endpoints, the learner ID/name/peer URL, empty alarms, and etcd 3.6.13 before
 promoting it. A promotion intent likewise makes the same command safe to retry
 whether the target is still a learner or is already the receipt-bound voter.
 Confirmation hashes contain stable topology and identity fields, not live KV
-or Raft counters. Both phases keep the shared maintenance lock. Credentials are
-the offline root identity decrypted only on local verified tmpfs; all network
+or Raft counters. The observed etcd auth mode is bound into both intents and
+must remain unchanged. When auth is enabled the offline TLS-CN root user must
+still have exactly the built-in root role; the documented pre-auth bootstrap
+state is also supported because mutual TLS and the host/network policy remain
+mandatory. Both phases keep the shared maintenance lock. Credentials are the
+offline root identity decrypted only on local verified tmpfs; all network
 access uses supervised loopback-only SSH forwards. Snapshot storage must be a
 caller-owned mode-0700 directory outside Git on encrypted durable storage.
 EOF
@@ -92,12 +96,13 @@ classify_membership() {
 
 replacement_prestate_json() {
   local target_node=$1 old_id=$2 target_peer=$3 commit=$4 lock_uid=$5
-  local members=$6 status=$7
+  local auth_mode=$6 members=$7 status=$8
   jq -cnS --arg node "$target_node" --arg old_id "$old_id" \
     --arg peer "$target_peer" --arg commit "$commit" --arg lock_uid "$lock_uid" \
-    --argjson members "$members" --argjson status "$status" '{
+    --arg auth_mode "$auth_mode" --argjson members "$members" \
+    --argjson status "$status" '{
       node:$node, oldMemberId:$old_id, peerURL:$peer, repoCommit:$commit,
-      lockUid:$lock_uid,
+      lockUid:$lock_uid, authMode:$auth_mode,
       members:([$members.members[] | {
         id:.ID, name, peerURLs, clientURLs,
         isLearner:(.isLearner // false)
@@ -110,11 +115,13 @@ replacement_prestate_json() {
 }
 
 promotion_prestate_json() {
-  local target_node=$1 learner_id=$2 commit=$3 lock_uid=$4 members=$5 status=$6
+  local target_node=$1 learner_id=$2 commit=$3 lock_uid=$4 auth_mode=$5
+  local members=$6 status=$7
   jq -cnS --arg node "$target_node" --arg learner "$learner_id" \
-    --arg commit "$commit" --arg lock_uid "$lock_uid" \
+    --arg commit "$commit" --arg lock_uid "$lock_uid" --arg auth_mode "$auth_mode" \
     --argjson members "$members" --argjson status "$status" '{
       node:$node, learnerMemberId:$learner, repoCommit:$commit, lockUid:$lock_uid,
+      authMode:$auth_mode,
       members:([$members.members[] | {
         id:.ID, name, peerURLs, clientURLs,
         isLearner:(.isLearner // false)
@@ -125,6 +132,16 @@ promotion_prestate_json() {
         isLearner:(.Status.isLearner // false)
       }] | sort_by(.endpoint))
     }'
+}
+
+classify_auth_mode() {
+  local auth=$1
+  jq -er '
+    if .enabled == true then "enabled"
+    elif .enabled == false then "disabled"
+    else empty
+    end
+  ' <<<"$auth"
 }
 
 mode=
@@ -195,12 +212,17 @@ if [[ $mode == check ]]; then
   fixture_replace_prestate=$(replacement_prestate_json fabric-az1-cp1 \
     1111111111111111 https://fabric-az1-cp1.fabric.internal:2380 \
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
-    "$fixture_members" "$fixture_status")
+    enabled "$fixture_members" "$fixture_status")
   [[ $fixture_replace_prestate == "$(replacement_prestate_json fabric-az1-cp1 \
     1111111111111111 https://fabric-az1-cp1.fabric.internal:2380 \
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
-    "$fixture_members" "$fixture_changed_status")" ]] ||
+    enabled "$fixture_members" "$fixture_changed_status")" ]] ||
     die 'replacement confirmation prestate includes volatile etcd counters'
+  [[ $fixture_replace_prestate != "$(replacement_prestate_json fabric-az1-cp1 \
+    1111111111111111 https://fabric-az1-cp1.fabric.internal:2380 \
+    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
+    disabled "$fixture_members" "$fixture_status")" ]] ||
+    die 'replacement confirmation does not bind etcd auth mode'
   fixture_learner_members=$(jq '.members[0].isLearner=true' <<<"$fixture_members")
   fixture_learner_status=$(jq '.[0].Status.isLearner=true' <<<"$fixture_status")
   fixture_changed_learner_status=$(jq \
@@ -208,12 +230,17 @@ if [[ $mode == check ]]; then
     <<<"$fixture_learner_status")
   fixture_promote_prestate=$(promotion_prestate_json fabric-az1-cp1 3333333333333333 \
     aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 22222222-3333-4444-5555-666666666666 \
-    "$fixture_learner_members" "$fixture_learner_status")
+    enabled "$fixture_learner_members" "$fixture_learner_status")
   [[ $fixture_promote_prestate == "$(promotion_prestate_json fabric-az1-cp1 \
     3333333333333333 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-    22222222-3333-4444-5555-666666666666 "$fixture_learner_members" \
+    22222222-3333-4444-5555-666666666666 enabled "$fixture_learner_members" \
     "$fixture_changed_learner_status")" ]] ||
     die 'promotion confirmation prestate includes volatile etcd counters'
+  [[ $(classify_auth_mode '{"enabled":true}') == enabled &&
+     $(classify_auth_mode '{"enabled":false}') == disabled ]] ||
+    die 'etcd auth mode classifier rejected a boolean mode'
+  ! classify_auth_mode '{}' >/dev/null ||
+    die 'etcd auth mode classifier accepted an absent mode'
   printf 'validated the snapshot-backed same-name etcd learner replacement helper\n'
   exit 0
 fi
@@ -458,11 +485,14 @@ member_json=$(query "$survivor_endpoints" --write-out=json member list) ||
   die 'cannot read structured etcd membership'
 auth_json=$(query "$survivor_endpoints" --write-out=json auth status) ||
   die 'cannot read etcd auth status'
-jq -e '.enabled == true' <<<"$auth_json" >/dev/null || die 'etcd auth is not enabled'
-root_user=$(query "$survivor_endpoints" --write-out=json user get root) ||
-  die 'cannot verify reserved root user'
-jq -e '.roles == ["root"]' <<<"$root_user" >/dev/null ||
-  die 'offline TLS CN root no longer has exactly the root role'
+auth_mode=$(classify_auth_mode "$auth_json") ||
+  die 'etcd auth status has no boolean mode'
+if [[ $auth_mode == enabled ]]; then
+  root_user=$(query "$survivor_endpoints" --write-out=json user get root) ||
+    die 'cannot verify reserved root user'
+  jq -e '.roles == ["root"]' <<<"$root_user" >/dev/null ||
+    die 'offline TLS CN root no longer has exactly the root role'
+fi
 
 if [[ $mode == plan-replace || $mode == replace ]]; then
   survivor_status=$(assert_survivors) || die 'surviving etcd voters are degraded'
@@ -478,11 +508,12 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
        $(stat -Lc '%u:%g:%a:%h' "$member_receipt") == "$(id -u):$(id -g):600:1" ]] ||
       die 'etcd replacement intent receipt is unsafe'
     jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
-      --arg peer "$target_peer_url" '
-      .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+      --arg peer "$target_peer_url" --arg auth_mode "$auth_mode" '
+      .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
       (.state == "replacement-planned" or .state == "learner-added") and
       .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
-      .peerURL == $peer and (.removedMemberId | test("^[0-9a-f]{16}$")) and
+      .peerURL == $peer and .authMode == $auth_mode and
+      (.removedMemberId | test("^[0-9a-f]{16}$")) and
       (.replacePrestateSha256 | test("^[0-9a-f]{64}$")) and
       (.snapshot.path | type == "string" and length > 0) and
       (.snapshot.sha256 | test("^[0-9a-f]{64}$")) and
@@ -511,13 +542,13 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
     [[ $old_member_id =~ ^[0-9a-f]{16}$ ]] ||
       die 'could not bind the target member exact hexadecimal ID'
     prestate=$(replacement_prestate_json "$node" "$old_member_id" "$target_peer_url" \
-      "$repo_commit" "$lock_uid" "$member_json" "$survivor_status")
+      "$repo_commit" "$lock_uid" "$auth_mode" "$member_json" "$survivor_status")
     prestate_sha256=$(printf '%s' "$prestate" | sha256sum | awk '{print $1}')
   fi
   expected_confirmation="REPLACE-ETCD-MEMBER:$node:$old_member_id:$prestate_sha256"
   if [[ $mode == plan-replace ]]; then
-    printf 'ETCD REPLACE READY node=%s old-id=%s gateway=%s state=%s\n' \
-      "$node" "$old_member_id" "$gateway" "$replacement_state"
+    printf 'ETCD REPLACE READY node=%s old-id=%s gateway=%s state=%s auth=%s\n' \
+      "$node" "$old_member_id" "$gateway" "$replacement_state" "$auth_mode"
     printf 'Exact live confirmation: %s\n' "$expected_confirmation"
     exit 0
   fi
@@ -556,11 +587,11 @@ if [[ $mode == plan-replace || $mode == replace ]]; then
     jq -n --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
       --arg removed_id "$old_member_id" --arg peer "$target_peer_url" \
       --arg snapshot "$snapshot_path" --arg snapshot_sha "$snapshot_sha256" \
-      --arg prestate_sha "$prestate_sha256" \
+      --arg prestate_sha "$prestate_sha256" --arg auth_mode "$auth_mode" \
       --arg planned "$(date --utc --iso-8601=seconds)" '{
-        schema:1, purpose:"fabric-etcd-member-day-two", state:"replacement-planned",
+        schema:2, purpose:"fabric-etcd-member-day-two", state:"replacement-planned",
         node:$node, repoCommit:$commit, lockUid:$lock_uid,
-        removedMemberId:$removed_id, peerURL:$peer,
+        removedMemberId:$removed_id, peerURL:$peer, authMode:$auth_mode,
         snapshot:{path:$snapshot, sha256:$snapshot_sha},
         replacePrestateSha256:$prestate_sha, replacementPlannedAt:$planned
       }' >"$member_receipt_tmp"
@@ -633,12 +664,13 @@ fi
 member_receipt=$lock_receipt/etcd-member.json
 [[ -f $member_receipt && ! -L $member_receipt ]] || die 'etcd learner receipt is absent'
 jq -e --arg node "$node" --arg commit "$repo_commit" --arg lock_uid "$lock_uid" \
-  --arg peer "$target_peer_url" '
-  .schema == 1 and .purpose == "fabric-etcd-member-day-two" and
+  --arg peer "$target_peer_url" --arg auth_mode "$auth_mode" '
+  .schema == 2 and .purpose == "fabric-etcd-member-day-two" and
   (.state == "learner-added" or .state == "promotion-planned" or
     .state == "promoted") and
   .node == $node and .repoCommit == $commit and .lockUid == $lock_uid and
-  .peerURL == $peer and (.removedMemberId | test("^[0-9a-f]{16}$")) and
+  .peerURL == $peer and .authMode == $auth_mode and
+  (.removedMemberId | test("^[0-9a-f]{16}$")) and
   (.learnerMemberId | test("^[0-9a-f]{16}$")) and
   .learnerMemberId != .removedMemberId and
   (if .state == "learner-added" then (.promotePrestateSha256 // null) == null
@@ -681,15 +713,16 @@ esac
 
 if [[ $promotion_state == learner-added ]]; then
   promote_prestate=$(promotion_prestate_json "$node" "$learner_member_id" \
-    "$repo_commit" "$lock_uid" "$member_json" "$status_all")
+    "$repo_commit" "$lock_uid" "$auth_mode" "$member_json" "$status_all")
   promote_prestate_sha256=$(printf '%s' "$promote_prestate" | sha256sum | awk '{print $1}')
 else
   promote_prestate_sha256=$(jq -r '.promotePrestateSha256' "$member_receipt")
 fi
 expected_confirmation="PROMOTE-ETCD-MEMBER:$node:$learner_member_id:$promote_prestate_sha256"
 if [[ $mode == plan-promote ]]; then
-  printf 'ETCD PROMOTION READY node=%s learner-id=%s gateway=%s state=%s live-role=%s\n' \
-    "$node" "$learner_member_id" "$gateway" "$promotion_state" "$membership_state"
+  printf 'ETCD PROMOTION READY node=%s learner-id=%s gateway=%s state=%s live-role=%s auth=%s\n' \
+    "$node" "$learner_member_id" "$gateway" "$promotion_state" "$membership_state" \
+    "$auth_mode"
   printf 'Exact live confirmation: %s\n' "$expected_confirmation"
   exit 0
 fi

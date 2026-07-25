@@ -20,7 +20,11 @@ For one node, the flow is:
    same-name member back as a learner after a validated snapshot. The helper
    writes its snapshot-bound intent before changing membership; rerun the same
    command and confirmation after an interruption. It resumes only from the
-   exact old-voter, two-survivor, or receipt-bound learner topology.
+   exact old-voter, two-survivor, or receipt-bound learner topology. Both the
+   documented pre-auth bootstrap state and the later authenticated state are
+   supported: the observed mode is bound into the replacement and promotion
+   intents, and an enabled cluster additionally requires the offline TLS-CN
+   root user to retain exactly the built-in root role.
 4. `retire plan` and `retire apply` delete only the stopped Node/password
    receipt UIDs.
 5. `prepare` renders the selected node's Ignition on tmpfs. For a service node
