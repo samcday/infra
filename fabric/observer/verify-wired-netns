@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+readonly namespace=fabric-observer
+readonly observer_address=10.66.0.2/24
+readonly observer_subnet=10.66.0.0/24
+readonly services_subnet=10.66.1.0/24
+readonly services_gateway=10.66.0.1
+readonly resolv_conf_line='# fabric-observer intentionally has no DNS configuration'
+readonly nsswitch_contents=$'passwd: files\ngroup: files\nshadow: files\ngshadow: files\nhosts: files\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\nnetgroup: files\nautomount: files\naliases: files'
+
+die() {
+  printf 'verify-wired-netns: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Verify the temporary wired Fabric observer namespace without changing it.
+
+Usage:
+  sudo fabric/observer/verify-wired-netns \
+    --interface enp50s0u2 \
+    --permanent-mac 00:e0:4c:68:05:36
+EOF
+}
+
+interface=
+permanent_mac=
+while (($#)); do
+  case $1 in
+    --interface)
+      (($# >= 2)) || die '--interface requires a value'
+      [[ -z $interface ]] || die '--interface may be specified only once'
+      interface=$2
+      shift 2
+      ;;
+    --permanent-mac)
+      (($# >= 2)) || die '--permanent-mac requires a value'
+      [[ -z $permanent_mac ]] || die '--permanent-mac may be specified only once'
+      permanent_mac=${2,,}
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || die 'run this verifier with sudo'
+[[ $interface =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die 'interface has an invalid shape'
+[[ $permanent_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+  die 'permanent MAC has an invalid shape'
+for command in awk ethtool getent grep ip jq nft sed stat sysctl; do
+  command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
+done
+
+[[ -f /run/netns/$namespace && ! -L /run/netns/$namespace ]] ||
+  die 'observer namespace handle is missing or unsafe'
+[[ $(stat -Lc '%u:%g:%a:%F' -- /run/netns/$namespace) == '0:0:444:regular empty file' ]] ||
+  die 'observer namespace handle has unsafe metadata'
+[[ ! -e /sys/class/net/$interface ]] ||
+  die 'wired observer interface leaked into the root namespace'
+
+link_json=$(ip -n "$namespace" -j link show) || die 'cannot inspect observer links'
+jq -e --arg interface "$interface" --arg mac "$permanent_mac" '
+  length == 2 and
+  any(.[];
+    .ifname == "lo" and .link_type == "loopback" and
+    (.flags | index("UP")) != null
+  ) and
+  any(.[];
+    .ifname == $interface and .link_type == "ether" and
+    .address == $mac and .operstate == "UP" and
+    (.flags | index("UP")) != null and
+    (.flags | index("LOWER_UP")) != null
+  )
+' <<<"$link_json" >/dev/null || die 'observer links differ from the exact wired shape'
+
+actual_permanent_mac=$(ip netns exec "$namespace" ethtool -P "$interface" |
+  awk '/^Permanent address: / { print $3; exit }') ||
+  die 'cannot inspect wired observer permanent MAC'
+[[ ${actual_permanent_mac,,} == "$permanent_mac" ]] ||
+  die 'wired observer permanent MAC changed unexpectedly'
+
+address_json=$(ip -n "$namespace" -j -4 address show scope global) ||
+  die 'cannot inspect observer addresses'
+jq -e --arg interface "$interface" '
+  length == 1 and
+  .[0].ifname == $interface and
+  (.[0].addr_info | length) == 1 and
+  .[0].addr_info[0] == {
+    family: "inet",
+    local: "10.66.0.2",
+    prefixlen: 24,
+    scope: "global",
+    label: $interface,
+    valid_life_time: 4294967295,
+    preferred_life_time: 4294967295
+  }
+' <<<"$address_json" >/dev/null || die "wired observer must have only $observer_address"
+[[ -z $(ip -n "$namespace" -o -6 address show) ]] ||
+  die 'IPv6 address exists in observer namespace'
+
+route_output=$(ip -n "$namespace" -o -4 route show table all |
+  sed 's/[[:space:]]*$//') || die 'cannot inspect observer routes'
+expected_routes=$(printf '%s\n' \
+  "$observer_subnet dev $interface proto kernel scope link src 10.66.0.2" \
+  "$services_subnet via $services_gateway dev $interface proto static src 10.66.0.2" \
+  "local 10.66.0.2 dev $interface table local proto kernel scope host src 10.66.0.2" \
+  "broadcast 10.66.0.255 dev $interface table local proto kernel scope link src 10.66.0.2" \
+  'local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1' \
+  'local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1' \
+  'broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1')
+[[ $route_output == "$expected_routes" ]] ||
+  die 'observer IPv4 routes differ from the exact connected/local allowlist'
+[[ -z $(ip -n "$namespace" -o -6 route show table all) ]] ||
+  die 'IPv6 route exists in observer namespace'
+
+rules4=$(ip -n "$namespace" -o -4 rule show | awk '{$1=$1; print}')
+[[ $rules4 == $'0: from all lookup local\n32766: from all lookup main\n32767: from all lookup default' ]] ||
+  die 'observer namespace has unexpected IPv4 policy-routing rules'
+rules6=$(ip -n "$namespace" -o -6 rule show | awk '{$1=$1; print}')
+[[ $rules6 == $'0: from all lookup local\n32766: from all lookup main' ]] ||
+  die 'observer namespace has unexpected IPv6 policy-routing rules'
+ip -n "$namespace" -4 route get 10.66.0.1 | grep -q \
+  "dev $interface .*src 10.66.0.2" || die 'router route does not select the wired observer'
+ip -n "$namespace" -4 route get 10.66.1.10 | grep -q \
+  "via $services_gateway dev $interface .*src 10.66.0.2" ||
+  die 'service route does not select the wired observer'
+if ip -n "$namespace" -4 route get 1.1.1.1 >/dev/null 2>&1; then
+  die 'observer namespace unexpectedly has a public route'
+fi
+
+for key in \
+  net.ipv4.ip_forward \
+  net.ipv4.conf.all.forwarding \
+  net.ipv4.conf.default.forwarding \
+  "net.ipv4.conf.$interface.forwarding" \
+  net.ipv4.conf.all.accept_redirects \
+  net.ipv4.conf.default.accept_redirects \
+  "net.ipv4.conf.$interface.accept_redirects" \
+  net.ipv4.conf.all.secure_redirects \
+  net.ipv4.conf.default.secure_redirects \
+  "net.ipv4.conf.$interface.secure_redirects" \
+  net.ipv4.conf.all.proxy_arp \
+  net.ipv4.conf.default.proxy_arp \
+  "net.ipv4.conf.$interface.proxy_arp" \
+  net.ipv6.conf.all.forwarding \
+  net.ipv6.conf.default.forwarding; do
+  [[ $(ip netns exec "$namespace" sysctl -n "$key") == 0 ]] ||
+    die "observer namespace sysctl must be zero: $key"
+done
+for key in \
+  net.ipv6.conf.all.disable_ipv6 \
+  net.ipv6.conf.default.disable_ipv6 \
+  net.ipv6.conf.lo.disable_ipv6 \
+  "net.ipv6.conf.$interface.disable_ipv6"; do
+  [[ $(ip netns exec "$namespace" sysctl -n "$key") == 1 ]] ||
+    die "observer namespace sysctl must be one: $key"
+done
+
+[[ -d /etc/netns/$namespace && ! -L /etc/netns/$namespace ]] ||
+  die 'observer namespace resolver directory is missing or unsafe'
+[[ $(stat -Lc '%u:%g:%a' -- /etc/netns/$namespace) == 0:0:755 ]] ||
+  die 'observer namespace resolver directory has unsafe metadata'
+for file in resolv.conf nsswitch.conf; do
+  [[ -f /etc/netns/$namespace/$file && ! -L /etc/netns/$namespace/$file ]] ||
+    die "observer $file is missing or unsafe"
+  [[ $(stat -Lc '%u:%g:%a:%h' -- /etc/netns/$namespace/$file) == 0:0:644:1 ]] ||
+    die "observer $file has unsafe metadata"
+done
+[[ $(</etc/netns/$namespace/resolv.conf) == "$resolv_conf_line" ]] ||
+  die 'observer resolver override has unexpected content'
+[[ $(</etc/netns/$namespace/nsswitch.conf) == "$nsswitch_contents" ]] ||
+  die 'observer NSS override has unexpected content'
+if ip netns exec "$namespace" getent ahostsv4 example.com >/dev/null 2>&1; then
+  die 'hostname resolution escaped the observer namespace'
+fi
+
+ruleset=$(ip netns exec "$namespace" nft -nn list ruleset) ||
+  die 'cannot inspect observer packet-filter state'
+[[ -z $ruleset ]] || die 'observer namespace contains packet-filter or NAT state'
+printf 'FABRIC_WIRED_OBSERVER=pass interface=%s permanent-mac=%s\n' \
+  "$interface" "$permanent_mac"

@@ -407,6 +407,8 @@ sudo scripts/rollout-fabric-router-etcd-policy \
   --check \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
   --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
+  --wired-observer-interface enp50s0u2 \
+  --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
   --identity /var/home/sam/.ssh/id_ed25519
 
 # Copy the revision-and-payload confirmation printed by --check exactly.
@@ -414,6 +416,8 @@ sudo scripts/rollout-fabric-router-etcd-policy \
   --run \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
   --etcdctl /dev/shm/PRIVATE-DIR/etcdctl \
+  --wired-observer-interface enp50s0u2 \
+  --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
   --identity /var/home/sam/.ssh/id_ed25519 \
   --confirm 'ROLLOUT-FABRIC-ROUTER-ETCD-POLICY:<pushed-main-commit>:<payload-sha256>'
 ```
@@ -422,7 +426,10 @@ sudo scripts/rollout-fabric-router-etcd-policy \
 private mode-0700 tmpfs directory. The helper requires the binary itself to be
 operator-owned, mode 0755, single-link, and byte-identical to the repository's
 checksum-pinned archive before placing that directory first in the
-unprivileged verifier's explicit PATH. Both modes require a clean checkout
+unprivileged verifier's explicit PATH. The example's paired wired-observer
+arguments select the temporary USB-Ethernet verifier and bind it to the named
+interface and permanent MAC; omit both arguments when using the canonical
+Wi-Fi observer helper. Both modes require a clean checkout
 exactly at fetched `origin/main`, run the
 complete read-only `verify-fabric-etcd-pre-open` contract, prove the committed
 and live root guards, verify observer isolation, pin the first SSH connection

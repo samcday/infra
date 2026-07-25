@@ -16,6 +16,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).parents[3]
 HELPER = REPO_ROOT / "scripts" / "rollout-fabric-router-etcd-policy"
+WIRED_OBSERVER = REPO_ROOT / "fabric" / "observer" / "verify-wired-netns"
 TRANSITION = REPO_ROOT / "fabric" / "router" / "etcd-client-transition.uci"
 FENCE_GUARD = REPO_ROOT / "fabric" / "router" / "etcd-client-fence.nft"
 DESIRED = (
@@ -90,6 +91,7 @@ class EtcdPolicyRolloutTests(unittest.TestCase):
 
     def test_scripts_are_syntactically_valid(self) -> None:
         subprocess.run(["bash", "-n", str(HELPER)], check=True)
+        subprocess.run(["bash", "-n", str(WIRED_OBSERVER)], check=True)
         heredocs = re.findall(
             r"<<'(?P<tag>REMOTE_[A-Z_]+)'(?: \|\| true)?\n(?P<body>.*?)\n(?P=tag)",
             self.helper,
@@ -1193,6 +1195,34 @@ guard_live
         validate = self.helper.index("\nvalidate_etcdctl\n")
         preflight = self.helper.index("\nverify_pre_open_contract preflight\n")
         self.assertLess(validate, preflight)
+
+    def test_wired_observer_is_an_explicit_exact_alternative(self) -> None:
+        verifier = WIRED_OBSERVER.read_text(encoding="utf-8")
+        for required in (
+            "readonly namespace=fabric-observer",
+            "readonly observer_address=10.66.0.2/24",
+            "length == 2",
+            '[[ ! -e /sys/class/net/$interface ]]',
+            'ethtool -P "$interface"',
+            '"$services_subnet via $services_gateway dev $interface proto static '
+            'src 10.66.0.2"',
+            "net.ipv4.conf.all.accept_redirects",
+            "net.ipv6.conf.all.disable_ipv6",
+            'nft -nn list ruleset',
+            "FABRIC_WIRED_OBSERVER=pass",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, verifier)
+        observer = re.search(
+            r"(?ms)^observer_verify\(\) \{\n(?P<body>.*?)^\}$", self.helper
+        )
+        self.assertIsNotNone(observer)
+        self.assertIn('"$repo_root/fabric/observer/verify-wired-netns"', observer.group("body"))
+        self.assertIn('--interface "$wired_observer_interface"', observer.group("body"))
+        self.assertIn(
+            '--permanent-mac "$wired_observer_permanent_mac"',
+            observer.group("body"),
+        )
 
     def test_check_path_cannot_launch_mutating_source_qualification(self) -> None:
         check_block = re.search(
