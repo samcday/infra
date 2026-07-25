@@ -1647,10 +1647,16 @@ guard_live
                                     {
                                         "key": "metadata.name",
                                         "operator": "In",
-                                        "values": [
-                                            "fabric-az1-svc1",
-                                            "fabric-az1-svc2",
-                                        ],
+                                        "values": ["fabric-az1-svc1"],
+                                    }
+                                ]
+                            },
+                            {
+                                "matchFields": [
+                                    {
+                                        "key": "metadata.name",
+                                        "operator": "In",
+                                        "values": ["fabric-az1-svc2"],
                                     }
                                 ]
                             }
