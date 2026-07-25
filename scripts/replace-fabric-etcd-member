@@ -136,9 +136,14 @@ promotion_prestate_json() {
 
 classify_auth_mode() {
   local auth=$1
+  # etcdctl 3.6.13 uses encoding/json on a protobuf struct whose false
+  # `enabled` field is tagged omitempty. A valid disabled response therefore
+  # has the response header and positive auth revision but no enabled key.
   jq -er '
+    select(type == "object" and (.header | type) == "object" and
+      (.authRevision | type) == "number" and .authRevision > 0) |
     if .enabled == true then "enabled"
-    elif .enabled == false then "disabled"
+    elif ((has("enabled") | not) or .enabled == false) then "disabled"
     else empty
     end
   ' <<<"$auth"
@@ -236,11 +241,15 @@ if [[ $mode == check ]]; then
     22222222-3333-4444-5555-666666666666 enabled "$fixture_learner_members" \
     "$fixture_changed_learner_status")" ]] ||
     die 'promotion confirmation prestate includes volatile etcd counters'
-  [[ $(classify_auth_mode '{"enabled":true}') == enabled &&
-     $(classify_auth_mode '{"enabled":false}') == disabled ]] ||
+  fixture_auth_header='{"header":{"cluster_id":1},"authRevision":1}'
+  [[ $(classify_auth_mode "$(jq '.enabled=true' <<<"$fixture_auth_header")") == enabled &&
+     $(classify_auth_mode "$fixture_auth_header") == disabled &&
+     $(classify_auth_mode "$(jq '.enabled=false' <<<"$fixture_auth_header")") == disabled ]] ||
     die 'etcd auth mode classifier rejected a boolean mode'
-  ! classify_auth_mode '{}' >/dev/null ||
-    die 'etcd auth mode classifier accepted an absent mode'
+  if classify_auth_mode '{}' >/dev/null ||
+      classify_auth_mode '{"header":{},"authRevision":1,"enabled":"false"}' >/dev/null; then
+    die 'etcd auth mode classifier accepted malformed status'
+  fi
   printf 'validated the snapshot-backed same-name etcd learner replacement helper\n'
   exit 0
 fi
