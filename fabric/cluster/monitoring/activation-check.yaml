@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/component: activation-check
+    app.kubernetes.io/name: fabric-monitoring
+    app.kubernetes.io/part-of: fabric-monitoring
+  name: fabric-monitoring-activation-check-adc0410
+  namespace: monitoring
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: activation-check
+        app.kubernetes.io/name: fabric-monitoring
+        app.kubernetes.io/part-of: fabric-monitoring
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: verifier
+          image: docker.io/curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ceu
+          args:
+            - |
+              extract_value() {
+                sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
+              }
+
+              assert_query() {
+                endpoint=$1
+                label=$2
+                expression=$3
+                expected=$4
+
+                response=$(curl \
+                  --fail \
+                  --get \
+                  --max-time 10 \
+                  --retry 2 \
+                  --retry-delay 1 \
+                  --show-error \
+                  --silent \
+                  --data-urlencode "query=$expression" \
+                  "http://$endpoint:9090/api/v1/query")
+                printf '%s\n' "$response" | grep -Fq '"status":"success"'
+                value=$(printf '%s\n' "$response" | extract_value)
+                [ "$value" = "$expected" ] || {
+                  printf '%s %s expected=%s actual=%s\n' \
+                    "$endpoint" "$label" "$expected" "${value:-absent}" >&2
+                  exit 1
+                }
+                printf '%s %s=%s\n' "$endpoint" "$label" "$value"
+              }
+
+              targets='up{job=~"fabric-(etcd|kube-vip|root-node)"}'
+              for replica in 0 1; do
+                endpoint="prometheus-kube-prometheus-stack-prometheus-$replica.prometheus-operated.monitoring.svc"
+                assert_query "$endpoint" configured-root-targets \
+                  "count($targets)" 9
+                assert_query "$endpoint" healthy-root-targets \
+                  "sum($targets)" 9
+                assert_query "$endpoint" root-target-jobs \
+                  "count(count by (job) ($targets))" 3
+                assert_query "$endpoint" minimum-targets-per-job \
+                  "min(count by (job) ($targets))" 3
+                assert_query "$endpoint" firing-critical-alerts \
+                  'count(ALERTS{alertstate="firing",severity="critical"}) or vector(0)' 0
+              done
+              printf 'FABRIC_MONITORING_ACTIVATION_CHECK=pass\n'
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      enableServiceLinks: false
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
