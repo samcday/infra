@@ -15,7 +15,9 @@ Every armed day-two response first loads a token-bound, non-consuming live
 Ignition. That handler extracts the one exact MAC-bound NetworkManager profile
 from the session's digest-bound destination Ignition and configures
 coreos-installer to copy it to the installed boot partition. The boot response
-also carries `rd.net.timeout.carrier=60`; the stock FCOS installer service
+also carries `rd.net.timeout.carrier=60` and live-only `nomodeset`; retaining
+the firmware framebuffer avoids a second DisplayPort/HDMI EDID negotiation
+when the kernel starts on these headless nodes. The stock FCOS installer service
 therefore writes first-boot-only `rd.neednet=1` with that recognized network
 argument. Ignition activates the copied static profile before fetching any
 router-hosted destination assets. The destination Ignition endpoint remains

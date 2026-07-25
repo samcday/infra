@@ -153,7 +153,7 @@ kernel_args="coreos.live.rootfs_url=$FCOS_BASE/fedora-coreos-$FCOS_VERSION-live-
 # coreos-installer-service persists recognized live network arguments into the
 # one-shot ignition.firstboot file and prepends rd.neednet=1.  Carrier timeout
 # is useful on both boots and avoids introducing a competing DHCP profile.
-kernel_args+=" ignition.firstboot ignition.platform.id=metal ignition.config.url=$live_ignition_url rd.net.timeout.carrier=60 systemd.show_status=false"
+kernel_args+=" ignition.firstboot ignition.platform.id=metal ignition.config.url=$live_ignition_url rd.net.timeout.carrier=60 nomodeset systemd.show_status=false"
 if [[ $role == service ]]; then
   kernel_args+=" coreos.inst.skip_reboot"
 fi
