@@ -561,6 +561,19 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             with self.subTest(verdict=verdict):
                 self.assertNotIn(verdict, body)
 
+        verifier = re.search(
+            r"(?ms)^observer_verify\(\) \{\n(?P<body>.*?)^\}$", self.script
+        )
+        self.assertIsNotNone(verifier)
+        verifier_body = verifier.group("body")
+        self.assertIn(
+            '"$repo_root/fabric/observer/verify-wired-netns"', verifier_body
+        )
+        self.assertIn('--interface "$wired_observer_interface"', verifier_body)
+        self.assertIn(
+            '--permanent-mac "$wired_observer_permanent_mac"', verifier_body
+        )
+
     def test_cleanup_is_uid_aware_and_preserves_failed_operation_lock(self) -> None:
         for required in (
             'current_uid=${state#present:}',

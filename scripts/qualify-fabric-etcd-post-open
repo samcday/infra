@@ -39,12 +39,16 @@ Read-only preflight (prints the exact revision-bound confirmation):
   sudo scripts/qualify-fabric-etcd-post-open \
     --check \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --wired-observer-interface enp50s0u2 \
+    --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
     --identity /var/home/sam/.ssh/id_ed25519
 
 Attended acceptance:
   sudo scripts/qualify-fabric-etcd-post-open \
     --run \
     --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+    --wired-observer-interface enp50s0u2 \
+    --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
     --identity /var/home/sam/.ssh/id_ed25519 \
     --confirm '$confirmation_prefix:<pushed-main-commit>'
 
@@ -304,8 +308,15 @@ release_cluster_network_lock() {
 }
 
 observer_verify() {
-  timeout --kill-after=2s 15s \
-    "$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+  if [[ -n $wired_observer_interface ]]; then
+    timeout --kill-after=2s 15s \
+      "$repo_root/fabric/observer/verify-wired-netns" \
+        --interface "$wired_observer_interface" \
+        --permanent-mac "$wired_observer_permanent_mac" >/dev/null
+  else
+    timeout --kill-after=2s 15s \
+      "$repo_root/fabric/observer/fabric-observer-netns" verify-isolation >/dev/null
+  fi
 }
 
 prepare_router_ssh() {
@@ -1696,6 +1707,8 @@ $etcd_archive_sha256" ]] || die 'checksum-pinned etcdctl archive contract change
 
 mode=
 serial_fingerprint=
+wired_observer_interface=
+wired_observer_permanent_mac=
 identity=/var/home/sam/.ssh/id_ed25519
 confirm=
 
@@ -1717,6 +1730,20 @@ while (($#)); do
       identity=$2
       shift 2
       ;;
+    --wired-observer-interface)
+      (($# >= 2)) || die '--wired-observer-interface requires a value'
+      [[ -z $wired_observer_interface ]] ||
+        die '--wired-observer-interface may be specified only once'
+      wired_observer_interface=$2
+      shift 2
+      ;;
+    --wired-observer-permanent-mac)
+      (($# >= 2)) || die '--wired-observer-permanent-mac requires a value'
+      [[ -z $wired_observer_permanent_mac ]] ||
+        die '--wired-observer-permanent-mac may be specified only once'
+      wired_observer_permanent_mac=${2,,}
+      shift 2
+      ;;
     --confirm)
       (($# >= 2)) || die '--confirm requires a value'
       [[ -z $confirm ]] || die '--confirm may be specified only once'
@@ -1736,6 +1763,12 @@ done
   exit 2
 }
 [[ -n $serial_fingerprint ]] || die '--serial-ed25519-fingerprint is required'
+if [[ -n $wired_observer_interface || -n $wired_observer_permanent_mac ]]; then
+  [[ $wired_observer_interface =~ ^[A-Za-z0-9_.-]{1,15}$ ]] ||
+    die 'wired observer interface has an invalid shape'
+  [[ $wired_observer_permanent_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] ||
+    die 'wired observer permanent MAC has an invalid shape'
+fi
 valid_fingerprint "$serial_fingerprint" || die 'serial fingerprint has an invalid shape'
 if [[ $mode == check ]]; then
   [[ -z $confirm ]] || die '--confirm is invalid with --check'

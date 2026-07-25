@@ -204,11 +204,15 @@ prints into the attended run:
 sudo scripts/qualify-fabric-etcd-post-open \
   --check \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --wired-observer-interface enp50s0u2 \
+  --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
   --identity /var/home/sam/.ssh/id_ed25519
 
 sudo scripts/qualify-fabric-etcd-post-open \
   --run \
   --serial-ed25519-fingerprint SHA256:VALUE_FROM_ROUTER_SERIAL \
+  --wired-observer-interface enp50s0u2 \
+  --wired-observer-permanent-mac 00:e0:4c:68:05:36 \
   --identity /var/home/sam/.ssh/id_ed25519 \
   --confirm 'QUALIFY-FABRIC-ETCD-POST-OPEN:<pushed-main-commit>'
 ```
