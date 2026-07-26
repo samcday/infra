@@ -311,6 +311,15 @@ The smoke Tenant deterministically owns `/etcdetcetc-smoke:fabric-smoke/`.
 Deleting it revokes its user and role but intentionally retains that prefix;
 recreation reattaches the retained data with a newly issued certificate.
 
+The runtime also runs `CronJob/fabric-etcd-smoke` every five minutes. Each Job
+mounts only the Tenant-owned TLS Secret and generated contract ConfigMap,
+selects a reachable physical endpoint, and performs a lease-backed
+put/get/delete under `.periodic-smoke/<Pod UID>`. The 90-second lease bounds any
+write left by a crashed Job. Its label-scoped NetworkPolicy permits only the
+three physical root `/32`s on TCP/2379; it has no ServiceAccount token or DNS
+egress. A successful run emits one non-secret `FABRIC_ETCD_SMOKE=pass` marker,
+while failed Jobs remain available to the standard Kubernetes Job alerts.
+
 ## Ongoing tenant lifecycle
 
 Fabric qualifies only cross-namespace tenants. Every EtcdTenant must set an

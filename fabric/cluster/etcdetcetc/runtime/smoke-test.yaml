@@ -1,0 +1,259 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fabric-etcd-smoke
+  namespace: etcdetcetc-smoke
+  labels:
+    app.kubernetes.io/name: fabric-etcd-smoke
+    app.kubernetes.io/instance: fabric-smoke
+    app.kubernetes.io/component: smoke-test
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fabric-etcd-smoke
+        app.kubernetes.io/instance: fabric-smoke
+        app.kubernetes.io/component: smoke-test
+    spec:
+      activeDeadlineSeconds: 120
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: fabric-etcd-smoke
+            app.kubernetes.io/instance: fabric-smoke
+            app.kubernetes.io/component: smoke-test
+        spec:
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 5
+          nodeSelector:
+            fabric.samcday.com/platform: "true"
+            kubernetes.io/os: linux
+          tolerations:
+            - effect: NoSchedule
+              key: fabric.samcday.com/platform
+              operator: Equal
+              value: "true"
+          hostAliases:
+            - ip: 10.66.0.10
+              hostnames:
+                - fabric-az1-cp1.fabric.internal
+            - ip: 10.66.0.11
+              hostnames:
+                - fabric-az1-cp2.fabric.internal
+            - ip: 10.66.0.12
+              hostnames:
+                - fabric-az1-cp3.fabric.internal
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            fsGroup: 65534
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke-test
+              image: docker.io/curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  set -eu
+                  umask 077
+
+                  expected_prefix=/etcdetcetc-smoke:fabric-smoke/
+                  expected_endpoints=https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379
+                  prefix=$(cat /contract/prefix)
+                  endpoints=$(cat /contract/endpoints)
+                  [ "$prefix" = "$expected_prefix" ]
+                  [ "$endpoints" = "$expected_endpoints" ]
+                  case "$POD_UID" in
+                    ????????-????-????-????-????????????) ;;
+                    *) exit 10 ;;
+                  esac
+                  case "$POD_UID" in
+                    *[!0-9a-f-]*) exit 10 ;;
+                  esac
+
+                  encode() {
+                    printf '%s' "$1" | base64 | tr -d '\n'
+                  }
+
+                  request() {
+                    path=$1
+                    payload=$2
+                    output=$3
+                    curl --silent --show-error --fail-with-body \
+                      --proto '=https' \
+                      --connect-timeout 3 --max-time 8 \
+                      --cacert /credential/ca.crt \
+                      --cert /credential/tls.crt \
+                      --key /credential/tls.key \
+                      --header 'Content-Type: application/json' \
+                      --request POST --data "$payload" \
+                      --output "$output" "$endpoint$path"
+                  }
+
+                  prefix_b64=$(encode "$prefix")
+                  endpoint=
+                  old_ifs=$IFS
+                  IFS=,
+                  for candidate in $endpoints; do
+                    endpoint=$candidate
+                    if request /v3/kv/range \
+                        "{\"key\":\"$prefix_b64\"}" /work/initial-read.json; then
+                      break
+                    fi
+                    endpoint=
+                  done
+                  IFS=$old_ifs
+                  [ -n "$endpoint" ]
+
+                  lease_id=
+                  cleanup() {
+                    if [ -n "$lease_id" ]; then
+                      request /v3/lease/revoke \
+                        "{\"ID\":\"$lease_id\"}" /work/lease-cleanup.json \
+                        >/dev/null 2>&1 || true
+                    fi
+                  }
+                  trap cleanup EXIT HUP INT TERM
+
+                  request /v3/lease/grant '{"TTL":"90"}' /work/lease-grant.json
+                  lease_id=$(sed -n 's/.*"ID":"\([-0-9][0-9]*\)".*/\1/p' /work/lease-grant.json)
+                  case "$lease_id" in
+                    ''|*[!0-9-]*) exit 11 ;;
+                  esac
+
+                  key=${prefix}.periodic-smoke/$POD_UID
+                  value=fabric-etcd-smoke:$POD_UID
+                  key_b64=$(encode "$key")
+                  value_b64=$(encode "$value")
+
+                  request /v3/kv/put \
+                    "{\"key\":\"$key_b64\",\"value\":\"$value_b64\",\"lease\":\"$lease_id\"}" \
+                    /work/put.json
+                  request /v3/kv/range \
+                    "{\"key\":\"$key_b64\"}" /work/get.json
+                  grep -Fq "\"key\":\"$key_b64\"" /work/get.json
+                  grep -Fq "\"value\":\"$value_b64\"" /work/get.json
+                  grep -Fq '"count":"1"' /work/get.json
+
+                  request /v3/kv/deleterange \
+                    "{\"key\":\"$key_b64\"}" /work/delete.json
+                  grep -Fq '"deleted":"1"' /work/delete.json
+                  request /v3/kv/range \
+                    "{\"key\":\"$key_b64\"}" /work/after-delete.json
+                  grep -Fq '"header":' /work/after-delete.json
+                  if grep -Fq '"kvs":' /work/after-delete.json; then
+                    exit 12
+                  fi
+
+                  request /v3/lease/revoke \
+                    "{\"ID\":\"$lease_id\"}" /work/lease-revoke.json
+                  lease_id=
+                  trap - EXIT HUP INT TERM
+                  printf 'FABRIC_ETCD_SMOKE=pass pod=%s\n' "$POD_NAME"
+              env:
+                - name: HOME
+                  value: /work
+                - name: TMPDIR
+                  value: /work
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 16Mi
+                  ephemeral-storage: 1Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+                  ephemeral-storage: 8Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: credential
+                  mountPath: /credential
+                  readOnly: true
+                - name: contract
+                  mountPath: /contract
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+          volumes:
+            - name: credential
+              secret:
+                secretName: fabric-smoke-etcd
+                optional: false
+                defaultMode: 0440
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+                    mode: 0440
+                  - key: tls.crt
+                    path: tls.crt
+                    mode: 0440
+                  - key: tls.key
+                    path: tls.key
+                    mode: 0440
+            - name: contract
+              configMap:
+                name: fabric-smoke-etcd
+                optional: false
+                defaultMode: 0444
+                items:
+                  - key: endpoints
+                    path: endpoints
+                  - key: prefix
+                    path: prefix
+            - name: work
+              emptyDir:
+                medium: Memory
+                sizeLimit: 4Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-fabric-etcd-smoke
+  namespace: etcdetcetc-smoke
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fabric-etcd-smoke
+      app.kubernetes.io/instance: fabric-smoke
+      app.kubernetes.io/component: smoke-test
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.66.0.10/32
+        - ipBlock:
+            cidr: 10.66.0.11/32
+        - ipBlock:
+            cidr: 10.66.0.12/32
+      ports:
+        - port: 2379
+          protocol: TCP

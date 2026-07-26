@@ -122,6 +122,61 @@ smoke="$repo_root/fabric/cluster/etcdetcetc/runtime/smoke-tenant.yaml"
    $(yq -r '.spec.clusterRef.namespace' "$smoke") == etcdetcetc ]] ||
   die 'permanent smoke Tenant differs from the TLS cross-namespace contract'
 
+smoke_test="$repo_root/fabric/cluster/etcdetcetc/runtime/smoke-test.yaml"
+smoke_test_objects=$(yq -o=json -I=0 '.' "$smoke_test" | jq -s '.') ||
+  die 'cannot parse the permanent smoke-test resources'
+jq -e '
+  ([.[] | [.apiVersion, .kind, .metadata.namespace, .metadata.name]]) == [
+    ["batch/v1", "CronJob", "etcdetcetc-smoke", "fabric-etcd-smoke"],
+    ["networking.k8s.io/v1", "NetworkPolicy", "etcdetcetc-smoke", "allow-fabric-etcd-smoke"]
+  ] and
+  ([.[] | select(.kind == "CronJob")][0] as $job |
+    $job.spec.schedule == "*/5 * * * *" and
+    $job.spec.concurrencyPolicy == "Forbid" and
+    $job.spec.startingDeadlineSeconds == 120 and
+    $job.spec.successfulJobsHistoryLimit == 1 and
+    $job.spec.failedJobsHistoryLimit == 3 and
+    $job.spec.jobTemplate.spec.activeDeadlineSeconds == 120 and
+    $job.spec.jobTemplate.spec.backoffLimit == 0 and
+    $job.spec.jobTemplate.spec.ttlSecondsAfterFinished == 3600 and
+    $job.spec.jobTemplate.spec.template.spec.automountServiceAccountToken == false and
+    $job.spec.jobTemplate.spec.template.spec.nodeSelector == {
+      "fabric.samcday.com/platform": "true", "kubernetes.io/os": "linux"
+    } and
+    $job.spec.jobTemplate.spec.template.spec.securityContext.runAsNonRoot == true and
+    $job.spec.jobTemplate.spec.template.spec.containers[0].image ==
+      "docker.io/curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13" and
+    $job.spec.jobTemplate.spec.template.spec.containers[0].securityContext == {
+      allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]},
+      readOnlyRootFilesystem: true
+    } and
+    ([ $job.spec.jobTemplate.spec.template.spec.volumes[] |
+      select(.name == "credential") | .secret.secretName]) == ["fabric-smoke-etcd"] and
+    ([ $job.spec.jobTemplate.spec.template.spec.volumes[] |
+      select(.name == "contract") | .configMap.name]) == ["fabric-smoke-etcd"] and
+    ($job.spec.jobTemplate.spec.template.spec.containers[0].args[0] as $script |
+      $script | contains("/v3/kv/put") and contains("/v3/kv/range") and
+      contains("/v3/kv/deleterange") and contains("/v3/lease/grant") and
+      contains("/v3/lease/revoke") and contains("FABRIC_ETCD_SMOKE=pass"))) and
+  ([.[] | select(.kind == "NetworkPolicy")][0].spec == {
+    podSelector: {matchLabels: {
+      "app.kubernetes.io/name": "fabric-etcd-smoke",
+      "app.kubernetes.io/instance": "fabric-smoke",
+      "app.kubernetes.io/component": "smoke-test"
+    }},
+    policyTypes: ["Egress"],
+    egress: [{
+      to: [
+        {ipBlock: {cidr: "10.66.0.10/32"}},
+        {ipBlock: {cidr: "10.66.0.11/32"}},
+        {ipBlock: {cidr: "10.66.0.12/32"}}
+      ],
+      ports: [{port: 2379, protocol: "TCP"}]
+    }]
+  })
+' >/dev/null <<<"$smoke_test_objects" ||
+  die 'permanent smoke-test CronJob or least-privilege egress policy differs from contract'
+
 cert_manager="$repo_root/fabric/cluster/platform/cert-manager.yaml"
 [[ $(yq -r 'select(.kind == "OCIRepository") | .spec.layerSelector.mediaType' \
   "$cert_manager") == application/vnd.cncf.helm.chart.content.v1.tar+gzip &&
@@ -309,7 +364,7 @@ fi
    $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.nodeSelector | to_entries | sort_by(.key) | map(.key + "=" + .value) | join(",")' \
   "$release") == 'fabric.samcday.com/platform=true,kubernetes.io/os=linux' &&
    $(yq -o=json -I=0 'select(.metadata.name == "etcdetcetc") | .spec.values.affinity' \
-  "$release" | jq -cS '.') == '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchFields":[{"key":"metadata.name","operator":"In","values":["fabric-az1-svc1","fabric-az1-svc2"]}]}]}}}' &&
+  "$release" | jq -cS '.') == '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchFields":[{"key":"metadata.name","operator":"In","values":["fabric-az1-svc1"]}]},{"matchFields":[{"key":"metadata.name","operator":"In","values":["fabric-az1-svc2"]}]}]}}}' &&
    $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.tolerations[] | [.key, .operator, .value, .effect] | @tsv' \
   "$release") == $'fabric.samcday.com/platform\tEqual\ttrue\tNoSchedule' &&
    $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.priorityClassName' \
@@ -469,10 +524,14 @@ jq -e --arg image "$controller_image" '
     }] and
     .spec.template.spec.affinity.nodeAffinity == {
       "requiredDuringSchedulingIgnoredDuringExecution": {
-        "nodeSelectorTerms": [{"matchFields": [{
-          "key": "metadata.name", "operator": "In",
-          "values": ["fabric-az1-svc1", "fabric-az1-svc2"]
-        }]}]
+        "nodeSelectorTerms": [
+          {"matchFields": [{
+            "key": "metadata.name", "operator": "In", "values": ["fabric-az1-svc1"]
+          }]},
+          {"matchFields": [{
+            "key": "metadata.name", "operator": "In", "values": ["fabric-az1-svc2"]
+          }]}
+        ]
       }
     } and
     (.spec.template.spec.topologySpreadConstraints | length) == 1 and
@@ -537,9 +596,11 @@ jq -e '
 
 runtime_objects=$(kubectl kustomize "$runtime_path" | yq -r \
   '[.apiVersion, .kind, .metadata.namespace, .metadata.name] | @tsv' | sort)
-expected_runtime_objects='etcdetcetc.samcday.com/v1alpha1	EtcdCluster	etcdetcetc	fabric-etcd
-etcdetcetc.samcday.com/v1alpha1	EtcdTenant	etcdetcetc-smoke	fabric-smoke'
+expected_runtime_objects='batch/v1	CronJob	etcdetcetc-smoke	fabric-etcd-smoke
+etcdetcetc.samcday.com/v1alpha1	EtcdCluster	etcdetcetc	fabric-etcd
+etcdetcetc.samcday.com/v1alpha1	EtcdTenant	etcdetcetc-smoke	fabric-smoke
+networking.k8s.io/v1	NetworkPolicy	etcdetcetc-smoke	allow-fabric-etcd-smoke'
 [[ $runtime_objects == "$expected_runtime_objects" ]] ||
-  die 'runtime Kustomization must render exactly one EtcdCluster and one smoke Tenant'
+  die 'runtime Kustomization must render the cluster, smoke Tenant, CronJob, and egress policy'
 
 echo "validated Fabric etcdetcetc delegated PKI, two-CA boundary, and $activation_phase activation gates"
