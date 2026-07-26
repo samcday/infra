@@ -120,10 +120,10 @@ class MonitoringPolicyRolloutTests(unittest.TestCase):
         self.assertIn(
             "assert_absent firewall.fabric_flat_services_root_metrics", self.helper
         )
-        self.assertIn("expected_rules=27", self.helper)
-        self.assertIn("expected_chain=17", self.helper)
         self.assertIn("expected_rules=28", self.helper)
         self.assertIn("expected_chain=18", self.helper)
+        self.assertIn("expected_rules=29", self.helper)
+        self.assertIn("expected_chain=19", self.helper)
         self.assertIn(
             "assert_uci firewall.fabric_flat_services_root_metrics.dest_port "
             "'2112 2381 9100'",
@@ -134,6 +134,22 @@ class MonitoringPolicyRolloutTests(unittest.TestCase):
             "assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie",
             self.helper,
         )
+        for required in (
+            "assert_uci firewall.fabric_flat_tailnet_root_ssh rule",
+            "assert_option_keys fabric_flat_tailnet_root_ssh",
+            "assert_uci firewall.fabric_flat_tailnet_root_ssh.name "
+            "Allow-tailnet-SNAT-to-root-SSH",
+            'assert_uci firewall.fabric_flat_tailnet_root_ssh.src_ip "$services"',
+            'assert_uci firewall.fabric_flat_tailnet_root_ssh.dest_ip "$roots"',
+            "assert_uci firewall.fabric_flat_tailnet_root_ssh.proto tcp",
+            "assert_uci firewall.fabric_flat_tailnet_root_ssh.dest_port 22",
+            "assert_uci firewall.fabric_flat_tailnet_root_ssh.target ACCEPT",
+            '"$candidate_rules" | awk \'NF {n++} END {print n+0}\')" -eq 29',
+            "fabric_flat_services_bootie_rootfs\nfabric_flat_tailnet_root_ssh\n"
+            "fabric_flat_reject_services_roots",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.helper)
 
     def test_wired_observer_can_be_selected_without_weakening_verification(self) -> None:
         observer = re.search(

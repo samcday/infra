@@ -1,6 +1,6 @@
 # Public ED25519 host keys captured through the attended commissioning paths.
-# Keep this file strict: the Tailnet relay and each fabric root are separate
-# trust decisions even though the inner SSH connection traverses the relay.
+# Keep this file strict: the service-node recovery relay and every Fabric node
+# remain separate trust decisions.
 sam-desktop.tailnet.hub.samcday.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILmmIT2iVuslz77j50wDpQ9VGBRcBjOy4RWVcvf8GEHT
 10.66.0.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINXN/YnIxiY7I4jmW8uINFREoxozWPKZ3lTWhSnNkmcd
 10.66.0.11 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI907dvgdQiZVNeh//rQk604wNm+f6utUor4r7XoSFZ

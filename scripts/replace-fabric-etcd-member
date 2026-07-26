@@ -407,7 +407,6 @@ target_port=$((42378 + target_index))
 target_peer_url=https://$node.fabric.internal:2380
 
 known_hosts=$repo_root/fabric/access/known_hosts
-proxy_command="$repo_root/scripts/fabric-ssh-proxy %h %p"
 identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
 [[ -f $known_hosts && ! -L $known_hosts && -r $identity && ! -L $identity ]] ||
   die 'strict Fabric SSH host keys or operator identity are unavailable'
@@ -427,7 +426,7 @@ ssh_arguments=(
   -o PermitLocalCommand=no -o ProxyJump=none -o RequestTTY=no
   -o ServerAliveCountMax=2 -o ServerAliveInterval=5 -o StrictHostKeyChecking=yes
   -o StreamLocalBindUnlink=no -o TCPKeepAlive=yes -o Tunnel=no -o UpdateHostKeys=no
-  -o "ProxyCommand=$proxy_command" -o "UserKnownHostsFile=$known_hosts"
+  -o ProxyCommand=none -o "UserKnownHostsFile=$known_hosts"
   -L 127.0.0.1:42379:10.66.0.10:2379
   -L 127.0.0.1:42380:10.66.0.11:2379
   -L 127.0.0.1:42381:10.66.0.12:2379

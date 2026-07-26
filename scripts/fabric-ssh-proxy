@@ -3,12 +3,12 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: fabric-ssh-proxy <fabric-node-ip> 22
+Usage: fabric-ssh-proxy <fabric-service-ip> 22
 
-Open a raw SSH transport to one commissioned Fabric node through
+Open a raw SSH transport to one commissioned Fabric service node through
 sam-desktop's Headscale address and its isolated fabric-observer network
-namespace. This is intended for OpenSSH ProxyCommand; it is not a general
-TCP or subnet forwarding helper.
+namespace. This is retained only for attended service-node day-two workflows;
+root SSH and Kubernetes access use the direct Tailnet route.
 EOF
 }
 
@@ -25,9 +25,8 @@ die() {
 target_address=$1
 target_port=$2
 case "$target_address:$target_port" in
-  10.66.0.10:22 | 10.66.0.11:22 | 10.66.0.12:22 | \
-    10.66.1.10:22 | 10.66.1.11:22) ;;
-  *) die 'target must be one commissioned Fabric node on TCP/22' ;;
+  10.66.1.10:22 | 10.66.1.11:22) ;;
+  *) die 'target must be one commissioned Fabric service node on TCP/22' ;;
 esac
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

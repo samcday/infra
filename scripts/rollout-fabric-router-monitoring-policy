@@ -246,6 +246,7 @@ fabric_flat_roots_kubelet
 fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
+fabric_flat_tailnet_root_ssh
 fabric_flat_reject_services_roots
 fabric_flat_reject_roots_services
 fabric_router_dns
@@ -270,6 +271,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
 
@@ -300,6 +302,17 @@ assert_uci firewall.fabric_flat_roots_bootie.dest_ip "$services"
 assert_uci firewall.fabric_flat_roots_bootie.proto tcp
 assert_uci firewall.fabric_flat_roots_bootie.dest_port 80
 assert_uci firewall.fabric_flat_roots_bootie.target ACCEPT
+assert_uci firewall.fabric_flat_tailnet_root_ssh rule
+assert_option_keys fabric_flat_tailnet_root_ssh
+assert_uci firewall.fabric_flat_tailnet_root_ssh.name Allow-tailnet-SNAT-to-root-SSH
+assert_uci firewall.fabric_flat_tailnet_root_ssh.src lan
+assert_uci firewall.fabric_flat_tailnet_root_ssh.dest lan
+assert_uci firewall.fabric_flat_tailnet_root_ssh.family ipv4
+assert_uci firewall.fabric_flat_tailnet_root_ssh.src_ip "$services"
+assert_uci firewall.fabric_flat_tailnet_root_ssh.dest_ip "$roots"
+assert_uci firewall.fabric_flat_tailnet_root_ssh.proto tcp
+assert_uci firewall.fabric_flat_tailnet_root_ssh.dest_port 22
+assert_uci firewall.fabric_flat_tailnet_root_ssh.target ACCEPT
 assert_uci firewall.fabric_flat_services_etcd_client rule
 assert_option_keys fabric_flat_services_etcd_client
 assert_uci firewall.fabric_flat_services_etcd_client.name Allow-platform-to-root-etcd-client
@@ -329,8 +342,8 @@ case $phase in
 $suffix"
     expected_forward="$forward_prefix
 $forward_suffix"
-    expected_rules=27
-    expected_chain=17
+    expected_rules=28
+    expected_chain=18
     assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest_port '2380 2381'
     assert_absent firewall.fabric_flat_services_root_metrics
     ;;
@@ -341,8 +354,8 @@ $suffix"
     expected_forward="$forward_prefix
 Allow-platform-to-root-metrics
 $forward_suffix"
-    expected_rules=28
-    expected_chain=18
+    expected_rules=29
+    expected_chain=19
     assert_uci firewall.fabric_flat_reject_services_etcd_internal.dest_port 2380
     assert_uci firewall.fabric_flat_services_root_metrics rule
     assert_option_keys fabric_flat_services_root_metrics
@@ -439,15 +452,33 @@ get_candidate() { uci -q -c "$work/candidate" -t "$work/save" get "$1"; }
   '2112 2381 9100' ] || fail 'candidate metrics ports differ'
 [ "$(get_candidate firewall.fabric_flat_services_root_metrics.target)" = ACCEPT ] ||
   fail 'candidate metrics verdict differs'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.name)" = \
+  Allow-tailnet-SNAT-to-root-SSH ] || fail 'candidate Tailnet SSH rule is absent'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.src_ip)" = \
+  '10.66.1.10/32 10.66.1.11/32' ] || fail 'candidate Tailnet SSH sources differ'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.dest_ip)" = \
+  '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32' ] ||
+  fail 'candidate Tailnet SSH destinations differ'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.proto)" = tcp ] ||
+  fail 'candidate Tailnet SSH protocol differs'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.dest_port)" = 22 ] ||
+  fail 'candidate Tailnet SSH port differs'
+[ "$(get_candidate firewall.fabric_flat_tailnet_root_ssh.target)" = ACCEPT ] ||
+  fail 'candidate Tailnet SSH verdict differs'
 candidate_rules=$(uci -q -c "$work/candidate" -t "$work/save" show firewall |
   sed -n "s/^firewall\.\([^.=]*\)='rule'$/\1/p")
-[ "$(printf '%s\n' "$candidate_rules" | awk 'NF {n++} END {print n+0}')" -eq 27 ] ||
+[ "$(printf '%s\n' "$candidate_rules" | awk 'NF {n++} END {print n+0}')" -eq 29 ] ||
   fail 'candidate rule count differs'
 [ "$(printf '%s\n' "$candidate_rules" | sed -n '8,11p')" = \
   'fabric_flat_services_etcd_client
 fabric_flat_reject_services_etcd_internal
 fabric_flat_services_root_metrics
 fabric_flat_services_api' ] || fail 'candidate transition ordering differs'
+[ "$(printf '%s\n' "$candidate_rules" | sed -n '17,20p')" = \
+  'fabric_flat_observer_services_ssh
+fabric_flat_services_bootie_rootfs
+fabric_flat_tailnet_root_ssh
+fabric_flat_reject_services_roots' ] || fail 'candidate Tailnet SSH ordering differs'
 sha256sum "$work/firewall.before" >"$work/firewall.before.sha256"
 sha256sum "$work/candidate/firewall" >"$work/firewall.candidate.sha256"
 chmod 0600 "$work/firewall.before" "$work/firewall.before.sha256" \

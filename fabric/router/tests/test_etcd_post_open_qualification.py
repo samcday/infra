@@ -264,10 +264,13 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             "Reject-services-to-root-etcd-internal 2380 REJECT",
             'assert_target_section fabric_flat_services_root_metrics',
             "Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT",
+            'assert_target_section fabric_flat_tailnet_root_ssh',
+            "Allow-tailnet-SNAT-to-root-SSH 22 ACCEPT",
             "assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie",
             "assert_uci firewall.fabric_flat_roots_bootie.src_ip '10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'",
             "assert_uci firewall.fabric_flat_roots_bootie.dest_ip '10.66.1.10/32 10.66.1.11/32'",
             "assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan'",
+            "assert_live_rule Allow-tailnet-SNAT-to-root-SSH 'jump accept_to_lan'",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd",
             "assert_uci firewall.fabric_router_services_http.dest_ip '10.66.1.1/32'",
             "assert_uci firewall.fabric_router_services_http.dest_port 80",
@@ -275,7 +278,10 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
             '[ "$actual_input" = "$expected_input" ]',
             "live input_lan terminal verdict is not exact",
             '[ "$actual_rules" = "$expected_rules" ]',
+            'fabric_flat_tailnet_root_ssh',
+            '"$actual_rules" | awk \'NF { n++ } END { print n + 0 }\')" -eq 29',
             '[ "$actual_forward" = "$expected_forward" ]',
+            '[ "$actual_chain_count" -eq 19 ]',
             "live forward_lan terminal verdict is not exact",
         ):
             with self.subTest(required=required):
@@ -283,12 +289,13 @@ class EtcdPostOpenQualificationTests(unittest.TestCase):
         self.assertIn('\\)=rule$/\\\\1/p")', self.script)
         self.assertNotIn("='rule'$/", self.script)
 
-    def test_root_guards_accept_exact_service_nodes_on_client_and_metrics_ports(self) -> None:
+    def test_root_guards_accept_exact_service_nodes_on_client_metrics_and_ssh_ports(self) -> None:
         for required in (
             "elements = { 10.66.1.10, 10.66.1.11 }",
             'ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"',
             'tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"',
             'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"',
+            'ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"',
             "! grep -Eq '@service_nodes_v4 tcp dport.*2380'",
             "fabric_guard semantics changed during acceptance",
             "new_packets - old_packets >= 2",

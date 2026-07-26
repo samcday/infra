@@ -126,6 +126,7 @@ firewall_policy=$(TARGET_PATH="$firewall_path" yq -er \
 service_set='elements = { 10.66.1.10, 10.66.1.11 }'
 service_etcd_allow='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"'
 service_metrics_allow='ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"'
+service_operator_ssh_allow='ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"'
 etcd_catchall='tcp dport 2379 counter drop comment "deny all other etcd clients including stale flows"'
 expected_etcd_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"
 ip saddr @etcd_maintenance_v4 tcp dport 2379 counter accept comment "attended etcd maintenance"
@@ -136,6 +137,8 @@ ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platfo
   die 'committed firewall policy lacks one exact service-node TCP/2379 allow'
 [[ $(grep -Fc "$service_metrics_allow" <<<"$firewall_policy") -eq 1 ]] ||
   die 'committed firewall policy lacks one exact service-node metrics allow'
+[[ $(grep -Fc "$service_operator_ssh_allow" <<<"$firewall_policy") -eq 1 ]] ||
+  die 'committed firewall policy lacks one exact Tailnet-routed operator SSH allow'
 [[ $(grep -Fc "$etcd_catchall" <<<"$firewall_policy") -eq 1 ]] ||
   die 'committed firewall policy lacks one TCP/2379 catch-all drop'
 service_etcd_allow_line=$(grep -nF "$service_etcd_allow" <<<"$firewall_policy" |
@@ -396,6 +399,7 @@ ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLA
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
 ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
 ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
+ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"
 ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 counter drop comment "deny all remaining input"'
   [[ $live_rules == "$expected_live_rules" ]] ||
@@ -406,9 +410,10 @@ counter drop comment "deny all remaining input"'
   expected_live_service_accepts='ip saddr @service_nodes_v4 tcp dport 2379 counter accept comment "trusted platform etcd clients"
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
 ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
-ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"'
+ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
+ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"'
   [[ $live_service_accepts == "$expected_live_service_accepts" ]] ||
-    die "$full_node live service-source accepts are not exactly TCP/2379, API/kubelet, VXLAN, and host metrics"
+    die "$full_node live service-source accepts are not exactly TCP/22, TCP/2379, API/kubelet, VXLAN, and host metrics"
   live_etcd_rules=$(awk '/tcp dport 2379/ && /comment/ { print }' \
     <<<"$normalized_input")
   expected_live_etcd_rules='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"

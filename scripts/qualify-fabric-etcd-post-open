@@ -496,6 +496,8 @@ assert_target_section fabric_flat_reject_services_etcd_internal \
   Reject-services-to-root-etcd-internal 2380 REJECT
 assert_target_section fabric_flat_services_root_metrics \
   Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
+assert_target_section fabric_flat_tailnet_root_ssh \
+  Allow-tailnet-SNAT-to-root-SSH 22 ACCEPT
 assert_uci firewall.fabric_flat_roots_bootie rule
 assert_option_keys fabric_flat_roots_bootie 'dest dest_ip dest_port family name proto src src_ip target'
 assert_uci firewall.fabric_flat_roots_bootie.name Allow-roots-to-Bootie
@@ -521,6 +523,7 @@ assert_uci firewall.fabric_router_services_http.target ACCEPT
 assert_live_rule Allow-platform-to-root-etcd-client 'jump accept_to_lan'
 assert_live_rule Reject-services-to-root-etcd-internal 'jump reject_to_lan'
 assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan'
+assert_live_rule Allow-tailnet-SNAT-to-root-SSH 'jump accept_to_lan'
 assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan'
 if printf '%s\n' "$live_table" | grep -F 'comment "!fw4: Reject-services-to-root-etcd"' >/dev/null; then
   fail 'obsolete live all-port etcd reject is present'
@@ -562,6 +565,7 @@ fabric_flat_roots_kubelet
 fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
+fabric_flat_tailnet_root_ssh
 fabric_flat_reject_services_roots
 fabric_flat_reject_roots_services
 fabric_router_dns
@@ -574,9 +578,9 @@ fabric_router_ssh
 fabric_reject_other_fabric_router_input'
 actual_rules=$(uci -q show firewall | sed -n "s/^firewall\\.\\([^.=]*\\)=rule$/\\1/p")
 [ "$actual_rules" = "$expected_rules" ] || fail 'firewall rule set or ordering is not exact'
-[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 28 ] ||
+[ "$(printf '%s\n' "$actual_rules" | awk 'NF { n++ } END { print n + 0 }')" -eq 29 ] ||
   fail 'firewall rule count is not exact'
-[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 31 ] ||
+[ "$(uci -q show firewall | awk -F= '$1 ~ /^firewall\.[^.]+$/ { n++ } END { print n + 0 }')" -eq 32 ] ||
   fail 'firewall contains an unexpected non-rule section'
 
 expected_forward='Block-fabric-to-private-WAN
@@ -594,6 +598,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
 actual_forward=$(printf '%s\n' "$live_chain" |
@@ -605,7 +610,7 @@ actual_chain_count=$(printf '%s\n' "$live_chain" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 18 ] || fail 'live forward_lan rule count is not exact'
+[ "$actual_chain_count" -eq 19 ] || fail 'live forward_lan rule count is not exact'
 terminal=$(printf '%s\n' "$live_chain" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
@@ -681,6 +686,8 @@ validate_root_guard() {
     die "${root_nodes[$index]} lacks the exact TCP/2379 catch-all"
   [[ $(grep -Fxc 'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"' "$normalized") -eq 1 ]] ||
     die "${root_nodes[$index]} lacks one exact service-node metrics admission"
+  [[ $(grep -Fxc 'ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"' "$normalized") -eq 1 ]] ||
+    die "${root_nodes[$index]} lacks one exact Tailnet-routed operator SSH admission"
   ! grep -Eq '@service_nodes_v4 tcp dport.*2380' "$normalized" ||
     die "${root_nodes[$index]} admits service nodes to the etcd peer port"
   expected_accepts='ip saddr @root_nodes_v4 tcp dport 2379 counter accept comment "root etcd clients"

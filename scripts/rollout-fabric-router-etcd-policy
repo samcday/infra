@@ -1418,6 +1418,7 @@ fabric_flat_roots_kubelet
 fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
+fabric_flat_tailnet_root_ssh
 fabric_flat_reject_services_roots
 fabric_flat_reject_roots_services
 fabric_router_dns
@@ -1441,12 +1442,16 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
 
 assert_target_section fabric_flat_services_root_metrics \
   Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT
 assert_live_rule Allow-platform-to-root-metrics 'jump accept_to_lan' no
+assert_target_section fabric_flat_tailnet_root_ssh \
+  Allow-tailnet-SNAT-to-root-SSH 22 ACCEPT
+assert_live_rule Allow-tailnet-SNAT-to-root-SSH 'jump accept_to_lan' no
 assert_root_bootie_section
 assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan' no
 
@@ -1458,8 +1463,8 @@ $common_suffix"
     expected_forward="$forward_prefix
 Reject-services-to-root-etcd
 $forward_suffix"
-    expected_rule_count=27
-    expected_chain_count=17
+    expected_rule_count=28
+    expected_chain_count=18
     assert_target_section fabric_flat_reject_services_etcd \
       Reject-services-to-root-etcd '2379 2380' REJECT
     assert_uci_absent firewall.fabric_flat_services_etcd_client
@@ -1477,8 +1482,8 @@ $common_suffix"
 Allow-platform-to-root-etcd-client
 Reject-services-to-root-etcd-internal
 $forward_suffix"
-    expected_rule_count=28
-    expected_chain_count=18
+    expected_rule_count=29
+    expected_chain_count=19
     assert_target_section fabric_flat_services_etcd_client \
       Allow-platform-to-root-etcd-client 2379 ACCEPT
     assert_target_section fabric_flat_reject_services_etcd_internal \
@@ -1642,6 +1647,7 @@ ip saddr @root_nodes_v4 udp dport 8472 counter accept comment "root Flannel VXLA
 ip saddr @service_nodes_v4 tcp dport { 6443, 10250 } counter accept comment "service agents to API and root kubelets"
 ip saddr @service_nodes_v4 udp dport 8472 counter accept comment "service-agent Flannel VXLAN"
 ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } counter accept comment "trusted platform monitoring"
+ip saddr @service_nodes_v4 tcp dport 22 counter accept comment "tailnet-routed operator SSH"
 ip saddr @observer_v4 tcp dport { 22, 2112, 2381, 6443, 9100 } counter accept comment "attended observer access"
 counter drop comment "deny all remaining input"'
   expected_live_forward_rules='ct state invalid counter drop comment "invalid conntrack state"
@@ -2524,6 +2530,7 @@ fabric_flat_roots_kubelet
 fabric_flat_roots_bootie
 fabric_flat_observer_services_ssh
 fabric_flat_services_bootie_rootfs
+fabric_flat_tailnet_root_ssh
 fabric_flat_reject_services_roots
 fabric_flat_reject_roots_services
 fabric_router_dns
@@ -2782,6 +2789,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
   actual_order=$(printf '%s\n' "$live_lan" |
@@ -2792,7 +2800,7 @@ Reject-other-roots-to-services'
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 18 ] || return 1
+  ')" -eq 19 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3164,6 +3172,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
   actual_order=$(printf '%s\n' "$live_lan" |
@@ -3175,7 +3184,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 17 ] || return 1
+  [ "$rule_count" -eq 18 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3296,6 +3305,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
   actual_order=$(printf '%s\n' "$live_lan" |
@@ -3307,7 +3317,7 @@ Reject-other-roots-to-services'
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
   ')
-  [ "$rule_count" -eq 18 ] || return 1
+  [ "$rule_count" -eq 19 ] || return 1
   terminal_rule=$(printf '%s\n' "$live_lan" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }
@@ -3959,6 +3969,7 @@ Allow-roots-to-service-kubelets
 Allow-roots-to-Bootie
 Allow-observer-to-services-SSH
 Allow-services-to-Bootie-rootfs
+Allow-tailnet-SNAT-to-root-SSH
 Reject-other-services-to-roots
 Reject-other-roots-to-services'
 actual_forward=$(printf '%s\n' "$live" |
@@ -3970,7 +3981,7 @@ actual_chain_count=$(printf '%s\n' "$live" | awk '
   inside && /# handle [0-9]+$/ { n++ }
   END { print n + 0 }
 ')
-[ "$actual_chain_count" -eq 18 ]
+[ "$actual_chain_count" -eq 19 ]
 terminal_rule=$(printf '%s\n' "$live" | awk '
   $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
   inside && $1 == "}" { inside = 0 }
@@ -4100,7 +4111,7 @@ accepted_open_exact() {
     inside && $1 == "}" { inside = 0 }
     inside && /# handle [0-9]+$/ { n++ }
     END { print n + 0 }
-  ')" -eq 18 ] || return 1
+  ')" -eq 19 ] || return 1
   aoe_terminal=$(printf '%s\n' "$aoe_live" | awk '
     $1 == "chain" && $2 == "forward_lan" && $3 == "{" { inside = 1; next }
     inside && $1 == "}" { inside = 0 }

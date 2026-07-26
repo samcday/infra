@@ -5,8 +5,9 @@ usage() {
   cat >&2 <<'EOF'
 Usage: fabric-ssh <cp1|cp2|cp3|svc1|svc2> [remote-command [argument ...]]
 
-Connect end-to-end to a commissioned Fabric node through sam-desktop's
-Tailnet identity and isolated fabric-observer namespace.
+Connect directly to a commissioned Fabric root through the advertised
+Tailnet subnet routes. Service-node day-two access retains the attended
+observer relay until the separate service host policy is migrated.
 EOF
 }
 
@@ -23,19 +24,22 @@ die() {
 node=$1
 shift
 case $node in
-  cp1 | fabric-az1-cp1) address=10.66.0.10 ;;
-  cp2 | fabric-az1-cp2) address=10.66.0.11 ;;
-  cp3 | fabric-az1-cp3) address=10.66.0.12 ;;
-  svc1 | fabric-az1-svc1) address=10.66.1.10 ;;
-  svc2 | fabric-az1-svc2) address=10.66.1.11 ;;
+  cp1 | fabric-az1-cp1) address=10.66.0.10; direct=true ;;
+  cp2 | fabric-az1-cp2) address=10.66.0.11; direct=true ;;
+  cp3 | fabric-az1-cp3) address=10.66.0.12; direct=true ;;
+  svc1 | fabric-az1-svc1) address=10.66.1.10; direct=false ;;
+  svc2 | fabric-az1-svc2) address=10.66.1.11; direct=false ;;
   *) die 'node must be cp1, cp2, cp3, svc1, or svc2' ;;
 esac
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_dir/.." && pwd -P)
 known_hosts=$repo_root/fabric/access/known_hosts
-proxy_command="$script_dir/fabric-ssh-proxy %h %p"
 identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
+proxy_command=none
+if ! $direct; then
+  proxy_command="$script_dir/fabric-ssh-proxy %h %p"
+fi
 
 [[ -f $known_hosts && ! -L $known_hosts ]] ||
   die "strict host-key file is missing or unsafe: $known_hosts"
@@ -60,6 +64,7 @@ ssh_arguments=(
   -o PasswordAuthentication=no
   -o PermitLocalCommand=no
   -o "ProxyCommand=$proxy_command"
+  -o ProxyJump=none
   -o StrictHostKeyChecking=yes
   -o UpdateHostKeys=no
   -o UserKnownHostsFile="$known_hosts"

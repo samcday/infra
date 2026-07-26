@@ -1284,6 +1284,8 @@ guard_live
             "assert_target_section fabric_flat_reject_services_etcd_internal",
             "Reject-services-to-root-etcd-internal 2380 REJECT",
             "Allow-platform-to-root-metrics '2112 2381 9100' ACCEPT",
+            "assert_target_section fabric_flat_tailnet_root_ssh",
+            "Allow-tailnet-SNAT-to-root-SSH 22 ACCEPT",
             "assert_root_bootie_section",
             "assert_live_rule Allow-roots-to-Bootie 'jump accept_to_lan' no",
             "assert_uci_absent firewall.fabric_flat_reject_services_etcd",
@@ -1313,16 +1315,21 @@ guard_live
             2,
         )
         for required in (
-            "expected_rule_count=27",
-            "expected_chain_count=17",
             "expected_rule_count=28",
             "expected_chain_count=18",
+            "expected_rule_count=29",
+            "expected_chain_count=19",
         ):
             self.assertIn(required, self.helper)
 
         self.assertIn(
             'ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } '
             'counter accept comment "trusted platform monitoring"',
+            self.helper,
+        )
+        self.assertIn(
+            'ip saddr @service_nodes_v4 tcp dport 22 '
+            'counter accept comment "tailnet-routed operator SSH"',
             self.helper,
         )
 

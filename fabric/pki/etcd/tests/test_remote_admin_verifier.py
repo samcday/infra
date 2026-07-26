@@ -54,11 +54,6 @@ class RemoteAdminVerifierFixtureTests(unittest.TestCase):
                 REPO / "fabric" / "cluster" / "etcdetcetc" / "server-ca.yaml",
                 config_dir / "server-ca.yaml",
             )
-            shutil.copy2(
-                REPO / "scripts" / "fabric-ssh-proxy",
-                fixture_root / "scripts" / "fabric-ssh-proxy",
-            )
-
             ca_key = pathlib.Path(temporary) / "ca-key.pem"
             leaf_key = pathlib.Path(temporary) / "leaf-key.pem"
             leaf_csr = pathlib.Path(temporary) / "leaf.csr"

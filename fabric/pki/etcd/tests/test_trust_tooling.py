@@ -850,7 +850,7 @@ class AdminHelperTests(unittest.TestCase):
             "ControlMaster=no",
             "ForwardAgent=no",
             "StrictHostKeyChecking=yes",
-            "ProxyCommand=$proxy_command",
+            "ProxyCommand=none",
             "UserKnownHostsFile=$known_hosts",
             "-L 127.0.0.1:42379:127.0.0.1:2379",
             "-L 127.0.0.1:42380:10.66.0.11:2379",

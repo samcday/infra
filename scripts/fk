@@ -9,9 +9,9 @@ Usage:
   fk <kubectl arguments...>
   fk k9s [k9s arguments...]
 
-The kubeconfig exec helper maintains a bounded operator credential and a
-user-systemd-supervised Tailnet/SSH tunnel. No K3s administrator kubeconfig or
-CA private key leaves a fabric root.
+The kubeconfig reaches the pinned Fabric API directly through the redundant
+Tailnet subnet routes, while its exec helper maintains a bounded operator
+credential. No K3s administrator kubeconfig or CA private key leaves a root.
 EOF
 }
 

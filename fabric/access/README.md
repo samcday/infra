@@ -1,34 +1,44 @@
 # Fabric operator access through the Tailnet
 
-This is the phase-one operator path for the root fabric. It reuses
-`sam-desktop`'s existing Headscale identity and isolated `fabric-observer`
-Wi-Fi namespace. It does not advertise `10.66.0.0/24`, add a route or veth,
-install Tailscale on a consensus root, or copy a K3s administrator kubeconfig
-or CA private key off a root.
+Two userspace Tailscale subnet routers on the Fabric service nodes advertise
+the exact root and service prefixes. The tracked kubeconfig connects directly
+to the API VIP at `10.66.0.254:6443`; root-node SSH uses those same routes.
+No Tailscale process or credential is installed on a consensus root, and no
+K3s administrator kubeconfig or CA private key leaves one.
 
-The path has three independently checked boundaries:
+The access path retains independent trust boundaries:
 
-1. a pinned Tailnet SSH connection terminates at `sam-desktop`;
-2. its allowlisted sudo command relays only to TCP/22 on a commissioned root
-   from inside `fabric-observer`; and
-3. a pinned, end-to-end inner SSH connection forwards local TCP/16443 to the
-   API VIP from that root.
+1. Headscale ACLs and route approval admit Sam to the two exact advertised
+   prefixes;
+2. default subnet-route SNAT presents one of the reviewed service-node source
+   addresses to Fabric; and
+3. each destination's host policy, API certificate, or pinned SSH host key
+   remains authoritative for the requested port and identity.
 
-Kubernetes TLS remains end to end through both SSH transports. The tracked
-kubeconfig verifies `api.fabric.internal` against `server-ca.crt`; a process
-that races the local port cannot impersonate the API.
+Kubernetes TLS remains end to end across the Tailnet route. Although the
+kubeconfig connects to the numeric VIP, it verifies `api.fabric.internal`
+against the pinned `server-ca.crt`.
 
 ## Requirements
 
-- `sam-desktop` is online in Headscale and reachable over OpenSSH;
-- its `fabric-observer` namespace is active and can reach the roots;
+- the local Tailscale client is connected to Headscale and accepts subnet
+  routes;
+- at least one enrolled Fabric subnet-router Pod is Ready;
+- the router and root-host Tailnet TCP/22 admissions are live;
 - the caller has Sam's SSH identity, defaulting to `~/.ssh/id_ed25519`;
 - the commissioned public keys in `known_hosts` still match; and
-- the client has Bash, curl, jq, OpenSSL, OpenSSH, and a user systemd manager.
+- the client has Bash, jq, OpenSSL, OpenSSH, and kubectl.
 
 OpenSSH user configuration and connection sharing are ignored so an existing
-master cannot bypass the pinned path. Set `FABRIC_SSH_IDENTITY` when the
-private key is at a different path.
+master, jump host, or proxy command cannot bypass the direct pinned path. Set
+`FABRIC_SSH_IDENTITY` when the private key is at a different path.
+
+An installation carrying the earlier observer-only policy cannot bootstrap
+this cutover through direct root SSH: both the router and root host reject the
+service-node SNAT sources. Stage the committed
+`Allow-tailnet-SNAT-to-root-SSH` router rule and `tailnet-routed operator SSH`
+root-host rule once through an attended console or reprovisioning path. After
+that migration, routine access has no observer-namespace dependency.
 
 ## Use it
 
@@ -48,8 +58,8 @@ scripts/fk k9s
 scripts/ik --context=fabric get nodes
 ```
 
-`fabric-credential` generates a P-256 key locally. Through the same pinned
-SSH/sudo path, a root validates the exact
+`fabric-credential` generates a P-256 key locally. Over direct pinned SSH, a
+root validates the exact
 `O=system:masters,CN=sam-fabric-operator` CSR, constrains its key and
 extensions, and signs it directly with the K3s client CA for about 15 minutes
 of usable time. A one-minute `notBefore` backdate makes the encoded validity
@@ -60,18 +70,8 @@ runtime directory and rotate with at least three minutes remaining. This
 leaves one minute of slack above the two-minute minimum required by attended
 fabric qualification helpers.
 
-The kubeconfig exec helper also calls `fabric-kube-tunnel ensure`. That command
-uses a transient user-systemd service to supervise the fixed loopback forward,
-verify the real API serving certificate before returning, and reconnect through
-cp2, cp1, then cp3. Native API TLS means watches, exec streams, k9s, and
-concurrent clients do not traverse `kubectl proxy`.
-
-Inspect or explicitly stop the transport with:
-
-```sh
-scripts/fabric-kube-tunnel status
-scripts/fabric-kube-tunnel stop
-```
+Native API TLS means watches, exec streams, k9s, and concurrent clients use the
+Tailnet route directly without a local SSH tunnel or `kubectl proxy`.
 
 Connect to a root for a version-matched emergency CLI:
 
@@ -79,10 +79,9 @@ Connect to a root for a version-matched emergency CLI:
 scripts/fabric-ssh cp2 sudo k3s kubectl get nodes -o wide
 ```
 
-## Boundary and successor
+## Boundary
 
-This deliberately depends on `sam-desktop` and the temporary observer radio.
-It is not the final independent access plane. Its successor is a service-only
-`fabric-access` Headscale peer outside the consensus roots, exposing only the
-API and bounded root SSH transports. The pinned API trust and short-lived
-operator credential model can remain.
+The Tailnet path deliberately terminates on the two service nodes, whose
+separate identities provide failover while keeping the consensus roots free of
+Tailnet state. The pinned API trust, strict node host keys, destination host
+guards, and short-lived operator credential remain independent controls.

@@ -328,6 +328,24 @@ set firewall.fabric_flat_services_bootie_rootfs.proto='tcp'
 set firewall.fabric_flat_services_bootie_rootfs.dest_port='80'
 set firewall.fabric_flat_services_bootie_rootfs.target='ACCEPT'
 
+# The two userspace Tailnet subnet routers retain default route SNAT, so
+# operator SSH arrives from the exact service-node address hosting the active
+# router Pod. Admit only those two source identities to SSH on the three roots;
+# the root host guard independently enforces the same source and port set.
+set firewall.fabric_flat_tailnet_root_ssh='rule'
+set firewall.fabric_flat_tailnet_root_ssh.name='Allow-tailnet-SNAT-to-root-SSH'
+set firewall.fabric_flat_tailnet_root_ssh.src='lan'
+set firewall.fabric_flat_tailnet_root_ssh.dest='lan'
+set firewall.fabric_flat_tailnet_root_ssh.family='ipv4'
+add_list firewall.fabric_flat_tailnet_root_ssh.src_ip='10.66.1.10/32'
+add_list firewall.fabric_flat_tailnet_root_ssh.src_ip='10.66.1.11/32'
+add_list firewall.fabric_flat_tailnet_root_ssh.dest_ip='10.66.0.10/32'
+add_list firewall.fabric_flat_tailnet_root_ssh.dest_ip='10.66.0.11/32'
+add_list firewall.fabric_flat_tailnet_root_ssh.dest_ip='10.66.0.12/32'
+set firewall.fabric_flat_tailnet_root_ssh.proto='tcp'
+set firewall.fabric_flat_tailnet_root_ssh.dest_port='22'
+set firewall.fabric_flat_tailnet_root_ssh.target='ACCEPT'
+
 set firewall.fabric_flat_reject_services_roots='rule'
 set firewall.fabric_flat_reject_services_roots.name='Reject-other-services-to-roots'
 set firewall.fabric_flat_reject_services_roots.src='lan'

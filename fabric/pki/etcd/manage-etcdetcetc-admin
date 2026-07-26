@@ -180,7 +180,6 @@ if [[ $mode == verify-remote ]]; then
   readonly online_ca=$repo_root/fabric/pki/etcdetcetc/client-ca.pem
   readonly committed_server_ca_manifest=$repo_root/fabric/cluster/etcdetcetc/server-ca.yaml
   readonly known_hosts=$repo_root/fabric/access/known_hosts
-  readonly proxy_command="$repo_root/scripts/fabric-ssh-proxy %h %p"
   readonly identity=${FABRIC_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}
   readonly forwarded_endpoints=https://127.0.0.1:42379,https://127.0.0.1:42380,https://127.0.0.1:42381
   [[ -f $online_ca && ! -L $online_ca ]] ||
@@ -191,9 +190,6 @@ if [[ $mode == verify-remote ]]; then
     die 'strict Fabric root host-key file is absent or unsafe'
   [[ -r $identity && ! -L $identity ]] ||
     die 'Fabric SSH identity is absent or unsafe'
-  [[ -x $repo_root/scripts/fabric-ssh-proxy &&
-     ! -L $repo_root/scripts/fabric-ssh-proxy ]] ||
-    die 'repo-local Fabric SSH proxy is absent or unsafe'
 
   remote_ik=("$repo_root/scripts/ik" --context=fabric --request-timeout=15s)
   [[ -x ${remote_ik[0]} && ! -L ${remote_ik[0]} ]] ||
@@ -440,7 +436,7 @@ if [[ $mode == verify-remote ]]; then
     -o TCPKeepAlive=yes
     -o Tunnel=no
     -o UpdateHostKeys=no
-    -o "ProxyCommand=$proxy_command"
+    -o ProxyCommand=none
     -o "UserKnownHostsFile=$known_hosts"
     -L 127.0.0.1:42379:127.0.0.1:2379
     -L 127.0.0.1:42380:10.66.0.11:2379

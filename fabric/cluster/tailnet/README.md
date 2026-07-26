@@ -20,5 +20,8 @@ address, so Flux cannot report this child Ready before enrollment succeeds.
 Linux clients must accept subnet routes. Default subnet-route SNAT is retained:
 Fabric hosts see forwarded sessions as originating from `10.66.1.10` or
 `10.66.1.11`, and their existing host policy remains authoritative for ports.
-The Tailnet route is suitable for carrying the offline recovery client's mTLS
-session to physical etcd without copying a private key into Kubernetes.
+The normal operator path uses the pinned Kubernetes API VIP on TCP/6443 and
+key-only SSH to the three roots on TCP/22. Exact OpenWrt and root-host rules
+admit those ports only from the two SNAT identities. The same route is suitable
+for carrying the offline recovery client's mTLS session to physical etcd
+without copying a private key into Kubernetes.

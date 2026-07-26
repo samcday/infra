@@ -72,9 +72,9 @@ The image deliberately:
   `100.64.0.0/10` destinations through the WAN, while granting public egress
   to the three root addresses and TCP/80+443 public egress to only
   `10.66.1.10-10.66.1.11`;
-- permits key-only OpenSSH from observer `10.66.0.2` and no other LAN source;
-  password authentication and every SSH forwarding mode are disabled, and
-  Dropbear is absent;
+- permits key-only OpenSSH to the router itself from observer `10.66.0.2` and
+  no other LAN source; password authentication and every SSH forwarding mode
+  are disabled, and Dropbear is absent;
 - permits router DNS, NTP, and pinned-asset HTTP on `10.66.0.1` only from the
   observer and three roots, and on `10.66.1.1` only from the two service nodes;
 - disables LAN DHCPv4, DHCPv6, router advertisements, and NDP proxying; the
@@ -131,9 +131,12 @@ defense in depth. The two IPv4 prefixes route through the same LAN zone; exact
 address-pinned rules permit API TCP/6443 from the two service nodes only to the
 VIP `10.66.0.254` and the three K3s server addresses `10.66.0.10-.12`, plus
 bidirectional Flannel UDP/8472, bidirectional kubelet TCP/10250, and attended
-observer `10.66.0.2` SSH to the two exact service addresses. The three exact
-root addresses may also reach in-cluster Bootie on the two exact service
-addresses over TCP/80 for a one-node day-two install. The direct API
+observer `10.66.0.2` SSH to the two exact service addresses. The two userspace
+Tailnet subnet routers retain route SNAT, so a separate exact rule admits
+their service-node source addresses `10.66.1.10-.11` only to TCP/22 on the
+three root addresses. The three exact root addresses may also reach in-cluster
+Bootie on the two exact service addresses over TCP/80 for a one-node day-two
+install. The direct API
 destinations are required because the K3s supervisor advertises its individual
 server endpoints after an agent initially joins through the VIP. During one
 attended install, those two service addresses may also fetch the live rootfs
@@ -307,9 +310,11 @@ the active inventory address `10.66.0.100`, another unauthorized address in
 each prefix, and a controlled WAN-side client. It must prove router-service
 source restrictions, observer and unauthorized forwarding denial, exact
 API/VXLAN/kubelet plus observer-to-service SSH same-interface forwarding, and
-service-node TCP/80 to the exact recovery Bootie observer address plus each
-root's TCP/80 access to the two in-cluster Bootie host addresses, while
-adjacent ports, hosts, and unauthorized sources fail. It must also prove explicit etcd denial,
+Tailnet-SNAT TCP/22 from both service addresses to all three exact roots. It
+must also prove service-node TCP/80 to the exact recovery Bootie observer
+address plus each root's TCP/80 access to the two in-cluster Bootie host
+addresses, while adjacent ports, hosts, and unauthorized sources fail. It
+must also prove explicit etcd denial,
 root public egress, service-only public TCP/80+443 egress, private and CGNAT
 denial, WAN-input denial, and WAN-to-fabric denial using known-live
 destinations plus deltas on the corresponding named fw4 counters. Do not claim

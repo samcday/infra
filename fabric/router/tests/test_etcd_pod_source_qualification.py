@@ -350,10 +350,15 @@ bash -c '
             "ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } "
             'counter accept comment "trusted platform monitoring"'
         )
+        operator_ssh_allow = (
+            "ip saddr @service_nodes_v4 tcp dport 22 "
+            'counter accept comment "tailnet-routed operator SSH"'
+        )
         self.assertEqual(self.root_firewall.count(service_set), 1)
         self.assertEqual(self.root_firewall.count(service_allow), 1)
         self.assertEqual(self.root_firewall.count(catchall), 1)
         self.assertEqual(self.root_firewall.count(metrics_allow), 1)
+        self.assertEqual(self.root_firewall.count(operator_ssh_allow), 1)
         self.assertLess(
             self.root_firewall.index(service_allow), self.root_firewall.index(catchall)
         )
@@ -379,6 +384,7 @@ bash -c '
         for required in (
             'service_set=\'elements = { 10.66.1.10, 10.66.1.11 }\'',
             "service_etcd_allow='ip saddr @service_nodes_v4 tcp dport 2379",
+            "service_operator_ssh_allow='ip saddr @service_nodes_v4 tcp dport 22",
             "etcd_catchall='tcp dport 2379 counter drop",
             "service_etcd_allow_line -lt $etcd_catchall_line",
             "expected_etcd_accepts='ip saddr @root_nodes_v4 tcp dport 2379",

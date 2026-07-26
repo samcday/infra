@@ -244,12 +244,13 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "flat_l2_sysctl=/etc/sysctl.d/90-fabric-flat-l2.conf",
             "net.ipv6.conf.all.accept_source_route=-1",
             "SYSCTL_POLICY=image-owned-no-preserved-overrides-live-exact",
-            "assert_section_count rule 28",
-            "assert_live_fw4_chain forward_lan 18",
+            "assert_section_count rule 29",
+            "assert_live_fw4_chain forward_lan 19",
             "assert_live_fw4_chain input_lan 11",
             "Allow-observer-to-services-SSH",
             "Allow-roots-to-Bootie",
             "Allow-services-to-Bootie-rootfs",
+            "Allow-tailnet-SNAT-to-root-SSH",
             "Allow-platform-to-root-etcd-client",
             "Reject-services-to-root-etcd-internal",
             "api_endpoints='10.66.0.254/32 10.66.0.10/32 10.66.0.11/32 10.66.0.12/32'",
@@ -267,10 +268,15 @@ class FlatL2NetworkShapeTests(unittest.TestCase):
             "ip saddr @service_nodes_v4 tcp dport { 2112, 2381, 9100 } "
             'counter accept comment "trusted platform monitoring"'
         )
+        operator_ssh_allow = (
+            "ip saddr @service_nodes_v4 tcp dport 22 "
+            'counter accept comment "tailnet-routed operator SSH"'
+        )
         peer_allow = "@service_nodes_v4 tcp dport 2380"
 
         self.assertEqual(root_firewall.count(service_set), 1)
         self.assertEqual(root_firewall.count(metrics_allow), 1)
+        self.assertEqual(root_firewall.count(operator_ssh_allow), 1)
         self.assertNotIn(peer_allow, root_firewall)
         self.assertNotRegex(
             root_firewall,
@@ -460,8 +466,6 @@ class FlatL2FirewallTests(unittest.TestCase):
                     "REJECT", "fabric_flat_reject_services_roots", **flow
                 )
         for flow, rule in (
-            (self.routed_flow("10.66.1.10", "10.66.0.10", "tcp", 22),
-             "fabric_flat_reject_services_roots"),
             (self.routed_flow("10.66.1.10", "10.66.0.11", "tcp", 10257),
              "fabric_flat_reject_services_roots"),
             (self.routed_flow("10.66.0.10", "10.66.1.10", "tcp", 6443),
@@ -475,6 +479,30 @@ class FlatL2FirewallTests(unittest.TestCase):
         ):
             with self.subTest(flow=flow):
                 self.assert_flow("REJECT", rule, **flow)
+
+    def test_tailnet_snat_has_only_exact_root_ssh(self) -> None:
+        for service in ("10.66.1.10", "10.66.1.11"):
+            for root in ("10.66.0.10", "10.66.0.11", "10.66.0.12"):
+                self.assert_flow(
+                    "ACCEPT",
+                    "fabric_flat_tailnet_root_ssh",
+                    **self.routed_flow(service, root, "tcp", 22),
+                )
+                for protocol, port in (("tcp", 23), ("udp", 22)):
+                    self.assert_flow(
+                        "REJECT",
+                        "fabric_flat_reject_services_roots",
+                        **self.routed_flow(service, root, protocol, port),
+                    )
+        for source, destination in (
+            ("10.66.1.12", "10.66.0.10"),
+            ("10.66.1.10", "10.66.0.13"),
+        ):
+            self.assert_flow(
+                "REJECT",
+                "fabric_flat_reject_services_roots",
+                **self.routed_flow(source, destination, "tcp", 22),
+            )
 
     def test_services_have_only_pinned_public_web_egress(self) -> None:
         for service in ("10.66.1.10", "10.66.1.11"):
@@ -560,6 +588,7 @@ class FlatL2FirewallTests(unittest.TestCase):
                 "fabric_flat_roots_bootie",
                 "fabric_flat_observer_services_ssh",
                 "fabric_flat_services_bootie_rootfs",
+                "fabric_flat_tailnet_root_ssh",
             },
         )
         for name, options in forwarding_accepts.items():
