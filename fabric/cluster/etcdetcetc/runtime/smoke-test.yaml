@@ -62,7 +62,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: smoke-test
-              image: docker.io/curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
+              image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
@@ -86,82 +86,54 @@ spec:
                     *[!0-9a-f-]*) exit 10 ;;
                   esac
 
-                  encode() {
-                    printf '%s' "$1" | base64 | tr -d '\n'
-                  }
-
-                  request() {
-                    path=$1
-                    payload=$2
-                    output=$3
-                    curl --silent --show-error --fail-with-body \
-                      --proto '=https' \
-                      --connect-timeout 3 --max-time 8 \
-                      --cacert /credential/ca.crt \
-                      --cert /credential/tls.crt \
-                      --key /credential/tls.key \
-                      --header 'Content-Type: application/json' \
-                      --request POST --data "$payload" \
-                      --output "$output" "$endpoint$path"
-                  }
-
-                  prefix_b64=$(encode "$prefix")
-                  endpoint=
-                  old_ifs=$IFS
-                  IFS=,
-                  for candidate in $endpoints; do
-                    endpoint=$candidate
-                    if request /v3/kv/range \
-                        "{\"key\":\"$prefix_b64\"}" /work/initial-read.json; then
-                      break
-                    fi
-                    endpoint=
-                  done
-                  IFS=$old_ifs
-                  [ -n "$endpoint" ]
-
+                  archive=/work/etcd-v3.6.13-linux-amd64.tar.gz
+                  ctl=/work/etcd-v3.6.13-linux-amd64/etcdctl
                   lease_id=
+
+                  tenant_ctl() {
+                    "$ctl" --endpoints="$endpoints" \
+                      --cacert=/credential/ca.crt \
+                      --cert=/credential/tls.crt \
+                      --key=/credential/tls.key \
+                      --dial-timeout=3s --command-timeout=8s "$@"
+                  }
+
                   cleanup() {
                     if [ -n "$lease_id" ]; then
-                      request /v3/lease/revoke \
-                        "{\"ID\":\"$lease_id\"}" /work/lease-cleanup.json \
-                        >/dev/null 2>&1 || true
+                      tenant_ctl lease revoke "$lease_id" >/dev/null 2>&1 || true
                     fi
                   }
                   trap cleanup EXIT HUP INT TERM
 
-                  request /v3/lease/grant '{"TTL":"90"}' /work/lease-grant.json
-                  lease_id=$(sed -n 's/.*"ID":"\([-0-9][0-9]*\)".*/\1/p' /work/lease-grant.json)
+                  wget -q -T 15 -O "$archive" \
+                    http://10.66.1.1/static/etcd-v3.6.13-linux-amd64.tar.gz
+                  printf '%s  %s\n' \
+                    b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465 \
+                    "$archive" | sha256sum -c - >/dev/null
+                  tar -xzf "$archive" -C /work \
+                    etcd-v3.6.13-linux-amd64/etcdctl
+                  version_output=$($ctl version)
+                  [ "$(printf '%s\n' "$version_output" | sed -n '1p')" = \
+                    'etcdctl version: 3.6.13' ]
+                  [ "$(printf '%s\n' "$version_output" | sed -n '2p')" = \
+                    'API version: 3.6' ]
+
+                  tenant_ctl get "$prefix" --limit=1 >/dev/null
+
+                  lease_output=$(tenant_ctl lease grant 90)
+                  lease_id=$(printf '%s\n' "$lease_output" | awk '{print $2}')
                   case "$lease_id" in
-                    ''|*[!0-9-]*) exit 11 ;;
+                    ''|*[!0-9a-f]*) exit 11 ;;
                   esac
 
                   key=${prefix}.periodic-smoke/$POD_UID
                   value=fabric-etcd-smoke:$POD_UID
-                  key_b64=$(encode "$key")
-                  value_b64=$(encode "$value")
+                  tenant_ctl put "$key" "$value" --lease="$lease_id" >/dev/null
+                  [ "$(tenant_ctl get "$key" --print-value-only)" = "$value" ]
+                  [ "$(tenant_ctl del "$key")" = 1 ]
+                  [ -z "$(tenant_ctl get "$key" --print-value-only)" ]
 
-                  request /v3/kv/put \
-                    "{\"key\":\"$key_b64\",\"value\":\"$value_b64\",\"lease\":\"$lease_id\"}" \
-                    /work/put.json
-                  request /v3/kv/range \
-                    "{\"key\":\"$key_b64\"}" /work/get.json
-                  grep -Fq "\"key\":\"$key_b64\"" /work/get.json
-                  grep -Fq "\"value\":\"$value_b64\"" /work/get.json
-                  grep -Fq '"count":"1"' /work/get.json
-
-                  request /v3/kv/deleterange \
-                    "{\"key\":\"$key_b64\"}" /work/delete.json
-                  grep -Fq '"deleted":"1"' /work/delete.json
-                  request /v3/kv/range \
-                    "{\"key\":\"$key_b64\"}" /work/after-delete.json
-                  grep -Fq '"header":' /work/after-delete.json
-                  if grep -Fq '"kvs":' /work/after-delete.json; then
-                    exit 12
-                  fi
-
-                  request /v3/lease/revoke \
-                    "{\"ID\":\"$lease_id\"}" /work/lease-revoke.json
+                  tenant_ctl lease revoke "$lease_id" >/dev/null
                   lease_id=
                   trap - EXIT HUP INT TERM
                   printf 'FABRIC_ETCD_SMOKE=pass pod=%s\n' "$POD_NAME"
@@ -180,12 +152,12 @@ spec:
                       fieldPath: metadata.uid
               resources:
                 requests:
-                  cpu: 5m
-                  memory: 16Mi
+                  cpu: 10m
+                  memory: 32Mi
                   ephemeral-storage: 1Mi
                 limits:
-                  cpu: 100m
-                  memory: 64Mi
+                  cpu: 250m
+                  memory: 192Mi
                   ephemeral-storage: 8Mi
               securityContext:
                 allowPrivilegeEscalation: false
@@ -231,7 +203,7 @@ spec:
             - name: work
               emptyDir:
                 medium: Memory
-                sizeLimit: 4Mi
+                sizeLimit: 128Mi
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -247,6 +219,12 @@ spec:
   policyTypes:
     - Egress
   egress:
+    - to:
+        - ipBlock:
+            cidr: 10.66.1.1/32
+      ports:
+        - port: 80
+          protocol: TCP
     - to:
         - ipBlock:
             cidr: 10.66.0.10/32

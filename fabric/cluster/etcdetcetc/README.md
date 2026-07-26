@@ -315,10 +315,12 @@ The runtime also runs `CronJob/fabric-etcd-smoke` every five minutes. Each Job
 mounts only the Tenant-owned TLS Secret and generated contract ConfigMap,
 selects a reachable physical endpoint, and performs a lease-backed
 put/get/delete under `.periodic-smoke/<Pod UID>`. The 90-second lease bounds any
-write left by a crashed Job. Its label-scoped NetworkPolicy permits only the
-three physical root `/32`s on TCP/2379; it has no ServiceAccount token or DNS
-egress. A successful run emits one non-secret `FABRIC_ETCD_SMOKE=pass` marker,
-while failed Jobs remain available to the standard Kubernetes Job alerts.
+write left by a crashed Job. It fetches and verifies the same checksum-pinned
+etcdctl 3.6.13 archive as the attended qualifier. Its label-scoped NetworkPolicy
+permits only that archive from the router service address and the three physical
+root `/32`s on TCP/2379; it has no ServiceAccount token or DNS egress. A
+successful run emits one non-secret `FABRIC_ETCD_SMOKE=pass` marker, while failed
+Jobs remain available to the standard Kubernetes Job alerts.
 
 ## Ongoing tenant lifecycle
 

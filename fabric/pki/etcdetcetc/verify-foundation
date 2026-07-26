@@ -145,7 +145,7 @@ jq -e '
     } and
     $job.spec.jobTemplate.spec.template.spec.securityContext.runAsNonRoot == true and
     $job.spec.jobTemplate.spec.template.spec.containers[0].image ==
-      "docker.io/curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13" and
+      "docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028" and
     $job.spec.jobTemplate.spec.template.spec.containers[0].securityContext == {
       allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]},
       readOnlyRootFilesystem: true
@@ -155,9 +155,11 @@ jq -e '
     ([ $job.spec.jobTemplate.spec.template.spec.volumes[] |
       select(.name == "contract") | .configMap.name]) == ["fabric-smoke-etcd"] and
     ($job.spec.jobTemplate.spec.template.spec.containers[0].args[0] as $script |
-      $script | contains("/v3/kv/put") and contains("/v3/kv/range") and
-      contains("/v3/kv/deleterange") and contains("/v3/lease/grant") and
-      contains("/v3/lease/revoke") and contains("FABRIC_ETCD_SMOKE=pass"))) and
+      $script | contains("etcdctl version: 3.6.13") and
+      contains("b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465") and
+      contains("tenant_ctl lease grant 90") and contains("tenant_ctl put") and
+      contains("tenant_ctl get") and contains("tenant_ctl del") and
+      contains("tenant_ctl lease revoke") and contains("FABRIC_ETCD_SMOKE=pass"))) and
   ([.[] | select(.kind == "NetworkPolicy")][0].spec == {
     podSelector: {matchLabels: {
       "app.kubernetes.io/name": "fabric-etcd-smoke",
@@ -165,14 +167,20 @@ jq -e '
       "app.kubernetes.io/component": "smoke-test"
     }},
     policyTypes: ["Egress"],
-    egress: [{
-      to: [
+    egress: [
+      {
+        to: [{ipBlock: {cidr: "10.66.1.1/32"}}],
+        ports: [{port: 80, protocol: "TCP"}]
+      },
+      {
+        to: [
         {ipBlock: {cidr: "10.66.0.10/32"}},
         {ipBlock: {cidr: "10.66.0.11/32"}},
         {ipBlock: {cidr: "10.66.0.12/32"}}
-      ],
-      ports: [{port: 2379, protocol: "TCP"}]
-    }]
+        ],
+        ports: [{port: 2379, protocol: "TCP"}]
+      }
+    ]
   })
 ' >/dev/null <<<"$smoke_test_objects" ||
   die 'permanent smoke-test CronJob or least-privilege egress policy differs from contract'
