@@ -41,7 +41,7 @@ rules:
     - hub-apiserver-ts-auth
     - labgrid-ts-auth
     - wasmcloud-nats-ts-auth
-  verbs: [create, patch, update, get]
+  verbs: [patch, update, get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -51,6 +51,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: headscale-tofu
+subjects:
+  - kind: ServiceAccount
+    name: tf-runner
+    namespace: headscale
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: headscale-tofu-secret-creator
+  namespace: headscale
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: headscale-tofu-secret-creator
+  namespace: headscale
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: headscale-tofu-secret-creator
 subjects:
   - kind: ServiceAccount
     name: tf-runner
