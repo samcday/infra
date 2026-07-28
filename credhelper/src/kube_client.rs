@@ -7,6 +7,7 @@ use std::path::Path;
 
 pub async fn fetch_ca_secret(
     server_url: &str,
+    server_tls_name: Option<&str>,
     server_ca_path: &Path,
     client_cert_path: &Path,
     client_key_path: &Path,
@@ -17,6 +18,7 @@ pub async fn fetch_ca_secret(
             name: "hub".to_string(),
             cluster: Some(Cluster {
                 server: Some(server_url.to_string()),
+                tls_server_name: server_tls_name.map(str::to_string),
                 certificate_authority: Some(server_ca_path.to_string_lossy().to_string()),
                 ..Default::default()
             }),

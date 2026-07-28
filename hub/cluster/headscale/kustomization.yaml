@@ -9,6 +9,7 @@ configMapGenerator:
 resources:
   - ../../../.kustomize-config
   - helm-release.yaml
+  - hub-apiserver-tailnet.yaml
   - noise-privkey.yaml
   - tofu.yaml
   - vpas.yaml

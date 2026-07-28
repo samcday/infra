@@ -16,7 +16,7 @@ take precedence over convenient CIDR shorthand.
 
 | Domain | Node or physical network | Pod CIDR | Service CIDR | API or publishing path |
 | --- | --- | --- | --- | --- |
-| `hub` | `10.0.1.0/24` | `172.30.0.0/16` | `172.31.0.0/16` | kube-vip `10.0.1.254` |
+| `hub` | `10.0.1.0/24` | `172.30.0.0/16` | `172.31.0.0/16` | kube-vip `10.0.1.254`; Tailnet TCP proxy `hub-apiserver.tailnet.hub.samcday.com:6443` |
 | `cloud-cluster` | Hetzner `172.29.0.0/16` | `172.28.0.0/16` | `172.27.0.0/16` | Headscale address expected at `100.64.0.3` |
 | `ilumbaclusta` | `10.0.3.0/24` | `172.28.0.0/16` | `172.27.0.0/16` | dynamically allocated from the hub BGP service interval |
 | `edge-au-east` | provider-assigned; no CIDR in this repo | `172.24.0.0/16` | `172.23.0.0/16` | parent Service `172.27.23.43`; Headscale address expected at `100.64.0.64` |
@@ -26,6 +26,9 @@ leases](../hub/router/files/etc/uci-defaults/system), [K3s
 configuration](../hub/butane/control-plane.yaml), and [kube-vip
 configuration](../hub/butane/control-plane.yaml). The router is `.1`, the
 three current control-plane/etcd nodes are `.10-.12`, and the API VIP is `.254`.
+The [hub API Tailnet proxy](../hub/cluster/headscale/hub-apiserver-tailnet.yaml)
+publishes only TCP port 6443 and forwards it to the in-cluster Kubernetes
+Service. It does not advertise the hub LAN or either Kubernetes CIDR.
 
 `cloud-cluster` uses the Hetzner network aggregate `172.28.0.0/15`, divided
 between the Pod range and the `172.29.0.0/16` provider node subnet. This is

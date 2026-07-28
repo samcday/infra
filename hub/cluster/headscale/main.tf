@@ -106,6 +106,14 @@ resource "headscale_pre_auth_key" "labgrid_coordinator" {
   acl_tags       = ["tag:labgrid-coordinator"]
 }
 
+resource "headscale_pre_auth_key" "hub_apiserver_stable" {
+  user           = headscale_user.hub.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:hub-apiserver"]
+}
+
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
   metadata {
     name      = "node-ts-auth"
@@ -180,5 +188,16 @@ resource "kubernetes_secret" "labgrid_coordinator_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.labgrid_coordinator.key
+  }
+}
+
+resource "kubernetes_secret" "hub_apiserver_preauth" {
+  metadata {
+    name      = "hub-apiserver-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.hub_apiserver_stable.key
   }
 }

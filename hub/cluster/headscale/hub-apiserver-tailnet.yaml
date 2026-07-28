@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-apiserver-ts-serve-config
+data:
+  serve.json: |
+    {
+      "TCP": {
+        "6443": {
+          "TCPForward": "kubernetes.default.svc.cluster.hub.internal:443"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hub-apiserver-ts-state
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hub-apiserver-tailnet
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hub-apiserver-tailnet
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [hub-apiserver-ts-state]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hub-apiserver-tailnet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hub-apiserver-tailnet
+subjects:
+  - kind: ServiceAccount
+    name: hub-apiserver-tailnet
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hub-apiserver-tailnet
+  labels:
+    app.kubernetes.io/name: hub-apiserver-tailnet
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hub-apiserver-tailnet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hub-apiserver-tailnet
+    spec:
+      serviceAccountName: hub-apiserver-tailnet
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5@sha256:9e2bfdd9e2ce724df53f976d06a4a9933aa730dc655ace42798f4c73735d1cac
+          env:
+            - name: TS_EXTRA_ARGS
+              value: --login-server=http://headscale-generic.headscale.svc.cluster.hub.internal
+            - name: TS_HOSTNAME
+              value: hub-apiserver
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: hub-apiserver-ts-auth
+                  key: authkey
+            - name: TS_KUBE_SECRET
+              value: hub-apiserver-ts-state
+            - name: TS_SERVE_CONFIG
+              value: /config/serve.json
+            - name: TS_USERSPACE
+              value: "true"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: serve-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: serve-config
+          configMap:
+            name: hub-apiserver-ts-serve-config

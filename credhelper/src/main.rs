@@ -108,22 +108,28 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
         );
     }
 
-    let (parent_server_url, parent_server_ca, parent_paths) = match cluster {
+    let (parent_server_url, parent_server_tls_name, parent_server_ca, parent_paths) = match cluster {
         "cloud" => {
             let hub_paths = ensure_hub_credentials()?;
             let hub_server_ca = root.join("hub/pki/k8s/server-ca.crt");
-            (config::HUB_SERVER_URL, hub_server_ca, hub_paths)
+            (
+                config::HUB_SERVER_URL,
+                Some(config::HUB_SERVER_TLS_NAME),
+                hub_server_ca,
+                hub_paths,
+            )
         }
         "edge-au-east" => {
             let cloud_paths = Box::pin(ensure_child_credentials("cloud", init)).await?;
             let cloud_server_ca = root.join("hub/pki/k8s/cloud-server-ca.crt");
-            (config::CLOUD_SERVER_URL, cloud_server_ca, cloud_paths)
+            (config::CLOUD_SERVER_URL, None, cloud_server_ca, cloud_paths)
         }
         _ => bail!("unsupported child cluster: {cluster}"),
     };
 
     let (child_ca_key, child_ca_cert) = kube_client::fetch_ca_secret(
         parent_server_url,
+        parent_server_tls_name,
         &parent_server_ca,
         &parent_paths.client_cert,
         &parent_paths.client_key,

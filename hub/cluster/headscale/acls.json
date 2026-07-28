@@ -33,6 +33,7 @@
         "tag:edge-au-east-apiserver": [],
         "tag:edge-au-east-node": [],
         "tag:fabric-subnet-router": ["sam@"],
+        "tag:hub-apiserver": [],
         "tag:labgrid-coordinator": []
     },
     "autoApprovers": {

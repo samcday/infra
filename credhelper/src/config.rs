@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const HUB_SERVER_URL: &str = "https://10.0.1.254:6443";
+pub const HUB_SERVER_URL: &str = "https://hub-apiserver.tailnet.hub.samcday.com:6443";
+pub const HUB_SERVER_TLS_NAME: &str = "10.0.1.254";
 pub const CLOUD_SERVER_URL: &str = "https://cloud-cluster-apiserver.tailnet.hub.samcday.com:6443";
 pub const CERT_VALIDITY_DAYS: u32 = 1;
 pub const CACHE_EXPIRY_MARGIN_SECS: i64 = 300;
