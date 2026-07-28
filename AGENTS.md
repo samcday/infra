@@ -33,8 +33,8 @@
 ## Secrets And Generated Files
 - Use SOPS for secrets and never commit decrypted material; `.sops.yaml` encrypts `hub/cluster` `data`/`stringData`, Butane values marked by `# cryptme`, `hub/pki/k8s/*.enc`, and otherwise falls back to Sam's personal age key.
 - Butane YAML under `hub/butane`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` is packaged by Kustomize `secretGenerator`; bootie renders it to Ignition at runtime.
-- CI builds `apps/bootie`, `apps/etcdetcetc`, `apps/headscale-node-cleaner`,
-  and `apps/node-joiner` images on `main`. Pushes build only changed app
+- CI builds `apps/bootie`, `apps/etcd-smoke`, `apps/etcdetcetc`,
+  `apps/headscale-node-cleaner`, and `apps/node-joiner` images on `main`. Pushes build only changed app
   contexts and tag them as `YYYYMMDDHH.<workflow-run-id>`; manual dispatches
   rebuild all four.
 - Flux image automation updates tags in `hub/cluster` using comments like
