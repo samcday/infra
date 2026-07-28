@@ -8,6 +8,7 @@ configMapGenerator:
       - config.yaml
 resources:
   - ../../../.kustomize-config
+  - admin-apikey-rotation.yaml
   - helm-release.yaml
   - hub-apiserver-tailnet.yaml
   - noise-privkey.yaml
