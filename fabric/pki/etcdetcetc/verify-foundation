@@ -145,7 +145,7 @@ jq -e '
     } and
     $job.spec.jobTemplate.spec.template.spec.securityContext.runAsNonRoot == true and
     $job.spec.jobTemplate.spec.template.spec.containers[0].image ==
-      "docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028" and
+      "ghcr.io/samcday/infra-etcd-smoke:2026072803.00000000030325176009@sha256:d473d5358155357c4041f5ea89b5add09482b769c41a09f188e5b81492a9cc0a" and
     $job.spec.jobTemplate.spec.template.spec.containers[0].securityContext == {
       allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]},
       readOnlyRootFilesystem: true
@@ -156,7 +156,8 @@ jq -e '
       select(.name == "contract") | .configMap.name]) == ["fabric-smoke-etcd"] and
     ($job.spec.jobTemplate.spec.template.spec.containers[0].args[0] as $script |
       $script | contains("etcdctl version: 3.6.13") and
-      contains("b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465") and
+      contains("ctl=/usr/local/bin/etcdctl") and
+      (contains("wget") | not) and
       contains("tenant_ctl lease grant 90") and contains("tenant_ctl put") and
       contains("tenant_ctl get") and contains("tenant_ctl del") and
       contains("tenant_ctl lease revoke") and contains("FABRIC_ETCD_SMOKE=pass"))) and
@@ -168,10 +169,6 @@ jq -e '
     }},
     policyTypes: ["Egress"],
     egress: [
-      {
-        to: [{ipBlock: {cidr: "10.66.1.1/32"}}],
-        ports: [{port: 80, protocol: "TCP"}]
-      },
       {
         to: [
         {ipBlock: {cidr: "10.66.0.10/32"}},

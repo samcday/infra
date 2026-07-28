@@ -62,7 +62,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: smoke-test
-              image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+              image: ghcr.io/samcday/infra-etcd-smoke:2026072803.00000000030325176009@sha256:d473d5358155357c4041f5ea89b5add09482b769c41a09f188e5b81492a9cc0a
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh
@@ -86,8 +86,7 @@ spec:
                     *[!0-9a-f-]*) exit 10 ;;
                   esac
 
-                  archive=/work/etcd-v3.6.13-linux-amd64.tar.gz
-                  ctl=/work/etcd-v3.6.13-linux-amd64/etcdctl
+                  ctl=/usr/local/bin/etcdctl
                   lease_id=
 
                   tenant_ctl() {
@@ -105,13 +104,6 @@ spec:
                   }
                   trap cleanup EXIT HUP INT TERM
 
-                  wget -q -T 15 -O "$archive" \
-                    http://10.66.1.1/static/etcd-v3.6.13-linux-amd64.tar.gz
-                  printf '%s  %s\n' \
-                    b4928654aed84d90952620c7144555e4186d795e1e7414e65fe0cf6265fd0465 \
-                    "$archive" | sha256sum -c - >/dev/null
-                  tar -xzf "$archive" -C /work \
-                    etcd-v3.6.13-linux-amd64/etcdctl
                   version_output=$($ctl version)
                   [ "$(printf '%s\n' "$version_output" | sed -n '1p')" = \
                     'etcdctl version: 3.6.13' ]
@@ -219,12 +211,6 @@ spec:
   policyTypes:
     - Egress
   egress:
-    - to:
-        - ipBlock:
-            cidr: 10.66.1.1/32
-      ports:
-        - port: 80
-          protocol: TCP
     - to:
         - ipBlock:
             cidr: 10.66.0.10/32
