@@ -42,6 +42,11 @@ spec:
             - |
               {{- if $.Values.externalHostname }}
               until ip=$(getent ahostsv4 {{ $.Values.externalHostname | quote }} | awk '{print $1; exit}') && [[ -n "$ip" ]]; do
+                # Preserve a previously published endpoint when an otherwise
+                # healthy control plane is upgraded during a DNS outage.
+                if ip=$(kubectl get configmap advertise-address -o jsonpath='{.data.value}' 2>/dev/null) && [[ -n "$ip" ]]; then
+                  break
+                fi
                 sleep 5
               done
               {{- else }}

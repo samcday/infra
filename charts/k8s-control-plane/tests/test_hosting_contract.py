@@ -287,6 +287,10 @@ class HostingContractTests(unittest.TestCase):
         self.assertEqual(exporter["spec"]["schedule"], "@daily")
         self.assertEqual(exporter["spec"]["concurrencyPolicy"], "Forbid")
 
+        advertiser = object_named(self.hardened, "Job", "advertise-address-1")
+        command = advertiser["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+        self.assertIn("kubectl get configmap advertise-address", command)
+
     def test_dedicated_konnectivity_identity_is_child_scoped(self) -> None:
         certificate = object_named(self.hardened, "Certificate", "konnectivity-server")
         self.assertEqual(certificate["spec"]["commonName"], "system:konnectivity-server")
