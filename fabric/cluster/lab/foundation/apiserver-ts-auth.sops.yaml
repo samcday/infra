@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: lab-apiserver-ts-auth
+    namespace: lab
+type: Opaque
+stringData:
+    authkey: ENC[AES256_GCM,data:jb22aALi5Z8bW1f90rltx3PJNK+fvRAw2I1B1BL3rqkTjzgR9YKNNzRQS9TwaF0xBUCbG+asIa2Dkh0ppKhj72ulBSgS6wr7YzBnjzxRqiyHNGWOEZ6tpA==,iv:apgXu2HarudAvHQHN8kpUyAXCElG3uIkENBfu2zn70M=,tag:UCTU8XOl8UZnGr/8IIwtkA==,type:str]
+sops:
+    age:
+        - recipient: age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBXTDN3N3dEdWVVRURYMEVm
+            K1pqbi9wb3pacm1qYXJDeHA1UVVEQ2dTZHp3CjVLRXh5N1AxOFBEK01kaDhBMWxu
+            dG04a25UYzRrRXBLWk00RkRhMlptdmMKLS0tIHRKc3dDUkZPMXFSV1A1RHM2SEV2
+            eUJTRzhoVWZMMm5kSk5aQmwvQ3ZHeHMKFDHnbb2M+mmUaohVNZnY5a5DIG5qpS1A
+            B+0RGikSOnVM9pA+apzbGlajOD7XjxjcDF3wU5QRm5cgjBsZkw6cTg==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBkU3NVZTlwOXpLeE5jWll5
+            ZzkxSG1KajRubE5tK29LYndWN3pYMXlORlF3CkUvWjVPcE9zUEdUYVh1ZHJPbHZx
+            emV3VkIyN0FDMTc2WjNObFdjUjRLV0EKLS0tIHdhQ2lhcFJUb1V0ODNtTTlTU2Zl
+            NytkYUMrZFRqSHJTeWNtWHpibmkyY1UKdLNAyFa/AsOZ0dhAg84UUq+8GJuAxWKa
+            XSYwBUIA6aVzzALGFomarCSDDkTYBhtc2DOh0rgHjcnDixUUGCyZTA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-29T00:02:01Z"
+    mac: ENC[AES256_GCM,data:7dzCev1HN9NDBucYY7P4yIbp/A6++ke7GIrFtvPEhONxWeu6wdyvsGJfEBheR/9O2fS7ubBhsx9FKKqRUZZon9q+0IYBECMgQny/v89PyKHILvC3cEYhgI9ZOysMe2Ao7Gu5sH8PViJE5enXUZXEGvkXLSZwCohOmrk4kCwG/U8=,iv:nxwgaMle+3wJmnYYf8pu6fFVSK/rLH1RR+HZk1nsMcQ=,tag:UM0NCCTiBWAz3Oe+J0yGPw==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

@@ -145,7 +145,7 @@ class LabControlPlaneContract(unittest.TestCase):
         self.assertEqual(release["spec"]["driftDetection"]["mode"], "enabled")
         self.assertNotIn("force", release["spec"]["upgrade"])
 
-    def test_flux_stages_are_safely_suspended(self):
+    def test_flux_activation_order_is_safe(self):
         children = documents(REPO / "fabric/cluster/flux-system/children.yaml")
         foundation = object_named(
             children, "Kustomization", "fabric-lab-foundation", "flux-system"
@@ -153,8 +153,13 @@ class LabControlPlaneContract(unittest.TestCase):
         control_plane = object_named(
             children, "Kustomization", "fabric-lab-control-plane", "flux-system"
         )
-        self.assertTrue(foundation["spec"]["suspend"])
-        self.assertTrue(control_plane["spec"]["suspend"])
+        self.assertIn(
+            (
+                foundation["spec"]["suspend"],
+                control_plane["spec"]["suspend"],
+            ),
+            ((True, True), (False, True), (False, False)),
+        )
         self.assertNotIn("wait", foundation["spec"])
         self.assertEqual(
             [item["name"] for item in control_plane["spec"]["dependsOn"]],

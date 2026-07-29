@@ -205,7 +205,7 @@ spec:
   # SOPS Secret to lab/foundation/kustomization.yaml, then (4) unsuspend only
   # this foundation and wait for the tenant, Tailnet proxy, and endpoint
   # publisher to become Ready.
-  suspend: true
+  suspend: false
   decryption:
     provider: sops
     secretRef:
