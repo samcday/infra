@@ -113,7 +113,11 @@ def hardened_values() -> dict:
                 {
                     "name": "lab-bootie-kubeconfig",
                     "namespace": "handoff",
-                }
+                },
+                {
+                    "name": "lab-bootie-kubeconfig-local",
+                    "namespace": "child-system",
+                },
             ],
             "clusterRbac": [
                 {
@@ -351,6 +355,15 @@ class HostingContractTests(unittest.TestCase):
             "admin-kubeconfig-generator-lab-bootie-lab-bootie-kubeconfig",
         )
         self.assertEqual(exported["metadata"]["namespace"], "handoff")
+        local = object_named(
+            self.hardened,
+            "Role",
+            "admin-kubeconfig-generator",
+        )
+        self.assertIn(
+            "lab-bootie-kubeconfig-local",
+            local["rules"][1]["resourceNames"],
+        )
 
     def test_dedicated_konnectivity_identity_is_child_scoped(self) -> None:
         certificate = object_named(self.hardened, "Certificate", "konnectivity-server")
