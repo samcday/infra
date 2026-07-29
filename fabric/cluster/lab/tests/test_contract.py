@@ -93,6 +93,30 @@ class LabFoundationContract(unittest.TestCase):
         apply = script.index("kubectl apply --server-side")
         self.assertLess(compare, apply)
 
+    def test_foundation_workloads_target_service_nodes_by_hostname(self):
+        expected = [
+            {
+                "key": "kubernetes.io/hostname",
+                "operator": "In",
+                "values": ["fabric-az1-svc1", "fabric-az1-svc2"],
+            }
+        ]
+        for name in (
+            "lab-apiserver-tailnet",
+            "lab-apiserver-endpoint-publisher",
+        ):
+            with self.subTest(deployment=name):
+                deployment = object_named(
+                    self.foundation, "Deployment", name, "lab"
+                )
+                term = deployment["spec"]["template"]["spec"]["affinity"][
+                    "nodeAffinity"
+                ]["requiredDuringSchedulingIgnoredDuringExecution"][
+                    "nodeSelectorTerms"
+                ][0]
+                self.assertEqual(term["matchExpressions"], expected)
+                self.assertNotIn("matchFields", term)
+
     def test_public_proxy_egress_is_tcp_443_only(self):
         policy = object_named(
             self.foundation,

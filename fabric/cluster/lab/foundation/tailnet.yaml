@@ -94,8 +94,8 @@ spec:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
-              - matchFields:
-                  - key: metadata.name
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
                     operator: In
                     values:
                       - fabric-az1-svc1
