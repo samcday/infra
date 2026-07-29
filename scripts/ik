@@ -1,13 +1,14 @@
 #!/bin/bash
 # ik - infra kubectl
 # Runs kubectl against the multi-cluster infra kubeconfig.
-# Works from any directory. Contexts: hub, cloud, edge-au-east, fabric
+# Works from any directory. Contexts: hub, cloud, edge-au-east, fabric, lab
 #
 # Usage:
 #   ik --context=hub get nodes
 #   ik --context=cloud get pods -n fastboop
 #   ik --context=edge-au-east get nodes
 #   ik --context=fabric get nodes
+#   ik --context=lab get nodes
 #   ik get pods -A   (explicitly defaults to hub)
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
