@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+readonly target_relative=fabric/cluster/lab/bootstrap/kubeadm-bootstrap.sops.yaml
+readonly target="$repo_root/$target_relative"
+cd -- "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/generate-lab-kubeadm-bootstrap [--force]
+
+Generate one 24-hour kubeadm bootstrap token and store it only in the Fabric
+SOPS handoff consumed by the Lab control plane and Bootie.
+EOF
+}
+
+die() {
+  printf 'generate-lab-kubeadm-bootstrap: %s\n' "$*" >&2
+  exit 1
+}
+
+force=false
+case ${1:-} in
+  '') ;;
+  --force) force=true ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+[[ $# -le 1 ]] || die 'too many arguments'
+
+for command in date grep install mktemp openssl sops yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+[[ -d fabric/cluster/lab/bootstrap ]] || die 'Lab bootstrap directory is absent'
+[[ -d /dev/shm && -w /dev/shm ]] || die '/dev/shm tmpfs is unavailable or unwritable'
+if [[ -e $target && $force != true ]]; then
+  die "$target_relative already exists; use --force only for an intentional rotation"
+fi
+
+umask 077
+tmp_dir=$(mktemp -d /dev/shm/lab-kubeadm-bootstrap.XXXXXXXX)
+encrypted_tmp="$tmp_dir/kubeadm-bootstrap.sops.yaml"
+cleanup() {
+  token_id=
+  token_secret=
+  if [[ -n ${tmp_dir:-} && -d $tmp_dir ]]; then
+    find "$tmp_dir" -depth -delete
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+token_id=$(openssl rand -hex 3)
+token_secret=$(openssl rand -hex 8)
+expiration=$(date --utc --date='+24 hours' '+%Y-%m-%dT%H:%M:%SZ')
+[[ $token_id =~ ^[a-f0-9]{6}$ && $token_secret =~ ^[a-f0-9]{16}$ ]] ||
+  die 'openssl returned a malformed kubeadm token'
+
+printf '%s\n' \
+  'apiVersion: v1' \
+  'kind: Secret' \
+  'metadata:' \
+  '  name: lab-kubeadm-bootstrap' \
+  '  namespace: lab' \
+  '  labels:' \
+  '    reconcile.fluxcd.io/watch: Enabled' \
+  'type: Opaque' \
+  'stringData:' \
+  "  token: $token_id.$token_secret" \
+  '  values.yaml: |' \
+  '    bootstrapTokens:' \
+  "      - id: $token_id" \
+  "        secret: $token_secret" \
+  "        expiration: $expiration" |
+  sops encrypt \
+    --filename-override "$target_relative" \
+    --input-type yaml \
+    --output-type yaml \
+    /dev/stdin > "$encrypted_tmp"
+token_id=
+token_secret=
+
+[[ $(sops filestatus "$encrypted_tmp" | yq -r '.encrypted') == true ]] ||
+  die 'SOPS did not report encrypted output'
+! grep -Eq '[a-f0-9]{6}\.[a-f0-9]{16}' "$encrypted_tmp" ||
+  die 'encrypted output still contains a plaintext kubeadm token'
+install -m 0600 -- "$encrypted_tmp" "$target"
+printf 'Wrote 24-hour SOPS bootstrap handoff: %s (expires %s)\n' \
+  "$target_relative" "$expiration"

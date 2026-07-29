@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+exec tailscale up \
+  --login-server=https://headscale.tail22d0a0.ts.net \
+  --hostname=lab-router \
+  --advertise-tags=tag:lab-router \
+  --accept-routes=false \
+  --accept-dns=true \
+  --ssh=false

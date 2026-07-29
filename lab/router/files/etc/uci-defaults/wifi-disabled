@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+for radio in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+  uci set "wireless.${radio}.disabled=1"
+done
+uci commit wireless
+wifi reload || true

@@ -1,0 +1,35 @@
+variant: fcos
+version: 1.5.0
+passwd:
+  users:
+    - name: sam
+      groups:
+        - adm
+        - wheel
+        - sudo
+        - systemd-journal
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
+storage:
+  directories:
+    - path: /etc/extensions
+      mode: 493
+  files:
+    - path: /etc/extensions/lab-node.raw
+      overwrite: true
+      mode: 420
+      contents:
+        source: http://10.0.4.1/static/lab-node-fcos44-k8s1.36.3-x86_64.raw
+        verification:
+          hash: sha256-3d32501acf70709253b0406972b3d0d928d7ac485204a3986a8948eb17ce3134
+    - path: /etc/zincati/config.d/90-disable.toml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          [updates]
+          enabled = false
+systemd:
+  units:
+    - name: systemd-sysext.service
+      enabled: true

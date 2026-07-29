@@ -122,9 +122,8 @@ metadata:
   name: allow-control-plane-lab-api-egress
   namespace: lab
 spec:
-  # admin-kubeconfig-generator is intentionally absent while users: []: its
-  # parent-API-only path does not contact the child. If chart users are added,
-  # add that component here in the same reviewed change.
+  # The bootstrap and kubeconfig-generator Jobs apply scoped RBAC through the
+  # child API in addition to the long-lived control-plane components.
   podSelector:
     matchLabels:
       app.kubernetes.io/name: k8s-control-plane
@@ -137,6 +136,7 @@ spec:
           - controller-manager
           - scheduler
           - bootstrap
+          - admin-kubeconfig-generator
   policyTypes:
     - Egress
   egress:
@@ -215,6 +215,7 @@ spec:
                   - controller-manager
                   - scheduler
                   - bootstrap
+                  - admin-kubeconfig-generator
       ports:
         - port: 6443
           protocol: TCP

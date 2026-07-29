@@ -40,6 +40,9 @@ rules:
     - conduit-ts-auth
     - hub-apiserver-ts-auth
     - lab-apiserver-ts-auth
+    - lab-bootie-ts-auth
+    - lab-node-ts-auth
+    - labgrid-lab-ts-auth
     - labgrid-ts-auth
     - wasmcloud-nats-ts-auth
   verbs: [patch, update, get]

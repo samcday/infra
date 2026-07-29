@@ -26,9 +26,11 @@ adminKubeconfig:
 
 bootstrapTokens:
   # - token: abcdef.0123456789abcdef
+  #   expiration: "2026-08-01T00:00:00Z"
   # - id: abcdef
   #   extraGroups: [system:bootstrappers:kubeadm:default-node-token]
   #   secret: 0123456789abcdef
+  #   expiration: "2026-08-01T00:00:00Z"
 
 bootstrap:
   # kubeadm 1.31 and newer write v1beta4; keep v1beta3 as the legacy default.
@@ -196,6 +198,12 @@ utilities:
 #             resources: ["secrets"]
 #             resourceNames: ["forgejo-runner-secrets"]
 #             verbs: ["get", "update", "patch"]
+#     clusterRbac:
+#       - rules:
+#           - apiGroups: [""]
+#             resources: ["nodes"]
+#             resourceNames: ["one-fixed-node"]
+#             verbs: ["get", "patch"]
 users: []
 
 # Can be either an IPv4 subnet, an IPv6 subnet, or exactly one of each.

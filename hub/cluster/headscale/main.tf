@@ -110,6 +110,30 @@ resource "headscale_pre_auth_key" "labgrid_coordinator" {
   acl_tags       = ["tag:labgrid-coordinator"]
 }
 
+resource "headscale_pre_auth_key" "labgrid_coordinator_lab" {
+  user           = headscale_user.lab.id
+  time_to_expire = "168h"
+  reusable       = false
+  ephemeral      = false
+  acl_tags       = ["tag:labgrid-coordinator"]
+}
+
+resource "headscale_pre_auth_key" "lab_bootie" {
+  user           = headscale_user.lab.id
+  time_to_expire = "168h"
+  reusable       = false
+  ephemeral      = false
+  acl_tags       = ["tag:lab-bootie"]
+}
+
+resource "headscale_pre_auth_key" "lab_node" {
+  user           = headscale_user.lab.id
+  time_to_expire = "168h"
+  reusable       = false
+  ephemeral      = false
+  acl_tags       = ["tag:lab-node"]
+}
+
 resource "headscale_pre_auth_key" "hub_apiserver_stable" {
   user           = headscale_user.hub.id
   time_to_expire = "520w"
@@ -200,6 +224,39 @@ resource "kubernetes_secret" "labgrid_coordinator_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.labgrid_coordinator.key
+  }
+}
+
+resource "kubernetes_secret" "labgrid_coordinator_lab_preauth" {
+  metadata {
+    name      = "labgrid-lab-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.labgrid_coordinator_lab.key
+  }
+}
+
+resource "kubernetes_secret" "lab_bootie_preauth" {
+  metadata {
+    name      = "lab-bootie-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.lab_bootie.key
+  }
+}
+
+resource "kubernetes_secret" "lab_node_preauth" {
+  metadata {
+    name      = "lab-node-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.lab_node.key
   }
 }
 

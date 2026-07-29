@@ -248,6 +248,9 @@ type: bootstrap.kubernetes.io/token
 stringData:
   token-id: {{ $id }}
   token-secret: {{ required "token missing secret" $secret }}
+  {{- with .expiration }}
+  expiration: {{ . | quote }}
+  {{- end }}
   {{- with .extraGroups }}
   auth-extra-groups: {{ . | join "," }}
   {{- end }}
@@ -403,6 +406,32 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: user-{{ $userName }}-{{ $idx }}
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: {{ $commonName }}
+{{- end }}
+{{- end }}
+{{- range $user := $.Values.users }}
+{{- $userName := required "users[].name is required" $user.name }}
+{{- $commonName := default $userName $user.commonName }}
+{{- range $idx, $binding := $user.clusterRbac }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: user-{{ $userName }}-cluster-{{ $idx }}
+rules:
+  {{- toYaml (required (printf "users[%s].clusterRbac[].rules is required" $userName) $binding.rules) | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: user-{{ $userName }}-cluster-{{ $idx }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: user-{{ $userName }}-cluster-{{ $idx }}
 subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: User

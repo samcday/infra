@@ -1,0 +1,26 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cilium
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://helm.cilium.io/
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: coredns
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://coredns.github.io/helm
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: openebs
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://openebs.github.io/openebs

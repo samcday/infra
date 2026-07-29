@@ -1,0 +1,322 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-bootie-install-policy
+  namespace: lab
+data:
+  # The impossible placeholder keeps installation fail-closed until the exact
+  # persistent disk is recorded during attended hardware discovery.
+  install-policy: |
+    lab-worker-1 /dev/disk/by-id/NOT-DECLARED
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-bootie-health
+  namespace: lab
+data:
+  healthz: ok
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-bootie
+  namespace: lab
+  labels:
+    app.kubernetes.io/name: lab-bootie
+    app.kubernetes.io/part-of: lab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lab-bootie
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lab-bootie
+        app.kubernetes.io/part-of: lab
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      priorityClassName: system-cluster-critical
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - fabric-az1-svc1
+                      - fabric-az1-svc2
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+      terminationGracePeriodSeconds: 15
+      initContainers:
+        - name: compile-ignition
+          image: ghcr.io/samcday/infra-bootie@sha256:5fa800c4cfa221facd9ffcc51b5fa0bcc12a8f0fb81622a862e91cb63b6f264f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -ceu
+            - -o
+            - pipefail
+            - -c
+          args:
+            - |
+              install -d -m 0700 /ignition/common
+              for source in /butane/common/*.yaml; do
+                name=$(basename "$source" .yaml)
+                butane --strict "$source" > "/ignition/common/$name.ign"
+              done
+              for source in /butane/lab/*.yaml; do
+                name=$(basename "$source" .yaml)
+                butane --strict -d /ignition "$source" > "/ignition/$name.ign"
+              done
+
+              token=$(cat /secrets/bootstrap/token)
+              authkey=$(cat /secrets/node/authkey)
+              ca_hash=$(cat /inputs/ca-hash/hash)
+              [[ $token =~ ^[a-f0-9]{6}\.[a-f0-9]{16}$ ]]
+              [[ $authkey == hskey-auth-* ]]
+              [[ $ca_hash =~ ^[a-f0-9]{64}$ ]]
+
+              token_data=$(printf '%s' "$token" | base64 -w0)
+              auth_data=$(printf '%s' "$authkey" | base64 -w0)
+              join_config=$(cat <<EOF
+              apiVersion: kubeadm.k8s.io/v1beta4
+              kind: JoinConfiguration
+              discovery:
+                bootstrapToken:
+                  apiServerEndpoint: lab-apiserver.tailnet.hub.samcday.com:6443
+                  token: $token
+                  caCertHashes:
+                    - sha256:$ca_hash
+              nodeRegistration:
+                name: lab-worker-1
+                criSocket: unix:///run/containerd/containerd.sock
+                kubeletExtraArgs:
+                  - name: node-ip
+                    value: 10.0.4.10
+              EOF
+              )
+              join_data=$(printf '%s\n' "$join_config" | base64 -w0)
+              cat > /tmp/runtime.yaml <<EOF
+              variant: fcos
+              version: 1.5.0
+              storage:
+                files:
+                  - path: /etc/ts-authkey
+                    overwrite: true
+                    mode: 384
+                    contents:
+                      source: data:text/plain;base64,$auth_data
+                  - path: /etc/kubeadm.join
+                    overwrite: true
+                    mode: 384
+                    contents:
+                      source: data:text/plain;base64,$join_data
+              EOF
+              butane --strict /tmp/runtime.yaml > /ignition/runtime.ign
+              chmod 0600 /ignition/runtime.ign
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /butane/common
+              name: butane-common
+              readOnly: true
+            - mountPath: /butane/lab
+              name: butane-lab
+              readOnly: true
+            - mountPath: /ignition
+              name: ignition
+            - mountPath: /inputs/ca-hash
+              name: ca-hash
+              readOnly: true
+            - mountPath: /secrets/bootstrap
+              name: kubeadm-bootstrap
+              readOnly: true
+            - mountPath: /secrets/node
+              name: node-auth
+              readOnly: true
+            - mountPath: /tmp
+              name: compile-tmp
+      containers:
+        - name: bootie
+          image: ghcr.io/samcday/infra-bootie@sha256:5fa800c4cfa221facd9ffcc51b5fa0bcc12a8f0fb81622a862e91cb63b6f264f
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -ceu
+          args:
+            - install -d -m 0755 /run/nginx; exec /bin/run
+          env:
+            - name: BOOTIE_ALLOW_NODE_CREATE
+              value: "false"
+            - name: BOOTIE_INSTALL_POLICY_FILE
+              value: /config/install-policy
+            - name: BOOTIE_NODE_NAME
+              value: lab-worker-1
+            - name: BOOTIE_PUBLIC_ORIGIN
+              value: http://lab-bootie.tailnet.hub.samcday.com
+            - name: BOOTIE_REQUIRE_BOOTSTRAP_STATE
+              value: "true"
+            - name: BOOTIE_REQUIRE_INSTALL_POLICY
+              value: "true"
+            - name: FCOS_BASE
+              value: http://10.0.4.1/static
+            - name: FCOS_VERSION
+              value: 44.20260621.3.1
+            - name: KUBECONFIG
+              value: /kubeconfig/value
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /static/healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /static/healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 96Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - NET_BIND_SERVICE
+                - SETGID
+                - SETUID
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: false
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config/install-policy
+              name: install-policy
+              readOnly: true
+              subPath: install-policy
+            - mountPath: /ignition
+              name: ignition
+              readOnly: true
+            - mountPath: /kubeconfig
+              name: kubeconfig
+              readOnly: true
+            - mountPath: /pxe/healthz
+              name: health
+              readOnly: true
+              subPath: healthz
+            - mountPath: /run
+              name: run
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/lib/nginx/logs
+              name: nginx-log
+            - mountPath: /var/lib/nginx/tmp
+              name: nginx-cache
+      volumes:
+        - name: butane-common
+          secret:
+            secretName: butane-common
+        - name: butane-lab
+          secret:
+            secretName: lab-butane
+        - name: ca-hash
+          configMap:
+            name: ca-hash
+        - name: compile-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: ignition
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+        - name: health
+          configMap:
+            name: lab-bootie-health
+        - name: install-policy
+          configMap:
+            name: lab-bootie-install-policy
+        - name: kubeadm-bootstrap
+          secret:
+            secretName: lab-kubeadm-bootstrap
+        - name: kubeconfig
+          secret:
+            secretName: lab-bootie-kubeconfig
+        - name: node-auth
+          secret:
+            secretName: lab-node-ts-auth
+        - name: nginx-cache
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: nginx-log
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-bootie
+  namespace: lab
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: lab-bootie
+  type: ClusterIP

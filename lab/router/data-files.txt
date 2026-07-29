@@ -1,0 +1,11 @@
+fedora-coreos-44.20260621.3.1-live-kernel.x86_64
+https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260621.3.1/x86_64/fedora-coreos-44.20260621.3.1-live-kernel.x86_64
+5b26cf74177e2083c1521dcb0c5da667714baee33b71b4aac822c34682edf2af
+
+fedora-coreos-44.20260621.3.1-live-initramfs.x86_64.img
+https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260621.3.1/x86_64/fedora-coreos-44.20260621.3.1-live-initramfs.x86_64.img
+b88d312dea3b444ba0cb7473ca8402b5273578785e6ed26d473bb6099db88830
+
+fedora-coreos-44.20260621.3.1-live-rootfs.x86_64.img
+https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260621.3.1/x86_64/fedora-coreos-44.20260621.3.1-live-rootfs.x86_64.img
+d955afef0f76b577017549ea64b2a7984a3a306a299aadd9a42c1f90f1e972ea

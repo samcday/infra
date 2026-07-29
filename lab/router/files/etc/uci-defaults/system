@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+uci -q batch <<'EOF'
+set system.@system[0].hostname='lab-router'
+set system.@system[0].zonename='Australia/Sydney'
+commit system
+
+set network.lan.ipaddr='10.0.4.1'
+set network.lan.netmask='255.255.255.0'
+set network.lan.ip6assign=''
+commit network
+
+set dhcp.@dnsmasq[0].local='/lab.internal/'
+set dhcp.@dnsmasq[0].domain='lab.internal'
+add_list dhcp.@dnsmasq[0].rebind_domain='tailnet.hub.samcday.com'
+set dhcp.lan.start='100'
+set dhcp.lan.limit='150'
+set dhcp.lan.leasetime='12h'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+commit dhcp
+EOF
+
+chsh -s /bin/bash || true
+service dnsmasq restart || true

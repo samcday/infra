@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+cd -- "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/handoff-lab-tailnet-auth [--force]
+
+Transfer the one-use Lab Bootie, worker, and coordinator Headscale keys from
+Hub into three SOPS-encrypted Fabric Secrets. Plaintext is held only in process
+memory and in a tmpfs pipeline.
+EOF
+}
+
+die() {
+  printf 'handoff-lab-tailnet-auth: %s\n' "$*" >&2
+  exit 1
+}
+
+force=false
+case ${1:-} in
+  '') ;;
+  --force) force=true ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+[[ $# -le 1 ]] || die 'too many arguments'
+
+for command in base64 grep install mktemp sops yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+[[ -x scripts/ik ]] || die 'scripts/ik is unavailable'
+[[ -d /dev/shm && -w /dev/shm ]] || die '/dev/shm tmpfs is unavailable or unwritable'
+
+mappings=$(cat <<'EOF'
+lab-bootie-ts-auth bootie-ts-auth.sops.yaml fabric/cluster/lab/bootie lab-bootie-ts-auth
+lab-node-ts-auth node-ts-auth.sops.yaml fabric/cluster/lab/bootstrap lab-node-ts-auth
+labgrid-lab-ts-auth labgrid-ts-auth-source.sops.yaml fabric/cluster/lab/child labgrid-ts-auth-source
+EOF
+)
+readonly mappings
+
+umask 077
+tmp_dir=$(mktemp -d /dev/shm/lab-tailnet-auth.XXXXXXXX)
+cleanup() {
+  if [[ -n ${tmp_dir:-} && -d $tmp_dir ]]; then
+    find "$tmp_dir" -depth -delete
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+while read -r source_secret target_file target_dir target_secret; do
+  target_relative="$target_dir/$target_file"
+  target="$repo_root/$target_relative"
+  [[ -d $target_dir ]] || die "target directory is absent: $target_dir"
+  if [[ -e $target && $force != true ]]; then
+    die "$target_relative already exists; use --force only for an intentional rotation"
+  fi
+
+  encoded=$(
+    scripts/ik --context=hub --namespace=headscale get secret "$source_secret" \
+      --output=jsonpath='{.data.authkey}'
+  )
+  [[ -n $encoded ]] || die "Hub Secret headscale/$source_secret has no authkey"
+  auth_key=$(printf '%s' "$encoded" | base64 --decode) ||
+    die "Hub Secret headscale/$source_secret is not valid base64"
+  [[ $auth_key =~ ^hskey-auth-[A-Za-z0-9_-]{16,}$ ]] ||
+    die "Hub Secret headscale/$source_secret is not a Headscale auth key"
+
+  encrypted_tmp="$tmp_dir/$target_file"
+  printf '%s\n' \
+    'apiVersion: v1' \
+    'kind: Secret' \
+    'metadata:' \
+    "  name: $target_secret" \
+    '  namespace: lab' \
+    'type: Opaque' \
+    'stringData:' \
+    "  authkey: $auth_key" |
+    sops encrypt \
+      --filename-override "$target_relative" \
+      --input-type yaml \
+      --output-type yaml \
+      /dev/stdin > "$encrypted_tmp"
+  auth_key=
+  encoded=
+
+  [[ $(sops filestatus "$encrypted_tmp" | yq -r '.encrypted') == true ]] ||
+    die "SOPS did not report encrypted output for $target_relative"
+  ! grep -Fq 'hskey-auth-' "$encrypted_tmp" ||
+    die "encrypted output contains plaintext auth material: $target_relative"
+  install -m 0600 -- "$encrypted_tmp" "$target"
+  printf 'Wrote SOPS-encrypted Fabric handoff: %s\n' "$target_relative"
+done <<< "$mappings"

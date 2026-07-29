@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+# shellcheck source=/dev/null
+source "$repo_root/lab/sysext/manifest.env"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/build-lab-node-sysext [--check]
+
+Build the deterministic FCOS system extension used by Lab workers. Downloads
+are SHA-256 verified and cached under _build/downloads; the resulting EROFS
+image is written under _build/lab-sysext. --check builds twice and proves that
+the artifact digest is reproducible.
+EOF
+}
+
+die() {
+  printf 'build-lab-node-sysext: %s\n' "$*" >&2
+  exit 1
+}
+
+check=false
+case ${1:-} in
+  '') ;;
+  --check) check=true ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+[[ $# -le 1 ]] || die 'too many arguments'
+
+for command in cmp curl find install mkfs.erofs sha256sum tar touch; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+
+readonly build_root="$repo_root/_build/lab-sysext"
+readonly cache_root="$repo_root/_build/downloads/lab-sysext"
+readonly output_name="lab-node-fcos${FCOS_SYSEXT_LEVEL}-k8s${KUBERNETES_VERSION}-x86_64.raw"
+mkdir -p -- "$build_root" "$cache_root"
+
+download() {
+  local name=$1
+  local url=$2
+  local expected=$3
+  local destination="$cache_root/$name"
+  local candidate="$destination.part"
+
+  if [[ -f $destination ]] && printf '%s  %s\n' "$expected" "$destination" | sha256sum --check --status; then
+    return
+  fi
+  curl --fail --location --retry 2 --output "$candidate" "$url"
+  printf '%s  %s\n' "$expected" "$candidate" | sha256sum --check --status ||
+    die "checksum mismatch for $name"
+  mv -f -- "$candidate" "$destination"
+}
+
+download kubeadm \
+  "https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/amd64/kubeadm" \
+  "$KUBEADM_SHA256"
+download kubelet \
+  "https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/amd64/kubelet" \
+  "$KUBELET_SHA256"
+download kubectl \
+  "https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/amd64/kubectl" \
+  "$KUBECTL_SHA256"
+download "cri-containerd-cni-${CONTAINERD_VERSION}-linux-amd64.tar.gz" \
+  "https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/cri-containerd-cni-${CONTAINERD_VERSION}-linux-amd64.tar.gz" \
+  "$CONTAINERD_CRI_SHA256"
+download "crictl-v${CRICTL_VERSION}-linux-amd64.tar.gz" \
+  "https://github.com/kubernetes-sigs/cri-tools/releases/download/v${CRICTL_VERSION}/crictl-v${CRICTL_VERSION}-linux-amd64.tar.gz" \
+  "$CRICTL_SHA256"
+download "tailscale_${TAILSCALE_VERSION}_amd64.tgz" \
+  "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz" \
+  "$TAILSCALE_SHA256"
+
+build_one() (
+  set -euo pipefail
+  local destination=$1
+  local work
+  work=$(mktemp -d "$build_root/.work.XXXXXXXX")
+  local root="$work/root"
+  local tailscale_root="$work/tailscale"
+  trap 'rm -rf -- "$work"' EXIT
+
+  mkdir -p -- "$root" "$tailscale_root"
+  tar -xzf "$cache_root/cri-containerd-cni-${CONTAINERD_VERSION}-linux-amd64.tar.gz" -C "$root"
+
+  mkdir -p -- "$root/usr/bin" "$root/usr/lib/systemd/system" \
+    "$root/usr/lib/extension-release.d"
+  install -m 0755 "$cache_root/kubeadm" "$root/usr/bin/kubeadm"
+  install -m 0755 "$cache_root/kubelet" "$root/usr/bin/kubelet"
+  install -m 0755 "$cache_root/kubectl" "$root/usr/bin/kubectl"
+
+  tar -xzf "$cache_root/crictl-v${CRICTL_VERSION}-linux-amd64.tar.gz" -C "$work"
+  install -m 0755 "$work/crictl" "$root/usr/bin/crictl"
+
+  tar -xzf "$cache_root/tailscale_${TAILSCALE_VERSION}_amd64.tgz" \
+    --strip-components=1 -C "$tailscale_root"
+  install -m 0755 "$tailscale_root/tailscale" "$root/usr/bin/tailscale"
+  install -m 0755 "$tailscale_root/tailscaled" "$root/usr/bin/tailscaled"
+  install -m 0644 "$tailscale_root/systemd/tailscaled.service" \
+    "$root/usr/lib/systemd/system/tailscaled.service"
+  install -m 0644 "$tailscale_root/systemd/tailscale-online.target" \
+    "$root/usr/lib/systemd/system/tailscale-online.target"
+  install -m 0644 "$tailscale_root/systemd/tailscale-wait-online.service" \
+    "$root/usr/lib/systemd/system/tailscale-wait-online.service"
+
+  install -m 0644 "$root/etc/systemd/system/containerd.service" \
+    "$root/usr/lib/systemd/system/containerd.service"
+  rm -rf -- "${root:?}/etc" "$root/cri-containerd.DEPRECATED.txt" \
+    "$root/opt/containerd/cluster"
+
+  install -m 0644 /dev/stdin "$root/usr/lib/systemd/system/kubelet.service" <<'EOF'
+[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=https://kubernetes.io/docs/
+Wants=network-online.target
+After=network-online.target containerd.service
+Requires=containerd.service
+
+[Service]
+ExecStart=/usr/bin/kubelet
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+EnvironmentFile=-/etc/default/kubelet
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  install -m 0644 /dev/stdin \
+    "$root/usr/lib/extension-release.d/extension-release.lab-node" <<EOF
+ID=fedora
+VERSION_ID=${FCOS_SYSEXT_LEVEL}
+SYSEXT_ID=lab-node
+SYSEXT_LEVEL=${FCOS_SYSEXT_LEVEL}
+ARCHITECTURE=x86-64
+EOF
+
+  find "$root" -exec touch --date=@0 {} +
+  local candidate="$destination.part"
+  mkfs.erofs --quiet --all-root --all-time --ignore-mtime -T0 \
+    -U 6c61622d-6e6f-4465-8000-000000000001 -L lab-node \
+    -zlz4hc,level=12 "$candidate" "$root"
+  chmod 0644 "$candidate"
+  mv -f -- "$candidate" "$destination"
+)
+
+readonly output="$build_root/$output_name"
+build_one "$output"
+sha256sum "$output"
+
+if $check; then
+  readonly second="$build_root/${output_name%.raw}.second.raw"
+  build_one "$second"
+  cmp --silent "$output" "$second" || die 'two clean builds produced different artifacts'
+  rm -f -- "$second"
+  printf 'reproducible: %s\n' "$output_name"
+fi

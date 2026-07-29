@@ -57,7 +57,7 @@ data:
       enabled: true
       agent:
         image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.36.0@sha256:5f534dd5f02a751bfc6cb9d2d2342c622d37ba9e8c6851768769ed8a9081b915
-        replicas: 2
+        replicas: 1
       port: 8091
       server:
         clientIdentity: dedicated
@@ -145,7 +145,38 @@ data:
     serviceCIDRs:
       - 172.25.0.0/16
     serviceIP: 172.25.0.1
-    users: []
+    users:
+      - name: lab-flux
+        clusterRbac:
+          - rules:
+              - apiGroups:
+                  - "*"
+                resources:
+                  - "*"
+                verbs:
+                  - "*"
+              - nonResourceURLs:
+                  - "*"
+                verbs:
+                  - "*"
+        exportKubeconfigs:
+          - name: lab-flux-kubeconfig
+            namespace: flux-system
+      - name: lab-bootie
+        clusterRbac:
+          - rules:
+              - apiGroups:
+                  - ""
+                resourceNames:
+                  - lab-worker-1
+                resources:
+                  - nodes
+                verbs:
+                  - get
+                  - patch
+        exportKubeconfigs:
+          - name: lab-bootie-kubeconfig
+            namespace: lab
     utilities:
       image: docker.io/bitnami/kubectl:latest@sha256:95de17e6eb92da83a58c90a9df0c4cede634f898d2e6b92ea04f4a6ee6ace08d
       resources:

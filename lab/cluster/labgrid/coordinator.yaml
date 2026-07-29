@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: labgrid-coordinator
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: lab-local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: labgrid-coordinator
+  labels:
+    app.kubernetes.io/name: labgrid-coordinator
+spec:
+  selector:
+    app.kubernetes.io/name: labgrid-coordinator
+  ports:
+    - name: grpc
+      port: 20408
+      protocol: TCP
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: labgrid-coordinator
+  labels:
+    app.kubernetes.io/name: labgrid-coordinator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: labgrid-coordinator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: labgrid-coordinator
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: lab-worker-1
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coordinator
+          image: docker.io/labgrid/coordinator:v26.0@sha256:828d457e2943a13a7545633d518273485c02cbd7e7e34161fbe2e703f6868015
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 20408
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /opt/coordinator
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: labgrid-coordinator
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

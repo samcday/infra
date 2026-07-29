@@ -99,6 +99,36 @@ def hardened_values() -> dict:
         "writableTmp": True,
     }
     values["bootstrap"] = {"kubeadmAPIVersion": "kubeadm.k8s.io/v1beta4"}
+    values["bootstrapTokens"] = [
+        {
+            "id": "abcdef",
+            "secret": "0123456789abcdef",
+            "expiration": "2026-08-01T00:00:00Z",
+        }
+    ]
+    values["users"] = [
+        {
+            "name": "lab-bootie",
+            "exportKubeconfigs": [
+                {
+                    "name": "lab-bootie-kubeconfig",
+                    "namespace": "handoff",
+                }
+            ],
+            "clusterRbac": [
+                {
+                    "rules": [
+                        {
+                            "apiGroups": [""],
+                            "resources": ["nodes"],
+                            "resourceNames": ["lab-worker-1"],
+                            "verbs": ["get", "patch"],
+                        }
+                    ]
+                }
+            ],
+        }
+    ]
     values["konnectivity"] = {
         "server": {
             "clientIdentity": "dedicated",
@@ -290,6 +320,37 @@ class HostingContractTests(unittest.TestCase):
         advertiser = object_named(self.hardened, "Job", "advertise-address-1")
         command = advertiser["spec"]["template"]["spec"]["containers"][0]["command"][-1]
         self.assertIn("kubectl get configmap advertise-address", command)
+
+    def test_bootstrap_token_expiration_and_cluster_scoped_user_rbac(self) -> None:
+        bootstrap = embedded_bootstrap(self.hardened)
+        token = object_named(bootstrap, "Secret", "bootstrap-token-abcdef")
+        self.assertEqual(token["stringData"]["expiration"], "2026-08-01T00:00:00Z")
+
+        role = object_named(bootstrap, "ClusterRole", "user-lab-bootie-cluster-0")
+        self.assertEqual(
+            role["rules"],
+            [
+                {
+                    "apiGroups": [""],
+                    "resources": ["nodes"],
+                    "resourceNames": ["lab-worker-1"],
+                    "verbs": ["get", "patch"],
+                }
+            ],
+        )
+        binding = object_named(
+            bootstrap,
+            "ClusterRoleBinding",
+            "user-lab-bootie-cluster-0",
+        )
+        self.assertEqual(binding["subjects"][0]["name"], "lab-bootie")
+
+        exported = object_named(
+            self.hardened,
+            "Role",
+            "admin-kubeconfig-generator-lab-bootie-lab-bootie-kubeconfig",
+        )
+        self.assertEqual(exported["metadata"]["namespace"], "handoff")
 
     def test_dedicated_konnectivity_identity_is_child_scoped(self) -> None:
         certificate = object_named(self.hardened, "Certificate", "konnectivity-server")

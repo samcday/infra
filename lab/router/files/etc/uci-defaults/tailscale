@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+uci -q batch <<'EOF'
+set network.tailscale=interface
+set network.tailscale.proto='none'
+set network.tailscale.device='tailscale0'
+set network.globals.packet_steering='1'
+commit network
+
+add firewall zone
+set firewall.@zone[-1].name='tailscale'
+set firewall.@zone[-1].input='REJECT'
+set firewall.@zone[-1].output='ACCEPT'
+set firewall.@zone[-1].forward='REJECT'
+set firewall.@zone[-1].masq='1'
+set firewall.@zone[-1].mtu_fix='1'
+add_list firewall.@zone[-1].network='tailscale'
+
+add firewall forwarding
+set firewall.@forwarding[-1].src='lan'
+set firewall.@forwarding[-1].dest='tailscale'
+
+add firewall rule
+set firewall.@rule[-1].name='Allow-SSH-from-Tailnet'
+set firewall.@rule[-1].src='tailscale'
+set firewall.@rule[-1].proto='tcp'
+set firewall.@rule[-1].dest_port='22'
+set firewall.@rule[-1].target='ACCEPT'
+commit firewall
+EOF
+
+service firewall restart || true
+service tailscale enable || true
+service tailscale start || true

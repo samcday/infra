@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+source_dir="$repo_root/_build/data"
+sysext_dir="$repo_root/_build/lab-sysext"
+destination=${1:-"$repo_root/_build/lab-router-data"}
+
+die() {
+  printf 'prepare-lab-router-data: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ $# -le 1 ]] || die 'usage: scripts/prepare-lab-router-data [empty-output-directory]'
+[[ -f "$source_dir/SHASUMS.txt" ]] ||
+  die 'router FCOS assets are absent; build lab/router first'
+[[ ! -e "$destination" ]] ||
+  die "destination already exists; choose an empty path: $destination"
+
+sysext_name=lab-node-fcos44-k8s1.36.3-x86_64.raw
+sysext_sha256=3d32501acf70709253b0406972b3d0d928d7ac485204a3986a8948eb17ce3134
+sysext_path="$sysext_dir/$sysext_name"
+[[ -f "$sysext_path" && ! -L "$sysext_path" ]] ||
+  die 'the pinned Lab system extension has not been built'
+printf '%s  %s\n' "$sysext_sha256" "$sysext_path" |
+  sha256sum --check --status || die 'the Lab system extension failed verification'
+
+stage=$(mktemp -d "${destination}.stage.XXXXXXXX")
+cleanup() {
+  [[ -z ${stage:-} || ! -e $stage ]] || find "$stage" -depth -delete
+}
+trap cleanup EXIT
+mkdir -p -- "$stage/www"
+
+while read -r expected filename extra; do
+  [[ $expected =~ ^[0-9a-f]{64}$ &&
+     $filename =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ &&
+     -z ${extra:-} ]] || die 'the router FCOS checksum manifest is malformed'
+  source_path="$source_dir/$filename"
+  [[ -f "$source_path" && ! -L "$source_path" ]] ||
+    die "router asset is absent: $filename"
+  printf '%s  %s\n' "$expected" "$source_path" |
+    sha256sum --check --status || die "router asset failed verification: $filename"
+  install -m 0644 -- "$source_path" "$stage/www/$filename"
+done < "$source_dir/SHASUMS.txt"
+
+install -m 0644 -- "$sysext_path" "$stage/www/$sysext_name"
+(
+  cd -- "$stage/www"
+  sha256sum -- * > SHASUMS.txt
+  sha256sum --check --strict SHASUMS.txt
+)
+mv -- "$stage" "$destination"
+stage=
+trap - EXIT
+printf 'prepared router data tree: %s\n' "$destination"
+printf 'format the USB filesystem as ext4 with label data, then copy www/ to its root\n'

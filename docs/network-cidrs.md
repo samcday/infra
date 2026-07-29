@@ -20,7 +20,7 @@ take precedence over convenient CIDR shorthand.
 | `cloud-cluster` | Hetzner `172.29.0.0/16` | `172.28.0.0/16` | `172.27.0.0/16` | Headscale address expected at `100.64.0.3` |
 | `ilumbaclusta` | `10.0.3.0/24` | `172.28.0.0/16` | `172.27.0.0/16` | dynamically allocated from the hub BGP service interval |
 | `edge-au-east` | provider-assigned; no CIDR in this repo | `172.24.0.0/16` | `172.23.0.0/16` | parent Service `172.27.23.43`; Headscale address expected at `100.64.0.64` |
-| `lab` | no workers allocated | `172.26.0.0/16` | `172.25.0.0/16` | Fabric parent Service `172.21.0.25`; `lab-apiserver.tailnet.hub.samcday.com`, with its IPv4 assigned dynamically from Headscale |
+| `lab` | `10.0.4.0/24` | `172.26.0.0/16` | `172.25.0.0/16` | Fabric parent Service `172.21.0.25`; `lab-apiserver.tailnet.hub.samcday.com`, with its IPv4 assigned dynamically from Headscale |
 
 The hub declarations come from the [router LAN and node
 leases](../hub/router/files/etc/uci-defaults/system), [K3s
@@ -139,8 +139,12 @@ advertisement or cross-cluster transport.
 | Service-plane candidate holdback | `10.66.1.100` | Held but unused during flat-L2 induction. Bootie discovery stays on `10.66.0.100`; the router grants `.1.100` no service and tests it as an unauthorized source. |
 | Remaining service-plane holdback | `10.66.1.101-10.66.1.254` | Unallocated; no DHCP allocation or publishing pool. |
 | Lab parent apiserver Service | `172.21.0.25` | Reserved inside the Fabric Service CIDR for the hosted `lab` apiserver. |
+| Lab worker LAN | `10.0.4.0/24` | Allocated behind the dedicated Lab OpenWrt router; deliberately not advertised as a Tailnet subnet route. |
+| Lab router, PXE, asset server and Tang | `10.0.4.1` | Dedicated AVM FRITZ!Box 4040 running the pinned Lab OpenWrt image. |
+| Lab stable worker | `10.0.4.10` | Reserved for `lab-worker-1`; the exact MAC-bound DHCP declaration is added after attended discovery. |
+| Lab LAN DHCP pool | `10.0.4.100-10.0.4.249` | Router-managed temporary clients and pre-install discovery; `.10` remains outside this pool. |
 | Lab child Kubernetes Service | `172.25.0.1` | First address in the lab Service CIDR. |
-| Lab child DNS Service | `172.25.0.10` | Reserved for future child CoreDNS; no child DNS workload is installed yet. |
+| Lab child DNS Service | `172.25.0.10` | Allocated to the child CoreDNS Helm release. |
 
 Evidence is in the [fabric plan](plans/fabric-cluster.md), [router
 configuration](../fabric/router/files/etc/uci-defaults/10-system), [node

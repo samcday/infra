@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-bootie-ts-serve-config
+  namespace: lab
+data:
+  serve.json: |
+    {
+      "TCP": {
+        "80": {
+          "TCPForward": "lab-bootie.lab.svc.cluster.fabric.internal:80"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lab-bootie-ts-state
+  namespace: lab
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lab-bootie-tailnet
+  namespace: lab
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lab-bootie-tailnet-state
+  namespace: lab
+rules:
+  - apiGroups: [""]
+    resourceNames: [lab-bootie-ts-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lab-bootie-tailnet-state
+  namespace: lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lab-bootie-tailnet-state
+subjects:
+  - kind: ServiceAccount
+    name: lab-bootie-tailnet
+    namespace: lab
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-bootie-tailnet
+  namespace: lab
+  labels:
+    app.kubernetes.io/name: lab-bootie-tailnet
+    app.kubernetes.io/part-of: lab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lab-bootie-tailnet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lab-bootie-tailnet
+        app.kubernetes.io/part-of: lab
+    spec:
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      serviceAccountName: lab-bootie-tailnet
+      priorityClassName: system-cluster-critical
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - fabric-az1-svc1
+                      - fabric-az1-svc2
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5@sha256:9e2bfdd9e2ce724df53f976d06a4a9933aa730dc655ace42798f4c73735d1cac
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "true"
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  key: authkey
+                  name: lab-bootie-ts-auth
+                  optional: false
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net --accept-routes=false --ssh=false
+            - name: TS_HOSTNAME
+              value: lab-bootie
+            - name: TS_KUBE_SECRET
+              value: lab-bootie-ts-state
+            - name: TS_SERVE_CONFIG
+              value: /config/serve.json
+            - name: TS_SOCKET
+              value: /var/run/tailscale/tailscaled.sock
+            - name: TS_TAILSCALED_EXTRA_ARGS
+              value: --no-logs-no-support
+            - name: TS_USERSPACE
+              value: "true"
+          ports:
+            - containerPort: 9002
+              name: health
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - mountPath: /config
+              name: serve-config
+              readOnly: true
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/run/tailscale
+              name: run
+      volumes:
+        - configMap:
+            name: lab-bootie-ts-serve-config
+          name: serve-config
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+          name: run
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+          name: tmp

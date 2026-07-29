@@ -1,0 +1,44 @@
+variant: fcos
+version: 1.5.0
+ignition:
+  config:
+    merge:
+      - local: common/fucksecurity.ign
+boot_device:
+  luks:
+    discard: true
+    tpm2: true
+    threshold: 2
+    tang:
+      - url: http://10.0.4.1:9090
+        thumbprint: 7Rwbq9XoOBv0SRphgfQ4REpr7ku9YWX5xK5543qiXMc
+storage:
+  disks:
+    - device: /dev/disk/by-id/coreos-boot-disk
+      wipe_table: false
+      partitions:
+        - number: 4
+          label: root
+          size_mib: 16384
+          resize: true
+        - number: 5
+          label: var
+          size_mib: 0
+  luks:
+    - name: var
+      device: /dev/disk/by-partlabel/var
+      discard: true
+      wipe_volume: true
+      clevis:
+        tpm2: true
+        threshold: 2
+        tang:
+          - url: http://10.0.4.1:9090
+            thumbprint: 7Rwbq9XoOBv0SRphgfQ4REpr7ku9YWX5xK5543qiXMc
+  filesystems:
+    - path: /var
+      device: /dev/mapper/var
+      format: ext4
+      mount_options:
+        - noatime
+      with_mount_unit: true

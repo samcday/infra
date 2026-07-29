@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Node
+metadata:
+  name: lab-worker-1
+  annotations:
+    fabric.samcday.com/bootstrap-state: hardware-discovery-required
+    samcday.com/boot-profiles: node,runtime
+  labels:
+    kubernetes.io/hostname: lab-worker-1
+    node-role.kubernetes.io/worker: ""
+    samcday.com/discovery: "true"
+spec:
+  # The placeholder cannot receive workloads. Attended discovery adds the
+  # exact MAC, serial and disk before installation; Git later clears this bit.
+  unschedulable: true

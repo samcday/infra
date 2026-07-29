@@ -1,0 +1,93 @@
+variant: fcos
+version: 1.5.0
+storage:
+  files:
+    - path: /etc/containerd/config.toml
+      overwrite: true
+      mode: 420
+      contents:
+        inline: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".cni]
+                bin_dir = "/opt/cni/bin"
+                conf_dir = "/etc/cni/net.d"
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                runtime_type = "io.containerd.runc.v2"
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                  SystemdCgroup = true
+            [plugins."io.containerd.internal.v1.opt"]
+              path = "/var/lib/containerd/opt"
+systemd:
+  units:
+    - name: containerd.service
+      enabled: true
+    - name: kubelet.service
+      enabled: true
+    - name: tailscaled.service
+      enabled: true
+    - name: tailscale-up.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Register the Lab worker with Headscale
+        After=tailscaled.service network-online.target
+        Requires=tailscaled.service
+        Wants=network-online.target
+        ConditionPathExists=/etc/ts-authkey
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/tailscale up --login-server=https://headscale.tail22d0a0.ts.net --auth-key=file:/etc/ts-authkey --hostname=lab-worker-1 --advertise-tags=tag:lab-node --accept-routes=false --accept-dns=true --ssh=false
+        ExecStartPost=/usr/bin/rm -f /etc/ts-authkey
+        Restart=on-failure
+        RestartSec=10s
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: tailscale-up.path
+      enabled: true
+      contents: |
+        [Unit]
+        After=systemd-sysext.service
+        Wants=systemd-sysext.service
+
+        [Path]
+        PathExists=/usr/lib/systemd/system/tailscaled.service
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: kubeadm-join.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Join lab-worker-1 to the Lab Kubernetes cluster
+        After=tailscale-up.service
+        Requires=tailscale-up.service
+        ConditionPathExists=!/etc/kubernetes/kubelet.conf
+        ConditionPathExists=/etc/kubeadm.join
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/kubeadm join --config /etc/kubeadm.join
+        ExecStartPost=/usr/bin/rm -f /etc/kubeadm.join
+        Restart=on-failure
+        RestartSec=30s
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: kubeadm-join.path
+      enabled: true
+      contents: |
+        [Unit]
+        After=systemd-sysext.service
+        Wants=systemd-sysext.service
+
+        [Path]
+        PathExists=/usr/bin/kubeadm
+
+        [Install]
+        WantedBy=multi-user.target

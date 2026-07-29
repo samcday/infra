@@ -299,9 +299,17 @@ if [[ -f "$config_dir/sysupgrade-sha256" ]]; then
   printf '%s  %s\n' "$expected_sysupgrade_sha256" "$sysupgrade_path" | sha256sum -c - ||
     die "generated sysupgrade differs from the reviewed pin: $config_dir/sysupgrade-sha256"
 
-  sysupgrade_manifest=${sysupgrade_filename%-squashfs-sysupgrade.itb}.manifest
-  [[ "$sysupgrade_manifest" != "$sysupgrade_filename" ]] ||
-    die 'pinned sysupgrade artifact must end in -squashfs-sysupgrade.itb'
+  case $sysupgrade_filename in
+    *-squashfs-sysupgrade.itb)
+      sysupgrade_manifest=${sysupgrade_filename%-squashfs-sysupgrade.itb}.manifest
+      ;;
+    *-squashfs-sysupgrade.bin)
+      sysupgrade_manifest=${sysupgrade_filename%-squashfs-sysupgrade.bin}.manifest
+      ;;
+    *)
+      die 'pinned sysupgrade artifact must end in -squashfs-sysupgrade.itb or -squashfs-sysupgrade.bin'
+      ;;
+  esac
   sysupgrade_manifest_path="$build_dir/bin/targets/$platform/$target/$sysupgrade_manifest"
   [[ -f "$sysupgrade_manifest_path" && ! -L "$sysupgrade_manifest_path" ]] ||
     die "generated package manifest is missing or not a regular file: $sysupgrade_manifest_path"
@@ -316,6 +324,25 @@ if [[ -f "$config_dir/sysupgrade-sha256" ]]; then
   fi
 else
   echo "WARNING: $config_dir does not pin a generated sysupgrade artifact" >&2
+fi
+
+if [[ -f "$config_dir/install-sha256" ]]; then
+  read_single_record "$config_dir/install-sha256"
+  read -r expected_install_sha256 install_filename extra <<< "$record"
+  [[ "$expected_install_sha256" =~ ^[0-9a-f]{64}$ &&
+     "$install_filename" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ &&
+     -z "${extra:-}" ]] ||
+    die "$config_dir/install-sha256 must contain one '<sha256>  <artifact-basename>' record"
+  [[ "$install_filename" == "openwrt-$openwrt_version-$platform-$target-"* ]] ||
+    die "$config_dir/install-sha256 pins an artifact for a different release or target"
+
+  install_path="$build_dir/bin/targets/$platform/$target/$install_filename"
+  [[ -f "$install_path" && ! -L "$install_path" ]] ||
+    die "pinned install artifact is missing or not a regular file: $install_path"
+  printf '%s  %s\n' "$expected_install_sha256" "$install_path" | sha256sum -c - ||
+    die "generated install image differs from the reviewed pin: $config_dir/install-sha256"
+else
+  echo "WARNING: $config_dir does not pin a generated install artifact" >&2
 fi
 flock -u "$build_lock_fd"
 

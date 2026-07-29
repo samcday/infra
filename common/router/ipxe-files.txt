@@ -1,7 +1,7 @@
 ipxe.efi
 https://boot.ipxe.org/x86_64-efi/ipxe.efi
-5aaf06c47040535e1f3a21c62b359ab0a6b4d0b7d098509459bcccddf0badd4f
+01a442a7a8a2ce11be1333639ec7d589a2f839bf09f7912b4d4902575ccd4f9b
 
 undionly.kpxe
 https://boot.ipxe.org/x86_64-pcbios/undionly.kpxe
-97c0f807040ee532dfe3c67e7072786e1adc59197643d9dbd4def6967294fdce
+094b441436684377e4ad6bdef49ceae47d3ae53edea7543413a5afab493f3f11

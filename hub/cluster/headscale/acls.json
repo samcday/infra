@@ -23,6 +23,23 @@
                 "tag:edge-au-east-apiserver:6443",
                 "tag:edge-au-east-apiserver:8091"
             ]
+        },
+        // Lab nodes use only the Tailnet-published hosted control plane.
+        {
+            "action": "accept",
+            "proto": "tcp",
+            "src": ["tag:lab-node"],
+            "dst": [
+                "tag:lab-apiserver:6443",
+                "tag:lab-apiserver:8091"
+            ]
+        },
+        // The pre-OS client reaches Fabric Bootie through the Lab router.
+        {
+            "action": "accept",
+            "proto": "tcp",
+            "src": ["tag:lab-router"],
+            "dst": ["tag:lab-bootie:80"]
         }
     ],
     "tagOwners": {
@@ -35,6 +52,9 @@
         "tag:fabric-subnet-router": ["sam@"],
         "tag:hub-apiserver": [],
         "tag:lab-apiserver": [],
+        "tag:lab-bootie": [],
+        "tag:lab-node": [],
+        "tag:lab-router": ["sam@"],
         "tag:labgrid-coordinator": []
     },
     "autoApprovers": {
