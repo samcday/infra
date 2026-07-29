@@ -75,7 +75,12 @@ class LabFoundationContract(unittest.TestCase):
         self.assertEqual(env["TS_HOSTNAME"], "lab-apiserver")
         self.assertEqual(env["TS_KUBE_SECRET"], "lab-apiserver-ts-state")
         self.assertEqual(env["TS_SOCKET"], "/var/run/tailscale/tailscaled.sock")
-        self.assertIn("tag:lab-apiserver", env["TS_EXTRA_ARGS"])
+        self.assertNotIn("--advertise-tags", env["TS_EXTRA_ARGS"])
+        headscale = (REPO / "hub/cluster/headscale/main.tf").read_text()
+        key = headscale.split(
+            'resource "headscale_pre_auth_key" "lab_apiserver_stable" {'
+        )[1].split("\n}", 1)[0]
+        self.assertIn('acl_tags       = ["tag:lab-apiserver"]', key)
 
     def test_publisher_is_atomic_and_change_driven(self):
         publisher = object_named(

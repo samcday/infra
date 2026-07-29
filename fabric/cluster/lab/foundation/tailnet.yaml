@@ -124,7 +124,7 @@ spec:
             - name: TS_ENABLE_HEALTH_CHECK
               value: "true"
             - name: TS_EXTRA_ARGS
-              value: --login-server=https://headscale.tail22d0a0.ts.net --advertise-tags=tag:lab-apiserver --accept-routes=false --ssh=false
+              value: --login-server=https://headscale.tail22d0a0.ts.net --accept-routes=false --ssh=false
             - name: TS_HOSTNAME
               value: lab-apiserver
             - name: TS_AUTHKEY
