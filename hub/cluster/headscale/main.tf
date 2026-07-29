@@ -118,7 +118,9 @@ resource "headscale_pre_auth_key" "labgrid_coordinator_lab" {
   acl_tags       = ["tag:labgrid-coordinator"]
 }
 
-resource "headscale_pre_auth_key" "lab_bootie" {
+# Generation 2 replaces the one-use key consumed by the initial Fabric API
+# policy race before the proxy could persist a complete Tailscale profile.
+resource "headscale_pre_auth_key" "lab_bootie_v2" {
   user           = headscale_user.lab.id
   time_to_expire = "168h"
   reusable       = false
@@ -245,7 +247,7 @@ resource "kubernetes_secret" "lab_bootie_preauth" {
   }
 
   data = {
-    authkey = headscale_pre_auth_key.lab_bootie.key
+    authkey = headscale_pre_auth_key.lab_bootie_v2.key
   }
 }
 
