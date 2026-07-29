@@ -41,6 +41,11 @@ spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
       priorityClassName: system-cluster-critical
+      securityContext:
+        fsGroup: 102
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         fabric.samcday.com/platform: "true"
         kubernetes.io/os: linux
@@ -127,6 +132,8 @@ spec:
               EOF
               butane --strict /tmp/runtime.yaml > /ignition/runtime.ign
               chmod 0600 /ignition/runtime.ign
+              sed 's/listen 80;/listen 8080;/' \
+                /etc/nginx/http.d/default.conf > /nginx/default.conf
           resources:
             requests:
               cpu: 25m
@@ -139,9 +146,9 @@ spec:
             capabilities:
               drop: [ALL]
             readOnlyRootFilesystem: true
-            runAsGroup: 0
-            runAsNonRoot: false
-            runAsUser: 0
+            runAsGroup: 102
+            runAsNonRoot: true
+            runAsUser: 102
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:
@@ -153,6 +160,8 @@ spec:
               readOnly: true
             - mountPath: /ignition
               name: ignition
+            - mountPath: /nginx
+              name: nginx-config
             - mountPath: /inputs/ca-hash
               name: ca-hash
               readOnly: true
@@ -172,7 +181,27 @@ spec:
             - /bin/bash
             - -ceu
           args:
-            - install -d -m 0755 /run/nginx; exec /bin/run
+            - |
+              install -d -m 0770 /run/bootie /run/nginx
+              fcgi_socket=/run/bootie/fcgi.sock
+              [[ ! -e $fcgi_socket && ! -L $fcgi_socket ]]
+              (
+                umask 0007
+                exec fcgiwrap -s "unix:$fcgi_socket"
+              ) &
+              fcgi_pid=$!
+              for _ in {1..50}; do
+                [[ -S $fcgi_socket && ! -L $fcgi_socket ]] && break
+                kill -0 "$fcgi_pid" 2>/dev/null || {
+                  wait "$fcgi_pid" || true
+                  printf 'bootie: fcgiwrap exited before creating its Unix socket\n' >&2
+                  exit 1
+                }
+                sleep 0.1
+              done
+              [[ -S $fcgi_socket && ! -L $fcgi_socket ]]
+              chmod 0770 "$fcgi_socket"
+              exec nginx
           env:
             - name: BOOTIE_ALLOW_NODE_CREATE
               value: "false"
@@ -193,7 +222,7 @@ spec:
             - name: KUBECONFIG
               value: /kubeconfig/value
           ports:
-            - containerPort: 80
+            - containerPort: 8080
               name: http
               protocol: TCP
           readinessProbe:
@@ -220,17 +249,12 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
-              add:
-                - CHOWN
-                - DAC_OVERRIDE
-                - NET_BIND_SERVICE
-                - SETGID
-                - SETUID
               drop:
                 - ALL
             readOnlyRootFilesystem: true
-            runAsNonRoot: false
-            runAsUser: 0
+            runAsGroup: 102
+            runAsNonRoot: true
+            runAsUser: 102
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:
@@ -244,6 +268,10 @@ spec:
             - mountPath: /kubeconfig
               name: kubeconfig
               readOnly: true
+            - mountPath: /etc/nginx/http.d/default.conf
+              name: nginx-config
+              readOnly: true
+              subPath: default.conf
             - mountPath: /pxe/healthz
               name: health
               readOnly: true
@@ -293,6 +321,10 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        - name: nginx-config
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         - name: nginx-log
           emptyDir:
             medium: Memory

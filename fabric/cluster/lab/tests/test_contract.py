@@ -366,6 +366,49 @@ class LabComputeContract(unittest.TestCase):
         self.assertEqual(env["KUBECONFIG"], "/kubeconfig/value")
         self.assertEqual(env["BOOTIE_PUBLIC_ORIGIN"], "http://lab-bootie.tailnet.hub.samcday.com")
 
+    def test_bootie_remains_compatible_with_restricted_pod_security(self):
+        deployment = object_named(self.bootie, "Deployment", "lab-bootie", "lab")
+        pod = deployment["spec"]["template"]["spec"]
+        self.assertEqual(pod["securityContext"]["fsGroup"], 102)
+        for container in pod["initContainers"] + pod["containers"]:
+            security = container["securityContext"]
+            self.assertTrue(security["runAsNonRoot"])
+            self.assertGreater(security["runAsUser"], 0)
+            self.assertEqual(security["capabilities"]["drop"], ["ALL"])
+            self.assertNotIn("add", security["capabilities"])
+
+        init_script = pod["initContainers"][0]["args"][0]
+        self.assertIn("listen 8080", init_script)
+        bootie = next(item for item in pod["containers"] if item["name"] == "bootie")
+        self.assertEqual(bootie["ports"][0]["containerPort"], 8080)
+
+    def test_bootie_network_policy_tracks_translated_ports_and_api_endpoints(self):
+        ingress = object_named(
+            self.bootie, "NetworkPolicy", "allow-lab-bootie-proxy", "lab"
+        )
+        self.assertEqual(ingress["spec"]["ingress"][0]["ports"][0]["port"], 8080)
+
+        egress = object_named(
+            self.bootie,
+            "NetworkPolicy",
+            "allow-lab-bootie-tailnet-egress",
+            "lab",
+        )
+        endpoint_rule = next(
+            rule
+            for rule in egress["spec"]["egress"]
+            if rule.get("ports") == [{"port": 6443, "protocol": "TCP"}]
+        )
+        self.assertEqual(
+            {entry["ipBlock"]["cidr"] for entry in endpoint_rule["to"]},
+            {
+                "10.66.0.10/32",
+                "10.66.0.11/32",
+                "10.66.0.12/32",
+                "10.66.0.254/32",
+            },
+        )
+
     def test_compute_secrets_are_runtime_compiled(self):
         deployment = object_named(self.bootie, "Deployment", "lab-bootie", "lab")
         init = deployment["spec"]["template"]["spec"]["initContainers"][0]

@@ -32,7 +32,7 @@ spec:
             matchLabels:
               app.kubernetes.io/name: lab-bootie-tailnet
       ports:
-        - port: 80
+        - port: 8080
           protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
@@ -52,12 +52,26 @@ spec:
       ports:
         - port: 443
           protocol: TCP
+    # Cilium applies policy after service translation on some paths, so allow
+    # the same exact physical API endpoints as the foundation proxies.
+    - to:
+        - ipBlock:
+            cidr: 10.66.0.10/32
+        - ipBlock:
+            cidr: 10.66.0.11/32
+        - ipBlock:
+            cidr: 10.66.0.12/32
+        - ipBlock:
+            cidr: 10.66.0.254/32
+      ports:
+        - port: 6443
+          protocol: TCP
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: lab-bootie
       ports:
-        - port: 80
+        - port: 8080
           protocol: TCP
     - to:
         - ipBlock:
