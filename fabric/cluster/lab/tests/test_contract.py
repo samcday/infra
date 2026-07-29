@@ -151,6 +151,22 @@ class LabControlPlaneContract(unittest.TestCase):
         )
         self.assertEqual(values["apiServer"]["service"]["spec"]["clusterIP"], "172.21.0.25")
         self.assertTrue(values["parentWorkloads"]["enabled"])
+        term = values["parentWorkloads"]["placement"]["affinity"][
+            "nodeAffinity"
+        ]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ][0]
+        self.assertEqual(
+            term["matchExpressions"],
+            [
+                {
+                    "key": "kubernetes.io/hostname",
+                    "operator": "In",
+                    "values": ["fabric-az1-svc1", "fabric-az1-svc2"],
+                }
+            ],
+        )
+        self.assertNotIn("matchFields", term)
         self.assertEqual(
             values["parentWorkloads"]["deployment"]["pdb"]["spec"],
             {"minAvailable": 1},
