@@ -5,8 +5,7 @@ workers or child-cluster add-ons. It provisions the etcdetcetc tenant, the
 Tailnet TCP proxy, and an endpoint publisher that writes the proxy's dynamically
 assigned CGNAT IPv4 into `lab-control-plane-endpoint`.
 
-Both `fabric-lab-foundation` and `fabric-lab-control-plane` are committed
-suspended. Activation is deliberately attended:
+Initial activation is deliberately attended and split across two Flux stages:
 
 1. Reconcile the Hub Headscale Terraform until its
    `headscale/lab-apiserver-ts-auth` Secret exists.
