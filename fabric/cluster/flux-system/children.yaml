@@ -255,7 +255,7 @@ spec:
   # Unsuspend only after fabric-lab-foundation is Ready. In particular, the
   # generated apiserver-etcd and lab-control-plane-endpoint values documents
   # must exist before Helm is allowed to render the control plane.
-  suspend: true
+  suspend: false
   dependsOn:
     - name: fabric-lab-foundation
   healthChecks:
