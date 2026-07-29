@@ -12,10 +12,6 @@ spec:
         name: infra
   interval: 1h
   releaseName: edge-edge-au-east-control-plane
-  upgrade:
-    # Jobs in this chart have ttlSecondsAfterFinished and get GC'd between chart
-    # upgrades; force recreates missing resources instead of failing to patch.
-    force: true
   valuesFrom:
     - kind: ConfigMap
       name: edge-au-east-control-plane-values

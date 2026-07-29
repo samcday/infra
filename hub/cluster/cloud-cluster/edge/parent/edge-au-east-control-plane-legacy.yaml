@@ -23,10 +23,6 @@ spec:
   # the existing release while the cloud-side HelmRelease adopts it.
   suspend: true
   targetNamespace: edge
-  upgrade:
-    # Jobs in this chart have ttlSecondsAfterFinished and get GC'd between chart
-    # upgrades; force recreates missing resources instead of failing to patch.
-    force: true
   valuesFrom:
     - kind: ConfigMap
       name: edge-au-east-control-plane-values

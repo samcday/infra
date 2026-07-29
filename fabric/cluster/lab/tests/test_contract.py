@@ -143,6 +143,7 @@ class LabControlPlaneContract(unittest.TestCase):
             ["control-plane-values", "apiserver-etcd", "lab-control-plane-endpoint"],
         )
         self.assertEqual(release["spec"]["driftDetection"]["mode"], "enabled")
+        self.assertNotIn("force", release["spec"]["upgrade"])
 
     def test_flux_stages_are_safely_suspended(self):
         children = documents(REPO / "fabric/cluster/flux-system/children.yaml")
