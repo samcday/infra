@@ -13,9 +13,12 @@ retaining their final addresses. This is routing and policy separation, not a
 security boundary: only the two trusted service nodes and reviewed foundation
 workloads may use it. A narrow exception admits the Fabric-hosted etcdetcetc
 controller and its dedicated smoke identity to TCP/2379 so the shared-etcd
-tenancy foundation can be proven. It does not admit a child control plane,
-general tenant workloads, KubeVirt, or worker induction; those remain gated on
-the managed-switch VLAN boundary.
+tenancy foundation can be proven. The infrastructure-owned `lab` child control
+plane is a second reviewed exception: it uses mTLS-scoped etcd credentials and
+fail-closed NetworkPolicies while explicitly accepting the remaining same-wire
+spoofing risk. General tenant workloads, KubeVirt, and worker induction remain
+excluded. A managed-switch VLAN is desirable defense in depth, but is not a
+prerequisite for this trusted hosted control plane.
 Future Bootie provisioning remains worker-only and attended.
 
 The design and induction gates live in

@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: control-plane-values
+  namespace: lab
+  labels:
+    reconcile.fluxcd.io/watch: Enabled
+data:
+  values.yaml: |
+    adminKubeconfig:
+      schedule: "@daily"
+      concurrencyPolicy: Forbid
+    apiServer:
+      image:
+        digest: sha256:b4bc06c81fd76f81174e6c19ddacf477acdf1583e7a5846ebbd513493aef6e43
+      replicas: 2
+      resources:
+        requests:
+          cpu: 150m
+          memory: 384Mi
+        limits:
+          memory: 1Gi
+      securityContext:
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+          drop:
+            - ALL
+      service:
+        spec:
+          clusterIP: 172.21.0.25
+          type: ClusterIP
+      vpa:
+        enabled: false
+    bootstrap:
+      kubeadmAPIVersion: kubeadm.k8s.io/v1beta4
+    bootstrapTokens: []
+    clusterCIDRs:
+      - 172.26.0.0/16
+    clusterDNS:
+      - 172.25.0.10
+    clusterDomain: cluster.local
+    clusterName: lab
+    controllerManager:
+      image:
+        digest: sha256:ed56454bf514916079a227f5765b64524fde52106dfcc52978b28634765b78b8
+      replicas: 2
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      vpa:
+        enabled: false
+    konnectivity:
+      enabled: true
+      agent:
+        image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.36.0@sha256:5f534dd5f02a751bfc6cb9d2d2342c622d37ba9e8c6851768769ed8a9081b915
+        replicas: 2
+      port: 8091
+      server:
+        clientIdentity: dedicated
+        extraArgs:
+          - --graceful-shutdown-timeout=20s
+        image: registry.k8s.io/kas-network-proxy/proxy-server:v0.36.0@sha256:61b6bfed89291cbee0dd0d5f9bb4982c6989059b15398690cd89e830ac29f1b7
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+    monitoring:
+      podMonitors:
+        enabled: false
+    parentClusterDomain: cluster.fabric.internal
+    parentWorkloads:
+      enabled: true
+      placement:
+        nodeSelector:
+          fabric.samcday.com/platform: "true"
+          kubernetes.io/os: linux
+        tolerations:
+          - effect: NoSchedule
+            key: fabric.samcday.com/platform
+            operator: Equal
+            value: "true"
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchFields:
+                    - key: metadata.name
+                      operator: In
+                      values:
+                        - fabric-az1-svc1
+                        - fabric-az1-svc2
+      podSecurityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      deployment:
+        priorityClassName: system-cluster-critical
+        requiredPodAntiAffinityTopologyKey: kubernetes.io/hostname
+        minReadySeconds: 10
+        terminationGracePeriodSeconds: 30
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 0
+            maxUnavailable: 1
+        pdb:
+          enabled: true
+          spec:
+            minAvailable: 1
+    scheduler:
+      deployment:
+        spec:
+          replicas: 2
+      image:
+        digest: sha256:128fc07d278d64c4f2cce416ed0a9f37b23a30cdde6f97873d18c9c78e259df4
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+      vpa:
+        enabled: false
+    serviceCIDRs:
+      - 172.25.0.0/16
+    serviceIP: 172.25.0.1
+    users: []
+    utilities:
+      image: docker.io/bitnami/kubectl:latest@sha256:95de17e6eb92da83a58c90a9df0c4cede634f898d2e6b92ea04f4a6ee6ace08d
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      writableTmp: true
+    version: 1.36.3

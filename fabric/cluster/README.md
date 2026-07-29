@@ -18,10 +18,12 @@ share one physical L2 across daisy-chained unmanaged switches. IP allow-lists
 cannot stop source spoofing on that wire. Until a managed switch enforces the
 declared VLANs, admit only these physically trusted machines and the reviewed
 Flux, CoreDNS, metrics-server, cert-manager, and etcdetcetc foundation needed
-to finish the platform. The dedicated etcdetcetc controller identity and one
-retained-data smoke tenant are the sole temporary etcd-client exception. Do
-not place a child control plane, other child etcd credentials, KubeVirt,
-tenant VMs, LLM jobs, or other untrusted workloads there.
+to finish the platform. The dedicated etcdetcetc controller identity, retained
+smoke tenant, and infrastructure-owned `lab` control plane are reviewed
+exceptions. The lab apiserver has a prefix-scoped mTLS identity and explicit
+NetworkPolicies, but those controls do not turn the shared wire into an
+anti-spoofing boundary. Do not place independently administered child control
+planes, KubeVirt, tenant VMs, LLM jobs, or other untrusted workloads there.
 
 K3s keeps only Flannel and kube-proxy from its normal base. Its packaged
 CoreDNS and metrics-server Addons remain disabled: this tree owns pinned,
@@ -37,10 +39,11 @@ required by K3s startup. Successful negative
 authorization tests, a controlled K3s restart/rejoin and token-rotation test,
 negative tests of the installed host guard, and a routed service-policy test
 are hard gates before the first service node joins. Physical VLAN isolation
-and its anti-spoofing tests remain hard gates before a child control-plane
-identity or general tenant workload is created. The etcdetcetc foundation
-exception requires separate positive and negative source, port, mTLS, and
-prefix-RBAC qualification before its smoke identity is accepted.
+and its anti-spoofing tests remain hard gates before independently administered
+or untrusted workloads are admitted, but not before the trusted Fabric-hosted
+`lab` control plane. The etcdetcetc foundation and lab exceptions require
+separate positive and negative source, port, mTLS, and prefix-RBAC
+qualification before their identities are accepted.
 
 All control planes admitted to the physical Fabric etcd are consequently one
 trusted availability domain. EtcdTenant prefixes protect key confidentiality

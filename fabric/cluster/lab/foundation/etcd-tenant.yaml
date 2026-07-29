@@ -1,0 +1,13 @@
+apiVersion: etcdetcetc.samcday.com/v1alpha1
+kind: EtcdTenant
+metadata:
+  name: apiserver
+  namespace: lab
+  annotations:
+    etcdetcetc.samcday.com/shared-availability-risk: accepted-v1
+spec:
+  clusterRef:
+    name: fabric-etcd
+    namespace: etcdetcetc
+  credentialMode: TLS
+  secretName: apiserver-etcd-client

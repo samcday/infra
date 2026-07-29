@@ -40,6 +40,10 @@ resource "headscale_user" "hub" {
   name = "hub"
 }
 
+resource "headscale_user" "lab" {
+  name = "lab"
+}
+
 resource "headscale_user" "sam" {
   name = "sam"
 }
@@ -112,6 +116,14 @@ resource "headscale_pre_auth_key" "hub_apiserver_stable" {
   reusable       = true
   ephemeral      = false
   acl_tags       = ["tag:hub-apiserver"]
+}
+
+resource "headscale_pre_auth_key" "lab_apiserver_stable" {
+  user           = headscale_user.lab.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:lab-apiserver"]
 }
 
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
@@ -199,5 +211,16 @@ resource "kubernetes_secret" "hub_apiserver_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.hub_apiserver_stable.key
+  }
+}
+
+resource "kubernetes_secret" "lab_apiserver_preauth" {
+  metadata {
+    name      = "lab-apiserver-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.lab_apiserver_stable.key
   }
 }

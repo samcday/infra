@@ -1426,6 +1426,19 @@ guard_live
                     },
                 }
                 for name in ("cert-manager", "etcdetcetc", "etcdetcetc-smoke")
+            ]
+            + [
+                {
+                    "apiVersion": "v1",
+                    "kind": "Namespace",
+                    "metadata": {
+                        "name": "lab",
+                        "labels": {
+                            **restricted_labels,
+                            "fabric.samcday.com/k8s-control-plane": "true",
+                        },
+                    },
+                }
             ],
         )
 

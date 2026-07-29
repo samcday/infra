@@ -2,7 +2,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: controller-manager
+  {{- if $.Values.parentWorkloads.enabled }}
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "controller-manager") | nindent 4 }}
+  {{- end }}
 spec:
+  {{- include "k8s-control-plane.parent-deployment-spec" $ | nindent 2 }}
   replicas: {{ required "missing controllerManager.replicas" $.Values.controllerManager.replicas }}
   selector:
     matchLabels:
@@ -11,16 +16,22 @@ spec:
     metadata:
       labels:
         app: kube-controller-manager
+        {{- if $.Values.parentWorkloads.enabled }}
+        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "controller-manager") | nindent 8 }}
+        {{- end }}
     spec:
+      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "controller-manager" "deployment" true "disableServiceAccountToken" true) | nindent 6 }}
       containers:
-        - image: {{ with $.Values.controllerManager.image -}}
-                   {{- required "missing controllerManager.image.repository" .repository }}:
-                   {{- tpl (required "missing controllerManager.image.tag" .tag) $ -}}
-                 {{ end }}
+        - image: {{ include "k8s-control-plane.component-image" (dict "root" $ "image" $.Values.controllerManager.image) }}
           {{- with $.Values.controllerManager.image.pullPolicy }}
           imagePullPolicy: {{ . }}
           {{- end }}
           name: controller-manager
+          {{- with $.Values.controllerManager.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" $.Values.controllerManager.securityContext) | nindent 10 }}
           command:
             - kube-controller-manager
             - --allocate-node-cidrs=true

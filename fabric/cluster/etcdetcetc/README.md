@@ -404,16 +404,15 @@ objects at another physical cluster.
 
 ## First child control-plane handoff
 
-This section defines the future handoff; it is not permission to create a child
-on the temporary flat L2. The managed-switch VLAN and anti-spoof gates in
-`fabric/cluster/README.md` remain mandatory. Before the first child, extend
-`charts/k8s-control-plane` with one exact svc1/svc2 placement contract shared
-by every apiserver/controller-manager/scheduler Deployment and every bootstrap
-Job/CronJob, plus hard hostname spreading. Fabric also needs PodMonitor output
-disabled and all three VPAs disabled until those CRDs/controllers are installed,
-then disjoint child CIDRs and an API publishing address/mechanism. The current
-chart's generated TLS-etcd handoff renders correctly, but those parent-cluster
-scheduling and API-exposure prerequisites are intentionally still absent.
+The first handoff is the infrastructure-owned `lab` control plane. Its
+deployment explicitly accepts the temporary flat-L2 spoofing risk documented
+in `fabric/cluster/README.md`; the managed-switch VLAN is defense in depth, not
+a gate for this trusted tenant. The chart must use one exact svc1/svc2
+placement contract for every apiserver/controller-manager/scheduler Deployment
+and bootstrap Job/CronJob, hard hostname anti-affinity, Restricted Pod Security,
+disabled PodMonitors/VPAs, disjoint child CIDRs, and the dedicated Tailnet API
+publisher. This exception does not authorize an independently administered or
+untrusted tenant on the shared wire.
 
 Create the child namespace through Flux before its HelmRelease, and label it
 for the fail-closed control-plane PKI policies:
@@ -422,7 +421,7 @@ for the fail-closed control-plane PKI policies:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: svc1-child
+  name: lab
   labels:
     fabric.samcday.com/k8s-control-plane: "true"
 ```
@@ -446,11 +445,15 @@ spec:
     - kind: ConfigMap
       name: apiserver-etcd
       valuesKey: values.yaml
+    - kind: ConfigMap
+      name: lab-control-plane-endpoint
+      valuesKey: values.yaml
 ```
 
 Do not use individual `targetPath` injections for the comma-separated endpoint
-field. The generated complete values document avoids Helm `--set` parsing and
-is labelled `reconcile.fluxcd.io/watch: Enabled`. A verified client-leaf renewal
+field. The generated etcd document and atomically published Tailnet endpoint
+document avoid Helm `--set` parsing and are labelled
+`reconcile.fluxcd.io/watch: Enabled`. A verified client-leaf renewal
 alters `etcd.clientCertificateRevision`; kube-apiserver does not reliably
 reload `--etcd-certfile`/`--etcd-keyfile` in place, so that public-certificate
 revision rolls its Pod template. It hashes only the published `tls.crt`, never

@@ -193,3 +193,82 @@ spec:
     namespace: flux-system
   timeout: 5m
   wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-foundation
+  namespace: flux-system
+spec:
+  # Activation is intentionally attended: (1) reconcile the Hub Terraform
+  # auth key, (2) run scripts/handoff-lab-apiserver-auth, (3) add the generated
+  # SOPS Secret to lab/foundation/kustomization.yaml, then (4) unsuspend only
+  # this foundation and wait for the tenant, Tailnet proxy, and endpoint
+  # publisher to become Ready.
+  suspend: true
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: fabric-platform
+    - name: fabric-tailnet
+    - name: fabric-etcdetcetc-runtime
+  healthCheckExprs:
+    - apiVersion: etcdetcetc.samcday.com/v1alpha1
+      kind: EtcdTenant
+      current: >-
+        has(status.conditions) &&
+        status.conditions.exists(c,
+          c.type == 'Ready' && c.status == 'True' &&
+          has(c.observedGeneration) &&
+          c.observedGeneration == metadata.generation)
+      failed: "false"
+  healthChecks:
+    - apiVersion: etcdetcetc.samcday.com/v1alpha1
+      kind: EtcdTenant
+      name: apiserver
+      namespace: lab
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: lab-apiserver-tailnet
+      namespace: lab
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: lab-apiserver-endpoint-publisher
+      namespace: lab
+  interval: 10m
+  path: ./fabric/cluster/lab/foundation
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-control-plane
+  namespace: flux-system
+spec:
+  # Unsuspend only after fabric-lab-foundation is Ready. In particular, the
+  # generated apiserver-etcd and lab-control-plane-endpoint values documents
+  # must exist before Helm is allowed to render the control plane.
+  suspend: true
+  dependsOn:
+    - name: fabric-lab-foundation
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: control-plane
+      namespace: lab
+  interval: 10m
+  path: ./fabric/cluster/lab/control-plane
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+  wait: true

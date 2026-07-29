@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+test_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+python=/usr/bin/python3
+if [[ ! -x $python ]]; then
+  python=$(command -v python3)
+fi
+
+PYTHONDONTWRITEBYTECODE=1 "$python" -B -m unittest discover \
+  --start-directory "$test_dir" \
+  --pattern 'test_*.py'

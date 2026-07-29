@@ -3,6 +3,16 @@ set -euo pipefail
 
 test_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover \
+python_bin=${PYTHON:-python3}
+if ! "$python_bin" -c 'import yaml' >/dev/null 2>&1; then
+  if /usr/bin/python3 -c 'import yaml' >/dev/null 2>&1; then
+    python_bin=/usr/bin/python3
+  else
+    echo "PyYAML is required to run the chart tests" >&2
+    exit 1
+  fi
+fi
+
+PYTHONDONTWRITEBYTECODE=1 "$python_bin" -B -m unittest discover \
   --start-directory "$test_dir" \
   --pattern 'test_*.py'

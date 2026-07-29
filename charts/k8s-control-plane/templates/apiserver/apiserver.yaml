@@ -18,7 +18,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: apiserver
+  {{- if $.Values.parentWorkloads.enabled }}
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+  {{- end }}
 spec:
+  {{- include "k8s-control-plane.parent-deployment-spec" $ | nindent 2 }}
   replicas: {{ required "missing apiServer.replicas" $.Values.apiServer.replicas }}
   selector:
     matchLabels:
@@ -36,16 +41,22 @@ spec:
       {{- end }}
       labels:
         app: apiserver
+        {{- if $.Values.parentWorkloads.enabled }}
+        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "apiserver") | nindent 8 }}
+        {{- end }}
     spec:
+      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "apiserver" "deployment" true "disableServiceAccountToken" true) | nindent 6 }}
       containers:
-        - image: {{ with $.Values.apiServer.image -}}
-                   {{- required "missing apiServer.image.repository" .repository }}:
-                   {{- tpl (required "missing apiServer.image.tag" .tag) $ -}}
-                 {{ end }}
+        - image: {{ include "k8s-control-plane.component-image" (dict "root" $ "image" $.Values.apiServer.image) }}
           {{- with $.Values.apiServer.image.pullPolicy }}
           imagePullPolicy: {{ . }}
           {{- end }}
           name: apiserver
+          {{- with $.Values.apiServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" $.Values.apiServer.securityContext) | nindent 10 }}
           command:
             - kube-apiserver
             {{- if $.Values.externalIP }}
@@ -164,9 +175,21 @@ spec:
             - --mode=grpc
             - --agent-namespace=kube-system
             - --agent-service-account=konnectivity-agent
+            {{- if eq $.Values.konnectivity.server.clientIdentity "dedicated" }}
+            - --kubeconfig=/konnectivity-kubeconfig
+            {{- else }}
             - --kubeconfig=/kubeconfig
+            {{- end }}
             - --authentication-audience=system:konnectivity-server
             - --server-count={{ $.Values.apiServer.replicas }}
+            {{- range $.Values.konnectivity.server.extraArgs }}
+            - {{ tpl . $ | quote }}
+            {{- end }}
+          {{- with $.Values.konnectivity.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 10 }}
           livenessProbe:
             httpGet:
               port: 8092
@@ -174,15 +197,26 @@ spec:
             initialDelaySeconds: 10
             timeoutSeconds: 60
           volumeMounts:
+            {{- if eq $.Values.konnectivity.server.clientIdentity "dedicated" }}
+            - name: konnectivity-client
+              mountPath: /konnectivity-client
+            {{- else }}
             - name: admin
               mountPath: /cert
+            {{- end }}
             - name: cert
               mountPath: /apiserver-cert
             - name: konnectivity
               mountPath: /konnectivity
+            {{- if eq $.Values.konnectivity.server.clientIdentity "dedicated" }}
+            - name: konnectivity-kubeconfig
+              mountPath: /konnectivity-kubeconfig
+              subPath: kubeconfig
+            {{- else }}
             - name: kubeconfig
               mountPath: /kubeconfig
               subPath: kubeconfig
+            {{- end }}
         {{- end }}
       volumes:
         - name: cert
@@ -209,6 +243,14 @@ spec:
         - name: kubeconfig
           configMap:
             name: kubeconfig
+        {{- if eq $.Values.konnectivity.server.clientIdentity "dedicated" }}
+        - name: konnectivity-client
+          secret:
+            secretName: konnectivity-server
+        - name: konnectivity-kubeconfig
+          configMap:
+            name: konnectivity-server-kubeconfig
+        {{- end }}
         {{ end }}
 ---
 {{ if $.Values.konnectivity.enabled }}
@@ -234,6 +276,7 @@ data:
               uds:
                 udsName: /konnectivity/socket
 ---
+{{- if eq $.Values.konnectivity.server.clientIdentity "legacyAdmin" }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -249,4 +292,5 @@ subjects:
     kind: User
     name: system:konnectivity-server
 ---
+{{- end }}
 {{ end }}

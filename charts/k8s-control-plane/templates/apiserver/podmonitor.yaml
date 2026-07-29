@@ -1,3 +1,4 @@
+{{- if $.Values.monitoring.podMonitors.enabled -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -33,3 +34,4 @@ spec:
   selector:
     matchLabels:
       app: apiserver
+{{- end -}}

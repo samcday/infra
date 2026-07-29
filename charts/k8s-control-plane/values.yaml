@@ -1,10 +1,13 @@
 apiServer:
   extraArgs: []
   image:
+    digest: ""
     repository: registry.k8s.io/kube-apiserver
     pullPolicy: IfNotPresent
     tag: "v{{ $.Values.version }}"
   replicas: 2
+  resources: {}
+  securityContext: {}
   service:
     annotations:
     labels:
@@ -15,22 +18,38 @@ apiServer:
   vpa:
     enabled: true
 
+adminKubeconfig:
+  # Refresh flattened kubeconfigs after cert-manager rotates their source
+  # certificates. Existing releases retain the historical weekly cadence.
+  schedule: "@weekly"
+  concurrencyPolicy: ""
+
 bootstrapTokens:
   # - token: abcdef.0123456789abcdef
   # - id: abcdef
   #   extraGroups: [system:bootstrappers:kubeadm:default-node-token]
   #   secret: 0123456789abcdef
 
+bootstrap:
+  # kubeadm 1.31 and newer write v1beta4; keep v1beta3 as the legacy default.
+  kubeadmAPIVersion: kubeadm.k8s.io/v1beta3
+
 clusterDomain: cluster.local
+
+clusterCIDRs: []
+clusterDNS: []
 
 clusterName: ~ # required
 
 controllerManager:
   image:
+    digest: ""
     repository: registry.k8s.io/kube-controller-manager
     pullPolicy: IfNotPresent
     tag: "v{{ $.Values.version }}"
   replicas: 2
+  resources: {}
+  securityContext: {}
   vpa:
     enabled: true
 
@@ -75,9 +94,40 @@ konnectivity:
     replicas: 2
   port: 8091
   server:
+    # dedicated uses a child-CA identity scoped to TokenReview delegation.
+    # legacyAdmin preserves the historical system:masters client identity.
+    clientIdentity: legacyAdmin
+    extraArgs: []
     image: registry.k8s.io/kas-network-proxy/proxy-server:v0.33.0
+    resources: {}
+
+monitoring:
+  podMonitors:
+    enabled: true
 
 parentClusterDomain: cluster.local
+
+serviceIP: null
+
+# Opt-in contract for workloads that run in the parent/hosting cluster. Keeping
+# this disabled preserves the historical manifests for existing releases.
+parentWorkloads:
+  enabled: false
+  placement:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  podSecurityContext: {}
+  containerSecurityContext: {}
+  deployment:
+    priorityClassName: ""
+    requiredPodAntiAffinityTopologyKey: ""
+    minReadySeconds: 0
+    terminationGracePeriodSeconds: null
+    strategy: {}
+    pdb:
+      enabled: false
+      spec: {}
 
 scheduler:
   enabled: true
@@ -109,11 +159,21 @@ scheduler:
       #     volumes:
       #       - name: extra
   image:
+    digest: ""
     repository: registry.k8s.io/kube-scheduler
     pullPolicy: IfNotPresent
     tag: "v{{ $.Values.version }}"
+  resources: {}
+  securityContext: {}
   vpa:
     enabled: true
+
+utilities:
+  image: bitnamilegacy/kubectl:1.33.4
+  resources: {}
+  # Mount an emptyDir at /tmp and set HOME there. Required when the common
+  # container security context makes the root filesystem read-only.
+  writableTmp: false
 
 # Additional client-certificate identities for child-cluster access.
 #

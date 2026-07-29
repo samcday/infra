@@ -10,6 +10,6 @@ A control-plane for the cluster "{{ $.Values.clusterName }}" has been deployed. 
 {{- if (empty (default (list) $.Values.serviceCIDRs)) -}}
 {{- fail "missing serviceCIDRs" -}}
 {{- end -}}
-{{- if (gt 2 (len $.Values)) -}}
+{{- if (gt (len $.Values.serviceCIDRs) 2) -}}
 {{- fail "too many serviceCIDRs" -}}
 {{- end -}}

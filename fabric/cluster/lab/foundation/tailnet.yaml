@@ -1,0 +1,191 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-apiserver-ts-serve-config
+  namespace: lab
+data:
+  serve.json: |
+    {
+      "TCP": {
+        "6443": {
+          "TCPForward": "apiserver.lab.svc.cluster.fabric.internal:6443"
+        },
+        "8091": {
+          "TCPForward": "apiserver.lab.svc.cluster.fabric.internal:8091"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lab-apiserver-ts-state
+  namespace: lab
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lab-apiserver-tailnet
+  namespace: lab
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lab-apiserver-tailnet-state
+  namespace: lab
+rules:
+  - apiGroups: [""]
+    resourceNames: [lab-apiserver-ts-state]
+    resources: [secrets]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lab-apiserver-tailnet-state
+  namespace: lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lab-apiserver-tailnet-state
+subjects:
+  - kind: ServiceAccount
+    name: lab-apiserver-tailnet
+    namespace: lab
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-apiserver-tailnet
+  namespace: lab
+  labels:
+    app.kubernetes.io/component: tailnet-proxy
+    app.kubernetes.io/instance: lab
+    app.kubernetes.io/name: lab-apiserver-tailnet
+    app.kubernetes.io/part-of: lab-control-plane
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lab-apiserver-tailnet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: tailnet-proxy
+        app.kubernetes.io/instance: lab
+        app.kubernetes.io/name: lab-apiserver-tailnet
+        app.kubernetes.io/part-of: lab-control-plane
+    spec:
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      serviceAccountName: lab-apiserver-tailnet
+      priorityClassName: system-cluster-critical
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        fabric.samcday.com/platform: "true"
+        kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchFields:
+                  - key: metadata.name
+                    operator: In
+                    values:
+                      - fabric-az1-svc1
+                      - fabric-az1-svc2
+      tolerations:
+        - effect: NoSchedule
+          key: fabric.samcday.com/platform
+          operator: Equal
+          value: "true"
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.86.5@sha256:9e2bfdd9e2ce724df53f976d06a4a9933aa730dc655ace42798f4c73735d1cac
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "true"
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_EXTRA_ARGS
+              value: --login-server=https://headscale.tail22d0a0.ts.net --advertise-tags=tag:lab-apiserver --accept-routes=false --ssh=false
+            - name: TS_HOSTNAME
+              value: lab-apiserver
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: lab-apiserver-ts-auth
+                  key: authkey
+                  optional: false
+            - name: TS_KUBE_SECRET
+              value: lab-apiserver-ts-state
+            - name: TS_SERVE_CONFIG
+              value: /config/serve.json
+            - name: TS_SOCKET
+              value: /var/run/tailscale/tailscaled.sock
+            - name: TS_TAILSCALED_EXTRA_ARGS
+              value: --no-logs-no-support
+            - name: TS_USERSPACE
+              value: "true"
+          ports:
+            - containerPort: 9002
+              name: health
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            failureThreshold: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - mountPath: /config
+              name: serve-config
+              readOnly: true
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/run/tailscale
+              name: run
+      volumes:
+        - configMap:
+            name: lab-apiserver-ts-serve-config
+          name: serve-config
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+          name: run
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+          name: tmp
