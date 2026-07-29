@@ -2,12 +2,29 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: bootstrap
+  {{- if $.Values.parentWorkloads.enabled }}
+  annotations:
+    helm.toolkit.fluxcd.io/driftDetection: disabled
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "bootstrap") | nindent 4 }}
+  {{- end }}
 spec:
   template:
+    {{- if $.Values.parentWorkloads.enabled }}
+    metadata:
+      labels:
+        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "bootstrap") | nindent 8 }}
+    {{- end }}
     spec:
+      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "bootstrap" "disableServiceAccountToken" true) | nindent 6 }}
       containers:
         - name: bootstrap
           image: {{ include "k8s-control-plane.kubectl-image" $ }}
+          {{- with $.Values.utilities.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 10 }}
           command:
             - bash
             - -uexo
@@ -22,12 +39,20 @@ spec:
           env:
             - name: KUBECONFIG
               value: /kubeconfig
+            {{- if $.Values.utilities.writableTmp }}
+            - name: HOME
+              value: /tmp
+            {{- end }}
           volumeMounts:
             - name: cert
               mountPath: /cert
             - name: kubeconfig
               mountPath: /kubeconfig
               subPath: kubeconfig
+            {{- if $.Values.utilities.writableTmp }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
       volumes:
         - name: cert
           secret:
@@ -35,5 +60,9 @@ spec:
         - name: kubeconfig
           configMap:
             name: kubeconfig
+        {{- if $.Values.utilities.writableTmp }}
+        - name: tmp
+          emptyDir: {}
+        {{- end }}
       restartPolicy: OnFailure
   ttlSecondsAfterFinished: 60

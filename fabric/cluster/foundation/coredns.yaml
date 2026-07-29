@@ -100,6 +100,7 @@ spec:
   revisionHistoryLimit: 0
   strategy:
     rollingUpdate:
+      maxSurge: 0
       maxUnavailable: 1
     type: RollingUpdate
   selector:
@@ -110,6 +111,13 @@ spec:
       labels:
         k8s-app: kube-dns
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  k8s-app: kube-dns
+              topologyKey: kubernetes.io/hostname
       priorityClassName: system-cluster-critical
       serviceAccountName: coredns
       nodeSelector:

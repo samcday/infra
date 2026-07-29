@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+readonly target_relative=fabric/cluster/lab/foundation/apiserver-ts-auth.sops.yaml
+readonly target="$repo_root/$target_relative"
+cd -- "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/handoff-lab-apiserver-auth [--force]
+
+Read the Terraform-managed lab apiserver Headscale preauth key from Hub and
+write it only as a SOPS-encrypted Secret for Fabric. Plaintext exists only in
+process memory and a pipe; the temporary output is encrypted and held in tmpfs.
+
+Use --force only when intentionally rotating an existing encrypted handoff.
+EOF
+}
+
+die() {
+  printf 'handoff-lab-apiserver-auth: %s\n' "$*" >&2
+  exit 1
+}
+
+force=false
+case ${1:-} in
+  '') ;;
+  --force) force=true ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+[[ $# -le 1 ]] || die 'too many arguments'
+
+for command in base64 grep install mktemp sops yq; do
+  command -v "$command" >/dev/null || die "required command is unavailable: $command"
+done
+[[ -x $repo_root/scripts/ik ]] || die 'scripts/ik is unavailable'
+[[ -d $repo_root/fabric/cluster/lab/foundation ]] ||
+  die 'Fabric lab foundation directory does not exist'
+[[ -d /dev/shm && -w /dev/shm ]] || die '/dev/shm tmpfs is unavailable or unwritable'
+if [[ -e $target && $force != true ]]; then
+  die "$target_relative already exists; use --force only for an intentional rotation"
+fi
+
+umask 077
+handoff_tmp_dir=$(mktemp -d /dev/shm/lab-apiserver-auth.XXXXXXXX)
+encrypted_tmp=$handoff_tmp_dir/apiserver-ts-auth.sops.yaml
+encoded=''
+auth_key=''
+cleanup() {
+  encoded=''
+  auth_key=''
+  if [[ -n ${handoff_tmp_dir:-} && -d $handoff_tmp_dir ]]; then
+    rm -f -- "$encrypted_tmp"
+    rmdir -- "$handoff_tmp_dir"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+encoded=$(
+  "$repo_root/scripts/ik" --context=hub --namespace=headscale \
+    get secret lab-apiserver-ts-auth --output=jsonpath='{.data.authkey}'
+)
+[[ -n $encoded ]] || die 'Hub Secret headscale/lab-apiserver-ts-auth has no authkey'
+auth_key=$(printf '%s' "$encoded" | base64 --decode) || die 'Hub authkey is not valid base64'
+[[ $auth_key =~ ^hskey-auth-[A-Za-z0-9_-]{16,}$ ]] ||
+  die 'Hub authkey does not have the expected hskey-auth format'
+
+printf '%s\n' \
+  'apiVersion: v1' \
+  'kind: Secret' \
+  'metadata:' \
+  '  name: lab-apiserver-ts-auth' \
+  '  namespace: lab' \
+  'type: Opaque' \
+  'stringData:' \
+  "  authkey: $auth_key" |
+  sops encrypt \
+    --filename-override "$target_relative" \
+    --input-type yaml \
+    --output-type yaml \
+    /dev/stdin >"$encrypted_tmp"
+
+[[ $(sops filestatus "$encrypted_tmp" | yq -r '.encrypted') == true ]] ||
+  die 'SOPS did not report encrypted output'
+! grep -Fq 'hskey-auth-' "$encrypted_tmp" || die 'encrypted output still contains plaintext auth material'
+
+install -m 0600 -- "$encrypted_tmp" "$target"
+printf 'Wrote SOPS-encrypted Fabric handoff: %s\n' "$target_relative"

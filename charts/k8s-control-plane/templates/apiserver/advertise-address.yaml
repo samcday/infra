@@ -2,13 +2,38 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: advertise-address 
+  name: advertise-address
+  {{- if $.Values.parentWorkloads.enabled }}
+  annotations:
+    helm.toolkit.fluxcd.io/driftDetection: disabled
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "advertise-address") | nindent 4 }}
+  {{- end }}
 spec:
   template:
+    {{- if $.Values.parentWorkloads.enabled }}
+    metadata:
+      labels:
+        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "advertise-address") | nindent 8 }}
+    {{- end }}
     spec:
+      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "advertise-address") | nindent 6 }}
       containers:
         - name: advertise-address
           image: {{ include "k8s-control-plane.kubectl-image" $ }}
+          {{- with $.Values.utilities.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 10 }}
+          {{- if $.Values.utilities.writableTmp }}
+          env:
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
           command:
             - bash
             - -uexo
@@ -27,6 +52,11 @@ spec:
               kubectl patch cert apiserver --type merge -p "{\"spec\":{\"ipAddresses\":[\"$ip\",\"{{ $.Values.serviceIP }}\"]}}"
       serviceAccount: advertise-address
       restartPolicy: OnFailure
+      {{- if $.Values.utilities.writableTmp }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}
   ttlSecondsAfterFinished: 60
 ---
 apiVersion: v1

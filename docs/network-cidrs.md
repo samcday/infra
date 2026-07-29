@@ -20,6 +20,7 @@ take precedence over convenient CIDR shorthand.
 | `cloud-cluster` | Hetzner `172.29.0.0/16` | `172.28.0.0/16` | `172.27.0.0/16` | Headscale address expected at `100.64.0.3` |
 | `ilumbaclusta` | `10.0.3.0/24` | `172.28.0.0/16` | `172.27.0.0/16` | dynamically allocated from the hub BGP service interval |
 | `edge-au-east` | provider-assigned; no CIDR in this repo | `172.24.0.0/16` | `172.23.0.0/16` | parent Service `172.27.23.43`; Headscale address expected at `100.64.0.64` |
+| `lab` | no workers allocated | `172.26.0.0/16` | `172.25.0.0/16` | Fabric parent Service `172.21.0.25`; `lab-apiserver.tailnet.hub.samcday.com`, with its IPv4 assigned dynamically from Headscale |
 
 The hub declarations come from the [router LAN and node
 leases](../hub/router/files/etc/uci-defaults/system), [K3s
@@ -95,12 +96,13 @@ and no non-host `AllowedIPs` accepted from its peers. The check did not inspect
 kernel routes inside Kubernetes nodes, a live OpenWrt router, Headscale's
 server-side approvals, the home gateway, or the Superloop path.
 
-No `advertise-routes` or equivalent subnet-route declaration exists in the
-repository. The common OpenWrt overlay permits forwarding between Tailscale
-and LAN zones but logs in without advertising a prefix. No subnet route was
-accepted by the live `sam-desktop` client; Headscale's server-side approvals
-and other clients remain unverified. The fabric router overlay explicitly
-removes Tailscale.
+The common OpenWrt overlay permits forwarding between Tailscale and LAN zones
+but logs in without advertising a prefix, and the physical Fabric router image
+explicitly removes Tailscale. Fabric instead runs two Kubernetes-hosted
+userspace subnet routers, one on each service node, declaring
+`10.66.0.0/24,10.66.1.0/24`; Headscale owns approval and ACL enforcement for
+those routes. The earlier `sam-desktop` spot-check below predates that
+declaration and is retained only as dated evidence, not current route state.
 
 ## Allocated fabric space
 
@@ -117,7 +119,7 @@ advertisement or cross-cluster transport.
 | Purpose | Range or address | Status |
 | --- | --- | --- |
 | Consensus and provisioning LAN | `10.66.0.0/24` | Live; no Git, live hub/cloud, or operator-route collision found; intentionally not advertised. |
-| Service-node LAN | `10.66.1.0/24` | Allocated for persistent fabric platform agents; staged for temporary routed use on the shared physical L2, pending live qualification. |
+| Service-node LAN | `10.66.1.0/24` | Live for persistent Fabric platform agents on the accepted temporary shared physical L2. |
 | Fabric Pod network | `172.22.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
 | Fabric Service network | `172.21.0.0/16` | Live in K3s configuration; no Git, live hub/cloud, or operator-route collision found. |
 | Router and offline asset server | `10.66.0.1` | Live router address. |
@@ -132,19 +134,23 @@ advertisement or cross-cluster transport.
 | Fabric API VIP | `10.66.0.254` | Live kube-vip API endpoint. |
 | Service-plane router | `10.66.1.1` | Staged as a second address on the router's sole fabric link; pending live qualification. |
 | Service-plane low-address holdback | `10.66.1.2-10.66.1.9` | Reserved; no DHCP allocation. |
-| Persistent platform agents | `10.66.1.10-10.66.1.11` | Allocated to `fabric-az1-svc1` and `fabric-az1-svc2`; not live yet. |
+| Persistent platform agents | `10.66.1.10-10.66.1.11` | Live on `fabric-az1-svc1` and `fabric-az1-svc2`. |
 | Service-plane holdback | `10.66.1.12-10.66.1.99` | Reserved for future reviewed service nodes; not a child-cluster pool. |
 | Service-plane candidate holdback | `10.66.1.100` | Held but unused during flat-L2 induction. Bootie discovery stays on `10.66.0.100`; the router grants `.1.100` no service and tests it as an unauthorized source. |
 | Remaining service-plane holdback | `10.66.1.101-10.66.1.254` | Unallocated; no DHCP allocation or publishing pool. |
+| Lab parent apiserver Service | `172.21.0.25` | Reserved inside the Fabric Service CIDR for the hosted `lab` apiserver. |
+| Lab child Kubernetes Service | `172.25.0.1` | First address in the lab Service CIDR. |
+| Lab child DNS Service | `172.25.0.10` | Reserved for future child CoreDNS; no child DNS workload is installed yet. |
 
 Evidence is in the [fabric plan](plans/fabric-cluster.md), [router
 configuration](../fabric/router/files/etc/uci-defaults/10-system), [node
 profiles](../fabric/butane/fabric-az1-cp1.yaml), and [K3s
 configuration](../fabric/butane/control-plane.yaml). The temporary flat-L2
-realization permits only the two named, physically trusted platform agents
-after router and root-host policy tests. It is not sufficient for child etcd
-credentials or tenant workloads. No child-cluster allocation block or
-externally published fabric load-balancer pool has been allocated yet.
+realization permits only the two named, physically trusted platform agents and
+the reviewed infrastructure-owned `lab` control plane after router, host,
+mTLS, prefix-RBAC, and NetworkPolicy qualification. It remains insufficient for
+independently administered or untrusted tenants. No externally published
+Fabric load-balancer pool has been allocated.
 
 ## Confirmed overlaps and sharp edges
 
@@ -159,7 +165,7 @@ externally published fabric load-balancer pool has been allocated yet.
   cloud Pod and node `/16`s. This is not an independent third workload range.
 - **Expected shared LAN:** the hub L2 pool is inside `10.0.1.0/24`. Its exact
   interval does not overlap the current static router, node, or API addresses.
-- **No repository collision:** the three proposed fabric ranges are disjoint
+- **No repository collision:** the Fabric and lab ranges are disjoint
   from every current Pod, Service, physical LAN, and publishing range listed
   above. This says nothing about networks absent from Git.
 - **External collision risk:** Headscale's `100.64.0.0/10` is carrier-grade NAT
@@ -181,8 +187,10 @@ externally published fabric load-balancer pool has been allocated yet.
   additional addresses on those LANs.
 - The allocated fabric service subnet still needs its permanent managed-switch
   VLAN realization. Its temporary same-wire realization is deliberately not
-  an anti-spoofing boundary. Future worker subnets, child Pod/Service blocks,
-  and published VIP pools require new entries before deployment.
+  an anti-spoofing boundary and is an accepted risk only for the trusted
+  platform and `lab` control plane. Future worker subnets, further child
+  Pod/Service blocks, and published VIP pools require new entries before
+  deployment.
 - `10.244.0.0/16`, `10.96.0.0/12`, and `10.0.0.10` occur only in chart defaults
   or a Helm-render example; they are not repository allocations.
 - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `0.0.0.0/0`, and `::/0`

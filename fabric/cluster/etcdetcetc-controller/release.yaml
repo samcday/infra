@@ -42,6 +42,7 @@ spec:
     allowedNamespaces:
       - etcdetcetc
       - etcdetcetc-smoke
+      - lab
     image:
       repository: ghcr.io/samcday/infra-etcdetcetc
       tag: "2026072506.00000000030147245918"
@@ -49,6 +50,7 @@ spec:
       pullPolicy: IfNotPresent
     managedNamespaces:
       - etcdetcetc-smoke
+      - lab
     legacyClusterWideCoreWatches: false
     replicaCount: 2
     nodeSelector:

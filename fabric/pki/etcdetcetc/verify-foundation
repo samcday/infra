@@ -106,7 +106,7 @@ cluster="$repo_root/fabric/cluster/etcdetcetc/runtime/cluster.yaml"
    $(yq -r '.spec.serverCAConfigMapRef.name' "$cluster") == fabric-etcd-server-ca &&
    $(yq -r '.spec.tenantTls.issuerRef.kind' "$cluster") == ClusterIssuer &&
    $(yq -r '.spec.tenantTls.issuerRef.name' "$cluster") == fabric-etcd-client-v1 &&
-   $(yq -r '.spec.allowedNamespaces | join(",")' "$cluster") == etcdetcetc-smoke ]] ||
+   $(yq -r '.spec.allowedNamespaces | join(",")' "$cluster") == 'etcdetcetc-smoke,lab' ]] ||
   die 'Fabric EtcdCluster trust or namespace contract differs'
 expected_endpoints='https://fabric-az1-cp1.fabric.internal:2379,https://fabric-az1-cp2.fabric.internal:2379,https://fabric-az1-cp3.fabric.internal:2379'
 [[ $(yq -r '.spec.endpoints | join(",")' "$cluster") == "$expected_endpoints" ]] ||
@@ -216,7 +216,11 @@ jq -e '
     {"apiVersion": "v1", "kind": "Namespace",
       "metadata": {"name": "etcdetcetc", "labels": restricted_labels}},
     {"apiVersion": "v1", "kind": "Namespace",
-      "metadata": {"name": "etcdetcetc-smoke", "labels": restricted_labels}}
+      "metadata": {"name": "etcdetcetc-smoke", "labels": restricted_labels}},
+    {"apiVersion": "v1", "kind": "Namespace",
+      "metadata": {"name": "lab", "labels": (restricted_labels + {
+        "fabric.samcday.com/k8s-control-plane": "true"
+      })}}
   ]
 ' >/dev/null <<<"$namespace_objects" ||
   die 'Fabric foundation Namespaces must be the exact restricted-v1.36 set'
@@ -357,9 +361,9 @@ if [[ $activation_phase == controller-active || $activation_phase == runtime-act
     die 'active Fabric controller must use a canonical non-bootstrap tag-and-digest image pin'
 fi
 [[ $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.allowedNamespaces | join(",")' \
-  "$release") == 'etcdetcetc,etcdetcetc-smoke' &&
+  "$release") == 'etcdetcetc,etcdetcetc-smoke,lab' &&
    $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.managedNamespaces | join(",")' \
-  "$release") == etcdetcetc-smoke &&
+  "$release") == 'etcdetcetc-smoke,lab' &&
    $(yq -r 'select(.metadata.name == "etcdetcetc") | (.spec.values.clusterNamespaces // []) | join(",")' \
   "$release") == '' &&
    $(yq -r 'select(.metadata.name == "etcdetcetc") | .spec.values.legacyClusterWideCoreWatches' \

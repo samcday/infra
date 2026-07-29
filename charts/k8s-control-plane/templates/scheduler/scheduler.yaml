@@ -1,10 +1,14 @@
 {{- define "scheduler-container" -}}
 name: kube-scheduler
 {{- with $.Values.scheduler.image }}
-image: {{ required "missing scheduler.image.repository" .repository }}:
-        {{- tpl (required "missing scheduler.image.tag" .tag) $ }}
+image: {{ include "k8s-control-plane.component-image" (dict "root" $ "image" .) }}
 imagePullPolicy: {{ .pullPolicy }}
 {{- end }}
+{{- with $.Values.scheduler.resources }}
+resources:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" $.Values.scheduler.securityContext) }}
 command:
   - kube-scheduler
   - --authentication-kubeconfig=/kubeconfig
@@ -61,10 +65,26 @@ volumes:
 {{- $dep := $.Values.scheduler.deployment -}}
 {{- $spec := $dep.spec -}}
 {{- $barfSpec := omit $spec "replicas" "selector" "template" -}}
+{{- $parentDeploymentSpec := dict -}}
+{{- if $.Values.parentWorkloads.enabled -}}
+{{- $parentDeploymentSpec = fromYaml (include "k8s-control-plane.parent-deployment-spec" $) -}}
+{{- end -}}
+{{- $mergedDeploymentSpec := deepCopy $parentDeploymentSpec -}}
+{{- range $key, $value := $barfSpec -}}
+{{- $_ := set $mergedDeploymentSpec $key $value -}}
+{{- end -}}
 
 {{- $template := default (dict) $spec.template -}}
 {{- $templateSpec := default (dict) $template.spec -}}
 {{- $barfTemplate := omit $templateSpec "containers" "volumes" -}}
+{{- $parentPodSpec := dict -}}
+{{- if $.Values.parentWorkloads.enabled -}}
+{{- $parentPodSpec = fromYaml (include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "scheduler" "deployment" true "disableServiceAccountToken" true)) -}}
+{{- end -}}
+{{- $mergedPodSpec := deepCopy $parentPodSpec -}}
+{{- range $key, $value := $barfTemplate -}}
+{{- $_ := set $mergedPodSpec $key $value -}}
+{{- end -}}
 
 {{- $container := fromYaml (include "scheduler-container" $) -}}
 
@@ -82,6 +102,17 @@ volumes:
 
 {{- $containers := list ($container) -}}
 {{- $volumes := (fromYaml (include "scheduler-volumes" $)).volumes -}}
+{{- $deploymentLabels := deepCopy (default (dict) $dep.labels) -}}
+{{- if $.Values.parentWorkloads.enabled -}}
+{{- $deploymentLabels = mustMergeOverwrite (fromYaml (include "k8s-control-plane.stable-labels" (dict "root" $ "component" "scheduler"))) $deploymentLabels -}}
+{{- end -}}
+{{- $podLabels := dict "app" "kube-scheduler" -}}
+{{- if $.Values.parentWorkloads.enabled -}}
+{{- $podLabels = mustMergeOverwrite $podLabels (fromYaml (include "k8s-control-plane.stable-labels" (dict "root" $ "component" "scheduler"))) -}}
+{{- end -}}
+{{- $podLabels = mustMergeOverwrite $podLabels (dig "metadata" "labels" (dict) $template) -}}
+{{- $podAnnotations := dict "config-hash" (sha1sum (print (toYaml $.Values.scheduler.config) (dig "deployment" "spec" "strategy" "type" "" $.Values.scheduler) (dig "deployment" "spec" "replicas" 1 $.Values.scheduler))) -}}
+{{- $podAnnotations = mustMergeOverwrite $podAnnotations (dig "metadata" "annotations" (dict) $template) -}}
 
 apiVersion: apps/v1
 kind: Deployment
@@ -91,13 +122,13 @@ metadata:
   annotations:
     {{- . | toYaml | nindent 4 }}
   {{- end }}
-  {{- with $dep.labels }}
+  {{- with $deploymentLabels }}
   labels:
     {{- . | toYaml | nindent 4 }}
   {{- end }}
 spec:
-  {{- if not (empty $barfSpec) }}
-  {{- $barfSpec | toYaml | nindent 2 }}
+  {{- if not (empty $mergedDeploymentSpec) }}
+  {{- $mergedDeploymentSpec | toYaml | nindent 2 }}
   {{- end }}
   replicas: {{ required "missing scheduler.deployment.spec.replicas" $spec.replicas }}
   selector:
@@ -106,15 +137,9 @@ spec:
   template:
     metadata:
       annotations:
-        config-hash: {{ sha1sum (print (toYaml $.Values.scheduler.config) (dig "deployment" "spec" "strategy" "type" "" $.Values.scheduler) (dig "deployment" "spec" "replicas" 1 $.Values.scheduler)) }}
-        {{- with (dig "metadata" "annotations" (dict) $template) }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- toYaml $podAnnotations | nindent 8 }}
       labels:
-        app: kube-scheduler
-        {{- with (dig "metadata" "labels" (dict) $template) }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- toYaml $podLabels | nindent 8 }}
     spec:
       containers:
         {{- toYaml $containers | nindent 8 }}
@@ -123,7 +148,7 @@ spec:
         {{- with $templateSpec.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with $barfTemplate }}
+      {{- with $mergedPodSpec }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
 {{- end -}}

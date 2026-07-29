@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-control-plane-endpoint
+  namespace: lab
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+  labels:
+    reconcile.fluxcd.io/watch: Enabled
+
+# The endpoint publisher owns data.values.yaml through server-side apply.
+# Leaving data absent keeps Flux from claiming or clearing that field.

@@ -1,0 +1,288 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: lab
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: lab
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 172.21.0.10/32
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Only the two foundation agents and chart utility Jobs need the hosting
+# cluster's API. The long-lived child control-plane processes use the lab API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-foundation-fabric-api-egress
+  namespace: lab
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - lab-apiserver-tailnet
+          - lab-apiserver-endpoint-publisher
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.21.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 10.66.0.10/32
+        - ipBlock:
+            cidr: 10.66.0.11/32
+        - ipBlock:
+            cidr: 10.66.0.12/32
+        - ipBlock:
+            cidr: 10.66.0.254/32
+      ports:
+        - port: 6443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane-utilities-fabric-api-egress
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-control-plane
+      app.kubernetes.io/instance: control-plane
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - ca-hash
+          - advertise-address
+          - admin-kubeconfig-generator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.21.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 10.66.0.10/32
+        - ipBlock:
+            cidr: 10.66.0.11/32
+        - ipBlock:
+            cidr: 10.66.0.12/32
+        - ipBlock:
+            cidr: 10.66.0.254/32
+      ports:
+        - port: 6443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane-lab-api-egress
+  namespace: lab
+spec:
+  # admin-kubeconfig-generator is intentionally absent while users: []: its
+  # parent-API-only path does not contact the child. If chart users are added,
+  # add that component here in the same reviewed change.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-control-plane
+      app.kubernetes.io/instance: control-plane
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - apiserver
+          - controller-manager
+          - scheduler
+          - bootstrap
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.21.0.25/32
+      ports:
+        - port: 6443
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: k8s-control-plane
+              app.kubernetes.io/instance: control-plane
+              app.kubernetes.io/component: apiserver
+      ports:
+        - port: 6443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tailnet-proxy-lab-api-egress
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lab-apiserver-tailnet
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.21.0.25/32
+      ports:
+        - port: 6443
+          protocol: TCP
+        - port: 8091
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: k8s-control-plane
+              app.kubernetes.io/instance: control-plane
+              app.kubernetes.io/component: apiserver
+      ports:
+        - port: 6443
+          protocol: TCP
+        - port: 8091
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-proxy-ingress
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-control-plane
+      app.kubernetes.io/instance: control-plane
+      app.kubernetes.io/component: apiserver
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: k8s-control-plane
+              app.kubernetes.io/instance: control-plane
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - apiserver
+                  - controller-manager
+                  - scheduler
+                  - bootstrap
+      ports:
+        - port: 6443
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lab-apiserver-tailnet
+      ports:
+        - port: 6443
+          protocol: TCP
+        - port: 8091
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-etcd-egress
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-control-plane
+      app.kubernetes.io/instance: control-plane
+      app.kubernetes.io/component: apiserver
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.66.0.10/32
+        - ipBlock:
+            cidr: 10.66.0.11/32
+        - ipBlock:
+            cidr: 10.66.0.12/32
+      ports:
+        - port: 2379
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-tailnet-proxy-public-egress
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lab-apiserver-tailnet
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - port: 443
+          protocol: TCP

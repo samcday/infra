@@ -2,12 +2,34 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: ca-hash
+  {{- if $.Values.parentWorkloads.enabled }}
+  annotations:
+    helm.toolkit.fluxcd.io/driftDetection: disabled
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "ca-hash") | nindent 4 }}
+  {{- end }}
 spec:
   template:
+    {{- if $.Values.parentWorkloads.enabled }}
+    metadata:
+      labels:
+        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "ca-hash") | nindent 8 }}
+    {{- end }}
     spec:
+      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "ca-hash") | nindent 6 }}
       containers:
         - name: ca-hash
           image: {{ include "k8s-control-plane.kubectl-image" $ }}
+          {{- with $.Values.utilities.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 10 }}
+          {{- if $.Values.utilities.writableTmp }}
+          env:
+            - name: HOME
+              value: /tmp
+          {{- end }}
           command:
             - bash
             - -uexo
@@ -21,12 +43,20 @@ spec:
             - name: ca
               mountPath: /ca.crt
               subPath: tls.crt
+            {{- if $.Values.utilities.writableTmp }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
       serviceAccount: ca-hash
       restartPolicy: OnFailure
       volumes:
         - name: ca
           secret:
             secretName: ca
+        {{- if $.Values.utilities.writableTmp }}
+        - name: tmp
+          emptyDir: {}
+        {{- end }}
   ttlSecondsAfterFinished: 60
 ---
 apiVersion: v1

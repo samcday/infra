@@ -1,0 +1,23 @@
+{{- if and .Values.parentWorkloads.enabled .Values.parentWorkloads.deployment.pdb.enabled -}}
+{{- $root := . -}}
+{{- $workloads := list (dict "name" "apiserver" "component" "apiserver") (dict "name" "controller-manager" "component" "controller-manager") -}}
+{{- if .Values.scheduler.enabled -}}
+{{- $workloads = append $workloads (dict "name" "kube-scheduler" "component" "scheduler") -}}
+{{- end -}}
+{{- range $workload := $workloads }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $workload.name }}
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $root "component" $workload.component) | nindent 4 }}
+spec:
+  {{- toYaml $root.Values.parentWorkloads.deployment.pdb.spec | nindent 2 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $root.Chart.Name | quote }}
+      app.kubernetes.io/instance: {{ $root.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $workload.component | quote }}
+---
+{{- end -}}
+{{- end -}}
