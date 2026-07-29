@@ -157,6 +157,23 @@ class LabFoundationContract(unittest.TestCase):
         self.assertIn("bootstrap", values)
         self.assertIn("admin-kubeconfig-generator", values)
 
+        flux_source = ingress["spec"]["ingress"][2]["from"][0]
+        self.assertEqual(
+            flux_source["namespaceSelector"]["matchLabels"],
+            {"kubernetes.io/metadata.name": "flux-system"},
+        )
+        self.assertEqual(
+            set(
+                flux_source["podSelector"]["matchExpressions"][0]["values"]
+            ),
+            {"helm-controller", "kustomize-controller"},
+        )
+        bootie_source = ingress["spec"]["ingress"][3]["from"][0]
+        self.assertEqual(
+            bootie_source["podSelector"]["matchLabels"],
+            {"app.kubernetes.io/name": "lab-bootie"},
+        )
+
 
 class LabControlPlaneContract(unittest.TestCase):
     def test_values_are_pinned_and_hardened(self):
