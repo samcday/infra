@@ -71,6 +71,8 @@ spec:
       app.kubernetes.io/name: lab-bootie-tailnet
   template:
     metadata:
+      annotations:
+        rollout.samcday.com/auth-generation: "2"
       labels:
         app.kubernetes.io/name: lab-bootie-tailnet
         app.kubernetes.io/part-of: lab

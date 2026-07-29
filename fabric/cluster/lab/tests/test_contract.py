@@ -381,6 +381,15 @@ class LabComputeContract(unittest.TestCase):
         self.assertIn("listen 8080", init_script)
         bootie = next(item for item in pod["containers"] if item["name"] == "bootie")
         self.assertEqual(bootie["ports"][0]["containerPort"], 8080)
+        proxy = object_named(
+            self.bootie, "Deployment", "lab-bootie-tailnet", "lab"
+        )
+        self.assertEqual(
+            proxy["spec"]["template"]["metadata"]["annotations"][
+                "rollout.samcday.com/auth-generation"
+            ],
+            "2",
+        )
 
     def test_bootie_network_policy_tracks_translated_ports_and_api_endpoints(self):
         ingress = object_named(
