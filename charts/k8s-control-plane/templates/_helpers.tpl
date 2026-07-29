@@ -15,6 +15,15 @@ app.kubernetes.io/instance: {{ .root.Release.Name | quote }}
 app.kubernetes.io/component: {{ .component | quote }}
 {{- end }}
 
+{{/*
+Run-once Jobs cannot be patched after their pod template changes. Include the
+Helm release revision in their names so upgrades create the new Job and retire
+the previous revision instead of attempting an immutable update.
+*/}}
+{{- define "k8s-control-plane.run-once-job-name" -}}
+{{- printf "%s-%d" .component (int .root.Release.Revision) | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
 {{- define "k8s-control-plane.container-security-context" -}}
 {{- $securityContext := dict -}}
 {{- if .root.Values.parentWorkloads.enabled -}}

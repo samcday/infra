@@ -144,7 +144,7 @@ def workload_pods(rendered: list[dict]) -> dict[tuple[str, str], tuple[dict, dic
 
 
 def embedded_bootstrap(rendered: list[dict]) -> list[dict]:
-    job = object_named(rendered, "Job", "bootstrap")
+    job = object_named(rendered, "Job", "bootstrap-1")
     command = job["spec"]["template"]["spec"]["containers"][0]["command"][-1]
     start = command.index("apiVersion: v1")
     end = command.index("\nHERE\n", start)
@@ -192,10 +192,10 @@ class HostingContractTests(unittest.TestCase):
             ("Deployment", "apiserver"): "apiserver",
             ("Deployment", "controller-manager"): "controller-manager",
             ("Deployment", "kube-scheduler"): "scheduler",
-            ("Job", "bootstrap"): "bootstrap",
-            ("Job", "ca-hash"): "ca-hash",
-            ("Job", "advertise-address"): "advertise-address",
-            ("Job", "admin-kubeconfig-generator"): "admin-kubeconfig-generator",
+            ("Job", "bootstrap-1"): "bootstrap",
+            ("Job", "ca-hash-1"): "ca-hash",
+            ("Job", "advertise-address-1"): "advertise-address",
+            ("Job", "admin-kubeconfig-generator-1"): "admin-kubeconfig-generator",
             ("CronJob", "admin-kubeconfig-generator"): "admin-kubeconfig-generator",
         }
         self.assertEqual(set(workloads), set(expected_components))
@@ -204,7 +204,7 @@ class HostingContractTests(unittest.TestCase):
             ("Deployment", "apiserver"),
             ("Deployment", "controller-manager"),
             ("Deployment", "kube-scheduler"),
-            ("Job", "bootstrap"),
+            ("Job", "bootstrap-1"),
         }
         for key, component in expected_components.items():
             with self.subTest(workload=key):
@@ -213,6 +213,7 @@ class HostingContractTests(unittest.TestCase):
                 self.assertEqual(labels.items() <= document["metadata"]["labels"].items(), True)
                 self.assertEqual(labels.items() <= template["metadata"]["labels"].items(), True)
                 if key[0] == "Job":
+                    self.assertEqual(document["spec"]["ttlSecondsAfterFinished"], 60)
                     self.assertEqual(
                         document["metadata"]["annotations"][
                             "helm.toolkit.fluxcd.io/driftDetection"

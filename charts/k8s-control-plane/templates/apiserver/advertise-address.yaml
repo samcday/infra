@@ -2,7 +2,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: advertise-address
+  name: {{ include "k8s-control-plane.run-once-job-name" (dict "root" $ "component" "advertise-address") }}
   {{- if $.Values.parentWorkloads.enabled }}
   annotations:
     helm.toolkit.fluxcd.io/driftDetection: disabled
