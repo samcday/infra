@@ -86,7 +86,10 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
 
     let paths = cache::CachePaths::for_cluster(cluster);
     let root = config::repo_root()?;
-    let repo_server_ca = root.join(format!("hub/pki/k8s/{cluster}-server-ca.crt"));
+    let repo_server_ca = match cluster {
+        "lab" => root.join("fabric/pki/k8s/lab-server-ca.crt"),
+        _ => root.join(format!("hub/pki/k8s/{cluster}-server-ca.crt")),
+    };
 
     let cache_ok = cache::is_valid(&paths) && paths.server_ca.exists();
 
@@ -96,7 +99,7 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
 
     if cache_ok && !repo_server_ca.exists() {
         eprintln!(
-            "warning: repo server CA missing at {}, re-fetching from hub API...",
+            "warning: repo server CA missing at {}, re-fetching from parent API...",
             repo_server_ca.display()
         );
     }
@@ -108,7 +111,7 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
         );
     }
 
-    let (parent_server_url, parent_server_tls_name, parent_server_ca, parent_paths) = match cluster {
+    let (parent_server_url, parent_server_tls_name, parent_server_ca, parent_auth) = match cluster {
         "cloud" => {
             let hub_paths = ensure_hub_credentials()?;
             let hub_server_ca = root.join("hub/pki/k8s/server-ca.crt");
@@ -116,13 +119,36 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
                 config::HUB_SERVER_URL,
                 Some(config::HUB_SERVER_TLS_NAME),
                 hub_server_ca,
-                hub_paths,
+                kube_client::ParentAuth::CertificateFiles {
+                    client_cert: hub_paths.client_cert,
+                    client_key: hub_paths.client_key,
+                },
             )
         }
         "edge-au-east" => {
             let cloud_paths = Box::pin(ensure_child_credentials("cloud", init)).await?;
             let cloud_server_ca = root.join("hub/pki/k8s/cloud-server-ca.crt");
-            (config::CLOUD_SERVER_URL, None, cloud_server_ca, cloud_paths)
+            (
+                config::CLOUD_SERVER_URL,
+                None,
+                cloud_server_ca,
+                kube_client::ParentAuth::CertificateFiles {
+                    client_cert: cloud_paths.client_cert,
+                    client_key: cloud_paths.client_key,
+                },
+            )
+        }
+        "lab" => {
+            let fabric_server_ca = root.join("fabric/access/server-ca.crt");
+            let fabric_credential = root.join("scripts/fabric-credential");
+            (
+                config::FABRIC_SERVER_URL,
+                Some(config::FABRIC_SERVER_TLS_NAME),
+                fabric_server_ca,
+                kube_client::ParentAuth::Exec {
+                    command: fabric_credential,
+                },
+            )
         }
         _ => bail!("unsupported child cluster: {cluster}"),
     };
@@ -131,8 +157,7 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
         parent_server_url,
         parent_server_tls_name,
         &parent_server_ca,
-        &parent_paths.client_cert,
-        &parent_paths.client_key,
+        parent_auth,
         namespace,
     )
     .await?;
@@ -150,6 +175,17 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
     cache::write_cert(&paths.client_cert, &client_cert_pem)?;
     cache::write_key(&paths.client_key, &client_key_pem)?;
     cache::write_cert(&paths.server_ca, &child_ca_cert_pem)?;
+    fs::create_dir_all(
+        repo_server_ca
+            .parent()
+            .context("repo server CA path has no parent directory")?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to create repo server CA directory for {}",
+            repo_server_ca.display()
+        )
+    })?;
     cache::write_cert(&repo_server_ca, &child_ca_cert_pem)?;
 
     Ok(paths)
@@ -164,7 +200,8 @@ fn usage() {
 Clusters:
   hub
   cloud
-  edge-au-east"
+  edge-au-east
+  lab"
     );
 }
 
