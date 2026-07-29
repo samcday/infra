@@ -153,6 +153,6 @@ data:
           cpu: 10m
           memory: 32Mi
         limits:
-          memory: 128Mi
+          memory: 256Mi
       writableTmp: true
     version: 1.36.3

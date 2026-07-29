@@ -173,6 +173,9 @@ class LabControlPlaneContract(unittest.TestCase):
         )
         self.assertFalse(values["monitoring"]["podMonitors"]["enabled"])
         self.assertEqual(values["konnectivity"]["server"]["clientIdentity"], "dedicated")
+        self.assertEqual(
+            values["utilities"]["resources"]["limits"]["memory"], "256Mi"
+        )
         for component in ("apiServer", "controllerManager", "scheduler"):
             self.assertRegex(
                 values[component]["image"]["digest"], r"^sha256:[0-9a-f]{64}$"
