@@ -213,7 +213,7 @@ class HostingContractTests(unittest.TestCase):
                 self.assertEqual(labels.items() <= document["metadata"]["labels"].items(), True)
                 self.assertEqual(labels.items() <= template["metadata"]["labels"].items(), True)
                 if key[0] == "Job":
-                    self.assertEqual(document["spec"]["ttlSecondsAfterFinished"], 60)
+                    self.assertNotIn("ttlSecondsAfterFinished", document["spec"])
                     self.assertEqual(
                         document["metadata"]["annotations"][
                             "helm.toolkit.fluxcd.io/driftDetection"

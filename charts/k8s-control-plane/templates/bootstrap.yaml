@@ -65,4 +65,3 @@ spec:
           emptyDir: {}
         {{- end }}
       restartPolicy: OnFailure
-  ttlSecondsAfterFinished: 60
