@@ -33,3 +33,6 @@ spec:
     - kind: ConfigMap
       name: lab-control-plane-endpoint
       valuesKey: values.yaml
+    - kind: Secret
+      name: lab-kubeadm-bootstrap
+      valuesKey: values.yaml

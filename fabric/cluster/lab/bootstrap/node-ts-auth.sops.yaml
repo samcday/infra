@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: lab-node-ts-auth
+    namespace: lab
+type: Opaque
+stringData:
+    authkey: ENC[AES256_GCM,data:RJT9XILXLOCUqWEZbB+I3gUz4Zhep6BNsIC1nJp+hwlldD4ZIL2YXe9H7PMcw2k14OxO0NpbmhnPVDgZ3AcTPpGW9QBwAhJgYhuVfxoouj+EUEPU/EWUtw==,iv:8/fg43SRS8VqnwniRXJMTc1+pIphrMNcRJvnpcKfyeg=,tag:PJ3duFULHSxQ5SzFTL779w==,type:str]
+sops:
+    age:
+        - recipient: age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBJY0hYQWVvK2lxNE0rSExk
+            aUk2ODlIY2U4RDdZaUtWWHRxcy8rczYvOFE0CnZCbjg2UmhHQjV6MU9vOUorUklz
+            ZFVVV0Y1Sy9HSS9KUVR5RFpCYnRVeWMKLS0tIDBiSnZhRjFXaTJ5c002b0R1TnN3
+            ZnQyT3hTSGpzdDgydjNERytxN1NwN3cKP7Nxfg02y2PiYWiy0R4gPMOvyy/7mCce
+            PWRQfyxFKkWBfFWXU7uxeZywDgAD+w/GVACMjKueAf9f5IkmFsaKSw==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsK21uMmZ1djBvTTBRUTJD
+            TWxmRmQraFJMYzlHZUxPYTN5Z2tKV0V6N0FrCk93d3lBVXlycE1mSldlUHZiWnJJ
+            TDE3RmJtd0xxK0RFdUlzdmhFcEdqMHMKLS0tIGpWUkxNUkZib3o0WHZRZTJVVWdo
+            UWd2M21hVmEzZmlFbHpYb2V0UUx0QlUKSMaPVPtNzbDuM6j1mniq5YkZc12A05LK
+            w8o6ZxGaod9NXHlKAmPi0luHNE8LO27Er4JOgrnWGYF45WxT1lxxQQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-29T05:42:20Z"
+    mac: ENC[AES256_GCM,data:1VkXMaqvMUtRXYr6Ctl0+4PWjKZ8OBb53y/i2Tp4FxjdqrxLy40tzgPBHuHIBi4+O3BONthFgyyzaxg0KuRa/d1XQPShMYp0ScVWgHOZYYHHxwF9GSz/X0GuKY/79T4WfnnYbPgug34nX1wKM6kKufRZxWEPdNvWGTSkM5+G/Nc=,iv:Wf8V55i1Vf8y+tPbpU8ro2NmsCH9i1jnI4c8xpmaQs0=,tag:qRa5FYZC1bBdZLmnaAbrVQ==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

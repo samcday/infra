@@ -256,7 +256,12 @@ class LabControlPlaneContract(unittest.TestCase):
         refs = [entry["name"] for entry in release["spec"]["valuesFrom"]]
         self.assertEqual(
             refs,
-            ["control-plane-values", "apiserver-etcd", "lab-control-plane-endpoint"],
+            [
+                "control-plane-values",
+                "apiserver-etcd",
+                "lab-control-plane-endpoint",
+                "lab-kubeadm-bootstrap",
+            ],
         )
         self.assertEqual(release["spec"]["driftDetection"]["mode"], "enabled")
         self.assertNotIn("force", release["spec"]["upgrade"])
@@ -279,7 +284,38 @@ class LabControlPlaneContract(unittest.TestCase):
         self.assertNotIn("wait", foundation["spec"])
         self.assertEqual(
             [item["name"] for item in control_plane["spec"]["dependsOn"]],
-            ["fabric-lab-foundation"],
+            ["fabric-lab-foundation", "fabric-lab-bootstrap"],
+        )
+
+    def test_compute_flux_activation_is_gated(self):
+        children = documents(REPO / "fabric/cluster/flux-system/children.yaml")
+        inventory = object_named(
+            children, "Kustomization", "fabric-lab-inventory", "flux-system"
+        )
+        bootie = object_named(
+            children, "Kustomization", "fabric-lab-bootie", "flux-system"
+        )
+        child = object_named(
+            children, "Kustomization", "fabric-lab-child", "flux-system"
+        )
+        coordinator = object_named(
+            children, "Kustomization", "fabric-lab-coordinator", "flux-system"
+        )
+        self.assertEqual(
+            inventory["spec"]["kubeConfig"]["secretRef"]["name"],
+            "lab-flux-kubeconfig",
+        )
+        self.assertFalse(inventory["spec"]["wait"])
+        self.assertIn(
+            {"name": "fabric-lab-inventory"}, bootie["spec"]["dependsOn"]
+        )
+        self.assertTrue(bootie["spec"]["wait"])
+        self.assertTrue(child["spec"]["suspend"])
+        self.assertFalse(child["spec"]["wait"])
+        self.assertTrue(coordinator["spec"]["suspend"])
+        self.assertEqual(
+            coordinator["spec"]["kubeConfig"]["secretRef"]["name"],
+            "lab-flux-kubeconfig",
         )
 
 

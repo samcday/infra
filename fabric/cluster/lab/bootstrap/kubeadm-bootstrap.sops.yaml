@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: lab-kubeadm-bootstrap
+    namespace: lab
+    labels:
+        reconcile.fluxcd.io/watch: Enabled
+type: Opaque
+stringData:
+    token: ENC[AES256_GCM,data:+6KlwIJh/GxcrhEMHs4Zi8fPNfN4RP4=,iv:P8ciOYnWkNJTiIILBbmXA3pkiFIwg4EW2Td5bdfdH1k=,tag:4/HPul3Uq1dkDP7t1243sg==,type:str]
+    values.yaml: ENC[AES256_GCM,data:F8xQfwK+4seX0hvzWwlRxa1hOksssYBTQpDDdynkN/QE0lZAH1oc6weVk8BoKbco8/tlvO+ShLkUr3oo8NkqzbZ5+cYNvzU19QcriondG6hoNbPJHXMArULWMEDCPoWelmk=,iv:KJWmKEWpKKB6od2YU8CqPLUE8A8sIMgSIByXOPpiWXA=,tag:kIRglH+G2sxIavhSp2NQUw==,type:str]
+sops:
+    age:
+        - recipient: age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBvUU9wbCtCTUliTThSMnF1
+            eW1TSHFqN2dkRHRNU1poamQzMnVTcTd6cFFzCkk3VC9oWG8wck1aT2xYMXY1NUVk
+            YnNJRGJpY3RDUkpkM2lYNWdQc1UxZ00KLS0tIDk3K1dWOWhYZ3kreGwwaWJQcWZY
+            MGRKVjBnenlXRjJBN3RtQXQ4bGdpU2sKPakRaIkoRXYcCwHfcHkVQL16swFI/sWe
+            ihEascYbydVC+ipAhlcjOUtD64jg/5lPQNaBlzHjKMgIJ7AZGFO8hQ==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSByMkl5ZDFpMFRSbjBEanpa
+            MHh3VWxVWnVTRUJFVDVqempmYUtEL0NmbzJZCkZDd3RaUjBoc3RiKzF2UzQ5ekFY
+            S1Q4dFV0cVM5TkpSSURQcy9iNFVTczAKLS0tIDhiOU1DcG43NDN4YU9rdnRuT1JG
+            eE1yRmRvL2MzeitJTXVFK0hkUDdSWlEKfv/SNz6tsAzlh25TQ+0SXtWUojOylAfe
+            JlWZwRcrYi19S1UOald/fQofXIWY0KKGwANYp3aGy2mhaicDkFnJjA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-29T05:42:20Z"
+    mac: ENC[AES256_GCM,data:42ZgDQ5lviJdfvxhPVTahUAan2nvcHVCXWeqrF00Om/0TSYyImfQAVDw1gAGtiToSZpMZExH8pAYCbSJwdQguiutFVb8fUSGEsSEURbcWqGXDxnLmG0qJIGGD8XUMhhrjDiR87zmle4Zwh0qC9a9wRSw5QrQe4miQNkRQ38zBMA=,iv:XolzEgOyr8iylwy025JaTicdw71HYXvi+u0eLatSPYk=,tag:+fSaXUVa4Y3BBUVNxuydvw==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

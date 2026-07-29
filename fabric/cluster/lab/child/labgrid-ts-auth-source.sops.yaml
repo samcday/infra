@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: labgrid-ts-auth-source
+    namespace: lab
+type: Opaque
+stringData:
+    authkey: ENC[AES256_GCM,data:rarqad5/PILRVD5PGZXQb4+xz7S0BFjWk4+Qp12I7zlvdYgykY7hu938ABznSshp1jMa5h0CG9mWNQg7RCLW+665XXzwY8HgphFHRaPg2aE31WHrgsYGvA==,iv:fQKLQOSmcrca5bzMuLlkZC60zR9gdajYGTmA0Cqw8rM=,tag:IE/S8rLE5guRnMu6sJuwzg==,type:str]
+sops:
+    age:
+        - recipient: age1r8tha72lm6j96pre8qrlxj2nyyzm9cq38umh9dcd2kf5hhjnqsfqe6saex
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBZamsrblMrSm9JRE9sWFU3
+            WldlSDVNNElnV3dzNm1uc0tVQk1OcE5GOVFzCkk5ZWowaXNLK3E0NWV3SnpPOGRO
+            M2dDNUM5VDN3aThZZVFGKzkwV3VuWGsKLS0tIGxxYUNTdnB0OVdXdzZRTThyUnl3
+            bmQ3RWlqS25ycFg4dkFhbnliQmIyMUkKO9Gmy/wCB2zUgsAq5TgMjJvjwww8619a
+            yenNOCqEvRNBdnZuwBUFSpex4o5XRONJr05JfLQjhOs00HW4fwTt8g==
+            -----END AGE ENCRYPTED FILE-----
+        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSByaWIzdzQxUXN3Nlprd2sr
+            UmxFT1lNVXcyY1ZkM25XRWVQdnhkaXVWVUg4ClhWYWY1ODZURExUaDZGMGdXYklu
+            dHJEd0k1eTBzSWpRei9TWktzZ2tDREEKLS0tIGthaUtxQUZ2VHF2SHhGN1hQYWZO
+            M1RXQ1FTL3JrdkZTOVE4Tzc3ODBhTzQKZPhMha3Yxw6KrQky7mZUxgsHVnnKlrig
+            4IDSqPaSuvtdZtZYfsVy8s1ZNWcOFvAIfQez8CZs18fBjX6yfqrMLA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-07-29T05:42:20Z"
+    mac: ENC[AES256_GCM,data:JZZvwox05r4SNfXIZPky7ahw/kOiqDKUGrA/BChNmdIIfrbzjeYUeoxm/vE/YICZ1E82JXxcmLVyFz+4yAGZZsSn6MPXIgr96f1OFxTrhZQXC3OgqzFpcnVhSVlJkHVla0MZHcUkP84A7E5HIXj1G6QW7+kvacYwcW27wa9aTss=,iv:7cafnpEW5+yRcIz+UiebNgFm0enWxcASjgbLZrlGslM=,tag:PdktKSKCIS1lPLizO1yiBg==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.11.0

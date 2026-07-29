@@ -249,15 +249,75 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
+  name: fabric-lab-bootstrap
+  namespace: flux-system
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: fabric-lab-foundation
+  interval: 10m
+  path: ./fabric/cluster/lab/bootstrap
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-common-butane
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-platform
+  interval: 10m
+  path: ./common/butane
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  targetNamespace: lab
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-butane
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-common-butane
+  interval: 10m
+  path: ./lab/butane
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  targetNamespace: lab
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
   name: fabric-lab-control-plane
   namespace: flux-system
 spec:
-  # Unsuspend only after fabric-lab-foundation is Ready. In particular, the
-  # generated apiserver-etcd and lab-control-plane-endpoint values documents
-  # must exist before Helm is allowed to render the control plane.
+  # The short-lived kubeadm token is supplied only after the persistent
+  # foundation is healthy.
   suspend: false
   dependsOn:
     - name: fabric-lab-foundation
+    - name: fabric-lab-bootstrap
   healthChecks:
     - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
@@ -265,6 +325,116 @@ spec:
       namespace: lab
   interval: 10m
   path: ./fabric/cluster/lab/control-plane
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-inventory
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: fabric-lab-control-plane
+  interval: 10m
+  kubeConfig:
+    secretRef:
+      name: lab-flux-kubeconfig
+  path: ./lab/cluster/inventory
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 5m
+  wait: false
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-bootie
+  namespace: flux-system
+spec:
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: fabric-lab-control-plane
+    - name: fabric-lab-bootstrap
+    - name: fabric-common-butane
+    - name: fabric-lab-butane
+    - name: fabric-lab-inventory
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: lab-bootie
+      namespace: lab
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: lab-bootie-tailnet
+      namespace: lab
+  interval: 10m
+  path: ./fabric/cluster/lab/bootie
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 10m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-child
+  namespace: flux-system
+spec:
+  suspend: true
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+  dependsOn:
+    - name: fabric-lab-control-plane
+  interval: 10m
+  path: ./fabric/cluster/lab/child
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: infra
+    namespace: flux-system
+  timeout: 15m
+  wait: false
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fabric-lab-coordinator
+  namespace: flux-system
+spec:
+  suspend: true
+  dependsOn:
+    - name: fabric-lab-child
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: labgrid-coordinator
+      namespace: labgrid
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: labgrid-coordinator-tailnet
+      namespace: labgrid
+  interval: 10m
+  kubeConfig:
+    secretRef:
+      name: lab-flux-kubeconfig
+  path: ./lab/cluster/labgrid
   prune: true
   sourceRef:
     kind: GitRepository
