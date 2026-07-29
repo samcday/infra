@@ -57,7 +57,6 @@ spec:
         - name: tmp
           emptyDir: {}
         {{- end }}
-  ttlSecondsAfterFinished: 60
 ---
 apiVersion: v1
 kind: ServiceAccount
