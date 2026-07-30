@@ -27,6 +27,8 @@ kind: Job
 metadata:
   name: purge-etcd-prefix
   namespace: ilumbaclusta-etcd-cleanup
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
 spec:
   activeDeadlineSeconds: 180
   backoffLimit: 0
@@ -44,7 +46,7 @@ spec:
             - --key=/credentials/tls.key
             - --dial-timeout=5s
             - --command-timeout=30s
-            - --write-out=json
+            - --write-out=fields
             - get
             - /ilumbaclusta/
             - --prefix
@@ -95,7 +97,7 @@ spec:
             - --key=/credentials/tls.key
             - --dial-timeout=5s
             - --command-timeout=30s
-            - --write-out=json
+            - --write-out=fields
             - get
             - /ilumbaclusta/
             - --prefix
@@ -113,7 +115,7 @@ spec:
             - --key=/credentials/tls.key
             - --dial-timeout=5s
             - --command-timeout=30s
-            - --write-out=json
+            - --write-out=fields
             - get
             - /ilumbaclusta/
             - --prefix
@@ -131,7 +133,7 @@ spec:
             - --key=/credentials/tls.key
             - --dial-timeout=5s
             - --command-timeout=30s
-            - --write-out=json
+            - --write-out=fields
             - get
             - /ilumbaclusta/
             - --prefix
