@@ -105,14 +105,6 @@ spec:
             recordType: CNAME
             targets:
               - cloud.samcday.com
-          - dnsName: matrix.fastboop.win
-            providerSpecific:
-              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
-                value: "false"
-            recordTTL: 300
-            recordType: CNAME
-            targets:
-              - cloud.samcday.com
           - dnsName: rokkitpokkit.samcday.com
             providerSpecific:
               - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
