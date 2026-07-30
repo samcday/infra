@@ -26,6 +26,9 @@ etcd:
     - https://hub-az1-cp2.hub.internal:2379
     - https://hub-az1-cp3.hub.internal:2379
 externalHostname: ilumbaclusta.hub.samcday.com
+konnectivity:
+  server:
+    clientIdentity: dedicated
 parentClusterDomain: cluster.hub.internal
 serviceCIDRs: [172.27.0.0/16]
 serviceIP: 172.27.0.1
