@@ -26,7 +26,6 @@ spec:
     external-dns:
     forgejo:
     headscale:
-    ilumbaclusta:
     ingress-nginx:
     labgrid:
     monitoring:

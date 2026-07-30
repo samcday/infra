@@ -2,7 +2,7 @@
 
 ## Repo Shape
 - This is an infrastructure repo, not a single app workspace; there is no root build, lint, or test command.
-- `hub/cluster/flux-system/kustomizations.yaml` is the hub Flux fan-out that creates Flux Kustomizations for `hub/cluster/*`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` paths.
+- `hub/cluster/flux-system/kustomizations.yaml` is the hub Flux fan-out that creates Flux Kustomizations for `hub/cluster/*`, `common/butane`, and `simonet/butane` paths.
 - `hub/cluster/cloud-cluster/` defines the Hetzner child cluster and app Flux sources; app workload manifests usually live in each app repo under `infra/k8s/`, not here.
 - `charts/resources` is a helper chart: each values key renders one resource, `_` is merged into every resource, `metadata.name` defaults to the key, and `apiVersion` defaults to `v1`.
 - Use `charts/resources` sparingly. Prefer direct manifests for normal Flux objects and workloads; reserve `charts/resources` for small glue resources that must be rendered from parent-cluster-only data such as SOPS secrets, generated values, or cross-cluster handoff inputs.
@@ -28,11 +28,11 @@
 - The `etcdetcetc` Tilt path uses `tilt up` or `tilt ci` and builds `x86_64-unknown-linux-musl`; local setup needs protobuf and musl tooling like the devcontainer installs.
 - The shipped `apps/etcdetcetc` image strips `xtask` from `Cargo.toml`; do not rely on `xtask` existing in the runtime container.
 - `credhelper` is a separate Rust crate; use `./scripts/credhelper <hub|cloud>` or `./scripts/credhelper --init`, and the wrapper rebuilds `credhelper/target/release/credhelper` when sources change.
-- Router images are built with `scripts/build-router-image.sh <hub/router|simonet/router|ilumbaclusta/router> <platform> <target> <profile>`; it overlays `common/router`, decrypts `files.enc/` with SOPS, and caches under `_build/`.
+- Router images are built with `scripts/build-router-image.sh <hub/router|simonet/router> <platform> <target> <profile>`; it overlays `common/router`, decrypts `files.enc/` with SOPS, and caches under `_build/`.
 
 ## Secrets And Generated Files
 - Use SOPS for secrets and never commit decrypted material; `.sops.yaml` encrypts `hub/cluster` `data`/`stringData`, Butane values marked by `# cryptme`, `hub/pki/k8s/*.enc`, and otherwise falls back to Sam's personal age key.
-- Butane YAML under `hub/butane`, `common/butane`, `simonet/butane`, and `ilumbaclusta/butane` is packaged by Kustomize `secretGenerator`; bootie renders it to Ignition at runtime.
+- Butane YAML under `hub/butane`, `common/butane`, and `simonet/butane` is packaged by Kustomize `secretGenerator`; bootie renders it to Ignition at runtime.
 - CI builds `apps/bootie`, `apps/etcd-smoke`, `apps/etcdetcetc`,
   `apps/headscale-node-cleaner`, and `apps/node-joiner` images on `main`. Pushes build only changed app
   contexts and tag them as `YYYYMMDDHH.<workflow-run-id>`; manual dispatches

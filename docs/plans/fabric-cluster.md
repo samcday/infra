@@ -237,9 +237,8 @@ Tailscale, and the current home/hub networks.
 
 Before allocating the first child cluster, extend the CIDR registry so it
 continues covering physical LANs, Tailscale, every parent/child Pod and Service
-range, and externally published VIP pools. The current cloud/ilumbaclusta
-Pod-and-Service reuse recorded there is evidence that prose-local allocations
-do not scale.
+range, and externally published VIP pools. Keep allocations declarative rather
+than relying on prose-local assignments.
 
 The consensus nodes use static NetworkManager addresses and `/etc/hosts` for
 peer names. Router DNS and DHCP are not in the etcd reconnect path. Do not

@@ -77,17 +77,6 @@ spec:
     headscale:
       spec:
         path: hub/cluster/headscale
-    ilumbaclusta:
-      spec:
-        path: hub/cluster/ilumbaclusta
-    ilumbaclusta-butane:
-      spec:
-        path: ilumbaclusta/butane
-        targetNamespace: ilumbaclusta
-    ilumbaclusta-butane-common:
-      spec:
-        path: common/butane
-        targetNamespace: ilumbaclusta
     ingress-nginx:
       spec:
         dependsOn: [name: gateway-api]

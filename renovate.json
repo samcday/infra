@@ -4,20 +4,17 @@
   ],
   "flux": {
     "managerFilePatterns": [
-      "/hub/cluster/.*\\.yaml$/",
-      "/ilumbaclusta/cluster/.*\\.yaml$/"
+      "/hub/cluster/.*\\.yaml$/"
     ]
   },
   "helm-values": {
     "managerFilePatterns": [
-      "/hub/cluster/.*\\.yaml$/",
-      "/ilumbaclusta/cluster/.*\\.yaml$/"
+      "/hub/cluster/.*\\.yaml$/"
     ]
   },
   "kubernetes": {
     "managerFilePatterns": [
-      "/hub/cluster/.*\\.yaml$/",
-      "/ilumbaclusta/cluster/.*\\.yaml$/"
+      "/hub/cluster/.*\\.yaml$/"
     ]
   },
   "packageRules": [

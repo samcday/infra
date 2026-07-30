@@ -18,7 +18,6 @@ take precedence over convenient CIDR shorthand.
 | --- | --- | --- | --- | --- |
 | `hub` | `10.0.1.0/24` | `172.30.0.0/16` | `172.31.0.0/16` | kube-vip `10.0.1.254`; Tailnet TCP proxy `hub-apiserver.tailnet.hub.samcday.com:6443` |
 | `cloud-cluster` | Hetzner `172.29.0.0/16` | `172.28.0.0/16` | `172.27.0.0/16` | Headscale address expected at `100.64.0.3` |
-| `ilumbaclusta` | `10.0.3.0/24` | `172.28.0.0/16` | `172.27.0.0/16` | dynamically allocated from the hub BGP service interval |
 | `edge-au-east` | provider-assigned; no CIDR in this repo | `172.24.0.0/16` | `172.23.0.0/16` | parent Service `172.27.23.43`; Headscale address expected at `100.64.0.64` |
 | `lab` | `10.0.4.0/24` | `172.26.0.0/16` | `172.25.0.0/16` | Fabric parent Service `172.21.0.25`; `lab-apiserver.tailnet.hub.samcday.com`, with its IPv4 assigned dynamically from Headscale |
 
@@ -38,10 +37,6 @@ control-plane values](../hub/cluster/cloud-cluster/control-plane-values.yaml).
 The aggregate containing its two disjoint `/16`s is intentional, not a
 collision.
 
-`ilumbaclusta` is declared by its [router
-configuration](../ilumbaclusta/router/files/etc/uci-defaults/system) and
-[hosted control-plane
-values](../hub/cluster/ilumbaclusta/control-plane-values.yaml).
 `edge-au-east` is declared by its [hosted control-plane
 values](../hub/cluster/cloud-cluster/edge/cluster/edge-au-east-control-plane-values.yaml).
 Its `172.27.23.43` address belongs to the parent `cloud-cluster` Service range;
@@ -158,10 +153,6 @@ Fabric load-balancer pool has been allocated.
 
 ## Confirmed overlaps and sharp edges
 
-- **Conflict:** `cloud-cluster` and `ilumbaclusta` both claim
-  `172.28.0.0/16` for Pods and `172.27.0.0/16` for Services. They cannot be
-  given unqualified routes to one another. Allocate new, disjoint ranges before
-  the fabric or Tailscale carries Pod or Service routes between them.
 - **Ambiguous boundary:** the hub BGP service interval is exactly
   `10.0.2.1-10.0.2.127`; repository comments disagree about whether its parent
   prefix is `/25` or `/24`. No adjacent `10.0.2.x` allocation is safe yet.
@@ -186,9 +177,8 @@ Fabric load-balancer pool has been allocated.
   ISP-side transit/CGNAT ranges are not declared in Git.
 - `edge-au-east` worker/provider node networks are provider-assigned and absent
   from the manifests.
-- The hub and ilumbaclusta OpenWrt DHCP ranges are inherited rather than
-  explicitly recorded here; inspect the running routers before consuming
-  additional addresses on those LANs.
+- The hub OpenWrt DHCP range is inherited rather than explicitly recorded here;
+  inspect the running router before consuming additional addresses on that LAN.
 - The allocated fabric service subnet still needs its permanent managed-switch
   VLAN realization. Its temporary same-wire realization is deliberately not
   an anti-spoofing boundary and is an accepted risk only for the trusted
