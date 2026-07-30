@@ -24,11 +24,6 @@ resource "headscale_user" "binarylane_demo" {
   name = "binarylane-demo"
 }
 
-resource "headscale_user" "conduit" {
-  name         = "conduit"
-  force_delete = true
-}
-
 resource "headscale_user" "edge" {
   name = "edge"
 }
