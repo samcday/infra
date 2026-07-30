@@ -77,6 +77,11 @@ spec:
     headscale:
       spec:
         path: hub/cluster/headscale
+    ilumbaclusta-etcd-cleanup:
+      spec:
+        dependsOn: [name: cert-manager]
+        path: hub/cluster/ilumbaclusta-etcd-cleanup
+        wait: true
     ingress-nginx:
       spec:
         dependsOn: [name: gateway-api]

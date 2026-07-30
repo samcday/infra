@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ilumbaclusta-etcd-cleanup
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: etcd-root
+  namespace: ilumbaclusta-etcd-cleanup
+spec:
+  commonName: root
+  duration: 1h
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: etcd
+  privateKey:
+    rotationPolicy: Always
+  renewBefore: 15m
+  secretName: etcd-root
+  usages:
+    - client auth
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: purge-etcd-prefix
+  namespace: ilumbaclusta-etcd-cleanup
+spec:
+  activeDeadlineSeconds: 180
+  backoffLimit: 0
+  template:
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: count-before
+          image: quay.io/coreos/etcd@sha256:885a73b09cde0293c84adad3d589cc5d091f03e61d390b94413c0a866ccfe232
+          command: [/usr/local/bin/etcdctl]
+          args:
+            - --endpoints=https://hub-az1-cp1.hub.internal:2379,https://hub-az1-cp2.hub.internal:2379,https://hub-az1-cp3.hub.internal:2379
+            - --cacert=/credentials/ca.crt
+            - --cert=/credentials/tls.crt
+            - --key=/credentials/tls.key
+            - --dial-timeout=5s
+            - --command-timeout=30s
+            - --write-out=json
+            - get
+            - /ilumbaclusta/
+            - --prefix
+            - --count-only
+          resources: &resources
+            limits:
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext: &securityContext
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+          volumeMounts: &volumeMounts
+            - name: credentials
+              mountPath: /credentials
+              readOnly: true
+        - name: delete-prefix
+          image: quay.io/coreos/etcd@sha256:885a73b09cde0293c84adad3d589cc5d091f03e61d390b94413c0a866ccfe232
+          command: [/usr/local/bin/etcdctl]
+          args:
+            - --endpoints=https://hub-az1-cp1.hub.internal:2379,https://hub-az1-cp2.hub.internal:2379,https://hub-az1-cp3.hub.internal:2379
+            - --cacert=/credentials/ca.crt
+            - --cert=/credentials/tls.crt
+            - --key=/credentials/tls.key
+            - --dial-timeout=5s
+            - --command-timeout=30s
+            - --write-out=json
+            - del
+            - /ilumbaclusta/
+            - --prefix
+          resources: *resources
+          securityContext: *securityContext
+          volumeMounts: *volumeMounts
+      containers:
+        - name: verify-cp1
+          image: quay.io/coreos/etcd@sha256:885a73b09cde0293c84adad3d589cc5d091f03e61d390b94413c0a866ccfe232
+          command: [/usr/local/bin/etcdctl]
+          args:
+            - --endpoints=https://hub-az1-cp1.hub.internal:2379
+            - --cacert=/credentials/ca.crt
+            - --cert=/credentials/tls.crt
+            - --key=/credentials/tls.key
+            - --dial-timeout=5s
+            - --command-timeout=30s
+            - --write-out=json
+            - get
+            - /ilumbaclusta/
+            - --prefix
+            - --count-only
+          resources: *resources
+          securityContext: *securityContext
+          volumeMounts: *volumeMounts
+        - name: verify-cp2
+          image: quay.io/coreos/etcd@sha256:885a73b09cde0293c84adad3d589cc5d091f03e61d390b94413c0a866ccfe232
+          command: [/usr/local/bin/etcdctl]
+          args:
+            - --endpoints=https://hub-az1-cp2.hub.internal:2379
+            - --cacert=/credentials/ca.crt
+            - --cert=/credentials/tls.crt
+            - --key=/credentials/tls.key
+            - --dial-timeout=5s
+            - --command-timeout=30s
+            - --write-out=json
+            - get
+            - /ilumbaclusta/
+            - --prefix
+            - --count-only
+          resources: *resources
+          securityContext: *securityContext
+          volumeMounts: *volumeMounts
+        - name: verify-cp3
+          image: quay.io/coreos/etcd@sha256:885a73b09cde0293c84adad3d589cc5d091f03e61d390b94413c0a866ccfe232
+          command: [/usr/local/bin/etcdctl]
+          args:
+            - --endpoints=https://hub-az1-cp3.hub.internal:2379
+            - --cacert=/credentials/ca.crt
+            - --cert=/credentials/tls.crt
+            - --key=/credentials/tls.key
+            - --dial-timeout=5s
+            - --command-timeout=30s
+            - --write-out=json
+            - get
+            - /ilumbaclusta/
+            - --prefix
+            - --count-only
+          resources: *resources
+          securityContext: *securityContext
+          volumeMounts: *volumeMounts
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: credentials
+          secret:
+            defaultMode: 0440
+            secretName: etcd-root
