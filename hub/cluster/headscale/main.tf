@@ -24,10 +24,6 @@ resource "headscale_user" "binarylane_demo" {
   name = "binarylane-demo"
 }
 
-resource "headscale_user" "conduit" {
-  name = "conduit"
-}
-
 resource "headscale_user" "edge" {
   name = "edge"
 }
@@ -77,13 +73,6 @@ resource "headscale_pre_auth_key" "cloud-cluster-wasmcloud-nats" {
   reusable       = true
   ephemeral      = false
   acl_tags       = ["tag:cloud-cluster-wasmcloud-nats"]
-}
-
-resource "headscale_pre_auth_key" "conduit_client_stable" {
-  user           = headscale_user.conduit.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
 }
 
 resource "headscale_pre_auth_key" "edge_au_east_apiserver" {
@@ -182,17 +171,6 @@ resource "kubernetes_secret" "cloud-cluster-wasmcloud-nats-preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.cloud-cluster-wasmcloud-nats.key
-  }
-}
-
-resource "kubernetes_secret" "conduit_client_preauth" {
-  metadata {
-    name      = "conduit-ts-auth"
-    namespace = "conduit"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.conduit_client_stable.key
   }
 }
 

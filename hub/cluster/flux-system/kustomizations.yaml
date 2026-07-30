@@ -56,12 +56,6 @@ spec:
       spec:
         dependsOn: [name: ingress-nginx]
         path: hub/cluster/dex
-    conduit:
-      spec:
-        dependsOn:
-          - name: gateway-api
-          - name: ingress-nginx
-        path: hub/cluster/conduit
     etcdetcetc:
       spec:
         dependsOn: [name: cert-manager]
@@ -83,11 +77,6 @@ spec:
     headscale:
       spec:
         path: hub/cluster/headscale
-    heisenbridge:
-      spec:
-        dependsOn:
-          - name: conduit
-        path: hub/cluster/heisenbridge
     ilumbaclusta:
       spec:
         path: hub/cluster/ilumbaclusta

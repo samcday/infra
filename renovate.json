@@ -23,15 +23,6 @@
   "packageRules": [
     {
       "matchDatasources": [
-        "docker"
-      ],
-      "matchPackageNames": [
-        "matrixdotorg/synapse"
-      ],
-      "changelogUrl": "https://github.com/element-hq/synapse"
-    },
-    {
-      "matchDatasources": [
         "helm"
       ],
       "matchPackageNames": [

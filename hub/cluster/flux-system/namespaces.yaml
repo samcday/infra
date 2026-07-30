@@ -21,12 +21,10 @@ spec:
     bootie:
     cert-manager:
     cloud-cluster:
-    conduit:
     dex:
     etcdetcetc:
     external-dns:
     forgejo:
-    heisenbridge:
     headscale:
     ilumbaclusta:
     ingress-nginx:

@@ -37,7 +37,6 @@ rules:
     - node-ts-auth
     - edge-au-east-apiserver-ts-auth
     - edge-au-east-node-ts-auth
-    - conduit-ts-auth
     - hub-apiserver-ts-auth
     - lab-apiserver-ts-auth
     - lab-bootie-ts-auth
