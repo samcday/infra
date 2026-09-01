@@ -28,7 +28,7 @@ spec:
     # https://github.com/community-tooling/charts/blob/main/charts/generic/values.yaml
     additionalContainers:
       - name: litestream
-        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
+        image: docker.io/litestream/litestream:0.5.17@sha256:4b02b9859a6b6b4087d8b8944e15f7e984bd7957cba322bbeee38b0e27b9656a
         args:
           - replicate
           - -config
@@ -74,7 +74,7 @@ spec:
       enabled: false
     initContainers:
       - name: litestream-restore
-        image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
+        image: docker.io/litestream/litestream:0.5.17@sha256:4b02b9859a6b6b4087d8b8944e15f7e984bd7957cba322bbeee38b0e27b9656a
         command:
           - /bin/sh
           - -ec
