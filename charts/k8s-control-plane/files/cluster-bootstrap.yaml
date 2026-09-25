@@ -1,21 +1,4 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cluster-info
-  namespace: kube-public
-data:
-  kubeconfig: |
-    apiVersion: v1
-    clusters:
-    - cluster:
-        certificate-authority-data: __CAHASH__
-        server: https://{{ default $.Values.externalIP $.Values.externalHostname }}:6443
-      name: ""
-    contexts: null
-    current-context: ""
-    kind: Config
-    preferences: {}
-    users: null
+{{ tpl ($.Files.Get "files/cluster-info.yaml") $ | trimSuffix "\n" }}
 ---
 apiVersion: v1
 kind: ConfigMap

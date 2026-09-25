@@ -231,6 +231,7 @@ class HostingContractTests(unittest.TestCase):
             ("Job", "advertise-address-1"): "advertise-address",
             ("Job", "admin-kubeconfig-generator-1"): "admin-kubeconfig-generator",
             ("CronJob", "admin-kubeconfig-generator"): "admin-kubeconfig-generator",
+            ("CronJob", "cluster-info-sync"): "cluster-info-sync",
         }
         self.assertEqual(set(workloads), set(expected_components))
 
@@ -239,6 +240,7 @@ class HostingContractTests(unittest.TestCase):
             ("Deployment", "controller-manager"),
             ("Deployment", "kube-scheduler"),
             ("Job", "bootstrap-1"),
+            ("CronJob", "cluster-info-sync"),
         }
         for key, component in expected_components.items():
             with self.subTest(workload=key):

@@ -24,6 +24,10 @@ adminKubeconfig:
   schedule: "@weekly"
   concurrencyPolicy: ""
 
+clusterInfoSync:
+  # Republish kube-public/cluster-info with the current CA certificate.
+  schedule: "@daily"
+
 bootstrapTokens:
   # - token: abcdef.0123456789abcdef
   #   expiration: "2026-08-01T00:00:00Z"

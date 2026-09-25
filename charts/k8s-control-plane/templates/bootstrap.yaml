@@ -1,3 +1,62 @@
+{{- define "k8s-control-plane.manifest-apply-job-spec" -}}
+{{- $ := .root -}}
+template:
+  {{- if $.Values.parentWorkloads.enabled }}
+  metadata:
+    labels:
+      {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" .component) | nindent 6 }}
+  {{- end }}
+  spec:
+    {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" .component "disableServiceAccountToken" true) | nindent 4 }}
+    containers:
+      - name: {{ .component }}
+        image: {{ include "k8s-control-plane.kubectl-image" $ }}
+        {{- with $.Values.utilities.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 8 }}
+        command:
+          - bash
+          - -uexo
+          - pipefail
+          - -c
+          - |
+            ca_hash=$(base64 -w0 < /cert/ca.crt)
+            cat <<HERE | sed "s/__CAHASH__/$ca_hash/" > /tmp/manifests
+            {{- tpl ($.Files.Get .manifest) $ | nindent 12 -}}
+            HERE
+            kubectl apply -f /tmp/manifests
+        env:
+          - name: KUBECONFIG
+            value: /kubeconfig
+          {{- if $.Values.utilities.writableTmp }}
+          - name: HOME
+            value: /tmp
+          {{- end }}
+        volumeMounts:
+          - name: cert
+            mountPath: /cert
+          - name: kubeconfig
+            mountPath: /kubeconfig
+            subPath: kubeconfig
+          {{- if $.Values.utilities.writableTmp }}
+          - name: tmp
+            mountPath: /tmp
+          {{- end }}
+    volumes:
+      - name: cert
+        secret:
+          secretName: admin
+      - name: kubeconfig
+        configMap:
+          name: kubeconfig
+      {{- if $.Values.utilities.writableTmp }}
+      - name: tmp
+        emptyDir: {}
+      {{- end }}
+    restartPolicy: OnFailure
+{{- end -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -9,59 +68,22 @@ metadata:
     {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "bootstrap") | nindent 4 }}
   {{- end }}
 spec:
-  template:
-    {{- if $.Values.parentWorkloads.enabled }}
-    metadata:
-      labels:
-        {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "bootstrap") | nindent 8 }}
-    {{- end }}
+  {{- include "k8s-control-plane.manifest-apply-job-spec" (dict "root" $ "component" "bootstrap" "manifest" "files/cluster-bootstrap.yaml") | nindent 2 }}
+---
+# cert-manager renews the CA certificate in place, but the bootstrap Job only
+# runs on chart revisions. Republish cluster-info so joining nodes, and the
+# node-side CA sync, see the renewed certificate before the old one expires.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-info-sync
+  {{- if $.Values.parentWorkloads.enabled }}
+  labels:
+    {{- include "k8s-control-plane.stable-labels" (dict "root" $ "component" "cluster-info-sync") | nindent 4 }}
+  {{- end }}
+spec:
+  schedule: {{ required "missing clusterInfoSync.schedule" $.Values.clusterInfoSync.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
     spec:
-      {{- include "k8s-control-plane.parent-pod-spec" (dict "root" $ "component" "bootstrap" "disableServiceAccountToken" true) | nindent 6 }}
-      containers:
-        - name: bootstrap
-          image: {{ include "k8s-control-plane.kubectl-image" $ }}
-          {{- with $.Values.utilities.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- include "k8s-control-plane.container-security-context" (dict "root" $ "securityContext" (dict)) | nindent 10 }}
-          command:
-            - bash
-            - -uexo
-            - pipefail
-            - -c
-            - |
-              ca_hash=$(base64 -w0 < /cert/ca.crt)
-              cat <<HERE | sed "s/__CAHASH__/$ca_hash/" > /tmp/manifests
-              {{- tpl ($.Files.Get "files/cluster-bootstrap.yaml") $ | nindent 14 -}}
-              HERE
-              kubectl apply -f /tmp/manifests
-          env:
-            - name: KUBECONFIG
-              value: /kubeconfig
-            {{- if $.Values.utilities.writableTmp }}
-            - name: HOME
-              value: /tmp
-            {{- end }}
-          volumeMounts:
-            - name: cert
-              mountPath: /cert
-            - name: kubeconfig
-              mountPath: /kubeconfig
-              subPath: kubeconfig
-            {{- if $.Values.utilities.writableTmp }}
-            - name: tmp
-              mountPath: /tmp
-            {{- end }}
-      volumes:
-        - name: cert
-          secret:
-            secretName: admin
-        - name: kubeconfig
-          configMap:
-            name: kubeconfig
-        {{- if $.Values.utilities.writableTmp }}
-        - name: tmp
-          emptyDir: {}
-        {{- end }}
-      restartPolicy: OnFailure
+      {{- include "k8s-control-plane.manifest-apply-job-spec" (dict "root" $ "component" "cluster-info-sync" "manifest" "files/cluster-info.yaml") | nindent 6 }}
