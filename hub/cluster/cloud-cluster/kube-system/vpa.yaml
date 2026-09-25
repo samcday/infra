@@ -23,6 +23,35 @@ spec:
   targetNamespace: kube-system
   values:
     # https://github.com/cowboysysop/charts/blob/master/charts/vertical-pod-autoscaler/values.yaml
+    # The chart's built-in genCA/genSignedCert certs last 365 days and only
+    # rotate on a Helm upgrade; let cert-manager own and renew them instead.
+    extraDeploy:
+      - apiVersion: cert-manager.io/v1
+        kind: Issuer
+        metadata:
+          name: vpa-webhook-selfsigned
+          namespace: kube-system
+        spec:
+          selfSigned: {}
+      - apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: vpa-webhook-tls
+          namespace: kube-system
+        spec:
+          secretName: vpa-webhook-tls
+          commonName: vpa-webhook.kube-system.svc
+          dnsNames:
+            - vpa-webhook
+            - vpa-webhook.kube-system
+            - vpa-webhook.kube-system.svc
+          duration: 2160h
+          renewBefore: 720h
+          privateKey:
+            rotationPolicy: Always
+          issuerRef:
+            kind: Issuer
+            name: vpa-webhook-selfsigned
     admissionController:
       metrics: &mon
         serviceMonitor:
@@ -30,6 +59,11 @@ spec:
       pdb:
         create: true
       replicaCount: 2
+      extraArgs:
+        # Pick up cert-manager renewals and re-patch the webhook caBundle.
+        reload-cert: true
+      tls:
+        existingSecret: vpa-webhook-tls
     recommender:
       extraArgs:
         pod-recommendation-min-memory-mb: 16

@@ -77,7 +77,6 @@ spec:
           fi
 
           FINALIZER=${FINALIZER:-headscale.samcday.com/node-cleanup}
-          HEADSCALE_USER=${HEADSCALE_USER:-cloud}
           HEADSCALE_TAG=${HEADSCALE_TAG:-tag:cloud-cluster-node}
           HEADSCALE_CONFIG=${HEADSCALE_CONFIG:-/tmp/headscale/config.yaml}
           HEADSCALE_CLI_ADDRESS=${HEADSCALE_CLI_ADDRESS:-headscale-generic.headscale.svc.cluster.hub.internal:50443}
@@ -117,14 +116,16 @@ spec:
 
           headscale_json() {
             ensure_headscale_config
-            headscale -c "$HEADSCALE_CONFIG" nodes list --user "$HEADSCALE_USER" -o json
+            # Tagged pre-auth keys register nodes as tagged-devices rather than
+            # under the cloud user, so match on name and tag across all nodes.
+            headscale -c "$HEADSCALE_CONFIG" nodes list -o json
           }
 
           matching_headscale_ids() {
             local node_name=$1
             headscale_json | jq -r --arg name "$node_name" --arg tag "$HEADSCALE_TAG" '
               select(type == "array")[]
-              | select(.name == $name)
+              | select(.name == $name or .given_name == $name)
               | select(((.tags // []) + (.forced_tags // []) + (.valid_tags // []) + (.pre_auth_key.acl_tags // [])) | index($tag))
               | .id
             '
@@ -228,6 +229,9 @@ spec:
       kind: Deployment
       metadata:
         name: headscale-node-cleaner
+        annotations:
+          # shell-operator reads the rotating admin kubeconfig only at startup.
+          reloader.stakater.com/auto: "true"
       spec:
         replicas: 1
         strategy:
