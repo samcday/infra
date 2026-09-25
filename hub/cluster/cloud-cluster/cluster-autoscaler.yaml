@@ -28,17 +28,14 @@ spec:
                 path: /spec/template/spec/serviceAccountName
   values:
     # https://github.com/kubernetes/autoscaler/blob/master/charts/cluster-autoscaler/values.yaml
+    # Hetzner no longer offers any CAX type in fsn1, nbg1 or hel1, so the
+    # cax11 group only ever failed to scale up.
     autoscalingGroups:
       - name: cx23
-        maxSize: 2
+        maxSize: 6
         minSize: 2
         instanceType: cx23
         region: nbg1
-      - name: cax11
-        maxSize: 2
-        minSize: 0
-        instanceType: cax11
-        region: fsn1
     cloudProvider: hetzner
     deployment:
       annotations:

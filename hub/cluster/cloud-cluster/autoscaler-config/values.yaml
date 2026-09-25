@@ -31,8 +31,90 @@ config:
         containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
         systemctl restart containerd.service
         kubeadm join cloud-cluster-apiserver.tailnet.hub.samcday.com:6443 --token {{ $.Values.token.id }}.{{ $.Values.token.secret }} --discovery-token-ca-cert-hash sha256:{{ $.Values.hash }}
+        cat > /usr/local/sbin/kube-ca-sync <<'KUBECASYNC'
+        #!/bin/bash
+        # Keep this node's copy of the cluster CA in step with kube-public/cluster-info.
+        # The control plane renews the CA certificate in place (same key), but kubeadm
+        # never refreshes the copy a node joined with, so the kubelet stops trusting
+        # the apiserver once that copy expires.
+        set -euo pipefail
+
+        kubeconfig=/etc/kubernetes/kubelet.conf
+        ca=/etc/kubernetes/pki/ca.crt
+        server=$(awk '$1 == "server:" {print $2; exit}' "$kubeconfig")
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+
+        # Fetch without trusting the local copy, which may already have expired. The
+        # key pin and self-signature check below are what make the result trustworthy.
+        curl -fsSk --max-time 30 -o "$tmp/cluster-info.json" \
+          "$server/api/v1/namespaces/kube-public/configmaps/cluster-info"
+        python3 - "$tmp/cluster-info.json" "$tmp/new.crt" <<'PY'
+        import base64, json, sys
+        kubeconfig = json.load(open(sys.argv[1]))["data"]["kubeconfig"]
+        data = next(
+            line.split(":", 1)[1].strip()
+            for line in kubeconfig.splitlines()
+            if line.strip().startswith("certificate-authority-data:")
+        )
+        open(sys.argv[2], "wb").write(base64.b64decode(data))
+        PY
+
+        pubkey() { openssl x509 -in "$1" -noout -pubkey | sha256sum; }
+        not_after() { date -d "$(openssl x509 -in "$1" -noout -enddate | cut -d= -f2)" +%s; }
+
+        if [[ "$(pubkey "$tmp/new.crt")" != "$(pubkey "$ca")" ]]; then
+          echo "cluster-info CA key differs from $ca; refusing to replace it" >&2
+          exit 1
+        fi
+        openssl verify -check_ss_sig -CAfile "$tmp/new.crt" "$tmp/new.crt" >/dev/null
+
+        awk '$1 == "certificate-authority-data:" {print $2; exit}' "$kubeconfig" |
+          base64 -d >"$tmp/kubelet-conf.crt"
+        if cmp -s "$tmp/new.crt" "$ca" && cmp -s "$tmp/new.crt" "$tmp/kubelet-conf.crt"; then
+          exit 0
+        fi
+        if (($(not_after "$tmp/new.crt") < $(not_after "$ca"))); then
+          echo "cluster-info CA expires before $ca; leaving it alone" >&2
+          exit 0
+        fi
+
+        stamp=$(date +%Y%m%d%H%M%S)
+        cp -a "$ca" "$ca.$stamp"
+        cp -a "$kubeconfig" "$kubeconfig.$stamp"
+        install -m 0644 "$tmp/new.crt" "$ca.new"
+        mv "$ca.new" "$ca"
+        sed -i "s|^\([[:space:]]*certificate-authority-data:\).*|\1 $(base64 -w0 "$ca")|" "$kubeconfig"
+        echo "updated cluster CA: $(openssl x509 -in "$ca" -noout -enddate)"
+        systemctl restart kubelet
+        KUBECASYNC
+        chmod 0755 /usr/local/sbin/kube-ca-sync
+        cat > /etc/systemd/system/kube-ca-sync.service <<'KUBECASYNC'
+        [Unit]
+        Description=Sync kubelet cluster CA from kube-public/cluster-info
+        Wants=network-online.target
+        After=network-online.target kubelet.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/kube-ca-sync
+        KUBECASYNC
+        cat > /etc/systemd/system/kube-ca-sync.timer <<'KUBECASYNC'
+        [Unit]
+        Description=Daily kubelet cluster CA sync
+
+        [Timer]
+        OnBootSec=10min
+        OnCalendar=daily
+        RandomizedDelaySec=6h
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+        KUBECASYNC
+        systemctl daemon-reload
+        systemctl enable --now kube-ca-sync.timer
       placementGroup: placement-group
-    cax11: *nodeConfig
 token:
   id: ~
   secret: ~
