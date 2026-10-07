@@ -48,7 +48,7 @@ storage:
           mode: 384
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:Moxa+dKnySAsDWeTMI9VhwKrVWbzcOHqY6QZGyIGUtPZcf92whJGEFna2JdeaHdlwZXv2i1c66sj83YXfVcpPHI=,iv:XzwTtE+3W5KnGbq5LlaxF7++EHQ0IFlSMB3O8eh320o=,tag:AhdhjVPaNtJ1mTU3s7LIuQ==,type:str]
+            inline: ENC[AES256_GCM,data:9ECZkEsmF/kMhvX1HZkUs5jADmRrlQ2t5q3bwNnIbGtVxr+TakNNVHQgiwaBeEpfuJjO6LmOY0RTGT4HVdxWtsQ=,iv:e30dZOl7b5OHvkWzF5pbd3GR1fhral35uwwSEi8l+14=,tag:YX/PNWYLxJ2q7qRtczfbjg==,type:str]
         # Required K3s datastore CA/client cert/key are intentionally omitted:
         # Hub is being retired; node reprovisioning would require restoring them.
         - path: /var/lib/rancher/k3s/server/manifests/cilium.yaml
@@ -149,18 +149,7 @@ storage:
                     clusterDomain: cluster.hub.internal
                     policies:
                       create: false
-        - path: /var/lib/rancher/k3s/server/manifests/flux-age-key.yaml
-          overwrite: true
-          mode: 384
-          contents:
-            # cryptme
-            inline: ENC[AES256_GCM,data:zVOb6ltXYHAupe7KzE47XTzvdUT5R+RPGMS9KIEVkebtd2cWmUSnVHbjshl1NmV4BdjmTym3w0YmgYwSL+1snLDxxQRq5mVhG7kpKoAJpOU3DNMlH0vXK/n+cCdVHlVGnWh0Zt8i2+ijGoSvurHX6luR/oguqX/9PA20uhQktWiUjvtfPX5J3SxWBYjS2W78IUVT6PCOt0YoS+zCxDNWDo+zoidlxlHMRb2ItFGqJu9UvphKveN6jEf2TdiELO/awMJWT/p9wm0LKSB+cX/WHGo+uzoZOI0b2KxYaeo64oL2mAd0pk3ejN07J7bwDmORGD1kUZ/R1mV+LQKPM9pihc5EIis6JefdLITfVnHLw3XQPYknARcMMXCpE7pfdGsNVqX9vBNz0G+1nv7EOkEOTU8cRGxiohJMI+QKtRzsX7sO,iv:VvhUZuZFzuKmtXcCJV7N0b2Xp4T38bUa76OU9rZtA9o=,tag:z1aCfNeff72Ob04YMjEuWg==,type:str]
-        - path: /var/lib/rancher/k3s/server/manifests/flux-ssh-key.yaml
-          overwrite: true
-          mode: 384
-          contents:
-            # cryptme
-            inline: ENC[AES256_GCM,data:kaZmTfireaELCtMsGaWJBYg5yttQDZ0mJw6WhaTIx4lrxsm0IPaRxf6iJz7WVB/FcVPTxetVHWWOyWAtL9dqL7qVlLuSwxD8YHK9mg23vr9DotQWBkl4CeLjZeYQU7TPurAPdm9fy/Ls7BiN8VPE69W3GNqs2c73qu88FfwTKRvAHvzJfcoXzMA6P8psgnWzHaoXrCgDHeqY8w8WIiOgQiLekn4jk/bhp8oVzcio0M+7eXw9aXUozQZB6IzwPIJL/V1kyJxCcLsQDtvclmkaDKI9Bt4bdYJVQr2n+uDMdA/Y2fUArwQFnuoNbA9rMsdXJ/P9Ouf2ZgXX7VRjTQEvxbo9JIYg18iPmH2L8F6rkt/K+PAKUnwDd6QgBqkhRnf7uApv3sSVEkp0PAb8wZi7V/6QV3RTq5fUMlKjs1BHY3YmVi4nwN46oT8WIHpSRJox4zyhIQ+VAIhG6QM9pl5tO4fUEiqmpGSsQBgP5bnibX9KApSp+qNxyfwCzhjr7GoLqu3nYNuzgfCAfa1aVwkj0Jf8Df1eTZNUTp/brYBfGRg9dBw5PERO13b2mQGZS7JL/FwTaBg37Hh8xCI55a/hESwoi4azpHxLaioIh6FoYTJueFIYd+RB/DldZ9Lt5uk9gHvb6l521SZugybkoXXdkZFiRC5kam0FcIsHjVWY8ycyGxsEnRrviQA+XPBt3TVoQB0K7Z1oyO9q1Sep/2Cw0Gs+e4rfCVcXwK+GR6qMqpewKaoVanWI8ZVQgvpertkAptlH3BChlsryjFtNlUXszjN2p1lyFRfQAsHagQWLqHxKEjSTwUbctS+vKBSPvoX20c5lkk3zKIAFkM8FEYTuMn0d0xQ8JCqlgJUkZ68mw2HiexKx7NnGwJ+Gay+mM+S9tW8dmeWEpcrNzdHsIwSHc1R+JXddttlmSeTUcZXcMj9JOlaDjah1cnuaT/m5HPAGoRIadwthy4jLvkarv6H7oOD9KVC+UllLiLUSVcwa2ydkIpSTEuAbvlbTfY/em/yy9FBcCq81h2O4AqTLGxiFodyk9t6zp/fb3PbXsMqzGv2LRxSEGHAfRx9Xh6yh/h8pBcOq9oRpOckwBGr0A0gYF8TTrjHyM8RYHImroBSjNx1s8IO9dcvCKUs1P2UiF0Vpy5bZ7zSKDE51yIY3H3uzwy5P9P39qX6IoExtUCcFyfaSuwXHR7GFZ9AFZkjaXN8+oOwDq1wcWRAl5UDTrRohMRXHsbKnuCcVV3qdC/OVwL3gOa4XMg0cpIK6SlXbXNtBQFOmgaTreVgElisns+6TFqpq7yvktLRVM+JwYgKnJdIYx0b980BqbvT+B3rEAFA5bbGjzwM4BFBxMsXpCIxqpPdGpLMGzL8NWcbw0c32JSSIAOSDQTR20sVFru9Rfs05u/MRsjiOKN08inFPKzpmMn0JsBsTxgd+/qJ8Bs1Ew8ULpQjrPveCaTm/T20v+i3zEQs/HODdGIkIzErRoi2SAfsmf7VYP6NdBQdxFsqhlulPreIGJRZ/kBACInqN9yw9wsAwftOv5gWmIrwvUhoqD0JUPw6hmNHArDtJX4f7/26tMdusYv808kGqMbrvvB0z66oAtRYMBstEOirFgNAD10GxhIYsZrVBgj4aW3wEGHN8xomdrI1Sz6cSTNYrj9kj5qXF3gf0r8e512zf+E/FY+IcUz5SgMo7x3AQaA+waT2OF4cwg5R3VLzbQ4q1sQv5nR49PXyKGsC0+AMChR9EQwRdHHKNKdGOBrM3wmRAc4kbersexRESsamplOxzqBQ2o8RmWp+j41zAwWr2zg3w/B7gqisb3eW4vPG49qn/JfAza9eVnykC54amchxzwz4HCFcfrFLnI3pcOaiMf53OSpC5wwY=,iv:dBulNDIDhi3WK+l6tSbRhQbd3dIV13agpMpPTb0zsa4=,tag:lUR7AZEEy1fW/HGyaYW+cg==,type:str]
+        # Flux age/SSH private keys were provisioned here; any future bootstrap must supply them manually.
         - path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
           overwrite: true
           contents:
@@ -270,25 +259,26 @@ systemd:
                 Environment=K3S_AGENT_TOKEN_FILE=/etc/rancher/k3s/agent.token
 sops:
     age:
-        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+        - recipient: age15v9ufl7p4vd2f67xsx5tstkmhzdrqgfj5408p9e3s7dyyc8mnacq44hkk9
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBIMUFIN1Z2RUJJM3V1b3pX
-            Tk5uQS9uallSbFZWUkFhV2FlaXBLNDYyV3lNClI1VzBWKzBZc0x1WGRZS2c2Ymlv
-            bjREdUV6ZjFpTmlmbzBQOXFnWXRYT3cKLS0tIDU4clNnOVZrVzlVcVJGRmt4S0ZZ
-            RW5SMHFZVGpUdm5zY1RkYzZPZmYrU3cKmpPJAhAC+mPeK5hf6Jj15N8VVsaH8GEG
-            4fjAxOccAQeAv+pTApvRC43lvDUM3naBcjb3NpNmv08c43EXjTgVtQ==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBPUnhJZjVuVG9RRTA3d1M4
+            bXE1bGN2N3NLU29Hdzd0ZlpVR1ZLbTV6WlNjCndTNUZXbjhZbEdGNTlZV1V5V1pD
+            UkNwZ0xqS1JrVytxRU9CNFNPYi9QbEUKLS0tIGNKWWJIV0Y0cTJLVDY0ZWN5K1M1
+            ZWU1enR3N0ZubDRmcHFPdWkvQ3Z3ZUkKGp4yi6GjDQvkuZsGo0cHoUCsIYPeFblT
+            nDWiojqvHWo3AFg8lLuWaW7oNNJTvUDniJK0XszxM/+hv4Sf2HAK/Q==
             -----END AGE ENCRYPTED FILE-----
-        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+        - recipient: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBVaXpLL2p1R2RKSDVSUTVW
-            V1h2Y1ZNQ05mdTM5MUw2b09RLzlrMU1KTFY4CjdkZWg0QVVaRFZkdVlKZHJJSG9j
-            bjZuZFAwTUpJcEdKZDVvcEZ4RENjUW8KLS0tIDJFOTEzS25DZGlUZzlKUFJ3SzVr
-            RWk1RTFKbnJYbDB4dFVDbEN3L2Y5ekEKHM/TJ7sOoF0suHwMO0c9LNje1MB2fLBB
-            2itbB4Xs2G3cbWl+Ft2qrNI8kyejAzjB/P47/+Veyu5o7qc+lrrkHQ==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IHNzaC1lZDI1NTE5IEw2V0lpQSBRVVE2
+            Zlk1MjBhSUV5Z1pJSUN3TUdmc2FUWjI1S2hFN2pjRlNTMnJrMkRJClNLZmk4ZXdo
+            RHcyS2sxdlFTdWZ5a2hlT0xweDF3M2UydEIzT2dWSHFJbVkKLS0tIHdjaG0yUnhN
+            OHZVZnlKcXY3VTVaaVVRRFdDcDUvQXJjY0hlRk42bVhWS1UKyWwOltM+rIiukNQE
+            JY96TpBGLC5rEi9Z489k475souqfsLdooCvODhMf/IfLP55WoO8w82yzn/FDoO/U
+            OYFHAg==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-10-07T18:57:06Z"
-    mac: ENC[AES256_GCM,data:14JVSQM/jjpP5Opllla9h5q+SAFPc11XwvRM52/XYa/J9R1wv43P5Uwsmz8j+Ztm3r9vAKaOovKWGV/4dmw8l51HKVYn18QMA6ETsUw7HP67d03/62Dj3QTITlVVoC/kgDfX9+6EYp7UEws4A6EmFKpkGok/IF0lpJav65rfA8Y=,iv:6GYQOTaVrViGJdhGGxhh2EaVxkn+l2cvh54OXRoNJLc=,tag:T8LH4vzOXqFnN0heGVDkAQ==,type:str]
+    lastmodified: "2026-10-07T20:35:17Z"
+    mac: ENC[AES256_GCM,data:bSFNaC70E/JKqFQisuGxpMXFx0AMrcTbdI7ZBlLVTwoaLskOlvd+VMiByyEqtxXkzQ8kFcrNmaGeXaPJjq88k+vuFyg/PnNhv17a1w/AZMLliQYJ2kDjnGcyhVrY7SsZqaxz7ZbNn+wB2BSu7qYgrIg2RDQtZwqgTllx2Vbgh0Q=,iv:X7V5HXAMwlMWxJ0vNeIra/9iARiv4a92nR+ShfoSkhM=,tag:VNuJK0c689AzlKCI0lK2Sg==,type:str]
     encrypted_comment_regex: cryptme
-    version: 3.9.4
+    version: 3.11.0

@@ -17,7 +17,7 @@ storage:
           mode: 384
           contents:
             # cryptme
-            inline: ENC[AES256_GCM,data:wrsMxxT/J8HoZiOPh+lVyeWZhjz3TEl8E3AJsIoEvgf7ZbjaG3w+g3XfKvFfV+XBr6xhHWP3MPdXd9foA9FuYPI=,iv:phS7C8FCBJ/9T6FO6JpohHdsAdNWVsWH4RQoYAGx+os=,tag:xQXH58nwjo6ezn0y1oZqWg==,type:str]
+            inline: ENC[AES256_GCM,data:/Q4kjzPCj6KnuCn7Bj/Udvt+419EOXX+vvqmAmL6auoqGgRiMGL6qbtDuDrPw/8/rcH/ed0tWD1DVZ7Ak0qO0Rc=,iv:Bkj1WpUjAV5v6N3houvhasBF8A2yk5KYhyX21UwvyVM=,tag:+GGQp0k+rQ6fIj5iLRuToQ==,type:str]
         - path: /etc/rancher/k3s/registries.yaml
           contents:
             inline: |
@@ -65,31 +65,27 @@ systemd:
             [Install]
             WantedBy=multi-user.target
 sops:
-    kms: []
-    gcp_kms: []
-    azure_kv: []
-    hc_vault: []
     age:
-        - recipient: age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs
+        - recipient: age15v9ufl7p4vd2f67xsx5tstkmhzdrqgfj5408p9e3s7dyyc8mnacq44hkk9
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSByb0oxUkZlR2g5M24vaDY3
-            MFNJUEtYMnlqR1Z2cmtQYUNHMmlraUFLZ0N3CktwcjF0c1NQSkJIS2U5QXRZdFlS
-            MGNyVU5jQUN5Z0R5R0RDdTcrcUpOTjQKLS0tIC9iTXZzaHB1RjNJRHFJb2dwNGFP
-            Y2NkVHFQb1VGbG9Wdk1lZzQ3TXU3cXcKUc6GeE8mTFPjX7N+CPamqRVyVtirB/kq
-            Lh2C9PQ0uMuT501G55LH6vkOx7gupWrMwqdoz/gMOWs95oZRm1Sezw==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBXVDBKWk5oYzIraE5lQWRS
+            WllYWDZ5RWMxbGU3SEVlMCtqdHlnd0hFeTJrCnllTWg3QzRHaVRaUGE5ell4bUVr
+            c29HL21qLzExZ1VNcHg4all6eDBvTlUKLS0tIE9YYlZQRFNmQXU5Uzk1Ykgxanpk
+            dkEzamVxTWNubC80TjJKVkhhNXc3bncK++M6Jh96+E0WNK5UVO+XzouLXbB6pqZW
+            dw/M5zxPSECJnrypVxumaAlBcOpsPjsv9e4g2TYSEbNPQxeD/ZEu9g==
             -----END AGE ENCRYPTED FILE-----
-        - recipient: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+        - recipient: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAxdzJzbWR2V0VBbExYYU0v
-            TUNhTzdTaEtITDlFK3FlOThBeEcwYS9WRGdzCjFCRkNxTFhteHRaYUtpVUg5RWd1
-            WWNVcmY0bmtuSlRyOTZWVlFlbUdwY0kKLS0tIEtUbzZYTTYzRlpXdzJzUjl6VGsr
-            bzk3U2hOdVcyb0s0TkNmdjBaWlNTZFEKFHqxXjRa3EmZJCLAQxH4BQxVWW2q6SXV
-            mo3DjP/VOoZVms/tw4bXdxHf0Jz9NJ3B+sOJ9Qzpccqr9j1NPaH7aA==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IHNzaC1lZDI1NTE5IEw2V0lpQSBDQ1By
+            b2xvdG1sSnVqSjZrV2ZHZExtbUp2S2tnamgwbGg5VUhtZjJYdXhNCjdnclZWQ1Bx
+            c2h0ajUvSzduVGlCRFZMRU11YmtWVjJGSHpDYVhzYW45NDAKLS0tIHptKzc4TXBL
+            WU5MTWM2MmZnbmJmVW0zS204eDE4T0cyREFrcTdxd09WWVEKV9PREOyihd35Zi/G
+            NsDGvXzpOmog3i+rpehzRMdilLSCaPfSaGfaA4rsXuVixX1qaCfKLGtgeK3NPEsS
+            CLbrFQ==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2025-09-04T06:42:55Z"
-    mac: ENC[AES256_GCM,data:3Wckf+VPQuSOvKxePa0UasKydDo04Vhs7/tcgIVeehcJB4nF7fTJyY+Xq6mBqtrPJVOVBM3Uks1hdKMneU7fwIvY5PIff8E/2BBwK9nIA1+O/LyrsmXaBl4gpW/A26OS8Lbc9VKqyqih9NAxsFQ6iFnO2/9okyiS2uDqynaCLMg=,iv:yihnGaHAgLfnl9OZoJEPK5PRhTha/Cnja7AMEW4lHjI=,tag:JWYAWmafWPz12yiAiaxlmQ==,type:str]
-    pgp: []
+    lastmodified: "2026-10-07T19:25:06Z"
+    mac: ENC[AES256_GCM,data:JseHuFB5kfmDKTMx52di6+7nnBEWBfeLs9mfXypbkdlkHZW1S+kWH39f4gbsmJUyuSq+47yVM3J9b08ZAkF3i/whSwlvFv5Y4KimtSvlDzdshF4Wn0j2o+6jmT701Y7ZABFqEZYfsQkmA9E64dgR4U8ja9NME/Awjie3cSxY4kU=,iv:Az9838HtTj2vI6sYoSppznr0Jr/yEt87lOZM2incrFQ=,tag:h5yb6b5ATq5p3HVyU8uUpw==,type:str]
     encrypted_comment_regex: cryptme
-    version: 3.9.4
+    version: 3.11.0

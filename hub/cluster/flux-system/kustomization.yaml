@@ -9,6 +9,7 @@ resources:
   - image-update-automation.yaml
   - kustomizations.yaml
   - namespaces.yaml
+  - ssh-key.yaml
   - tofu-controller.yaml
   - webhook.yaml
   - webhook-token.yaml

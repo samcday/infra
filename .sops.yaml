@@ -22,17 +22,17 @@ creation_rules:
   - age: age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
     path_regex: fabric/pki/etcd/.*\.enc$
 
-  # encrypt files in hub/cluster to the hub age key
+  # encrypt hub/cluster secrets to the hub age and Sam SSH recovery keys
   - age: >-
-      age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs,
-      age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+      age15v9ufl7p4vd2f67xsx5tstkmhzdrqgfj5408p9e3s7dyyc8mnacq44hkk9,
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
     encrypted_regex: ^(data|stringData)$
     path_regex: hub/cluster
 
-  # encrypt Butane configs to the hub age key
+  # encrypt Butane configs to the hub age and Sam SSH recovery keys
   - age: >-
-      age1tu8l2llfk32g0c4mvklqazjkj977h9xwvx3ntwt2ucdert8sufgq2g8mgs,
-      age14taxy23wzym2r9jndzsq5h8dx2f5cj5vtusfet2ggjjepp8pkfdqf6mus0
+      age15v9ufl7p4vd2f67xsx5tstkmhzdrqgfj5408p9e3s7dyyc8mnacq44hkk9,
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwawprQXEkGl38Q7T0PNseL0vpoyr4TbATMkEaZJTWQ
     encrypted_comment_regex: "cryptme"
     path_regex: .*/butane/.*\.yaml$
 
