@@ -315,9 +315,6 @@ class LabControlPlaneContract(unittest.TestCase):
         child = object_named(
             children, "Kustomization", "fabric-lab-child", "flux-system"
         )
-        coordinator = object_named(
-            children, "Kustomization", "fabric-lab-coordinator", "flux-system"
-        )
         self.assertEqual(
             inventory["spec"]["kubeConfig"]["secretRef"]["name"],
             "lab-flux-kubeconfig",
@@ -329,11 +326,6 @@ class LabControlPlaneContract(unittest.TestCase):
         self.assertTrue(bootie["spec"]["wait"])
         self.assertTrue(child["spec"]["suspend"])
         self.assertFalse(child["spec"]["wait"])
-        self.assertTrue(coordinator["spec"]["suspend"])
-        self.assertEqual(
-            coordinator["spec"]["kubeConfig"]["secretRef"]["name"],
-            "lab-flux-kubeconfig",
-        )
 
 
 class LabComputeContract(unittest.TestCase):
@@ -342,7 +334,6 @@ class LabComputeContract(unittest.TestCase):
         cls.bootie = render("fabric/cluster/lab/bootie")
         cls.child = render("fabric/cluster/lab/child")
         cls.inventory = render("lab/cluster/inventory")
-        cls.labgrid = render("lab/cluster/labgrid")
 
     def test_placeholder_and_bootie_fail_closed(self):
         node = object_named(self.inventory, "Node", "lab-worker-1")
@@ -448,24 +439,6 @@ class LabComputeContract(unittest.TestCase):
             values["localpv-provisioner"]["hostpathClass"]["isDefaultClass"]
         )
 
-    def test_coordinator_starts_fresh_and_is_tailnet_published(self):
-        pvc = object_named(self.labgrid, "PersistentVolumeClaim", "labgrid-coordinator")
-        self.assertEqual(pvc["spec"]["storageClassName"], "lab-local")
-        deployment = object_named(self.labgrid, "Deployment", "labgrid-coordinator")
-        self.assertEqual(deployment["spec"]["strategy"]["type"], "Recreate")
-        self.assertRegex(
-            deployment["spec"]["template"]["spec"]["containers"][0]["image"],
-            r"@sha256:[0-9a-f]{64}$",
-        )
-        proxy = object_named(
-            self.labgrid, "Deployment", "labgrid-coordinator-tailnet"
-        )
-        tailscale = proxy["spec"]["template"]["spec"]["containers"][0]
-        env = {item["name"]: item.get("value") for item in tailscale["env"]}
-        self.assertEqual(env["TS_HOSTNAME"], "labgrid-coordinator")
-        self.assertIn("https://headscale.tail22d0a0.ts.net", env["TS_EXTRA_ARGS"])
-        self.assertNotIn("--advertise-tags", env["TS_EXTRA_ARGS"])
-
 
 class LabHeadscaleContract(unittest.TestCase):
     def test_lab_router_and_node_acls_are_narrow(self):
@@ -484,7 +457,6 @@ class LabHeadscaleContract(unittest.TestCase):
             {
                 "lab-bootie-ts-auth",
                 "lab-node-ts-auth",
-                "labgrid-lab-ts-auth",
             }
             <= names
         )

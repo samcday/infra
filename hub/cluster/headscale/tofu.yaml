@@ -41,18 +41,8 @@ rules:
     - lab-apiserver-ts-auth
     - lab-bootie-ts-auth
     - lab-node-ts-auth
-    - labgrid-lab-ts-auth
-    - labgrid-ts-auth
     - wasmcloud-nats-ts-auth
   verbs: [patch, update, get]
-# Retain narrowly scoped teardown access until OpenTofu has removed the old
-# coordinator Secrets from state, before removing the namespace and these rules.
-- apiGroups: [""]
-  resources: [secrets]
-  resourceNames:
-    - labgrid-lab-ts-auth
-    - labgrid-ts-auth
-  verbs: [delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

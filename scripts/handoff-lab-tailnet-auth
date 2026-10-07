@@ -9,8 +9,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/handoff-lab-tailnet-auth [--force]
 
-Transfer the one-use Lab Bootie, worker, and coordinator Headscale keys from
-Hub into three SOPS-encrypted Fabric Secrets. Plaintext is held only in process
+Transfer the one-use Lab Bootie and worker Headscale keys from
+Hub into two SOPS-encrypted Fabric Secrets. Plaintext is held only in process
 memory and in a tmpfs pipeline.
 EOF
 }
@@ -44,7 +44,6 @@ done
 mappings=$(cat <<'EOF'
 lab-bootie-ts-auth bootie-ts-auth.sops.yaml fabric/cluster/lab/bootie lab-bootie-ts-auth
 lab-node-ts-auth node-ts-auth.sops.yaml fabric/cluster/lab/bootstrap lab-node-ts-auth
-labgrid-lab-ts-auth labgrid-ts-auth-source.sops.yaml fabric/cluster/lab/child labgrid-ts-auth-source
 EOF
 )
 readonly mappings

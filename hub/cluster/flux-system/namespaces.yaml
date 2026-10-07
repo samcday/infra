@@ -27,7 +27,6 @@ spec:
     forgejo:
     headscale:
     ingress-nginx:
-    labgrid:
     monitoring:
     openebs:
     prometheus-operator:
