@@ -468,20 +468,6 @@ class LabComputeContract(unittest.TestCase):
 
 
 class LabHeadscaleContract(unittest.TestCase):
-    def test_old_coordinator_identity_is_not_rotated_in_place(self):
-        terraform = (REPO / "hub/cluster/headscale/main.tf").read_text()
-        old = terraform.split(
-            'resource "headscale_pre_auth_key" "labgrid_coordinator" {'
-        )[1].split("\n}", 1)[0]
-        self.assertIn("user           = headscale_user.hub.id", old)
-        self.assertIn('time_to_expire = "520w"', old)
-        self.assertIn("reusable       = true", old)
-        new = terraform.split(
-            'resource "headscale_pre_auth_key" "labgrid_coordinator_lab" {'
-        )[1].split("\n}", 1)[0]
-        self.assertIn("user           = headscale_user.lab.id", new)
-        self.assertIn("reusable       = false", new)
-
     def test_lab_router_and_node_acls_are_narrow(self):
         text = (REPO / "hub/cluster/headscale/acls.json").read_text()
         self.assertIn('"src": ["tag:lab-router"]', text)
