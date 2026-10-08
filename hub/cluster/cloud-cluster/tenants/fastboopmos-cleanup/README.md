@@ -1,6 +1,9 @@
 # Temporary fastboopmos B2 cleanup
 
-**Inventory only:** the initial Job performs no mutations. The Cloud fastboopmos
+**Approved purge:** the Job deletes only the account/bucket pinned in `job.yaml`.
+The successful 2026-10-08 inventory validated bucket `f7555fa6d30a178499db0912`
+in account `75f63a749b92`: 762 upload versions, 32 hide markers,
+29,160,102,030 content bytes, and zero unfinished uploads. The Cloud fastboopmos
 namespace and reconcilers have been removed, and its archived GitHub repository's
 Actions secrets/variables cleared. B2 configuration remains until cleanup passes.
 This is only for `samcday-fastboopmos`: never
