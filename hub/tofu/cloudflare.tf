@@ -20,6 +20,14 @@ resource "cloudflare_record" "samcday_apex" {
   allow_overwrite = true
 }
 
+resource "cloudflare_record" "samcday_discord" {
+  zone_id = data.cloudflare_zone.samcday.id
+  name    = "_discord.samcday.com"
+  type    = "TXT"
+  content = "dh=f2807420704930c91d131eef7fa7d3fb347d359a"
+  ttl     = 1
+}
+
 resource "random_password" "tunnel_secret" {
   length = 32
 }
