@@ -46,7 +46,9 @@ spec:
     kustomization:
       interval: 1h
       path: ./infra/k8s
-      prune: true
+      # Teardown gate: stop recreating app resources before deleting Terraform.
+      suspend: true
+      prune: false
       timeout: 2m
     sops:
       enabled: true
