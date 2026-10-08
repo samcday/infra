@@ -26,7 +26,6 @@ spec:
     edge:
     etcd:
     fastboop:
-    fastboopmos:
     gibblox:
     keda:
     nginx-gateway:

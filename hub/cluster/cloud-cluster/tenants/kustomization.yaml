@@ -3,10 +3,6 @@ kind: Kustomization
 namespace: cloud-cluster
 resources:
   - fastboop.yaml
-  - fastboopmos/fastboopmos-age-key.yaml
-  - fastboopmos/fastboopmos-tofu.yaml
-  - fastboopmos/fastboopmos-tofu-bucket-vars.yaml
-  - fastboopmos.yaml
   - gibblox-webhook-token.yaml
   - gibblox.yaml
   - rokkitpokkit/rokkitpokkit-age-key.yaml

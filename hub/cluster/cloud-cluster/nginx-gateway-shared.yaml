@@ -36,7 +36,6 @@ spec:
           - fastboop.win
           - "*.fastboop.win"
           - "*.rokkitpokkit.samcday.com"
-          - "*.fastboopmos.samcday.com"
         issuerRef:
           group: cert-manager.io
           kind: ClusterIssuer
@@ -82,14 +81,6 @@ spec:
             targets:
               - cloud.samcday.com
           - dnsName: fastboop.win
-            providerSpecific:
-              - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
-                value: "false"
-            recordTTL: 300
-            recordType: CNAME
-            targets:
-              - cloud.samcday.com
-          - dnsName: fastboopmos.samcday.com
             providerSpecific:
               - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
                 value: "false"

@@ -29,6 +29,5 @@ spec:
       serviceAccount:
         allowedNamespaces:
           - fastboop
-          - fastboopmos
           - gibblox
           - rokkitpokkit
