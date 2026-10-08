@@ -36,7 +36,7 @@ def legacy_values() -> dict:
 def hardened_values() -> dict:
     values = copy.deepcopy(BASE_VALUES)
     values["externalIP"] = None
-    values["externalHostname"] = "lab.example.test"
+    values["externalHostname"] = "child.example.test"
     values["adminKubeconfig"] = {
         "schedule": "@daily",
         "concurrencyPolicy": "Forbid",
@@ -46,10 +46,10 @@ def hardened_values() -> dict:
     values["parentWorkloads"] = {
         "enabled": True,
         "placement": {
-            "nodeSelector": {"node-role.samcday.com/fabric": ""},
+            "nodeSelector": {"node-role.example.test/hosting": ""},
             "tolerations": [
                 {
-                    "key": "node-role.samcday.com/fabric",
+                    "key": "node-role.example.test/hosting",
                     "operator": "Exists",
                     "effect": "NoSchedule",
                 }
@@ -108,14 +108,14 @@ def hardened_values() -> dict:
     ]
     values["users"] = [
         {
-            "name": "lab-bootie",
+            "name": "provisioner",
             "exportKubeconfigs": [
                 {
-                    "name": "lab-bootie-kubeconfig",
+                    "name": "provisioner-kubeconfig",
                     "namespace": "handoff",
                 },
                 {
-                    "name": "lab-bootie-kubeconfig-local",
+                    "name": "provisioner-kubeconfig-local",
                     "namespace": "child-system",
                 },
             ],
@@ -125,7 +125,7 @@ def hardened_values() -> dict:
                         {
                             "apiGroups": [""],
                             "resources": ["nodes"],
-                            "resourceNames": ["lab-worker-1"],
+                            "resourceNames": ["worker-1"],
                             "verbs": ["get", "patch"],
                         }
                     ]
@@ -257,7 +257,7 @@ class HostingContractTests(unittest.TestCase):
                         "disabled",
                     )
                 pod = template["spec"]
-                self.assertEqual(pod["nodeSelector"], {"node-role.samcday.com/fabric": ""})
+                self.assertEqual(pod["nodeSelector"], {"node-role.example.test/hosting": ""})
                 self.assertEqual(pod["securityContext"]["runAsNonRoot"], True)
                 self.assertEqual(pod["securityContext"]["seccompProfile"], {"type": "RuntimeDefault"})
                 self.assertEqual(pod.get("automountServiceAccountToken", True), key not in tokenless)
@@ -332,14 +332,14 @@ class HostingContractTests(unittest.TestCase):
         token = object_named(bootstrap, "Secret", "bootstrap-token-abcdef")
         self.assertEqual(token["stringData"]["expiration"], "2026-08-01T00:00:00Z")
 
-        role = object_named(bootstrap, "ClusterRole", "user-lab-bootie-cluster-0")
+        role = object_named(bootstrap, "ClusterRole", "user-provisioner-cluster-0")
         self.assertEqual(
             role["rules"],
             [
                 {
                     "apiGroups": [""],
                     "resources": ["nodes"],
-                    "resourceNames": ["lab-worker-1"],
+                    "resourceNames": ["worker-1"],
                     "verbs": ["get", "patch"],
                 }
             ],
@@ -347,14 +347,14 @@ class HostingContractTests(unittest.TestCase):
         binding = object_named(
             bootstrap,
             "ClusterRoleBinding",
-            "user-lab-bootie-cluster-0",
+            "user-provisioner-cluster-0",
         )
-        self.assertEqual(binding["subjects"][0]["name"], "lab-bootie")
+        self.assertEqual(binding["subjects"][0]["name"], "provisioner")
 
         exported = object_named(
             self.hardened,
             "Role",
-            "admin-kubeconfig-generator-lab-bootie-lab-bootie-kubeconfig",
+            "admin-kubeconfig-generator-provisioner-provisioner-kubeconfig",
         )
         self.assertEqual(exported["metadata"]["namespace"], "handoff")
         local = object_named(
@@ -363,7 +363,7 @@ class HostingContractTests(unittest.TestCase):
             "admin-kubeconfig-generator",
         )
         self.assertIn(
-            "lab-bootie-kubeconfig-local",
+            "provisioner-kubeconfig-local",
             local["rules"][1]["resourceNames"],
         )
 
@@ -399,7 +399,7 @@ class HostingContractTests(unittest.TestCase):
                 "template": {
                     "spec": {
                         "priorityClassName": "custom-priority",
-                        "nodeSelector": {"node-role.samcday.com/fabric": "custom"},
+                        "nodeSelector": {"node-role.example.test/hosting": "custom"},
                         "containers": [
                             {
                                 "name": "kube-scheduler",
@@ -418,7 +418,7 @@ class HostingContractTests(unittest.TestCase):
         self.assertEqual(deployment["spec"]["minReadySeconds"], 25)
         pod = deployment["spec"]["template"]["spec"]
         self.assertEqual(pod["priorityClassName"], "custom-priority")
-        self.assertEqual(pod["nodeSelector"], {"node-role.samcday.com/fabric": "custom"})
+        self.assertEqual(pod["nodeSelector"], {"node-role.example.test/hosting": "custom"})
         scheduler = pod["containers"][0]
         self.assertIn("--v=4", scheduler["command"])
         self.assertEqual(scheduler["securityContext"]["runAsUser"], 1234)

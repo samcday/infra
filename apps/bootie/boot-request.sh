@@ -1,10 +1,6 @@
 #!/bin/bash
 set -ueo pipefail
 
-if [[ "${BOOTIE_DAY2_MODE:-false}" == true ]]; then
-  exec /usr/local/bin/boot-request-day2
-fi
-
 BOOT_FORMAT=${BOOT_FORMAT:-ipxe}
 case "$BOOT_FORMAT" in
   grub | ipxe) ;;
@@ -58,6 +54,14 @@ HERE
   exit
 }
 
+# Refuse retired provisioning configurations rather than interpreting an old
+# install ceremony as an ordinary hub boot request.
+if [[ "${BOOTIE_DAY2_MODE:-false}" != false ||
+      "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" != false ||
+      "${BOOTIE_INSTALL_DELIVERY:-ignition}" != ignition ]]; then
+  booterr 'unsupported provisioning mode'
+fi
+
 if [[ -z "${FCOS_VERSION:-}" ]]; then
   FCOS_VERSION=$(curl -s --fail https://builds.coreos.fedoraproject.org/streams/stable.json | jq -r .architectures.x86_64.artifacts.metal.release)
 fi
@@ -80,14 +84,6 @@ case "${BOOTIE_REQUIRE_INSTALL_POLICY:-false}" in
   false | true) ;;
   *) booterr 'BOOTIE_REQUIRE_INSTALL_POLICY must be true or false' ;;
 esac
-case "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" in
-  false | true) ;;
-  *) booterr 'BOOTIE_REQUIRE_BOOTSTRAP_STATE must be true or false' ;;
-esac
-case "${BOOTIE_INSTALL_DELIVERY:-ignition}" in
-  ignition | custom-initramfs) ;;
-  *) booterr 'BOOTIE_INSTALL_DELIVERY must be ignition or custom-initramfs' ;;
-esac
 if [[ "${BOOTIE_REQUIRE_INSTALL_POLICY:-false}" == true ]]; then
   if [[ -z "${BOOTIE_INSTALL_POLICY_FILE:-}" ||
         ! -f "$BOOTIE_INSTALL_POLICY_FILE" ||
@@ -107,45 +103,6 @@ fi
 if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" &&
       ! "$BOOTIE_EXPECTED_NODE_UID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
   booterr 'BOOTIE_EXPECTED_NODE_UID must be one exact Kubernetes UUID'
-fi
-if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
-  if [[ -z "${BOOTIE_NODE_NAME:-}" ||
-        "${BOOTIE_ALLOW_NODE_CREATE:-true}" != false ||
-        "${BOOTIE_REQUIRE_INSTALL_POLICY:-false}" != true ||
-        "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" != true ]]; then
-    booterr 'custom-initramfs delivery requires a fixed predeclared Node and both install gates'
-  fi
-  if [[ -z "${BOOTIE_CUSTOM_INITRAMFS_NAME:-}" ||
-        ! "$BOOTIE_CUSTOM_INITRAMFS_NAME" =~ ^[0-9a-f]{32,64}\.img$ ]]; then
-    booterr 'BOOTIE_CUSTOM_INITRAMFS_NAME must be a 128-bit-or-stronger capability filename'
-  fi
-  if [[ -z "${BOOTIE_CUSTOM_FCOS_VERSION:-}" ||
-        "$BOOTIE_CUSTOM_FCOS_VERSION" != "$FCOS_VERSION" ]]; then
-    booterr 'BOOTIE_CUSTOM_FCOS_VERSION must exactly match FCOS_VERSION'
-  fi
-  if [[ "${BOOTIE_CUSTOM_LIVE_KARGS:-}" != \
-        'coreos.inst.skip_reboot systemd.show_status=false' ]]; then
-    booterr 'BOOTIE_CUSTOM_LIVE_KARGS must preserve the exact reviewed installer lifecycle arguments'
-  fi
-  [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" ]] ||
-    booterr 'custom-initramfs delivery requires BOOTIE_EXPECTED_NODE_UID'
-  if [[ -z "${BOOTIE_CUSTOM_INITRAMFS_SHA256:-}" ||
-        ! "$BOOTIE_CUSTOM_INITRAMFS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-    booterr 'BOOTIE_CUSTOM_INITRAMFS_SHA256 must be one lowercase SHA-256'
-  fi
-  custom_initramfs_file=${BOOTIE_CUSTOM_INITRAMFS_FILE:-/pxe/$BOOTIE_CUSTOM_INITRAMFS_NAME}
-  if [[ $custom_initramfs_file != /* ||
-        ${custom_initramfs_file##*/} != "$BOOTIE_CUSTOM_INITRAMFS_NAME" ||
-        ! -f $custom_initramfs_file || -L $custom_initramfs_file ]]; then
-    booterr 'the customized PXE initramfs is unavailable or does not match its capability name'
-  fi
-  if [[ $(stat -Lc '%a:%h' "$custom_initramfs_file") != 644:1 ]]; then
-    booterr 'the customized PXE initramfs must be a single-link runtime snapshot'
-  fi
-  actual_custom_initramfs_sha256=$(sha256sum "$custom_initramfs_file" | awk '{print $1}')
-  if [[ $actual_custom_initramfs_sha256 != "$BOOTIE_CUSTOM_INITRAMFS_SHA256" ]]; then
-    booterr 'the customized PXE initramfs does not match its expected SHA-256'
-  fi
 fi
 
 # iPXE supplies simple, non-percent-encoded identity values. Ignore every
@@ -197,8 +154,7 @@ node_snapshot=
 
 if [[ -n "${BOOTIE_NODE_NAME:-}" ]]; then
   node=node/$BOOTIE_NODE_NAME
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ||
-        (-n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}") ]]; then
+  if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" ]]; then
     node_snapshot=$(kubectl get "$node" -o json) ||
       booterr "the fixed Bootie Node is unavailable: $node"
     jq -e --arg name "$BOOTIE_NODE_NAME" '
@@ -270,16 +226,12 @@ if [[ -z "$node" ]]; then
   )
   node_created=true
 else
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ||
-        (-n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}") ]]; then
+  if [[ -n "$node_snapshot" ]]; then
     boot_device=$(jq -r '.metadata.annotations["samcday.com/boot-device"] // ""' \
       <<<"$node_snapshot")
     install=$(jq -r '.metadata.annotations["samcday.com/install"] // ""' \
       <<<"$node_snapshot")
     discovery=$(jq -r '.metadata.labels["samcday.com/discovery"] // ""' \
-      <<<"$node_snapshot")
-    bootstrap_state=$(jq -r \
-      '.metadata.annotations["fabric.samcday.com/bootstrap-state"] // ""' \
       <<<"$node_snapshot")
     custom_node_resource_version=$(jq -r '.metadata.resourceVersion // ""' \
       <<<"$node_snapshot")
@@ -298,8 +250,6 @@ else
     boot_device=$(kubectl get "$node" -o jsonpath='{.metadata.annotations.samcday\.com/boot-device}')
     install=$(kubectl get "$node" -o jsonpath='{.metadata.annotations.samcday\.com/install}')
     discovery=$(kubectl get "$node" -o jsonpath='{.metadata.labels.samcday\.com/discovery}')
-    bootstrap_state=$(kubectl get "$node" \
-      -o jsonpath='{.metadata.annotations.fabric\.samcday\.com/bootstrap-state}')
   fi
 fi
 
@@ -319,54 +269,6 @@ if [[ "${install:-}" == "true" ]]; then
   fi
   if [[ -z "${boot_device:-}" ]]; then
     booterr "installation is armed for $node but samcday.com/boot-device is empty"
-  fi
-  if [[ "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" == true &&
-        "${bootstrap_state:-}" != install-armed ]]; then
-    booterr "installation is armed for $node without the reviewed bootstrap state"
-  fi
-
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
-    jq -e '
-      .metadata.labels["fabric.samcday.com/bootstrap-placeholder"] == "true"
-    ' <<<"$node_snapshot" >/dev/null ||
-      booterr "installation is armed for $node without the worker bootstrap placeholder"
-    jq -e '
-      .metadata.labels | has("fabric.samcday.com/platform") | not
-    ' <<<"$node_snapshot" >/dev/null ||
-      booterr "installation is armed for $node with the worker platform label already assigned"
-    jq -e '
-      .metadata.labels | has("node-role.kubernetes.io/worker") | not
-    ' <<<"$node_snapshot" >/dev/null ||
-      booterr "installation is armed for $node with a reserved worker role already assigned"
-    jq -e '
-      (.spec.taints // null) as $taints |
-      ($taints | type) == "array" and
-      ([
-        $taints[] |
-        select(. == {
-          effect: "NoSchedule",
-          key: "fabric.samcday.com/platform",
-          value: "true"
-        })
-      ] | length) == 1 and
-      all($taints[];
-        . == {
-          effect: "NoSchedule",
-          key: "fabric.samcday.com/platform",
-          value: "true"
-        } or
-        (
-          (.key == "node.kubernetes.io/not-ready" or
-           .key == "node.kubernetes.io/unreachable") and
-          ((.value // "") == "") and
-          (.effect == "NoSchedule" or .effect == "NoExecute") and
-          ((keys - ["effect", "key", "timeAdded", "value"]) | length == 0) and
-          ((has("timeAdded") | not) or
-           (.timeAdded | type == "string" and length > 0))
-        )
-      )
-    ' <<<"$node_snapshot" >/dev/null ||
-      booterr "installation is armed for $node without the exact worker platform taint set"
   fi
 
   if [[ -n "${BOOTIE_INSTALL_POLICY_FILE:-}" ]]; then
@@ -395,44 +297,19 @@ if [[ "${install:-}" == "true" ]]; then
     booterr 'installation requires an exact device policy'
   fi
 
-  # Atomically consume the destructive authorization. The legacy delivery
-  # binds a following Ignition response to a one-use token. A customized PXE
-  # initramfs already carries the live and destination Ignitions, so it must
-  # not leave a second, independently usable Ignition token behind.
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
-    patch=$(jq -cn --arg resource_version "$custom_node_resource_version" \
+  # Atomically consume the install arm and bind the following Ignition response
+  # to a one-use token. A fixed Node identity also fences concurrent replacement.
+  if [[ -n "$node_snapshot" ]]; then
+    patch=$(jq -cn --arg token "$ignition_token" \
+      --arg resource_version "$custom_node_resource_version" \
       --arg uid "$custom_node_uid" '[
       {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
       {"op":"test","path":"/metadata/uid","value":$uid},
       {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
-      {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
       {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
-      {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"}
+      {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
+      {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
     ]')
-  elif [[ "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" == true ]]; then
-    if [[ -n "${BOOTIE_EXPECTED_NODE_UID:-}" && -n "${BOOTIE_NODE_NAME:-}" ]]; then
-      patch=$(jq -cn --arg token "$ignition_token" \
-        --arg resource_version "$custom_node_resource_version" \
-        --arg uid "$custom_node_uid" '[
-        {"op":"test","path":"/metadata/resourceVersion","value":$resource_version},
-        {"op":"test","path":"/metadata/uid","value":$uid},
-        {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
-        {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
-        {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
-        {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
-        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
-        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
-      ]')
-    else
-      patch=$(jq -cn --arg token "$ignition_token" '[
-        {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
-        {"op":"test","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-armed"},
-        {"op":"remove","path":"/metadata/annotations/samcday.com~1install"},
-        {"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"},
-        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-token","value":$token},
-        {"op":"add","path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"}
-      ]')
-    fi
   else
     patch=$(jq -cn --arg token "$ignition_token" '[
       {"op":"test","path":"/metadata/annotations/samcday.com~1install","value":"true"},
@@ -444,18 +321,8 @@ if [[ "${install:-}" == "true" ]]; then
   if ! kubectl patch "$node" --type=json --patch "$patch" >/dev/null; then
     booterr "installation authorization for $node was already consumed or changed"
   fi
-  if [[ "${BOOTIE_INSTALL_DELIVERY:-ignition}" == custom-initramfs ]]; then
-    initramfs_url="$BOOTIE_PUBLIC_ORIGIN/custom-initramfs/$BOOTIE_CUSTOM_INITRAMFS_NAME"
-    if [[ $BOOT_FORMAT == grub ]]; then
-      [[ $FCOS_GRUB_BASE == */static ]] ||
-        booterr 'custom-initramfs GRUB delivery requires FCOS_GRUB_BASE ending in /static'
-      grub_initramfs_url="${FCOS_GRUB_BASE%/static}/custom-initramfs/$BOOTIE_CUSTOM_INITRAMFS_NAME"
-    fi
-    kernel_args+="ignition.firstboot ignition.platform.id=metal $BOOTIE_CUSTOM_LIVE_KARGS "
-  else
-    ignition_url+="&install=1"
-    kernel_args+="coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=$ignition_url "
-  fi
+  ignition_url+="&install=1"
+  kernel_args+="coreos.inst.install_dev=$boot_device coreos.inst.ignition_url=$ignition_url "
 else
   # Known non-installing nodes need a token too. Unknown nodes received this
   # annotation in their atomic create above.

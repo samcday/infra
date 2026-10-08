@@ -1,8 +1,13 @@
 #!/bin/bash
 set -ueo pipefail
 
-if [[ "${BOOTIE_DAY2_MODE:-false}" == true ]]; then
-  exec /usr/local/bin/generate-ignition-day2
+if [[ "${BOOTIE_DAY2_MODE:-false}" != false ||
+      "${BOOTIE_REQUIRE_BOOTSTRAP_STATE:-false}" != false ||
+      "${BOOTIE_INSTALL_DELIVERY:-ignition}" != ignition ]]; then
+  echo 'unsupported provisioning mode' >&2
+  echo 'Status: 409 Conflict'
+  echo
+  exit
 fi
 
 request_path=${REQUEST_URI%%\?*}

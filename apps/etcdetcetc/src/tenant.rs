@@ -4385,7 +4385,7 @@ Fcix40FKEeiE093Aj3cweMYxNLPgwgQP8Xu3kA5QEw==
 
         let mut cluster_issuer = cluster.spec.tenant_tls.unwrap().issuer_ref;
         cluster_issuer.kind = crate::crd::IssuerKind::ClusterIssuer;
-        cluster_issuer.name = "fabric-etcd-client-v1".to_string();
+        cluster_issuer.name = "etcd-client-v1".to_string();
         let cluster_scoped = build_certificate_manifest(
             "etcdtenant-22222222-2222-2222-2222-222222222222",
             "etcdtenant-22222222-2222-2222-2222-222222222222-tls",
@@ -4397,7 +4397,7 @@ Fcix40FKEeiE093Aj3cweMYxNLPgwgQP8Xu3kA5QEw==
         assert_eq!(cluster_scoped["spec"]["issuerRef"]["kind"], "ClusterIssuer");
         assert_eq!(
             cluster_scoped["spec"]["issuerRef"]["name"],
-            "fabric-etcd-client-v1"
+            "etcd-client-v1"
         );
     }
 

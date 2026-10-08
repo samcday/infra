@@ -2,20 +2,15 @@ use anyhow::{Context, Result, bail};
 use k8s_openapi::api::core::v1::Secret;
 use kube::api::Api;
 use kube::config::{
-    AuthInfo, Cluster, ExecConfig, ExecInteractiveMode, KubeConfigOptions, Kubeconfig,
+    AuthInfo, Cluster, KubeConfigOptions, Kubeconfig,
     NamedAuthInfo, NamedCluster, NamedContext,
 };
 use kube::{Client, Config};
 use std::path::{Path, PathBuf};
 
-pub enum ParentAuth {
-    CertificateFiles {
-        client_cert: PathBuf,
-        client_key: PathBuf,
-    },
-    Exec {
-        command: PathBuf,
-    },
+pub struct ParentAuth {
+    pub client_cert: PathBuf,
+    pub client_key: PathBuf,
 }
 
 pub async fn fetch_ca_secret(
@@ -25,28 +20,10 @@ pub async fn fetch_ca_secret(
     parent_auth: ParentAuth,
     namespace: &str,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    let auth_info = match parent_auth {
-        ParentAuth::CertificateFiles {
-            client_cert,
-            client_key,
-        } => AuthInfo {
-            client_certificate: Some(client_cert.to_string_lossy().to_string()),
-            client_key: Some(client_key.to_string_lossy().to_string()),
-            ..Default::default()
-        },
-        ParentAuth::Exec { command } => AuthInfo {
-            exec: Some(ExecConfig {
-                api_version: Some("client.authentication.k8s.io/v1".to_string()),
-                command: Some(command.to_string_lossy().to_string()),
-                args: None,
-                env: None,
-                drop_env: None,
-                interactive_mode: Some(ExecInteractiveMode::Never),
-                provide_cluster_info: false,
-                cluster: None,
-            }),
-            ..Default::default()
-        },
+    let auth_info = AuthInfo {
+        client_certificate: Some(parent_auth.client_cert.to_string_lossy().to_string()),
+        client_key: Some(parent_auth.client_key.to_string_lossy().to_string()),
+        ..Default::default()
     };
 
     let kubeconfig = Kubeconfig {

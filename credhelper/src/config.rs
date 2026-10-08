@@ -5,8 +5,6 @@ use std::process::Command;
 pub const HUB_SERVER_URL: &str = "https://hub-apiserver.tailnet.hub.samcday.com:6443";
 pub const HUB_SERVER_TLS_NAME: &str = "10.0.1.254";
 pub const CLOUD_SERVER_URL: &str = "https://cloud-cluster-apiserver.tailnet.hub.samcday.com:6443";
-pub const FABRIC_SERVER_URL: &str = "https://10.66.0.254:6443";
-pub const FABRIC_SERVER_TLS_NAME: &str = "api.fabric.internal";
 pub const CERT_VALIDITY_DAYS: u32 = 1;
 pub const CACHE_EXPIRY_MARGIN_SECS: i64 = 300;
 pub const CERT_SUBJECT_CN: &str = "kubernetes-admin";
@@ -16,13 +14,12 @@ pub fn child_namespace(cluster: &str) -> Option<&'static str> {
     match cluster {
         "cloud" => Some("cloud-cluster"),
         "edge-au-east" => Some("edge"),
-        "lab" => Some("lab"),
         _ => None,
     }
 }
 
 pub fn all_child_clusters() -> &'static [&'static str] {
-    &["cloud", "edge-au-east", "lab"]
+    &["cloud", "edge-au-east"]
 }
 
 pub fn cache_root() -> PathBuf {
@@ -50,4 +47,19 @@ pub fn repo_root() -> Result<PathBuf> {
         .trim()
         .to_string();
     Ok(PathBuf::from(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_child_clusters_match_the_remaining_hierarchy() {
+        assert_eq!(all_child_clusters(), &["cloud", "edge-au-east"]);
+        assert_eq!(child_namespace("cloud"), Some("cloud-cluster"));
+        assert_eq!(child_namespace("edge-au-east"), Some("edge"));
+        for unsupported in ["hub", "fabric", "lab", "unknown"] {
+            assert_eq!(child_namespace(unsupported), None);
+        }
+    }
 }

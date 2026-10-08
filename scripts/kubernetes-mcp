@@ -39,9 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-# The tracked kubeconfig intentionally defaults ordinary kubectl to fabric.
-# Keep the repository's read-only MCP server defaulting to hub while retaining
-# all contexts for its explicit multi-cluster tools.
+# Keep the read-only MCP server defaulting to hub while retaining all contexts
+# for its explicit multi-cluster tools.
 install -m 0600 -- "$repo_root/kubeconfig" "$kubeconfig"
 # Once the copy lives in XDG_RUNTIME_DIR, make repo-relative public CA paths
 # absolute. Some optional generated child CAs may not exist yet, so do not use
@@ -49,7 +48,6 @@ install -m 0600 -- "$repo_root/kubeconfig" "$kubeconfig"
 # file while trying to read them.
 sed -i \
   -e "s#certificate-authority: hub/#certificate-authority: $repo_root/hub/#" \
-  -e "s#certificate-authority: fabric/#certificate-authority: $repo_root/fabric/#" \
   "$kubeconfig"
 kubectl --kubeconfig "$kubeconfig" config use-context hub >/dev/null
 

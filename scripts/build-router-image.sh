@@ -182,12 +182,8 @@ if [[ -d "$config_dir/files.enc" ]]; then
       die "could not decrypt router overlay file: $config_dir/$f"
     fi
     # SOPS protects content, not destination metadata. Preserve executable bits
-    # and other reviewed source modes, then enforce the fabric credential
-    # directory independently because Git does not retain mode 0600.
+    # and other reviewed source modes.
     chmod --reference="$config_dir/$f" "$decrypted_tmp"
-    case $dst in
-      files/etc/fabric/*) chmod 0600 "$decrypted_tmp" ;;
-    esac
     mv -f -- "$decrypted_tmp" "$build_dir/$dst"
   done < <(cd "$config_dir" && find files.enc/ -type f -print0)
 fi
@@ -370,7 +366,7 @@ if [[ -f $config_dir/data-files.txt ]]; then
       die "unsafe filename in data record $record_number: $filename"
     [[ -n "$url" && "$url" != *[[:space:]]* ]] ||
       die "invalid source in data record $record_number: $filename"
-    [[ "$url" == https://* || "$url" == oci://* ]] ||
+    [[ "$url" == https://* ]] ||
       die "unsupported source scheme in data record $record_number: $filename"
     [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] ||
       die "invalid SHA256 in data record $record_number: $filename"
@@ -393,7 +389,7 @@ if [[ -f $config_dir/data-files.txt ]]; then
   trap cleanup_shasums_tmp EXIT
 
   # Build the complete manifest alongside the published one. A late download
-  # or image-stage failure must leave the last known-complete manifest intact.
+  # failure must leave the last known-complete manifest intact.
   for ((index = 0; index < ${#data_filenames[@]}; index++)); do
     filename=${data_filenames[$index]}
     sha256=${data_hashes[$index]}
@@ -405,13 +401,7 @@ if [[ -f $config_dir/data-files.txt ]]; then
     url=${data_sources[$index]}
     sha256=${data_hashes[$index]}
 
-    if [[ "$url" == oci://* ]]; then
-      "$root_dir/scripts/stage-fabric-airgap-images" \
-        --filename "$filename" \
-        --output-dir "$data_dir"
-    else
-      download_verified "$url" "$sha256" "$data_dir/$filename"
-    fi
+    download_verified "$url" "$sha256" "$data_dir/$filename"
     printf '%s  %s\n' "$sha256" "$data_dir/$filename" | sha256sum -c -
   done
 

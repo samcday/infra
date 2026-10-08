@@ -86,10 +86,7 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
 
     let paths = cache::CachePaths::for_cluster(cluster);
     let root = config::repo_root()?;
-    let repo_server_ca = match cluster {
-        "lab" => root.join("fabric/pki/k8s/lab-server-ca.crt"),
-        _ => root.join(format!("hub/pki/k8s/{cluster}-server-ca.crt")),
-    };
+    let repo_server_ca = root.join(format!("hub/pki/k8s/{cluster}-server-ca.crt"));
 
     let cache_ok = cache::is_valid(&paths) && paths.server_ca.exists();
 
@@ -119,7 +116,7 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
                 config::HUB_SERVER_URL,
                 Some(config::HUB_SERVER_TLS_NAME),
                 hub_server_ca,
-                kube_client::ParentAuth::CertificateFiles {
+                kube_client::ParentAuth {
                     client_cert: hub_paths.client_cert,
                     client_key: hub_paths.client_key,
                 },
@@ -132,21 +129,9 @@ async fn ensure_child_credentials(cluster: &str, init: bool) -> Result<cache::Ca
                 config::CLOUD_SERVER_URL,
                 None,
                 cloud_server_ca,
-                kube_client::ParentAuth::CertificateFiles {
+                kube_client::ParentAuth {
                     client_cert: cloud_paths.client_cert,
                     client_key: cloud_paths.client_key,
-                },
-            )
-        }
-        "lab" => {
-            let fabric_server_ca = root.join("fabric/access/server-ca.crt");
-            let fabric_credential = root.join("scripts/fabric-credential");
-            (
-                config::FABRIC_SERVER_URL,
-                Some(config::FABRIC_SERVER_TLS_NAME),
-                fabric_server_ca,
-                kube_client::ParentAuth::Exec {
-                    command: fabric_credential,
                 },
             )
         }
@@ -200,8 +185,7 @@ fn usage() {
 Clusters:
   hub
   cloud
-  edge-au-east
-  lab"
+  edge-au-east"
     );
 }
 

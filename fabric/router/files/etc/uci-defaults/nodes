@@ -1,4 +1,0 @@
-# Static leases are populated only after the read-only hardware inventory pass.
-set -uexo pipefail
-
-true

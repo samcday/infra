@@ -10,8 +10,7 @@
 
 ## Cluster Access
 - Use `scripts/ik --context=hub ...` for the management cluster,
-  `scripts/ik --context=cloud ...` for app workloads, and
-  `scripts/ik --context=fabric ...` for the Fabric root cluster; it always uses
+  and `scripts/ik --context=cloud ...` for app workloads; it always uses
   the repo-local `kubeconfig`.
 - `.mcp.json` configures a read-only Kubernetes MCP server against `./kubeconfig` with `core,config,helm` toolsets.
 - For app debugging, check Flux `GitRepository`/`Kustomization` objects in the hub `cloud-cluster` namespace, then workloads in the same app namespace on the `cloud` context.
@@ -23,7 +22,7 @@
 - `scripts/sync-chart-crds --check` proves the Helm CRDs match the Rust types.
   `scripts/lifecycle-integration --check` validates immutable prerequisites;
   `--run` creates and tears down a disposable kind API plus real etcd 3.6.13
-  and exercises the delegated-CA tenant lifecycle without reading Fabric.
+  and exercises the delegated-CA tenant lifecycle without reading live infrastructure.
 - `cargo xtask dev-up` requires `kind`, `docker`, `kubectl`, and `crane`; it also creates/reuses Docker registry `127.0.0.1:5001`.
 - The `etcdetcetc` Tilt path uses `tilt up` or `tilt ci` and builds `x86_64-unknown-linux-musl`; local setup needs protobuf and musl tooling like the devcontainer installs.
 - The shipped `apps/etcdetcetc` image strips `xtask` from `Cargo.toml`; do not rely on `xtask` existing in the runtime container.
@@ -51,9 +50,8 @@
   `cargo clippy --workspace --all-targets --locked -- -D warnings` in
   `apps/etcdetcetc`, or `cargo check --manifest-path credhelper/Cargo.toml` for
   `credhelper`.
-- Focused suites include `fabric/router/tests/run`,
-  `fabric/pki/etcd/tests/run`, `fabric/pki/etcdetcetc/tests/run`,
-  `fabric/observer/tests/run`, and `charts/k8s-control-plane/tests/run`. Use
+- Focused suites include `apps/bootie/tests/run`
+  and `charts/k8s-control-plane/tests/run`. Use
   Docker builds, Helm renders, strict Butane checks, or
   `kubectl kustomize <path>` for the remaining component surface.
 - GitHub Actions do not run repo-wide validation; `.github/workflows/images.yaml`

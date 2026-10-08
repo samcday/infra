@@ -1,15 +1,10 @@
 {
-  "ignition": {
-    "version": "3.4.0"
-  },
+  "ignition": {"version": "3.4.0"},
   "storage": {
-    "files": [
-      {
-        "path": "/etc/bootie-fixed-profile",
-        "contents": {
-          "source": "data:,fabric-az1-cp3"
-        }
-      }
-    ]
+    "files": [{
+      "path": "/etc/bootie-fixed-profile",
+      "mode": 420,
+      "contents": {"source": "data:,test-node"}
+    }]
   }
 }

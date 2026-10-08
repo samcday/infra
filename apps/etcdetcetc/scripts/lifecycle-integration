@@ -6,7 +6,6 @@ umask 077
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 app_dir=$(cd -- "$script_dir/.." && pwd -P)
-repo_dir=$(cd -- "$app_dir/../.." && pwd -P)
 
 readonly etcd_version=3.6.13
 readonly etcd_archive=etcd-v3.6.13-linux-amd64.tar.gz
@@ -47,7 +46,7 @@ checksum-pinned real etcd 3.6.13 server.
 creating a cluster. --run creates and always tears down an isolated kind
 cluster, local etcd process, two host controller processes, and deterministic
 Certificate emulator. It retains its private temporary evidence directory only
-on failure. No Fabric context or live infrastructure is read or changed.
+on failure. No live infrastructure is read or changed.
 EOF
 }
 
@@ -85,12 +84,11 @@ done
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] ||
   die 'the pinned etcd archive and kind image currently support only Linux x86_64'
 
-archive_contract=$(awk -v name="$etcd_archive" '
-  $0 == name { print; getline; print; getline; print; exit }
-' "$repo_dir/fabric/router/data-files.txt")
-[[ $archive_contract == "$etcd_archive
-$etcd_archive_url
-$etcd_archive_sha256" ]] || die 'repository etcd 3.6.13 archive pin differs from the lifecycle gate'
+# These pins belong to this disposable fixture, independently of deployed routers.
+[[ $etcd_archive == "etcd-v${etcd_version}-linux-amd64.tar.gz" &&
+   $etcd_archive_sha256 =~ ^[0-9a-f]{64}$ &&
+   $kind_amd64_digest =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  die 'lifecycle gate download or image pin is malformed'
 
 [[ -f $app_dir/dev/certificate-crd.yaml ]] || die 'minimal Certificate CRD is absent'
 yq -e '
@@ -294,17 +292,17 @@ openssl x509 -req -sha256 -days 2 -in "$pki/admin.csr" \
   -extfile "$pki/client.ext" -out "$pki/admin.crt" >/dev/null 2>&1
 
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
-  -out "$pki/fabric-root.key"
-openssl req -new -sha256 -key "$pki/fabric-root.key" \
-  -subj /CN=fabric-root -out "$pki/fabric-root.csr"
-openssl x509 -req -sha256 -days 2 -in "$pki/fabric-root.csr" \
+  -out "$pki/platform-root.key"
+openssl req -new -sha256 -key "$pki/platform-root.key" \
+  -subj /CN=platform-root -out "$pki/platform-root.csr"
+openssl x509 -req -sha256 -days 2 -in "$pki/platform-root.csr" \
   -CA "$pki/ca.crt" -CAkey "$pki/ca.key" -CAserial "$pki/ca.srl" \
-  -extfile "$pki/client.ext" -out "$pki/fabric-root.crt" >/dev/null 2>&1
+  -extfile "$pki/client.ext" -out "$pki/platform-root.crt" >/dev/null 2>&1
 
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
   -out "$pki/controller-admin.key"
 openssl req -new -sha256 -key "$pki/controller-admin.key" \
-  -subj /CN=fabric-etcdetcetc -out "$pki/controller-admin.csr"
+  -subj /CN=lifecycle-controller -out "$pki/controller-admin.csr"
 openssl x509 -req -sha256 -days 1 -in "$pki/controller-admin.csr" \
   -CA "$pki/client-ca.crt" -CAkey "$pki/client-ca.key" -CAcreateserial \
   -extfile "$pki/client.ext" -out "$pki/controller-admin.crt" >/dev/null 2>&1
@@ -337,12 +335,12 @@ etcd_admin() {
     "$@"
 }
 
-etcd_fabric_root() {
+etcd_platform_root() {
   "$work/bin/etcdctl" \
     --endpoints "$endpoint" \
     --cacert "$pki/ca.crt" \
-    --cert "$pki/fabric-root.crt" \
-    --key "$pki/fabric-root.key" \
+    --cert "$pki/platform-root.crt" \
+    --key "$pki/platform-root.key" \
     "$@"
 }
 
@@ -379,12 +377,12 @@ print(json.dumps(contract, sort_keys=True, separators=(",", ":")))
 ' <<<"$member_json"
 }
 
-fabric_root_contract() {
+platform_root_contract() {
   local role_json user_json
-  user_json=$(etcd_admin --write-out=json user get fabric-root) ||
-    die 'cannot read lifecycle fabric-root user'
-  role_json=$(etcd_admin --write-out=json role get fabric-root) ||
-    die 'cannot read lifecycle fabric-root role'
+  user_json=$(etcd_admin --write-out=json user get platform-root) ||
+    die 'cannot read lifecycle platform-root user'
+  role_json=$(etcd_admin --write-out=json role get platform-root) ||
+    die 'cannot read lifecycle platform-root role'
   jq -n -cS \
     --argjson roles "$(jq -cS '.roles' <<<"$user_json")" \
     --argjson permissions "$(jq -cS '
@@ -397,16 +395,16 @@ fabric_root_contract() {
     '{roles: $roles, permissions: $permissions}'
 }
 
-assert_fabric_root_exact() {
+assert_platform_root_exact() {
   local contract=$1
   jq -e '
-    .roles == ["fabric-root"] and
+    .roles == ["platform-root"] and
     .permissions == [
       {permType: 2, key: "/bootstrap/", range_end: "/bootstrap0"},
-      {permType: 2, key: "/fabric-root/", range_end: "/fabric-root0"}
+      {permType: 2, key: "/platform-root/", range_end: "/platform-root0"}
     ]
   ' <<<"$contract" >/dev/null ||
-    die 'lifecycle fabric-root differs from the exact two-prefix contract'
+    die 'lifecycle platform-root differs from the exact two-prefix contract'
 }
 
 deadline=$((SECONDS + 60))
@@ -417,13 +415,13 @@ until etcd_admin endpoint health >/dev/null 2>&1; do
 done
 etcd_admin user add root --no-password >/dev/null
 etcd_admin user grant-role root root >/dev/null
-etcd_admin role add fabric-root >/dev/null
-etcd_admin role grant-permission fabric-root --prefix=true readwrite /fabric-root/ >/dev/null
-etcd_admin role grant-permission fabric-root --prefix=true readwrite /bootstrap/ >/dev/null
-etcd_admin user add fabric-root --no-password >/dev/null
-etcd_admin user grant-role fabric-root fabric-root >/dev/null
-etcd_admin user add fabric-etcdetcetc --no-password >/dev/null
-etcd_admin user grant-role fabric-etcdetcetc root >/dev/null
+etcd_admin role add platform-root >/dev/null
+etcd_admin role grant-permission platform-root --prefix=true readwrite /platform-root/ >/dev/null
+etcd_admin role grant-permission platform-root --prefix=true readwrite /bootstrap/ >/dev/null
+etcd_admin user add platform-root --no-password >/dev/null
+etcd_admin user grant-role platform-root platform-root >/dev/null
+etcd_admin user add lifecycle-controller --no-password >/dev/null
+etcd_admin user grant-role lifecycle-controller root >/dev/null
 etcd_admin auth enable >/dev/null
 etcd_admin endpoint health >/dev/null
 etcd_controller_admin endpoint health >/dev/null
@@ -443,15 +441,15 @@ jq -e --arg endpoint "$endpoint" --arg peer "http://127.0.0.1:$peer_port" '
 ' <<<"$physical_members_before" >/dev/null ||
   die 'initial lifecycle physical member contract is not exactly one voting member'
 
-fabric_root_before=$(fabric_root_contract)
-assert_fabric_root_exact "$fabric_root_before"
-fabric_root_smoke_key=/fabric-root/.etcdetcetc-lifecycle-preservation
-etcd_fabric_root put "$fabric_root_smoke_key" preserved >/dev/null
-[[ $(etcd_fabric_root get "$fabric_root_smoke_key" --print-value-only) == preserved ]] ||
-  die 'fabric-root fixture cannot read its exact prefix'
-etcd_fabric_root del "$fabric_root_smoke_key" >/dev/null
-if etcd_fabric_root get /etcdetcetc-lifecycle-must-deny >/dev/null 2>&1; then
-  die 'fabric-root fixture read outside its two exact prefixes'
+platform_root_before=$(platform_root_contract)
+assert_platform_root_exact "$platform_root_before"
+platform_root_smoke_key=/platform-root/.etcdetcetc-lifecycle-preservation
+etcd_platform_root put "$platform_root_smoke_key" preserved >/dev/null
+[[ $(etcd_platform_root get "$platform_root_smoke_key" --print-value-only) == preserved ]] ||
+  die 'platform-root fixture cannot read its exact prefix'
+etcd_platform_root del "$platform_root_smoke_key" >/dev/null
+if etcd_platform_root get /etcdetcetc-lifecycle-must-deny >/dev/null 2>&1; then
+  die 'platform-root fixture read outside its two exact prefixes'
 fi
 
 kind_image="kindest/node:${kind_version}@${kind_amd64_digest}"
@@ -1279,16 +1277,16 @@ wait_for 'Certificate deletion cleanup' object_absent certificate "$system_names
 [[ $(etcd_admin get "$outside_key" --print-value-only) == "$outside_value" ]] ||
   die 'lifecycle operations changed the outside-prefix sentinel'
 
-fabric_root_after=$(fabric_root_contract)
-assert_fabric_root_exact "$fabric_root_after"
-[[ $fabric_root_after == "$fabric_root_before" ]] ||
-  die 'tenant lifecycle changed the retained fabric-root authorization contract'
-etcd_fabric_root get /bootstrap/ --prefix --limit=1 >/dev/null ||
-  die 'retained fabric-root credential lost bootstrap-prefix access'
+platform_root_after=$(platform_root_contract)
+assert_platform_root_exact "$platform_root_after"
+[[ $platform_root_after == "$platform_root_before" ]] ||
+  die 'tenant lifecycle changed the retained platform-root authorization contract'
+etcd_platform_root get /bootstrap/ --prefix --limit=1 >/dev/null ||
+  die 'retained platform-root credential lost bootstrap-prefix access'
 
 physical_members_after=$(physical_member_contract)
 printf '%s\n' "$physical_members_after" >"$work/physical-members-after.json"
 [[ $physical_members_after == "$physical_members_before" ]] ||
   die 'controller lifecycle changed the physical etcd member contract'
 
-note 'PASS: fenced standby takeover, replacement cluster reconciliation, unchanged physical membership, delegated-CA provisioning, prefix isolation, fabric-root preservation, durable deauthorization barrier, reauthorization, and deletion cleanup'
+note 'PASS: fenced standby takeover, replacement cluster reconciliation, unchanged physical membership, delegated-CA provisioning, prefix isolation, platform-root preservation, durable deauthorization barrier, reauthorization, and deletion cleanup'

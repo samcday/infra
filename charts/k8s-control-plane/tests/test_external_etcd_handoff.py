@@ -12,9 +12,9 @@ import yaml
 CHART = pathlib.Path(__file__).resolve().parents[1]
 
 ENDPOINTS = [
-    "https://10.66.0.10:2379",
-    "https://10.66.0.11:2379",
-    "https://10.66.0.12:2379",
+    "https://192.0.2.10:2379",
+    "https://192.0.2.11:2379",
+    "https://192.0.2.12:2379",
 ]
 PREFIX = "/kubernetes/child/"
 SECRET_NAME = "child-apiserver-etcd-client"

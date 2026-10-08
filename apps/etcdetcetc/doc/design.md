@@ -6,7 +6,7 @@ Multi-tenant etcd clusters need per-tenant RBAC: users, roles, and
 prefix-scoped permissions. Doing this by hand with `etcdctl` is error-prone,
 not declarative, and makes credential lifecycle difficult to audit.
 
-Here, "tenant" means a mutually trusted Fabric workload with a distinct key
+Here, "tenant" means a mutually trusted workload with a distinct key
 prefix. It does not mean a hostile tenant or an independent availability
 domain.
 
@@ -18,7 +18,7 @@ domain.
 4. Emit a Secret per tenant with connection details for downstream consumers.
 5. Support opt-in client certificates through an explicitly scoped
    cert-manager Issuer without conflating its client CA with the physical etcd
-   server CA. Fabric isolates its signer as an admission-gated ClusterIssuer.
+   server CA. A shared signer must be isolated and protected by admission policy.
 
 ## Non-goals (v1alpha1)
 
@@ -54,7 +54,7 @@ spec:
   tenantTls:
     issuerRef:
       kind: ClusterIssuer
-      name: fabric-etcd-client-v1
+      name: etcd-client-v1
   allowedNamespaces:
     - cloud-cluster
     - simonet
@@ -243,10 +243,10 @@ tenant's prefix, etcd `3.6.13` denies that tenant's attach, renew, and revoke
 operations; the TLS provisioning probe verifies the destructive revoke case
 and nested-transaction attachment case against the configured server.
 
-This design therefore supports only mutually trusted, Fabric-operated control
-planes. Kubernetes Event objects are the stock apiserver path that uses native
-etcd TTL leases; coordination `Lease` objects are ordinary prefixed keys. A
-compromised control plane can still exhaust or disrupt the shared store.
+This design therefore supports only mutually trusted control planes under the
+same administration. Kubernetes Event objects are the stock apiserver path that
+uses native etcd TTL leases; coordination `Lease` objects are ordinary prefixed
+keys. A compromised control plane can still exhaust or disrupt the shared store.
 Independently administered clients require a dedicated etcd cluster or an
 identity-aware L7 proxy that owns the lease namespace and enforces per-identity
 rate and space limits.

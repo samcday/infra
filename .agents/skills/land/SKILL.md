@@ -20,8 +20,7 @@ An invocation is the landing request: proceed without asking again. Follow
 2. **Check the final changes before pushing.** Run `git diff --check`, relevant
    existing component tests, and affected renders, including consumers of shared
    bases/charts. Keep checks proportional; documentation changes need no app build.
-   - Kustomize: `kubectl kustomize <path>`; follow the pattern in
-     `fabric/cluster/lab/tests/test_contract.py:15`.
+   - Kustomize: `kubectl kustomize <path>`.
    - Helm: render affected releases with their actual chart version, namespace,
      and values; the invocation pattern is in
      `charts/k8s-control-plane/tests/test_external_etcd_handoff.py:43`.
@@ -36,13 +35,13 @@ An invocation is the landing request: proceed without asking again. Follow
 4. **Wait for green.** Relevant image builds must pass
    (`.github/workflows/images.yaml`), Flux must have consumed the landed commit
    (or a descendant containing it), and every active reconciler must be healthy.
-   Follow the Hub and Fabric fan-outs, including child-cluster releases
+   Follow the hub and cloud fan-outs, including child-cluster releases
    (`hub/cluster/flux-system/kustomizations.yaml`,
-   `hub/cluster/cloud-cluster/flux-system/`, `fabric/cluster/flux-system/`).
+   `hub/cluster/cloud-cluster/flux-system/`).
    Include tofu-controller's Terraform resources. Require current desired-state
    readiness, not stale green status; list intentionally suspended exclusions.
    Use bounded, read-only checks through `scripts/ik --context=<context> -n
-   <namespace> get ...` (`scripts/ik:16`). No live patches or forced reconciliation
+   <namespace> get ...`. No live patches or forced reconciliation
    without Sam's specific permission.
 
 5. **Sync parent.** After successful landing, ask the main/parent Delta thread to

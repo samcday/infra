@@ -32,10 +32,10 @@ spec:
     key: ca.crt
   tenantTls:
     issuerRef:
-      # Fabric keeps this ClusterIssuer's key outside every namespace readable
-      # by the controller and protects its use with fail-closed admission.
+      # Keep this ClusterIssuer's key outside every namespace readable by the
+      # controller and protect its use with fail-closed admission.
       kind: ClusterIssuer
-      name: fabric-etcd-client-v1
+      name: etcd-client-v1
   allowedNamespaces:
     - my-app
 ```
@@ -53,7 +53,7 @@ colocated with the EtcdCluster) or `ClusterIssuer`. The API group is fixed to
 `cert-manager.io`. A ClusterIssuer is safe only when its signing-key Secret is
 outside every namespace readable by this controller and an independent,
 fail-closed admission policy restricts Certificate and CertificateRequest
-shapes. Fabric uses that isolated ClusterIssuer pattern.
+shapes.
 
 The physical-cluster references in `endpoints`, `authSecretRef`, and
 `serverCAConfigMapRef` are immutable after creation. Rotate credentials or CA
@@ -145,8 +145,8 @@ populated foreign lease, including the nested-transaction attachment path.
 Native etcd leases have no owner, however: empty-lease races, lease TTL
 metadata, backend capacity, request processing, alarms, and availability are
 shared. A compromised tenant can deny service to every cluster even though it
-cannot modify another populated prefix. Only mutually trusted,
-Fabric-operated control planes are supported. Independently administered or
+cannot modify another populated prefix. Only mutually trusted control planes
+under the same administration are supported. Independently administered or
 hostile tenants require dedicated etcd or an identity-aware proxy with lease
 ownership and per-identity rate/capacity enforcement.
 
@@ -260,7 +260,7 @@ reconciled EtcdCluster ConfigMap remains a compatibility output and is not
 copied as the Tenant handoff source. Generated fragments set
 `etcd.externalSecretRevisionsRequired: true`, making both revisions mandatory.
 The chart's false default exists only so pre-handoff legacy releases can remain
-running until migration; Fabric tenants must never override the generated flag.
+running until migration; managed tenants must never override the generated flag.
 
 ```yaml
 spec:
@@ -304,12 +304,12 @@ non-preemption by the standby, a full stable-record interval before takeover,
 and two current-generation EtcdCluster reconciliations by the replacement. It
 also compares the exact physical member contract before and after the complete
 lifecycle. The fixture mirrors the production two-CA boundary: server and
-retained `fabric-root` identities chain to the physical CA, while the controller
+retained `platform-root` identities chain to the physical CA, while the controller
 admin and tenant leaves chain to the delegated client-only CA. The pass then
 requires exact prefix isolation, client-leaf rotation and handoff revisions,
-unchanged `fabric-root` access, durable deauthorization through early
+unchanged `platform-root` access, durable deauthorization through early
 reauthorization, retained tenant data, and exact finalizer cleanup. It never
-reads or changes Fabric.
+reads or changes live infrastructure.
 
 ### Runtime leadership and health
 

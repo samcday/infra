@@ -1680,13 +1680,13 @@ mod tests {
             readiness_for_state(true, true, Some(QUALIFIED_ETCD_VERSION), &[], false),
             (true, "Connected", String::new())
         );
-        let alarms = vec!["fabric-az1-cp2: NOSPACE".to_string()];
+        let alarms = vec!["etcd-member-2: NOSPACE".to_string()];
         assert_eq!(
             readiness_for_state(true, true, Some(QUALIFIED_ETCD_VERSION), &alarms, false,),
             (
                 false,
                 "AlarmsActive",
-                "etcd reports active alarms: fabric-az1-cp2: NOSPACE".to_string()
+                "etcd reports active alarms: etcd-member-2: NOSPACE".to_string()
             )
         );
     }

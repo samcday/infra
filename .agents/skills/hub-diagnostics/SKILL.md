@@ -1,6 +1,6 @@
 ---
 name: hub-diagnostics
-description: Perform compact, read-only diagnostics against this repository's hub, cloud, and fabric Kubernetes clusters. Use for Kubernetes inspection, Flux GitRepository, Kustomization, or HelmRelease failures, pod health, events, logs, Cilium, kube-vip, metrics-server, or etcd issues. Prefer the project's allowlisted Kubernetes MCP tools and use scripts/ik only for bounded reads the MCP cannot express.
+description: Perform compact, read-only diagnostics against this repository's hub and cloud Kubernetes clusters. Use for Kubernetes inspection, Flux GitRepository, Kustomization, or HelmRelease failures, pod health, events, logs, Cilium, kube-vip, metrics-server, or etcd issues. Prefer the project's allowlisted Kubernetes MCP tools and use scripts/ik only for bounded reads the MCP cannot express.
 ---
 
 # Infrastructure Cluster Diagnostics
@@ -9,14 +9,12 @@ Gather the smallest useful set of live-cluster evidence without changing cluster
 
 ## Select the context explicitly
 
-Require `hub`, `cloud`, or `fabric` for every cluster read. Never rely on the kubeconfig current context or an MCP default.
+Require `hub` or `cloud` for every cluster read. Never rely on the kubeconfig current context or an MCP default.
 
 - Use `hub` for the management cluster and its Flux objects.
 - Use `cloud` for child-cluster workloads.
-- Use `fabric` for the root-consensus cluster, its service nodes, and its own Flux objects.
 - Treat other configured contexts, including `edge-au-east`, as outside this skill's scope.
 - For an app, inspect its Flux objects on `hub` before inspecting the workload on `cloud`. Workload fan-out objects usually live in `cloud-cluster`; shared sources such as `GitRepository/infra` can live in `flux-system`. Follow the manifest's namespace.
-- For fabric platform services, inspect Flux objects and workloads on `fabric`; do not route them through `hub`.
 - Ask for the context when the request and repository layout do not make it unambiguous.
 - Label every finding with its context and namespace.
 
@@ -74,7 +72,7 @@ Separate observed facts from inferred causes.
 
 ## Diagnose Flux
 
-On the owning context (`hub` or `fabric`), inspect the smallest relevant set of:
+On the owning context (`hub` or `cloud`), inspect the smallest relevant set of:
 
 - `source.toolkit.fluxcd.io/v1` `GitRepository`;
 - `kustomize.toolkit.fluxcd.io/v1` `Kustomization`;
@@ -84,7 +82,7 @@ Check Ready conditions, reasons and messages, observed generation, applied or at
 
 For child-cluster apps, finish the relevant `hub` reconciliation check before switching explicitly to `cloud` and the app namespace. Resolve each object's namespace from its manifest rather than assuming all Flux objects live in `cloud-cluster`.
 
-For the fabric root, inspect `GitRepository/infra` and the relevant Kustomizations in `fabric` namespace `flux-system`, then inspect the resulting platform workload in its manifest namespace. Prove both Ready/current generation and the expected Git revision when a specific rollout is under diagnosis.
+Prove both Ready/current generation and the expected Git revision when a specific rollout is under diagnosis.
 
 ## Diagnose Cilium
 
@@ -96,11 +94,11 @@ Use the requested context and namespace `kube-system`.
 4. For load-balancer or routing issues, inspect the named Service and only relevant Cilium CRs such as `CiliumLoadBalancerIPPool`, `CiliumL2AnnouncementPolicy`, or `CiliumBGPPeeringPolicy`.
 5. Do not enumerate all `CiliumEndpoint` objects by default.
 
-For cloud Cilium reconciliation, also inspect the corresponding HelmRelease on `hub` in namespace `cloud-cluster`. Do not assume Cilium exists on `fabric`; establish the installed CNI from repository or bounded object evidence first.
+For cloud Cilium reconciliation, also inspect the corresponding HelmRelease on `hub` in namespace `cloud-cluster`.
 
 ## Diagnose kube-vip
 
-Kube-vip can run on `hub` or `fabric`. Use the context named by the request or repository path and, in `kube-system`, inspect:
+Use context `hub` and, in namespace `kube-system`, inspect:
 
 - DaemonSet `kube-vip-ds`;
 - pods selected by `app.kubernetes.io/name=kube-vip-ds`;
@@ -108,18 +106,6 @@ Kube-vip can run on `hub` or `fabric`. Use the context named by the request or r
 - a short log tail from container `kube-vip`.
 
 Compare scheduled and ready pods with control-plane nodes. Do not silently transpose this workflow to `cloud`.
-
-On `fabric`, also verify kube-vip pods remain confined to nodes labeled `fabric.samcday.com/root-consensus=true`; report any service-node placement as a policy violation.
-
-## Diagnose fabric platform services
-
-On `fabric`, keep the root-consensus boundary explicit:
-
-1. Inspect the named Deployment, DaemonSet, or HelmRelease and only its pods.
-2. Confirm ordinary platform pods run only on nodes labeled `fabric.samcday.com/platform=true`, normally `fabric-az1-svc1` and `fabric-az1-svc2`.
-3. Report any non-kube-vip pod assigned to a root-consensus node as a safety incident.
-4. For metrics-server, inspect its HelmRelease, Deployment, APIService `v1beta1.metrics.k8s.io`, and a bounded `top` read. Do not treat an Available APIService alone as proof that every node has fresh metrics.
-5. For CoreDNS, inspect its Deployment, Service, EndpointSlices only when routing is relevant, and pods selected by `k8s-app=kube-dns`.
 
 ## Diagnose etcd
 
@@ -131,11 +117,9 @@ For cloud etcd:
 
 For hub etcd, inspect the `etcdetcetc` controller and `etcdetcetc.samcday.com/v1alpha1` `EtcdCluster` named `hub-etcd` in namespace `etcdetcetc`. Treat direct member health beyond exposed status, probes, events, and logs as a capability gap; never run `etcdctl` through pod exec.
 
-For fabric etcd, remember that K3s uses three external TLS endpoints co-located on the root hosts; etcd is host-managed, not embedded in K3s and not represented by Pods. Use `fabric` to inspect the three root Node conditions, Leases, relevant `kube-system` events, and exposed API readiness only. Never claim member, endpoint, or linearizable-read health from Kubernetes Node or API readiness. The read-only MCP does not expose host journals or a safe etcd status operation; report that limitation instead of using SSH, host commands, or pod exec under this skill.
-
 ## Use shell fallback sparingly
 
-Fall back to `scripts/ik --context=<hub|cloud|fabric>` only when an allowlisted MCP tool cannot express a necessary read, such as a hard time window, server-side result cap, or compact field projection. State the missing MCP capability before using the fallback.
+Fall back to `scripts/ik --context=<hub|cloud>` only when an allowlisted MCP tool cannot express a necessary read, such as a hard time window, server-side result cap, or compact field projection. State the missing MCP capability before using the fallback.
 
 Keep fallback queries read-only and bounded:
 

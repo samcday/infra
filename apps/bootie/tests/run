@@ -5,10 +5,9 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 boot_request=$script_dir/../boot-request.sh
 export PATH="$script_dir/fake-bin:$PATH"
 export FCOS_VERSION=44.test
-export FCOS_BASE=http://10.66.0.2/static
-export FCOS_GRUB_BASE='(http,10.66.0.2)/static'
-export BOOTIE_PUBLIC_ORIGIN=http://10.66.0.2
-export BOOTIE_CUSTOM_LIVE_KARGS='coreos.inst.skip_reboot systemd.show_status=false'
+export FCOS_BASE=http://192.0.2.1/static
+export FCOS_GRUB_BASE='(http,192.0.2.1)/static'
+export BOOTIE_PUBLIC_ORIGIN=http://192.0.2.1
 export BOOTIE_EXPECTED_NODE_UID=01234567-89ab-cdef-0123-456789abcdef
 export QUERY_STRING=mac=00-11-22-33-44-55
 
@@ -40,17 +39,17 @@ live_grub=$(
     "$boot_request"
 )
 assert_contains "$live_grub" \
-  'linux (http,10.66.0.2)/static/fedora-coreos-44.test-live-kernel.x86_64'
-assert_contains "$live_grub" 'ignition.config.url=http://10.66.0.2/ignition/test-node?token='
+  'linux (http,192.0.2.1)/static/fedora-coreos-44.test-live-kernel.x86_64'
+assert_contains "$live_grub" 'ignition.config.url=http://192.0.2.1/ignition/test-node?token='
 assert_contains "$live_grub" \
-  'initrd (http,10.66.0.2)/static/fedora-coreos-44.test-live-initramfs.x86_64.img'
+  'initrd (http,192.0.2.1)/static/fedora-coreos-44.test-live-initramfs.x86_64.img'
 assert_not_contains "$live_grub" '#!ipxe'
 assert_not_contains "$live_grub" 'coreos.inst.install_dev='
 
 fixed_node=$(
   BOOT_FORMAT=grub \
     BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_NODE_NAME=test-node \
     FAIL_ON_LIST=true \
     FAKE_BOOT_DEVICE='' \
     FAKE_DISCOVERY=true \
@@ -58,12 +57,12 @@ fixed_node=$(
     "$boot_request"
 )
 assert_contains "$fixed_node" \
-  'ignition.config.url=http://10.66.0.2/ignition/fabric-az1-cp3?token='
+  'ignition.config.url=http://192.0.2.1/ignition/test-node?token='
 
 wrong_fixed_mac=$(
   BOOT_FORMAT=grub \
     BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+    BOOTIE_NODE_NAME=test-node \
     FAIL_ON_LIST=true \
     FAKE_MAC=00-11-22-33-44-66 \
     FAKE_BOOT_DEVICE='' \
@@ -72,7 +71,7 @@ wrong_fixed_mac=$(
     "$boot_request" 2>&1
 )
 assert_contains "$wrong_fixed_mac" 'Status: 409 Conflict'
-assert_contains "$wrong_fixed_mac" 'the request MAC does not match node/fabric-az1-cp3'
+assert_contains "$wrong_fixed_mac" 'the request MAC does not match node/test-node'
 
 live_ipxe=$(
   BOOT_FORMAT=ipxe \
@@ -83,7 +82,7 @@ live_ipxe=$(
 )
 assert_contains "$live_ipxe" '#!ipxe'
 assert_contains "$live_ipxe" \
-  'kernel http://10.66.0.2/static/fedora-coreos-44.test-live-kernel.x86_64 initrd=main'
+  'kernel http://192.0.2.1/static/fedora-coreos-44.test-live-kernel.x86_64 initrd=main'
 
 not_armed=$(
   BOOT_FORMAT=grub \
@@ -98,9 +97,7 @@ assert_not_contains "$not_armed" 'coreos.inst.install_dev='
 install_grub=$(
   BOOT_FORMAT=grub \
     BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
     BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
     FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
     FAKE_DISCOVERY=false \
     FAKE_INSTALL=true \
@@ -110,371 +107,23 @@ assert_contains "$install_grub" \
   'coreos.inst.install_dev=/dev/disk/by-id/ata-approved'
 assert_contains "$install_grub" '\&install=1'
 
-custom_initramfs_name=0123456789abcdef0123456789abcdef.img
-custom_initramfs_file=$script_dir/fixtures/$custom_initramfs_name
-custom_initramfs_sha256=$(sha256sum "$custom_initramfs_file" | awk '{print $1}')
-custom_initramfs_size=$(stat -Lc '%s' "$custom_initramfs_file")
-custom_mutation_log=$(mktemp)
-custom_install_grub=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAIL_ON_LIST=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    FAKE_KUBECTL_LOG="$custom_mutation_log" \
-    "$boot_request"
-)
-assert_contains "$custom_install_grub" \
-  "initrd (http,10.66.0.2)/custom-initramfs/$custom_initramfs_name"
-assert_contains "$custom_install_grub" \
-  'coreos.live.rootfs_url=http://10.66.0.2/static/fedora-coreos-44.test-live-rootfs.x86_64.img'
-assert_not_contains "$custom_install_grub" "/static/$custom_initramfs_name"
-assert_contains "$custom_install_grub" 'ignition.firstboot ignition.platform.id=metal'
-assert_contains "$custom_install_grub" \
-  'coreos.inst.skip_reboot systemd.show_status=false'
-assert_not_contains "$custom_install_grub" 'coreos.inst.install_dev='
-assert_not_contains "$custom_install_grub" '/ignition/fabric-az1-cp3'
-custom_patch=$(grep '^patch node/fabric-az1-cp3 --type=json --patch' \
-  "$custom_mutation_log")
-assert_contains "$custom_patch" \
-  '"op":"test","path":"/metadata/resourceVersion","value":"12345"'
-assert_contains "$custom_patch" \
-  '"op":"test","path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"'
-assert_contains "$custom_patch" \
-  '"op":"remove","path":"/metadata/annotations/samcday.com~1install"'
-assert_contains "$custom_patch" \
-  '"op":"replace","path":"/metadata/annotations/fabric.samcday.com~1bootstrap-state","value":"install-response-issued"'
-assert_not_contains "$custom_patch" 'ignition-token'
-assert_not_contains "$custom_patch" 'ignition-mode'
-find "$custom_mutation_log" -maxdepth 0 -type f -delete
-
-custom_missing_platform_taint=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAIL_ON_LIST=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    FAKE_TAINTS_JSON='[{"effect":"NoSchedule","key":"node.kubernetes.io/not-ready"}]' \
-    "$boot_request" 2>&1
-)
-assert_contains "$custom_missing_platform_taint" 'Status: 409 Conflict'
-assert_contains "$custom_missing_platform_taint" \
-  'without the exact worker platform taint set'
-
-for present_platform_label in '' true; do
-  custom_present_platform_label=$(
-    BOOT_FORMAT=grub \
-      BOOTIE_ALLOW_NODE_CREATE=false \
-      BOOTIE_NODE_NAME=fabric-az1-cp3 \
-      BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-      BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-      BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-      BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-      BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-      BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-      BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-      BOOTIE_REQUIRE_INSTALL_POLICY=true \
-      FAIL_ON_LIST=true \
-      FAKE_BOOTSTRAP_STATE=install-armed \
-      FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-      FAKE_DISCOVERY=false \
-      FAKE_INSTALL=true \
-      FAKE_PLATFORM_LABEL="$present_platform_label" \
-      "$boot_request" 2>&1
-  )
-  assert_contains "$custom_present_platform_label" 'Status: 409 Conflict'
-  assert_contains "$custom_present_platform_label" \
-    'with the worker platform label already assigned'
-done
-
-for present_worker_role in '' true; do
-  custom_present_worker_role=$(
-    BOOT_FORMAT=grub \
-      BOOTIE_ALLOW_NODE_CREATE=false \
-      BOOTIE_NODE_NAME=fabric-az1-cp3 \
-      BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-      BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-      BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-      BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-      BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-      BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-      BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-      BOOTIE_REQUIRE_INSTALL_POLICY=true \
-      FAIL_ON_LIST=true \
-      FAKE_BOOTSTRAP_STATE=install-armed \
-      FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-      FAKE_DISCOVERY=false \
-      FAKE_INSTALL=true \
-      FAKE_WORKER_ROLE="$present_worker_role" \
-      "$boot_request" 2>&1
-  )
-  assert_contains "$custom_present_worker_role" 'Status: 409 Conflict'
-  assert_contains "$custom_present_worker_role" \
-    'with a reserved worker role already assigned'
-done
-
-custom_install_ipxe=$(
-  BOOT_FORMAT=ipxe \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAIL_ON_LIST=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    "$boot_request"
-)
-assert_contains "$custom_install_ipxe" \
-  "initrd --name main http://10.66.0.2/custom-initramfs/$custom_initramfs_name"
-assert_contains "$custom_install_ipxe" \
-  'coreos.live.rootfs_url=http://10.66.0.2/static/fedora-coreos-44.test-live-rootfs.x86_64.img'
-assert_not_contains "$custom_install_ipxe" "/static/$custom_initramfs_name"
-assert_not_contains "$custom_install_ipxe" 'coreos.inst.install_dev='
-assert_contains "$custom_install_ipxe" \
-  'coreos.inst.skip_reboot systemd.show_status=false'
-
-wrong_custom_live_kargs=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_LIVE_KARGS=systemd.show_status=false \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$wrong_custom_live_kargs" 'Status: 409 Conflict'
-assert_contains "$wrong_custom_live_kargs" \
-  'BOOTIE_CUSTOM_LIVE_KARGS must preserve the exact reviewed installer lifecycle arguments'
-
-wrong_custom_node_uid=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_EXPECTED_NODE_UID=ffffffff-ffff-ffff-ffff-ffffffffffff \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$wrong_custom_node_uid" 'Status: 409 Conflict'
-assert_contains "$wrong_custom_node_uid" \
-  'the fixed Bootie Node UID does not match the issued identity'
-
-custom_initramfs_response=$(
-  BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    REQUEST_METHOD=GET \
-    REQUEST_URI="/custom-initramfs/$custom_initramfs_name" \
-    "$script_dir/../serve-custom-initramfs.sh"
-)
-assert_contains "$custom_initramfs_response" 'Content-Type: application/octet-stream'
-assert_contains "$custom_initramfs_response" "Content-Length: $custom_initramfs_size"
-assert_contains "$custom_initramfs_response" 'bootie custom-initramfs test fixture'
-
-wrong_custom_initramfs_capability=$(
-  BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    REQUEST_METHOD=GET \
-    REQUEST_URI=/custom-initramfs/ffffffffffffffffffffffffffffffff.img \
-    "$script_dir/../serve-custom-initramfs.sh" 2>&1
-)
-assert_contains "$wrong_custom_initramfs_capability" 'Status: 404 Not Found'
-assert_not_contains "$wrong_custom_initramfs_capability" \
-  'bootie custom-initramfs test fixture'
 grep -Fqx '    location ~ "^/static/[0-9a-f]{32,64}\.img$" {' \
   "$script_dir/../nginx-http.conf" ||
   fail 'Nginx no longer denies capability-shaped files through /static'
 [[ $(grep -Fc 'fastcgi_pass unix:/run/bootie/fcgi.sock;' \
-  "$script_dir/../nginx-http.conf") == 6 ]] ||
-  fail 'Nginx does not route all six CGI endpoints through the pod-local Unix socket'
-grep -Fq 'SCRIPT_FILENAME /usr/local/bin/generate-live-ignition-day2;' \
-  "$script_dir/../nginx-http.conf" ||
-  fail 'Nginx does not route token-bound day-two live Ignition'
-grep -Fq 'SCRIPT_FILENAME /usr/local/bin/generate-discovery-ignition-day2;' \
-  "$script_dir/../nginx-http.conf" ||
-  fail 'Nginx does not route non-installing replacement discovery Ignition'
+  "$script_dir/../nginx-http.conf") == 3 ]] ||
+  fail 'Nginx does not route all three CGI endpoints through the pod-local Unix socket'
 ! grep -Fq '127.0.0.1:9000' "$script_dir/../nginx-http.conf" ||
   fail 'Nginx still depends on the restart-sensitive host-network FastCGI TCP port'
-for runner in run.sh run-cluster.sh; do
-  # The runner must pass the literal shell variable to fcgiwrap at runtime.
-  # shellcheck disable=SC2016
-  grep -Fq 'exec fcgiwrap -s "unix:$fcgi_socket"' "$script_dir/../$runner" ||
-    fail "$runner does not bind fcgiwrap to the pod-local Unix socket"
-  # shellcheck disable=SC2016
-  grep -Fq 'chown root:nginx "$fcgi_socket"' "$script_dir/../$runner" ||
-    fail "$runner does not make the Unix socket accessible to the Nginx worker"
-  ! grep -Fq 'tcp:127.0.0.1:9000' "$script_dir/../$runner" ||
-    fail "$runner still binds the restart-sensitive host-network FastCGI TCP port"
-done
-grep -Fq 'install_firewall_rule fabric-bootie-http-v2' \
-  "$script_dir/../run-cluster.sh" ||
-  fail 'cluster Bootie does not install the post-network-handoff HTTP rule'
-grep -Fq \
-  "10.66.0.10, 10.66.0.11, 10.66.0.12, 10.66.1.10, 10.66.1.11, 10.66.1.101" \
-  "$script_dir/../run-cluster.sh" ||
-  fail 'cluster Bootie does not admit both final and temporary source addresses'
+# The runner must pass the literal shell variable to fcgiwrap at runtime.
+# shellcheck disable=SC2016
+grep -Fq 'exec fcgiwrap -s "unix:$fcgi_socket"' "$script_dir/../run.sh" ||
+  fail 'run.sh does not bind fcgiwrap to the pod-local Unix socket'
+# shellcheck disable=SC2016
+grep -Fq 'chown root:nginx "$fcgi_socket"' "$script_dir/../run.sh" ||
+  fail 'run.sh does not make the Unix socket accessible to the Nginx worker'
 
-missing_custom_initramfs=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME=ffffffffffffffffffffffffffffffff.img \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$script_dir/fixtures/ffffffffffffffffffffffffffffffff.img" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$missing_custom_initramfs" 'Status: 409 Conflict'
-assert_contains "$missing_custom_initramfs" \
-  'the customized PXE initramfs is unavailable or does not match its capability name'
-
-wrong_custom_hash=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$(printf '0%.0s' {1..64})" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$wrong_custom_hash" 'Status: 409 Conflict'
-assert_contains "$wrong_custom_hash" \
-  'the customized PXE initramfs does not match its expected SHA-256'
-
-wrong_custom_version=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION=44.wrong \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$wrong_custom_version" 'Status: 409 Conflict'
-assert_contains "$wrong_custom_version" \
-  'BOOTIE_CUSTOM_FCOS_VERSION must exactly match FCOS_VERSION'
-
-stale_custom_authorization=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_ALLOW_NODE_CREATE=false \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    BOOTIE_CUSTOM_INITRAMFS_SHA256="$custom_initramfs_sha256" \
-    BOOTIE_CUSTOM_FCOS_VERSION="$FCOS_VERSION" \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAKE_BOOTSTRAP_STATE=install-armed \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_IGNITION_MODE=install \
-    FAKE_IGNITION_TOKEN=stale-token \
-    FAKE_INSTALL=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$stale_custom_authorization" 'Status: 409 Conflict'
-assert_contains "$stale_custom_authorization" \
-  'the fixed Bootie Node has stale Ignition authorization'
-
-unsafe_custom_delivery=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_INSTALL_DELIVERY=custom-initramfs \
-    BOOTIE_CUSTOM_INITRAMFS_NAME="$custom_initramfs_name" \
-    BOOTIE_CUSTOM_INITRAMFS_FILE="$custom_initramfs_file" \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$unsafe_custom_delivery" 'Status: 409 Conflict'
-assert_contains "$unsafe_custom_delivery" \
-  'custom-initramfs delivery requires a fixed predeclared Node and both install gates'
-
-wrong_bootstrap_state=$(
-  BOOT_FORMAT=grub \
-    BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
-    BOOTIE_REQUIRE_INSTALL_POLICY=true \
-    FAKE_BOOTSTRAP_STATE=discovery \
-    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_DISCOVERY=false \
-    FAKE_INSTALL=true \
-    "$boot_request" 2>&1
-)
-assert_contains "$wrong_bootstrap_state" 'Status: 409 Conflict'
-assert_contains "$wrong_bootstrap_state" 'without the reviewed bootstrap state'
-assert_not_contains "$wrong_bootstrap_state" 'coreos.inst.install_dev='
-
-for grub_response in "$live_grub" "$fixed_node" "$install_grub" "$custom_install_grub"; do
+for grub_response in "$live_grub" "$fixed_node" "$install_grub"; do
   grub_body=${grub_response#*$'\n\n'}
   grub2-script-check /dev/stdin <<< "$grub_body"
 done
@@ -509,11 +158,9 @@ uid_bound_install=$(
     BOOTIE_ALLOW_NODE_CREATE=false \
     BOOTIE_EXPECTED_NODE_UID=01234567-89ab-cdef-0123-456789abcdef \
     BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_NODE_NAME=test-node \
     BOOTIE_REQUIRE_INSTALL_POLICY=true \
     FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_BOOTSTRAP_STATE=install-armed \
     FAKE_DISCOVERY=false \
     FAKE_INSTALL=true \
     FAKE_KUBECTL_LOG="$uid_bound_log" \
@@ -522,6 +169,12 @@ uid_bound_install=$(
 assert_contains "$uid_bound_install" 'coreos.inst.install_dev=/dev/disk/by-id/ata-approved'
 grep -Fq '"path":"/metadata/uid","value":"01234567-89ab-cdef-0123-456789abcdef"' \
   "$uid_bound_log" || fail 'fixed-Ignition install consumption was not Node-UID bound'
+grep -Fq '"path":"/metadata/resourceVersion","value":"12345"' \
+  "$uid_bound_log" || fail 'fixed-Ignition install consumption was not version bound'
+grep -Fq '"op":"remove","path":"/metadata/annotations/samcday.com~1install"' \
+  "$uid_bound_log" || fail 'install authorization was not consumed'
+grep -Fq '"path":"/metadata/annotations/samcday.com~1ignition-mode","value":"install"' \
+  "$uid_bound_log" || fail 'install token was not mode bound'
 rm -f -- "$uid_bound_log"
 
 uid_mismatch=$(
@@ -529,11 +182,9 @@ uid_mismatch=$(
     BOOTIE_ALLOW_NODE_CREATE=false \
     BOOTIE_EXPECTED_NODE_UID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
     BOOTIE_INSTALL_POLICY_FILE="$script_dir/install-policy" \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
-    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true \
+    BOOTIE_NODE_NAME=test-node \
     BOOTIE_REQUIRE_INSTALL_POLICY=true \
     FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved \
-    FAKE_BOOTSTRAP_STATE=install-armed \
     FAKE_DISCOVERY=false \
     FAKE_INSTALL=true \
     "$boot_request" 2>&1
@@ -554,21 +205,21 @@ assert_contains "$invalid_format" 'Status: 500 Internal Server Error'
 fixed_dir=$(mktemp -d)
 trap 'rm -rf -- "$fixed_dir"' EXIT
 install -m 0600 "$script_dir/fixtures/fixed-ignition.ign" \
-  "$fixed_dir/fabric-az1-cp3.ign"
+  "$fixed_dir/test-node.ign"
 mutation_log=$fixed_dir/kubectl-mutations.log
 fixed_ignition=$(
-  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/test-node.ign" \
+    BOOTIE_NODE_NAME=test-node \
     FAKE_KUBECTL_LOG="$mutation_log" \
     FAKE_DISCOVERY=false \
     FAKE_IGNITION_MODE=install \
     FAKE_IGNITION_TOKEN=fixed-token \
     QUERY_STRING='token=fixed-token&install=1' \
-    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    REQUEST_URI=/ignition/test-node \
     "$script_dir/../generate-ignition.sh"
 )
 assert_contains "$fixed_ignition" 'content-type: application/json'
-grep -Fq 'patch node/fabric-az1-cp3 --type=json --patch' "$mutation_log" ||
+grep -Fq 'patch node/test-node --type=json --patch' "$mutation_log" ||
   fail 'fixed Ignition request did not consume its one-use token'
 fixed_body=${fixed_ignition#*$'\n\n'}
 jq -e '
@@ -577,32 +228,58 @@ jq -e '
 ' <<< "$fixed_body" >/dev/null || fail 'fixed Ignition response changed'
 
 fixed_live_refusal=$(
-  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/test-node.ign" \
+    BOOTIE_NODE_NAME=test-node \
     FAKE_DISCOVERY=false \
     FAKE_IGNITION_MODE=live \
     FAKE_IGNITION_TOKEN=fixed-token \
     QUERY_STRING='token=fixed-token' \
-    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    REQUEST_URI=/ignition/test-node \
     "$script_dir/../generate-ignition.sh" 2>&1
 )
 assert_contains "$fixed_live_refusal" 'Status: 403 Forbidden'
 assert_not_contains "$fixed_live_refusal" '/etc/bootie-fixed-profile'
 
 failed_consumption=$(
-  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/fabric-az1-cp3.ign" \
-    BOOTIE_NODE_NAME=fabric-az1-cp3 \
+  BOOTIE_FIXED_IGNITION_FILE="$fixed_dir/test-node.ign" \
+    BOOTIE_NODE_NAME=test-node \
     FAIL_PATCH=true \
     FAKE_DISCOVERY=false \
     FAKE_IGNITION_MODE=install \
     FAKE_IGNITION_TOKEN=fixed-token \
     QUERY_STRING='token=fixed-token&install=1' \
-    REQUEST_URI=/ignition/fabric-az1-cp3 \
+    REQUEST_URI=/ignition/test-node \
     "$script_dir/../generate-ignition.sh" 2>&1
 )
 assert_contains "$failed_consumption" 'Status: 409 Conflict'
 assert_contains "$failed_consumption" 'ignition token was already consumed'
 assert_not_contains "$failed_consumption" '/etc/bootie-fixed-profile'
 
-"$script_dir/run-day2"
+# An old deployment must fail closed, not fall through to the ordinary installer.
+for retired_setting in BOOTIE_DAY2_MODE=true \
+    BOOTIE_REQUIRE_BOOTSTRAP_STATE=true BOOTIE_INSTALL_DELIVERY=custom-initramfs; do
+  for handler in "$boot_request" "$script_dir/../generate-ignition.sh"; do
+    : > "$mutation_log"
+    refused=$(env "$retired_setting" FAKE_KUBECTL_LOG="$mutation_log" \
+      "$handler" 2>&1)
+    assert_contains "$refused" 'Status: 409 Conflict'
+    assert_contains "$refused" 'unsupported provisioning mode'
+    [[ ! -s "$mutation_log" ]] || fail 'retired mode contacted Kubernetes'
+  done
+done
+
+failed_install=$(
+  FAIL_PATCH=true FAKE_DISCOVERY=false FAKE_INSTALL=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved "$boot_request" 2>&1
+)
+assert_contains "$failed_install" 'Status: 409 Conflict'
+assert_not_contains "$failed_install" 'coreos.inst.install_dev='
+
+discovery_install=$(
+  FAKE_DISCOVERY=true FAKE_INSTALL=true \
+    FAKE_BOOT_DEVICE=/dev/disk/by-id/ata-approved "$boot_request" 2>&1
+)
+assert_contains "$discovery_install" 'Status: 409 Conflict'
+assert_not_contains "$discovery_install" 'coreos.inst.install_dev='
+
 echo 'bootie request tests passed'

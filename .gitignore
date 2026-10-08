@@ -3,3 +3,8 @@ _build/
 credhelper/target/
 __pycache__/
 *.py[cod]
+
+# Retired clusters may still have local private keys and generated artifacts.
+# Keep them ignored until their separate, explicitly authorized disposal.
+/fabric/
+/lab/
