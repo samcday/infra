@@ -48,6 +48,14 @@ resource "headscale_pre_auth_key" "cloud_cluster_apiserver_stable" {
   acl_tags       = ["tag:cloud-cluster-apiserver"]
 }
 
+resource "headscale_pre_auth_key" "cloud_cluster_metrics_write" {
+  user           = headscale_user.cloud.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:cloud-cluster-metrics-write"]
+}
+
 resource "headscale_pre_auth_key" "cloud-cluster-nodes" {
   user           = headscale_user.cloud.id
   time_to_expire = "520w"
@@ -114,6 +122,17 @@ resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.cloud_cluster_apiserver_stable.key
+  }
+}
+
+resource "kubernetes_secret" "cloud_cluster_metrics_write_preauth" {
+  metadata {
+    name      = "metrics-write-ts-auth"
+    namespace = "cloud-cluster"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.cloud_cluster_metrics_write.key
   }
 }
 

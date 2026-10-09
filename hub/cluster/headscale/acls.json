@@ -15,6 +15,12 @@
             "src": ["tag:cloud-cluster-node"],
             "dst": ["tag:cloud-cluster-apiserver:*"]
         },
+        // Allow cloud-cluster nodes to send metrics to the hub write proxy.
+        {
+            "action": "accept",
+            "src": ["tag:cloud-cluster-node"],
+            "dst": ["tag:cloud-cluster-metrics-write:8080"]
+        },
         // Allow edge-au-east nodes to access only their hosted apiserver.
         {
             "action": "accept",

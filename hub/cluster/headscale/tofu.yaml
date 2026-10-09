@@ -34,6 +34,7 @@ rules:
   resources: [secrets]
   resourceNames:
     - apiserver-ts-auth
+    - metrics-write-ts-auth
     - node-ts-auth
     - edge-au-east-apiserver-ts-auth
     - edge-au-east-node-ts-auth

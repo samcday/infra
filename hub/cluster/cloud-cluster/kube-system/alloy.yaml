@@ -21,6 +21,21 @@ spec:
       name: admin-kubeconfig
   storageNamespace: kube-system
   targetNamespace: kube-system
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRole
+              name: kube-system-alloy
+            patch: |
+              - op: add
+                path: /rules/-
+                value:
+                  nonResourceURLs: ["/api/v1/write"]
+                  # kube-rbac-proxy authorizes HTTP POST as "create".
+                  verbs: [create]
   values:
     # https://github.com/grafana/helm-charts/blob/main/charts/alloy/values.yaml
     alloy:
