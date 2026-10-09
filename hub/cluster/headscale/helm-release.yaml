@@ -92,10 +92,14 @@ spec:
               servicePortName: http
       tls:
         - hosts: [headscale]
+    # /metrics stays responsive when the database connection is stuck.
     livenessProbe:
       httpGet:
-        path: /metrics
-        port: metrics
+        path: /health
+        port: http
+      timeoutSeconds: 3
+      periodSeconds: 10
+      failureThreshold: 6
     initContainers:
       - name: litestream-restore
         image: docker.io/litestream/litestream:v0.5.8@sha256:9874588ddb04789179d0d93cc902ba9309bb0cac4c33eb5631599d4559c60106
@@ -136,8 +140,9 @@ spec:
       storageClassName: ceph-block
     readinessProbe:
       httpGet:
-        path: /metrics
-        port: metrics
+        path: /health
+        port: http
+      timeoutSeconds: 3
     service:
       ports:
         - targetPort: grpc
@@ -148,6 +153,14 @@ spec:
           protocol: TCP
           name: http
           port: 80
+    # Allow up to five minutes for database startup before liveness takes over.
+    startupProbe:
+      httpGet:
+        path: /health
+        port: http
+      timeoutSeconds: 3
+      periodSeconds: 10
+      failureThreshold: 30
 
 ---
 apiVersion: monitoring.coreos.com/v1

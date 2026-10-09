@@ -142,8 +142,9 @@ database:
 
   # GORM configuration settings.
   gorm:
-    # Enable prepared statements.
-    prepare_stmt: true
+    # Avoid a prepared-statement cache deadlock with SQLite's single connection.
+    # https://github.com/go-gorm/gorm/issues/7465
+    prepare_stmt: false
 
     # Enable parameterized queries.
     parameterized_queries: true
