@@ -106,6 +106,14 @@ class SecurityContract(unittest.TestCase):
         cli = pods["cliproxyapi"]["containers"][0]
         self.assertEqual(cli["command"], ["/CLIProxyAPI/CLIProxyAPI"])
         self.assertEqual(cli["args"], ["-config", "/runtime/config.yaml"])
+        for probe in ("readinessProbe", "livenessProbe"):
+            self.assertEqual(cli[probe], {
+                "exec": {"command": [
+                    "/usr/bin/timeout", "2", "/bin/bash", "-ec",
+                    "exec 3<>/dev/tcp/127.0.0.1/8317",
+                ]},
+                "timeoutSeconds": 3,
+            })
         prepare = pods["cliproxyapi"]["initContainers"][0]
         self.assertEqual(prepare["command"], ["/bin/sh", "/config/prepare-config.sh"])
         config_mount = next(m for m in bifrost["volumeMounts"] if m["mountPath"] == "/app/data/config.json")
@@ -193,9 +201,12 @@ class SecurityContract(unittest.TestCase):
                 self.assertEqual(match["path"]["type"], "Exact")
                 headers = match["headers"]
                 self.assertEqual(len(headers), 1)
-                self.assertEqual(headers[0]["name"].lower(), "x-forwarded-proto")
-                self.assertEqual(headers[0].get("type", "Exact"), "Exact")
-                self.assertEqual(headers[0]["value"], "https")
+                self.assertEqual(headers[0]["name"].lower(), "cf-visitor")
+                self.assertEqual(headers[0]["type"], "RegularExpression")
+                self.assertEqual(headers[0]["value"], r'^\{\s*"scheme"\s*:\s*"https"\s*\}$')
+                self.assertRegex('{"scheme":"https"}', headers[0]["value"])
+                self.assertRegex('{ "scheme" : "https" }', headers[0]["value"])
+                self.assertNotRegex('{"scheme":"http"}', headers[0]["value"])
                 actual.append((match["method"], match["path"]["value"]))
         self.assertEqual(set(actual), PUBLIC_ENDPOINTS)
         self.assertEqual(len(actual), len(PUBLIC_ENDPOINTS))

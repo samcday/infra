@@ -38,15 +38,17 @@ cleaned in `finally` (and the render file by the shell trap). HTTP/startup
 waits and Docker commands are bounded.
 
 Checks cover CLI key preparation, actual image auth, disabled management,
-non-root/read-only root operation; Bifrost inference/admin credential
-separation, OpenAI chat/Responses and Anthropic content/usage/SSE, request and
-post-hoc token limits, and persistence across a graceful restart.
+container-local loopback probe commands, non-root/read-only root operation;
+Bifrost inference/admin credential separation, OpenAI chat/Responses and
+Anthropic content/usage/SSE, request and post-hoc token limits, and persistence
+across a graceful restart.
 
 ## What this does not prove
 
-- Static HTTPRoute checks prove only the manifest allowlist, forwarded-proto
-  match and disabled stream timeouts. They do **not** prove live Cloudflare TLS,
-  trustworthy header handling, Gateway implementation support or routing.
+- Static HTTPRoute checks prove only the manifest allowlist, Cloudflare
+  visitor-scheme match and disabled stream timeouts. They do **not** prove live
+  Cloudflare TLS, trustworthy header handling, Gateway implementation support
+  or routing.
 - Docker isolation is not a live test of Kubernetes NetworkPolicy, storage
   attachment, SOPS/Secret reconciliation or pod security admission. The local
   Docker SELinux label check is disabled to permit temporary bind mounts;

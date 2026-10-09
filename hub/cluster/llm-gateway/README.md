@@ -24,14 +24,20 @@ advertise it as ready for friends until the commissioning checks below pass.
 - `route.yaml` is an explicit method/path allowlist, not a `/` or `/v1/*`
   proxy. Neither Bifrost's dashboard and `/api` management routes nor
   CLIProxyAPI's management, OAuth callback, discovery, or UI routes are public.
-- The route requires Cloudflare's `X-Forwarded-Proto: https`. Clients must
-  always start with HTTPS; a server rejection cannot undo a key already sent
-  over plaintext HTTP. HSTS is supplementary, not an API-client security
-  boundary.
+- The route requires Cloudflare's `CF-Visitor` header to report
+  `{"scheme":"https"}`. The shared Envoy listener rewrites
+  `X-Forwarded-Proto` for the tunnel's HTTP origin hop, so that header cannot
+  be used for this match. Clients must always start with HTTPS; a server
+  rejection cannot undo a key already sent over plaintext HTTP. HSTS is
+  supplementary, not an API-client security boundary.
 - Public authentication is a Bifrost virtual key, never the internal
   CLIProxyAPI key, Bifrost admin password, or provider OAuth token.
 - CLIProxyAPI accepts only the generated internal key. Its Service has an
   ingress NetworkPolicy permitting only Bifrost pods in this namespace.
+- CLIProxyAPI health probes use the image's `bash` TCP support and `timeout`
+  to check loopback inside the container. Node-origin TCP probes time out
+  under the private ingress policy; do not widen that policy just to admit
+  probes. The pinned image does not contain `curl` or `wget`.
 - Neither workload has a Kubernetes service-account token. Both run non-root
   with a read-only root filesystem and explicitly writable state.
 - Bifrost has one replica with `Recreate` updates. OSS replicas do not share

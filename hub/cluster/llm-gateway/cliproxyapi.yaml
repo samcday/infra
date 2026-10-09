@@ -75,12 +75,16 @@ spec:
               memory: 128Mi
             limits:
               memory: 1Gi
+          # Node-origin TCP probes are blocked by the private ingress policy.
+          # Use the image's bash TCP support to check loopback instead.
           readinessProbe:
-            tcpSocket:
-              port: http
+            exec:
+              command: [/usr/bin/timeout, "2", /bin/bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/8317"]
+            timeoutSeconds: 3
           livenessProbe:
-            tcpSocket:
-              port: http
+            exec:
+              command: [/usr/bin/timeout, "2", /bin/bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/8317"]
+            timeoutSeconds: 3
           volumeMounts:
             - name: runtime
               mountPath: /runtime

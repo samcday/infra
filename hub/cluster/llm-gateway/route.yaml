@@ -13,50 +13,56 @@ spec:
       sectionName: http
   rules:
     - matches:
-        # Cloudflare sets X-Forwarded-Proto from the visitor's connection.
-        # This Gateway's HTTP listener is behind the encrypted tunnel.
+        # Envoy rewrites X-Forwarded-Proto on the tunnel's HTTP origin hop.
+        # Preserve HTTPS-only matching with Cloudflare's visitor scheme instead.
         - method: GET
           path:
             type: Exact
             value: /v1/models
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
         - method: POST
           path:
             type: Exact
             value: /v1/chat/completions
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
         - method: POST
           path:
             type: Exact
             value: /v1/responses
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
         - method: POST
           path:
             type: Exact
             value: /v1/responses/compact
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
         - method: POST
           path:
             type: Exact
             value: /anthropic/v1/messages
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
         - method: POST
           path:
             type: Exact
             value: /anthropic/v1/messages/count_tokens
           headers:
-            - name: X-Forwarded-Proto
-              value: https
+            - name: CF-Visitor
+              type: RegularExpression
+              value: '^\{\s*"scheme"\s*:\s*"https"\s*\}$'
       filters:
         - type: ResponseHeaderModifier
           responseHeaderModifier:

@@ -173,12 +173,15 @@ def cli_checks(docker, objects, root):
     expect(base, "/v1/models", 200, headers=valid)
     expect(base, "/v0/management/config", 404, headers=valid)
     expect(base, "/management.html", 404, headers=valid)
+    expect(base, "/", 200)
+    for probe in ("readinessProbe", "livenessProbe"):
+        docker.command("exec", name, *container[probe]["exec"]["command"])
     require(docker.command("exec", name, "id", "-u").stdout.strip() == "1000", "CLI ran as root")
     mounts = docker.command("exec", name, "cat", "/proc/mounts").stdout.splitlines()
     root_options = next(line.split()[3] for line in mounts if line.split()[1] == "/")
     require("ro" in root_options.split(","), "CLI root mount is not read-only")
     require(docker.command("exec", name, "touch", "/root-write-test", check=False).returncode != 0, "CLI root filesystem writable")
-    print("PASS CLI image: key validation/auth, disabled management, UID1000 and read-only root")
+    print("PASS CLI image: key validation/auth, disabled management, loopback probes, UID1000 and read-only root")
 
 
 def bifrost_checks(docker, objects, root):
