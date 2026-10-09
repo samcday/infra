@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/maximhq/bifrost/transports/v2.2.6/transports/config.schema.json",
+  "version": 2,
+  "source_of_truth": "config.json",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "client": {
+    "enforce_auth_on_inference": true,
+    "enable_logging": false,
+    "disable_content_logging": true,
+    "allow_per_request_content_storage_override": false,
+    "allow_per_request_raw_override": false,
+    "retain_content_in_object_storage": false,
+    "logging_headers": [],
+    "whitelisted_routes": [],
+    "allowed_origins": ["https://llm.samcday.com"],
+    "header_filter_config": {
+      "allowlist": ["anthropic-beta", "anthropic-version"]
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {"path": "/app/data/config.db"}
+  },
+  "logs_store": {"enabled": false},
+  "governance": {
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "sam",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD"
+    }
+  },
+  "providers": {
+    "cliproxy-openai": {
+      "keys": [
+        {
+          "name": "cliproxy-openai-internal",
+          "value": "env.CLIPROXY_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://cliproxyapi:8317",
+        "allow_private_network": true,
+        "default_request_timeout_in_seconds": 600,
+        "stream_idle_timeout_in_seconds": 180,
+        "max_retries": 0
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "list_models": true,
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "responses": true,
+          "responses_stream": true,
+          "compaction": true
+        }
+      }
+    },
+    "cliproxy-anthropic": {
+      "keys": [
+        {
+          "name": "cliproxy-anthropic-internal",
+          "value": "env.CLIPROXY_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://cliproxyapi:8317",
+        "allow_private_network": true,
+        "default_request_timeout_in_seconds": 600,
+        "stream_idle_timeout_in_seconds": 180,
+        "max_retries": 0
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "allowed_requests": {
+          "list_models": true,
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "responses": true,
+          "responses_stream": true,
+          "count_tokens": true
+        }
+      }
+    }
+  }
+}

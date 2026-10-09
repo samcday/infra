@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+    '') containers=false ;;
+    --containers) containers=true ;;
+    *) echo "usage: $0 [--containers]" >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { echo "usage: $0 [--containers]" >&2; exit 2; }
+
+test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo=$(CDPATH= cd -- "$test_dir/../../../.." && pwd)
+cd "$repo"
+python=${PYTHON:-python3}
+"$python" -c 'import yaml' || { echo "Python with PyYAML is required" >&2; exit 1; }
+render=$(mktemp)
+trap 'rm -f "$render"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+# Keep this exact renderer: these tests check the objects Flux will consume.
+kubectl kustomize hub/cluster/llm-gateway > "$render"
+PYTHONDONTWRITEBYTECODE=1 "$python" -B "$test_dir/static.py" "$render"
+if "$containers"; then
+    PYTHONDONTWRITEBYTECODE=1 "$python" -B "$test_dir/containers.py" "$render"
+else
+    echo "Container checks not run (opt in with --containers)."
+fi

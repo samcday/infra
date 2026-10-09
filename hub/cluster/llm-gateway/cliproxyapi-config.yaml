@@ -1,0 +1,22 @@
+config-version: 8
+server:
+  host: 0.0.0.0
+  port: 8317
+  # Disables request-capture middleware, including error payload files.
+  commercial-mode: true
+oauth:
+  auth-dir: /auths
+management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+requests:
+  streaming:
+    keepalive-seconds: 15
+observability:
+  logs:
+    debug: false
+    logging-to-file: false
+    request-log: false
+  pprof:
+    enable: false

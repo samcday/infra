@@ -152,6 +152,13 @@ spec:
             namespace: kubevirt-canary
         path: hub/cluster/kubevirt/canary
         timeout: 30m
+    llm-gateway:
+      spec:
+        dependsOn:
+          - name: ingress-nginx
+          - name: rook-ceph
+        path: hub/cluster/llm-gateway
+        wait: true
     monitoring:
       spec:
         dependsOn:
