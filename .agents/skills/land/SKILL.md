@@ -14,42 +14,69 @@ metadata:
 An invocation is the landing request: proceed without asking again. Follow
 `AGENTS.md`; preserve unrelated work.
 
+Success means the declared scope reconciled, not that the whole fleet is green.
+
 1. **Prepare.** Fetch `origin/main`, commit the requested changes, and rebase on
    `origin/main`. Resolve clear conflicts automatically; stop on ambiguous intent.
+   Record the base and candidate SHAs.
 
-2. **Check the final changes before pushing.** Run `git diff --check`, relevant
-   existing component tests, and affected renders, including consumers of shared
-   bases/charts. Keep checks proportional; documentation changes need no app build.
-   - Kustomize: `kubectl kustomize <path>`.
-   - Helm: render affected releases with their actual chart version, namespace,
-     and values; the invocation pattern is in
-     `charts/k8s-control-plane/tests/test_external_etcd_handoff.py:43`.
-   - Use the component checks in `AGENTS.md` and their existing test runners.
-   All applicable required checks must pass on the changes being landed.
-   Missing, pending, failed, or unverifiable checks are blockers.
+2. **Scope.** Derive the checklist from the final diff, not the whole cluster.
+   - Trace the diff's old and new sides through source/path references, shared
+     Kustomize/Helm inputs, Terraform `path:` directories (Terraform CRs read
+     `.tf` files directly) and generated fan-outs
+     (`hub/cluster/flux-system/kustomizations.yaml`,
+     `hub/cluster/cloud-cluster/flux-system/`). Resolve ownership from renders
+     and live inventories, not directory prefixes, and stay inside the ownership
+     boundary below.
+   - Include affected reconcilers, their prerequisites and workload outcomes;
+     identify remote target clusters separately. A shared parent, source or
+     prerequisite does not pull in unrelated siblings.
+   - Show the checklist: context/namespace/kind/name, why included, and the
+     before/after check. List intentional suspended exclusions; ask if scope is
+     uncertain.
+   - Until decoupled, every infra push also includes HelmReleases
+     `cloud-cluster/control-plane` (hub) and `edge/edge-au-east-control-plane`
+     (cloud), plus the Jobs for their new release revision:
+     `reconcileStrategy: Revision` upgrades them on every infra commit, which
+     reruns bootstrap. Older revisions' Jobs are not gates.
 
-3. **Publish.** Push normally to `origin/main` and verify the remote contains the
+3. **Preflight.** Everything required must pass before pushing.
+   - Static: `git diff --check <base> <candidate>`, relevant component tests from
+     `AGENTS.md`, and affected renders, including shared-input consumers. Use
+     `kubectl kustomize <path>` for Kustomize; for Helm, render affected releases
+     with their actual chart version, namespace and values (invocation pattern:
+     `charts/k8s-control-plane/tests/test_external_etcd_handoff.py:43`).
+     Documentation needs no app build.
+   - Live: prove access to every context in scope (a fresh worktree lacks
+     child-cluster CAs: run `scripts/credhelper --init`), then record readiness,
+     observed generations and revisions. Existing targets must be healthy and
+     current; new targets need healthy prerequisites. Missing access or
+     unverifiable checks block the push.
+   - Repair/removal: ask Sam to approve the named pre-existing failures; the
+     declared postflight outcome is still required.
+
+4. **Publish.** Push normally to `origin/main` and verify the remote contains the
    landed commit. No PR ceremony unless current repository rules require it.
-   Never force-push; if main advances, rebase and repeat affected checks.
+   Never force-push; if main advances, rebase, recompute scope and repeat preflight.
 
-4. **Wait for green.** Relevant image builds must pass
-   (`.github/workflows/images.yaml`). Each active infra source root and its
-   infra-backed consumers must have consumed the landed commit (or a descendant
-   containing it); Hub consumption alone does not prove child-source convergence.
-   Every active **infra-owned** reconciler must be healthy. Use the ownership
-   boundary below, not cluster-wide health.
-   Follow the in-scope hub and cloud fan-outs, including child-cluster releases
-   (`hub/cluster/flux-system/kustomizations.yaml`,
-   `hub/cluster/cloud-cluster/flux-system/`).
-   Include infra-owned Terraform resources, not every resource watched by
-   tofu-controller. Require current desired-state readiness, not stale green
-   status; report the source roots checked and intentionally suspended or
-   external-repository exclusions. Load `hub-diagnostics` and follow its bounded,
-   read-only access rules. No live patches or forced reconciliation without Sam's
-   specific permission.
+5. **Verify the same scope.**
+   - Each infra source root in scope (hub, and child copies such as
+     `cloud/edge/GitRepository/infra`) consumed the landed commit or a
+     descendant; hub consumption alone does not prove child convergence.
+   - Each target reached its own desired revision, current generation and health,
+     not merely source readiness or stale green. Verify planned
+     removals/suspensions.
+   - Relevant image builds passed (`.github/workflows/images.yaml`); for intended
+     rollouts, follow the built tag/digest through automation into the workload.
+   - Report the source roots checked and exclusions. Unrelated failures are
+     non-blocking notes.
 
-5. **Sync parent.** After successful landing, ask the main/parent Delta thread to
+6. **Sync parent.** After successful landing, ask the main/parent Delta thread to
    rebase its `infra` worktree on `origin/main`.
+
+Load `hub-diagnostics` for every cluster read (preflight and verification) and
+follow its bounded, read-only rules. No live patches or forced reconciliation
+without Sam's specific permission.
 
 Do not stop at a successful push. If verification fails or times out, report the
 blocker and distinguish “not pushed” from “pushed, but not successfully reconciled.”
