@@ -15,6 +15,10 @@
 - `.mcp.json` configures a read-only Kubernetes MCP server against `./kubeconfig` with `core,config,helm` toolsets.
 - For app debugging, check Flux `GitRepository`/`Kustomization` objects in the hub `cloud-cluster` namespace, then workloads in the same app namespace on the `cloud` context.
 - Mutating cluster state directly is expressly forbidden unless Sam explicitly allows it for the specific operation. Make changes through Git and Flux reconciliation by default; use direct `kubectl`/`scripts/ik` mutation only when explicitly authorized.
+- After successful preflight and publication, a `/land` invocation authorizes
+  `flux reconcile source git`. Limit requests to active `GitRepository` sources
+  named in the preflight scope that fetch this repository. This grants no
+  permission for other live mutations.
 
 ## Component Commands
 - `apps/etcdetcetc` is a Rust Kubernetes controller workspace; run commands from that directory.

@@ -59,6 +59,12 @@ Success means the declared scope reconciled, not that the whole fleet is green.
    landed commit. No PR ceremony unless current repository rules require it.
    Never force-push; if main advances, rebase, recompute scope and repeat preflight.
 
+   After successful preflight and publication, `/land` authorizes source requests.
+   Limit them to active `GitRepository` sources named in the preflight scope that
+   fetch this repository. From the repo root, run
+   `flux reconcile source git <name> --kubeconfig=./kubeconfig --context=<context>
+   --namespace=<namespace> --timeout=5m` for each source.
+
 5. **Verify the same scope.**
    - Each infra source root in scope (hub, and child copies such as
      `cloud/edge/GitRepository/infra`) consumed the landed commit or a
@@ -74,9 +80,9 @@ Success means the declared scope reconciled, not that the whole fleet is green.
 6. **Sync parent.** After successful landing, ask the main/parent Delta thread to
    rebase its `infra` worktree on `origin/main`.
 
-Load `hub-diagnostics` for every cluster read (preflight and verification) and
-follow its bounded, read-only rules. No live patches or forced reconciliation
-without Sam's specific permission.
+Load `hub-diagnostics` for cluster reads. Follow its bounded, read-only rules.
+Other live mutations need Sam's specific permission, including workload patches,
+Helm resets and forced reconciliation of other resources.
 
 Do not stop at a successful push. If verification fails or times out, report the
 blocker and distinguish “not pushed” from “pushed, but not successfully reconciled.”
