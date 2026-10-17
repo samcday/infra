@@ -45,6 +45,11 @@ spec:
                 secretKeyRef:
                   name: gateway-credentials
                   key: CLIPROXY_API_KEY
+            - name: MIMO_CODE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mimo-credentials
+                  key: MIMO_CODE_API_KEY
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

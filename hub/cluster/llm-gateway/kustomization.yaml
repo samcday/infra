@@ -13,4 +13,5 @@ resources:
   - bifrost.yaml
   - cliproxyapi.yaml
   - credentials.sops.yaml
+  - mimo-credentials.sops.yaml
   - route.yaml

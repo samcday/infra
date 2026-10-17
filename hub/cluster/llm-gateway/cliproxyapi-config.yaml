@@ -20,3 +20,16 @@ observability:
     request-log: false
   pprof:
     enable: false
+api-keys:
+  claude:
+    - name: mimo
+      base-url: https://token-plan-sgp.xiaomimimo.com/anthropic
+      keys:
+        - api-key: "__MIMO_CODE_API_KEY__"
+      models:
+        - name: mimo-v2.6-pro
+          is-compat: true
+        - name: mimo-v2.6-pro[1m]
+          is-compat: true
+        - name: mimo-v2.6-flash
+          is-compat: true

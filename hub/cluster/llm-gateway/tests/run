@@ -21,6 +21,7 @@ trap 'exit 129' HUP
 
 # Keep this exact renderer: these tests check the objects Flux will consume.
 kubectl kustomize hub/cluster/llm-gateway > "$render"
+PYTHONDONTWRITEBYTECODE=1 "$python" -B "$test_dir/initializer.py"
 PYTHONDONTWRITEBYTECODE=1 "$python" -B "$test_dir/static.py" "$render"
 if "$containers"; then
     PYTHONDONTWRITEBYTECODE=1 "$python" -B "$test_dir/containers.py" "$render"

@@ -182,6 +182,46 @@ class SecurityContract(unittest.TestCase):
         self.assertIs(cli["observability"]["pprof"]["enable"], False)
         self.assertFalse(cli.get("access", {}).get("api-keys"))
 
+    def test_mimo_provider_uses_private_static_credential(self):
+        pod = resource(OBJECTS, "Deployment", "cliproxyapi")["spec"]["template"]["spec"]
+        prepare = pod["initContainers"][0]
+        env = {entry["name"]: entry for entry in prepare["env"]}
+        self.assertIn("MIMO_CODE_API_KEY", env)
+        self.assertEqual(env["MIMO_CODE_API_KEY"]["valueFrom"]["secretKeyRef"], {
+            "name": "mimo-credentials", "key": "MIMO_CODE_API_KEY",
+        })
+        self.assertEqual(sum(entry["name"] == "MIMO_CODE_API_KEY" for entry in prepare["env"]), 1)
+        for deployment in (obj for obj in OBJECTS if obj["kind"] == "Deployment"):
+            spec = deployment["spec"]["template"]["spec"]
+            for container in spec["containers"] + spec.get("initContainers", []):
+                for source in container.get("envFrom", []):
+                    self.assertNotEqual(source.get("secretRef", {}).get("name"), "mimo-credentials")
+                if container is not prepare:
+                    for entry in container.get("env", []):
+                        self.assertNotEqual(entry["name"], "MIMO_CODE_API_KEY")
+                        self.assertNotEqual(entry.get("valueFrom", {}).get("secretKeyRef", {}).get("name"), "mimo-credentials")
+            for volume in spec["volumes"]:
+                self.assertNotEqual(volume.get("secret", {}).get("secretName"), "mimo-credentials")
+        runtime = next(volume for volume in pod["volumes"] if volume["name"] == "runtime")
+        self.assertEqual(runtime["emptyDir"], {"medium": "Memory"})
+        template = config_data(OBJECTS, "config.yaml")
+        self.assertEqual(template.count("__MIMO_CODE_API_KEY__"), 1)
+        self.assertIn('api-key: "__MIMO_CODE_API_KEY__"', template)
+        cli = yaml.safe_load(template)
+        self.assertEqual(cli["api-keys"]["claude"], [{
+            "name": "mimo",
+            "base-url": "https://token-plan-sgp.xiaomimimo.com/anthropic",
+            "keys": [{"api-key": "__MIMO_CODE_API_KEY__"}],
+            "models": [
+                {"name": "mimo-v2.6-pro", "is-compat": True},
+                {"name": "mimo-v2.6-pro[1m]", "is-compat": True},
+                {"name": "mimo-v2.6-flash", "is-compat": True},
+            ],
+        }])
+        secret = resource(OBJECTS, "Secret", "mimo-credentials")
+        self.assertTrue(secret["stringData"]["MIMO_CODE_API_KEY"].startswith("ENC[AES256_GCM,"))
+        self.assertIn("sops", secret)
+
     def test_public_route_is_an_exact_allowlist(self):
         routes = [obj for obj in OBJECTS if obj["kind"] == "HTTPRoute"]
         self.assertEqual(len(routes), 1)

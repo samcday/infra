@@ -138,27 +138,55 @@ def cli_checks(docker, objects, root):
     runtime = writable_dir(root, "cli-runtime")
     auth = writable_dir(root, "cli-auth")
     mounts = [(source, "/config", True), (runtime, "/runtime", False)]
-    for index, invalid in enumerate(["", "space key", "colon:key", 'quote"key', "line\nkey"]):
-        docker.env["CLIPROXY_API_KEY"] = invalid
-        name = docker.run(
-            "invalid-" + str(index), CLI_IMAGE, ["/bin/sh", "/config/prepare-config.sh"],
-            mounts=mounts, env=["CLIPROXY_API_KEY"], network="none",
-        )
-        code = docker.command("wait", name).stdout.strip()
-        require(code == "1", "unsafe key was not rejected by the validation script")
-        logs = docker.command("logs", name)
-        require("must be a nonempty URL-safe token" in logs.stderr, "key validation did not execute")
-        require(not (runtime / "config.yaml").exists(), "invalid key wrote runtime config")
-    docker.env["CLIPROXY_API_KEY"] = FAKE_PROXY_KEY
+    keys = {"CLIPROXY_API_KEY": FAKE_PROXY_KEY, "MIMO_CODE_API_KEY": FAKE_MIMO_KEY}
+    for variable, invalid_keys in [
+        ("CLIPROXY_API_KEY", [None, "", "space key", "colon:key", 'quote"key', "line\nkey"]),
+        ("MIMO_CODE_API_KEY", [None, "", "space key", 'quote"key', "back\\slash", "line\nkey",
+                               "tab\tkey", "control\x01key", "delete\x7fkey", "non-ascii-é",
+                               "__MIMO_CODE_API_KEY__", "@MIMO_CODE_API_KEY@",
+                               "@mimo-api-key@", "@@MIMO_CODE_API_KEY@@"]),
+    ]:
+        for index, invalid in enumerate(invalid_keys):
+            docker.env.update(keys)
+            if invalid is None:
+                docker.env.pop(variable)
+            else:
+                docker.env[variable] = invalid
+            name = docker.run(
+                "invalid-" + variable.lower() + "-" + str(index), CLI_IMAGE,
+                ["/bin/sh", "/config/prepare-config.sh"],
+                mounts=mounts, env=keys, network="none",
+            )
+            code = docker.command("wait", name).stdout.strip()
+            require(code == "1", "unsafe key was not rejected by the validation script")
+            logs = docker.command("logs", name)
+            require(variable + " must be " in logs.stderr, "key validation did not execute")
+            require(not logs.stdout, "key validation wrote unexpected stdout")
+            if invalid:
+                require(invalid not in logs.stderr, "key validation logged its input")
+            require(not (runtime / "config.yaml").exists(), "invalid key wrote runtime config")
+    docker.env.update(keys)
     name = docker.run(
         "prepare", CLI_IMAGE, ["/bin/sh", "/config/prepare-config.sh"],
-        mounts=mounts, env=["CLIPROXY_API_KEY"], network="none",
+        mounts=mounts, env=keys, network="none",
     )
     require(docker.command("wait", name).stdout.strip() == "0", "valid fake key failed preparation")
-    generated = yaml.safe_load((runtime / "config.yaml").read_text())
+    rendered = (runtime / "config.yaml").read_text()
+    require("__MIMO_CODE_API_KEY__" not in rendered, "MiMo placeholder was not resolved")
+    generated = yaml.safe_load(rendered)
     require(generated.pop("access") == {"api-keys": [FAKE_PROXY_KEY]}, "incorrect injected access key")
-    require(generated == yaml.safe_load((source / "config.yaml").read_text()), "preparation changed base config")
-    require((runtime / "config.yaml").stat().st_mode & 0o077 == 0, "runtime key file not private")
+    expected = yaml.safe_load((source / "config.yaml").read_text().replace("__MIMO_CODE_API_KEY__", FAKE_MIMO_KEY))
+    require(generated == expected, "preparation changed base config or injected incorrect MiMo key")
+    require((runtime / "config.yaml").stat().st_mode & 0o777 == 0o600, "runtime key file not mode 0600")
+    # Retry with an existing over-permissive file in the actual pinned image.
+    (runtime / "config.yaml").chmod(0o644)
+    retry = docker.run(
+        "prepare-retry", CLI_IMAGE, ["/bin/sh", "/config/prepare-config.sh"],
+        mounts=mounts, env=keys, network="none",
+    )
+    require(docker.command("wait", retry).stdout.strip() == "0", "config preparation retry failed")
+    require((runtime / "config.yaml").read_text() == rendered, "retry changed generated config")
+    require((runtime / "config.yaml").stat().st_mode & 0o777 == 0o600, "retry did not restore mode 0600")
     pod = resource(objects, "Deployment", "cliproxyapi")["spec"]["template"]["spec"]
     container = pod["containers"][0]
     name = docker.run(
@@ -170,7 +198,11 @@ def cli_checks(docker, objects, root):
     wait_ready(base, "/v1/models", valid)
     expect(base, "/v1/models", 401)
     expect(base, "/v1/models", 401, headers={"Authorization": "Bearer fake-invalid"})
-    expect(base, "/v1/models", 200, headers=valid)
+    models = expect(base, "/v1/models", 200, headers=valid)
+    require(len(models["data"]) == 3, "pinned CLI image registered an unexpected number of models")
+    require({model["id"] for model in models["data"]} == {
+        "mimo-v2.6-pro", "mimo-v2.6-pro[1m]", "mimo-v2.6-flash",
+    }, "pinned CLI image did not register exactly the three configured MiMo models")
     expect(base, "/v0/management/config", 404, headers=valid)
     expect(base, "/management.html", 404, headers=valid)
     expect(base, "/", 200)
@@ -181,7 +213,7 @@ def cli_checks(docker, objects, root):
     root_options = next(line.split()[3] for line in mounts if line.split()[1] == "/")
     require("ro" in root_options.split(","), "CLI root mount is not read-only")
     require(docker.command("exec", name, "touch", "/root-write-test", check=False).returncode != 0, "CLI root filesystem writable")
-    print("PASS CLI image: key validation/auth, disabled management, loopback probes, UID1000 and read-only root")
+    print("PASS CLI image: both key validations, MiMo substitution/model registration, auth, disabled management, loopback probes, UID1000 and read-only root")
 
 
 def bifrost_checks(docker, objects, root):
@@ -341,8 +373,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, interrupted)
     objects = load_render(sys.argv[1])
     FAKE_PROXY_KEY = "test-only-" + secrets.token_urlsafe(24)
+    # Cover punctuation beyond URL-safe/base64 without using a real token.
+    FAKE_MIMO_KEY = "test-only-" + secrets.token_urlsafe(24) + "".join(
+        chr(value) for value in range(33, 127) if chr(value) not in '\\"'
+    )
     docker = Docker({
         "CLIPROXY_API_KEY": FAKE_PROXY_KEY,
+        "MIMO_CODE_API_KEY": FAKE_MIMO_KEY,
         "BIFROST_ADMIN_PASSWORD": "test-only-" + secrets.token_urlsafe(24),
         "BIFROST_ENCRYPTION_KEY": secrets.token_hex(16),
     })

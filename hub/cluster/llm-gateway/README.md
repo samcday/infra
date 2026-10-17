@@ -14,8 +14,9 @@ personal machines / friends / a capped Hermes client
 ```
 
 This is an inference deployment, not a completed Discord enrollment service.
-No provider login or user virtual key is seeded by these manifests. Do not
-advertise it as ready for friends until the commissioning checks below pass.
+MiMo is configured to use a separately encrypted static subscription key; no
+OAuth login or user virtual key is seeded by these manifests. Do not advertise
+it as ready for friends until the commissioning checks below pass.
 
 ## Boundaries and ownership
 
@@ -31,7 +32,7 @@ advertise it as ready for friends until the commissioning checks below pass.
   rejection cannot undo a key already sent over plaintext HTTP. HSTS is
   supplementary, not an API-client security boundary.
 - Public authentication is a Bifrost virtual key, never the internal
-  CLIProxyAPI key, Bifrost admin password, or provider OAuth token.
+  CLIProxyAPI key, Bifrost admin password, or provider subscription/OAuth token.
 - CLIProxyAPI accepts only the generated internal key. Its Service has an
   ingress NetworkPolicy permitting only Bifrost pods in this namespace.
 - CLIProxyAPI health probes use the image's `bash` TCP support and `timeout`
@@ -44,7 +45,8 @@ advertise it as ready for friends until the commissioning checks below pass.
   live quota counters; do not scale this Deployment to get availability.
 - The auth PVC contains current, rotating provider credentials. The Bifrost
   PVC contains configuration, issued keys, and usage state. Treat both as
-  sensitive; persistence is **not** a backup plan.
+  sensitive; persistence is **not** a backup plan. MiMo's static key is not
+  stored on the auth PVC; existing OAuth state and its mount remain unchanged.
 - Request-content logging is disabled. CLIProxyAPI commercial mode also
   disables error-request payload capture, which `request-log: false` alone
   does not disable. Cloudflare still terminates TLS and processes traffic.
@@ -55,10 +57,18 @@ advertise it as ready for friends until the commissioning checks below pass.
   also have fixed protocol-specific headers; add session-header forwarding
   only when the relevant client/provider workflow has been tested.
 
-The small init script adds the internal key to CLIProxyAPI's config in a
-memory-backed volume. CLIProxyAPI v8 does not expand arbitrary environment
-references in YAML. All non-secret settings remain reviewable in
-`cliproxyapi-config.yaml`; the shared key must use a URL-safe alphabet.
+The small init script substitutes MiMo's static key and adds the internal
+access key to `/runtime/config.yaml`, mode `0600`, in a memory-backed volume.
+CLIProxyAPI v8 does not expand arbitrary environment references in YAML.
+All non-secret settings remain reviewable in `cliproxyapi-config.yaml`.
+The shared `CLIPROXY_API_KEY` retains its URL-safe alphabet. MiMo's key may
+contain any nonempty printable ASCII graph characters except double quotes
+and backslashes: whitespace, controls and non-ASCII are rejected. Validation
+happens before writing config; substitution requires exactly one explicitly
+double-quoted `__MIMO_CODE_API_KEY__` placeholder and leaves none unresolved.
+Environment values containing that placeholder or `@@...@@` template markers,
+and values wholly delimited as `@...@`, are rejected as well. Token text is
+never evaluated as shell code or printed to logs.
 
 ## Configuration and state
 
@@ -113,6 +123,48 @@ Keep these values encrypted. Missing Secret keys must prevent startup; never
 substitute example passwords or enable keyless operation. Keep the encryption
 key with any Bifrost backup and do not rotate it without the upstream migration
 procedure. Secret environment changes require a controlled workload restart.
+
+### MiMo static subscription
+
+Required dedicated Secret `mimo-credentials`, from
+`mimo-credentials.sops.yaml`, contains `MIMO_CODE_API_KEY`. It is SOPS-encrypted
+for the hub and SSH-recovery recipients, separate from the shared gateway
+credentials. The required `secretKeyRef` exposes it **only** to CLIProxyAPI's
+`prepare-config` init container, not to Bifrost or the main container's
+environment. The main process reads the rendered memory-backed config.
+Never put the plaintext key in the ConfigMap or the auth PVC.
+Before rollout, the owner must privately verify that the encrypted entry
+resolves to the actual runtime subscription credential, not a config-template
+placeholder. Local tests check encrypted structure and fake-key behavior;
+they cannot establish the encrypted credential's provenance or validity.
+
+The provider belongs in CLIProxyAPI's native Anthropic-compatible
+`api-keys.claude` configuration, named `mimo`, with base URL
+`https://token-plan-sgp.xiaomimimo.com/anthropic`. Each model has
+`is-compat: true`. It is not a new Bifrost provider or an OpenAI base-URL
+override. Use the existing Anthropic provider for client model IDs:
+
+| CLIProxyAPI model | Bifrost client model |
+| --- | --- |
+| `mimo-v2.6-pro` | `cliproxy-anthropic/mimo-v2.6-pro` |
+| `mimo-v2.6-pro[1m]` | `cliproxy-anthropic/mimo-v2.6-pro[1m]` |
+| `mimo-v2.6-flash` | `cliproxy-anthropic/mimo-v2.6-flash` |
+
+Preserve the literal `[1m]` suffix. No virtual keys or per-person grants are
+created by this change. Grant only explicitly approved models; existing
+wildcard grants can already see newly registered models. Availability and
+entitlements still require an approved authenticated inference check; local
+model registration alone does not prove them.
+
+MiMo needs no OAuth login, refresh-state migration or management endpoint.
+Its static key can be reused without moving or stopping rotating OAuth state;
+all clients using that subscription still share its upstream limits. Keep
+other providers' onboarding and auth PVC unchanged. After an approved Secret
+rotation, restart the CLIProxyAPI workload in a controlled manner so the init
+container rebuilds the config. Updating the Secret alone does not rerun init
+or refresh its environment. ConfigMap/script changes do change the generated
+ConfigMap name and pod template; no Bifrost restart is needed solely for a
+MiMo key change. Neither case is authorization to mutate the live cluster.
 
 ## Budget semantics
 
@@ -208,15 +260,17 @@ sh hub/cluster/llm-gateway/tests/run --containers
 ```
 
 The first command renders with `kubectl kustomize` and checks the security
-invariants without contacting a cluster. Container checks additionally need
-Docker, the pinned gateway images, and a local Python-capable fixture image.
+invariants and executable initializer tests without contacting a cluster.
+Container checks additionally need Docker, the pinned gateway images, and a
+local Python-capable fixture image.
 The runner does not pull images; prepare them deliberately. Its default
 fixture image is `python:3.13-alpine`; an existing compatible image can be
 selected with `LLM_GATEWAY_TEST_PYTHON_IMAGE`.
 
 Container tests use fake credentials, synthetic pricing/model-parameter
 catalogs, a deterministic mock provider, and an internal Docker network with
-no published ports. They exercise the pinned application binaries, not real
+no published ports. They verify the pinned CLI image registers the three MiMo
+models with a fake key, and exercise the existing protocol mocks, not real
 provider accounts. They do not prove Cilium policy enforcement, Cloudflare
 TLS/streaming, live PVC ownership, or subscription credential validity.
 
@@ -228,18 +282,20 @@ or otherwise mutate the live cluster directly.
 
 1. Review the hostname, pinned images, Secret handling, route allowlist, and
    persistence. Render with `kubectl kustomize hub/cluster/llm-gateway`.
-2. Review the included SOPS-encrypted Secret and confirm the hub can decrypt
-   it before enabling the Flux Kustomization. Retrieve the admin password
+2. Review both included SOPS-encrypted Secrets and confirm the hub can decrypt
+   them before enabling the Flux Kustomization. Retrieve the admin password
    privately with SOPS when needed; never paste it into a transcript.
 3. After approved landing, check the Flux revision and Deployment readiness
    on context `hub`, namespace `llm-gateway`.
 4. Access Bifrost administration only through an owner-controlled local
    forwarding path, with its separate admin password. It must not be
    available at the public inference hostname.
-5. Agree and perform the provider-auth cutover separately. Stop old instances
-   that share a rotating refresh credential before migrating its latest state
-   or doing a fresh hub login. Do not copy a stale login snapshot to several
-   running instances. CLIProxyAPI management is disabled; any temporary
+5. For MiMo, verify the dedicated static-key Secret and controlled
+   CLIProxyAPI restart; no OAuth cutover is needed. For OAuth-backed providers,
+   agree and perform the auth cutover separately. Stop old instances that
+   share a rotating refresh credential before migrating its latest state or
+   doing a fresh hub login. Do not copy a stale login snapshot to several
+   running instances. CLIProxyAPI management remains disabled; any temporary
    onboarding mechanism needs separate approval and must remain private.
 6. Create one tightly capped owner test key. Verify models, a streamed
    response and a tool call through the **public HTTPS endpoint**, plus
