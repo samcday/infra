@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: litellm
+---
+# Used by both proxy and pre-install migration Job; no Kubernetes API access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm
+automountServiceAccountToken: false
+---
+# Kubernetes/Sam may issue a short-lived credential for this external bot identity.
+# It is not mounted into the application and has no general cluster write access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-operator
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-operator
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [litellm-credentials]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods, services, events]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/portforward]
+    verbs: [create]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    resourceNames: [litellm]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-operator
+subjects:
+  - kind: ServiceAccount
+    name: litellm-operator
+    namespace: litellm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-operator
