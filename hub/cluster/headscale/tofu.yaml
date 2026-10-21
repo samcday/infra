@@ -39,6 +39,7 @@ rules:
     - edge-au-east-apiserver-ts-auth
     - edge-au-east-node-ts-auth
     - hub-apiserver-ts-auth
+    - services-subnet-router-ts-auth
     - wasmcloud-nats-ts-auth
   verbs: [patch, update, get]
 ---

@@ -10,6 +10,7 @@ resources:
   - ../../../.kustomize-config
   - helm-release.yaml
   - hub-apiserver-tailnet.yaml
+  - subnet-router.yaml
   - noise-privkey.yaml
   - tofu.yaml
   - vpas.yaml
