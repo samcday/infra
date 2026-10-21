@@ -159,6 +159,15 @@ spec:
           - name: rook-ceph
         path: hub/cluster/llm-gateway
         wait: true
+    litellm:
+      spec:
+        dependsOn:
+          - name: ingress-nginx
+          - name: rook-ceph
+          - name: llm-gateway
+        path: hub/cluster/litellm
+        wait: true
+        timeout: 10m
     monitoring:
       spec:
         dependsOn:

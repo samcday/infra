@@ -1,0 +1,147 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: litellm
+spec:
+  type: oci
+  url: oci://ghcr.io/berriai
+  interval: 24h
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: litellm
+spec:
+  interval: 1h
+  timeout: 10m
+  chart:
+    spec:
+      chart: litellm-helm
+      version: 1.105.1
+      sourceRef:
+        kind: HelmRepository
+        name: litellm
+  driftDetection:
+    mode: enabled
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 1
+  values:
+    fullnameOverride: litellm
+    image:
+      repository: ghcr.io/berriai/litellm-non_root
+      tag: v1.105.1@sha256:aff05d5e4bc3824e079e8461e85d64feb6c833612af2fe1717a1aa8483b46da4
+      pullPolicy: IfNotPresent
+    # One process: no Redis/HA claim; avoid overlapping in-memory limit state.
+    replicaCount: 1
+    numWorkers: 1
+    strategy:
+      type: Recreate
+    serviceAccount:
+      create: false
+      name: litellm
+      automount: false
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+      # The supported Prisma startup/migration path needs its package/cache dirs.
+      readOnlyRootFilesystem: false
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 4Gi
+    service:
+      type: ClusterIP
+      port: 4000
+    ingress:
+      enabled: false
+    masterkeySecretName: litellm-credentials
+    masterkeySecretKey: masterkey
+    db:
+      useExisting: true
+      deployStandalone: false
+      endpoint: litellm-postgres
+      database: litellm
+      secret:
+        name: litellm-credentials
+        usernameKey: username
+        passwordKey: password
+    redis:
+      enabled: false
+    migrationJob:
+      enabled: true
+      activeDeadlineSeconds: 600
+      hooks:
+        argocd:
+          enabled: false
+        helm:
+          enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          memory: 2Gi
+    logLevel: WARNING
+    envVars:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      # Never enable DB model writes alongside Git-owned model_list entries.
+      STORE_MODEL_IN_DB: "False"
+    extraEnvVars:
+      - name: LITELLM_SALT_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-credentials
+            key: salt
+      - name: CLIPROXY_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-credentials
+            key: CLIPROXY_API_KEY
+    proxy_config:
+      model_list:
+        - model_name: gpt-6-astra
+          litellm_params:
+            model: openai/gpt-6-astra
+            api_base: http://cliproxyapi.llm-gateway.svc.cluster.local:8317/v1
+            api_key: os.environ/CLIPROXY_API_KEY
+          model_info:
+            mode: responses
+            # Normalized usage credits, NOT a charge or subscription balance.
+            input_cost_per_token: 0.000001
+            output_cost_per_token: 0.000001
+            cache_read_input_token_cost: 0.000001
+            cache_creation_input_token_cost: 0.000001
+        - model_name: claude-haiku-5-5
+          litellm_params:
+            model: anthropic/claude-haiku-5-5
+            api_base: http://cliproxyapi.llm-gateway.svc.cluster.local:8317
+            api_key: os.environ/CLIPROXY_API_KEY
+          model_info:
+            input_cost_per_token: 0.000001
+            output_cost_per_token: 0.000001
+            cache_read_input_token_cost: 0.000001
+            cache_creation_input_token_cost: 0.000001
+      general_settings:
+        master_key: os.environ/PROXY_MASTER_KEY
+        store_prompts_in_spend_logs: false
+      litellm_settings:
+        telemetry: false
+        turn_off_message_logging: true
+      router_settings:
+        num_retries: 0
+        fallbacks: []
