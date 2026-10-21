@@ -103,6 +103,25 @@ resource "headscale_pre_auth_key" "hub_apiserver_stable" {
   acl_tags       = ["tag:hub-apiserver"]
 }
 
+resource "headscale_pre_auth_key" "services_subnet_router" {
+  user           = headscale_user.hub.id
+  time_to_expire = "520w"
+  reusable       = true
+  ephemeral      = false
+  acl_tags       = ["tag:hub-services-subnet-router"]
+}
+
+resource "kubernetes_secret" "services_subnet_router_preauth" {
+  metadata {
+    name      = "services-subnet-router-ts-auth"
+    namespace = "headscale"
+  }
+
+  data = {
+    authkey = headscale_pre_auth_key.services_subnet_router.key
+  }
+}
+
 resource "kubernetes_secret" "cloud-cluster-node-preauth" {
   metadata {
     name      = "node-ts-auth"

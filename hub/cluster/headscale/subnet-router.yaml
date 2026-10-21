@@ -1,0 +1,165 @@
+# Services only: never restore the hub LAN, Pod or ClusterIP advertisements.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: services-subnet-router
+spec:
+  serviceName: services-subnet-router
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: services-subnet-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: services-subnet-router
+    spec:
+      serviceAccountName: services-subnet-router
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: services-subnet-router
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.104.1@sha256:87c55d6be56ad85b3d8bceca5f87f73de288c609131460dd1be1874c250cc41d
+          env:
+            - name: TS_EXTRA_ARGS
+              value: --login-server=http://headscale-generic.headscale.svc.cluster.hub.internal --accept-routes=false
+            - name: TS_ROUTES
+              value: 10.0.2.0/24
+            # Userspace routing leaves host interfaces, routes and firewall alone.
+            - name: TS_USERSPACE
+              value: "true"
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "true"
+            - name: TS_SOCKET
+              value: /tmp/tailscaled.sock
+            - name: TS_STATE_DIR
+              value: /tmp/tailscale
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_LOCAL_ADDR_PORT
+              value: 0.0.0.0:9002
+            - name: TS_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TS_KUBE_SECRET
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: services-subnet-router-ts-auth
+                  key: authkey
+          ports:
+            - name: health
+              containerPort: 9002
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: services-subnet-router
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: services-subnet-router
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: services-subnet-router
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: services-subnet-router
+  ports:
+    - name: health
+      port: 9002
+      targetPort: 9002
+---
+# Use fresh identities, not the retained legacy subnet-router-{0,1} Secrets.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: services-subnet-router-0
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: services-subnet-router-1
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: services-subnet-router
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: services-subnet-router
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [services-subnet-router-0, services-subnet-router-1]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: services-subnet-router
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: services-subnet-router
+subjects:
+  - kind: ServiceAccount
+    name: services-subnet-router
