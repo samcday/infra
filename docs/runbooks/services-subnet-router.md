@@ -30,8 +30,8 @@ advertisements.
 - Existing ACL access is unchanged: `sam@` already has `*:*`. This is private
   network access, **not** a security boundary against agents running on an
   already-authorized device. Tagged infrastructure gains no new traffic grants.
-- Vaultwarden DNS, TLS, Gateway/HTTPRoute, and Cloudflare configuration are
-  unchanged. The service remains on its private Gateway.
+- The subnet router does not change service DNS, TLS, Gateway/HTTPRoute, or
+  Cloudflare configuration.
 
 ## Verify after an approved GitOps rollout
 
@@ -49,13 +49,13 @@ Merging into the watched branch allows the existing Flux/tofu-controller flow
    Inspect the `headscale nodes list-routes` output using the deployed release.
 4. On a Linux client, verify it accepts subnet routes (`tailscale debug prefs`,
    `RouteAll: true`). Inspect `tailscale status --json` and `ip -4 route get
-   10.0.2.10`; the selected route should use Tailscale, not the local Wi-Fi
+   10.0.2.4`; the selected route should use Tailscale, not the local Wi-Fi
    gateway. Do not blanket-enable route acceptance on infrastructure nodes.
 5. From outside the hub LAN, test the actual TLS endpoint:
 
    ```sh
    curl --noproxy '*' --fail --show-error --connect-timeout 5 --max-time 15 \
-     https://vaultwarden.samcday.com/alive
+     https://grafana.hub.samcday.com/api/health
    ```
 
    Expect HTTP success with normal certificate verification. Confirm DNS still
