@@ -52,6 +52,8 @@ spec:
     cloud-cluster:
       spec:
         path: hub/cluster/cloud-cluster
+        # Keep cloud and edge paused while their live resources are deleted.
+        suspend: true
     dex:
       spec:
         dependsOn: [name: ingress-nginx]
