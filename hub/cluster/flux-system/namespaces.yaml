@@ -20,7 +20,6 @@ spec:
       kind: Namespace
     bootie:
     cert-manager:
-    cloud-cluster:
     dex:
     etcdetcetc:
     external-dns:

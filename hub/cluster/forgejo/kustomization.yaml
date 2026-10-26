@@ -7,6 +7,3 @@ resources:
   - dex-oauth-secret.yaml
   - forgejo.yaml
   - login-redirect.yaml
-  - runner-sync-rbac.yaml
-  - runner-sync-config.yaml
-  - runner-sync-cronjob.yaml

@@ -40,61 +40,6 @@ resource "headscale_user" "sam" {
   name = "sam"
 }
 
-resource "headscale_pre_auth_key" "cloud_cluster_apiserver_stable" {
-  user           = headscale_user.cloud.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:cloud-cluster-apiserver"]
-}
-
-resource "headscale_pre_auth_key" "cloud_cluster_metrics_write" {
-  user           = headscale_user.cloud.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:cloud-cluster-metrics-write"]
-}
-
-resource "headscale_pre_auth_key" "cloud-cluster-nodes" {
-  user           = headscale_user.cloud.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:cloud-cluster-node"]
-}
-
-resource "headscale_pre_auth_key" "cloud-cluster" {
-  user           = headscale_user.cloud.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = true
-}
-
-resource "headscale_pre_auth_key" "cloud-cluster-wasmcloud-nats" {
-  user           = headscale_user.cloud.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:cloud-cluster-wasmcloud-nats"]
-}
-
-resource "headscale_pre_auth_key" "edge_au_east_apiserver" {
-  user           = headscale_user.edge_au_east.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = false
-  acl_tags       = ["tag:edge-au-east-apiserver"]
-}
-
-resource "headscale_pre_auth_key" "edge_au_east_nodes" {
-  user           = headscale_user.edge_au_east.id
-  time_to_expire = "520w"
-  reusable       = true
-  ephemeral      = true
-  acl_tags       = ["tag:edge-au-east-node"]
-}
-
 resource "headscale_pre_auth_key" "hub_apiserver_stable" {
   user           = headscale_user.hub.id
   time_to_expire = "520w"
@@ -119,72 +64,6 @@ resource "kubernetes_secret" "services_subnet_router_preauth" {
 
   data = {
     authkey = headscale_pre_auth_key.services_subnet_router.key
-  }
-}
-
-resource "kubernetes_secret" "cloud-cluster-node-preauth" {
-  metadata {
-    name      = "node-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.cloud-cluster-nodes.key
-  }
-}
-
-resource "kubernetes_secret" "cloud-cluster-apiserver-preauth" {
-  metadata {
-    name      = "apiserver-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.cloud_cluster_apiserver_stable.key
-  }
-}
-
-resource "kubernetes_secret" "cloud_cluster_metrics_write_preauth" {
-  metadata {
-    name      = "metrics-write-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.cloud_cluster_metrics_write.key
-  }
-}
-
-resource "kubernetes_secret" "cloud-cluster-wasmcloud-nats-preauth" {
-  metadata {
-    name      = "wasmcloud-nats-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.cloud-cluster-wasmcloud-nats.key
-  }
-}
-
-resource "kubernetes_secret" "edge_au_east_apiserver_preauth" {
-  metadata {
-    name      = "edge-au-east-apiserver-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    authkey = headscale_pre_auth_key.edge_au_east_apiserver.key
-  }
-}
-
-resource "kubernetes_secret" "edge_au_east_node_preauth" {
-  metadata {
-    name      = "edge-au-east-node-ts-auth"
-    namespace = "cloud-cluster"
-  }
-
-  data = {
-    key = headscale_pre_auth_key.edge_au_east_nodes.key
   }
 }
 
