@@ -128,27 +128,6 @@ spec:
             namespace: kubevirt
         path: hub/cluster/kubevirt/instance
         timeout: 15m
-    kubevirt-canary:
-      spec:
-        dependsOn:
-          - name: cdi
-          - name: kubevirt
-          - name: rook-ceph
-        healthCheckExprs:
-          - apiVersion: kubevirt.io/v1
-            kind: VirtualMachine
-            current: has(status.ready) && status.ready
-            failed: >-
-              has(status.printableStatus) && status.printableStatus in
-              ['CrashLoopBackOff', 'ErrorUnschedulable', 'ErrImagePull',
-              'ImagePullBackOff', 'ErrorPvcNotFound', 'DataVolumeError']
-        healthChecks:
-          - apiVersion: kubevirt.io/v1
-            kind: VirtualMachine
-            name: arch-canary
-            namespace: kubevirt-canary
-        path: hub/cluster/kubevirt/canary
-        timeout: 30m
     llm-gateway:
       spec:
         dependsOn:
