@@ -7,7 +7,6 @@ secretGenerator:
       - control-plane.yaml
       - etcd.yaml
       - install.yaml
-      - kubevirt.yaml
       - worker.yaml
     options:
       disableNameSuffixHash: true

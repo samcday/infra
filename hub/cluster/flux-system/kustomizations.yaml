@@ -82,16 +82,6 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/kube-system
-    cdi-operator:
-      spec:
-        path: hub/cluster/kubevirt/cdi-operator
-        timeout: 10m
-        wait: true
-    kubevirt-operator:
-      spec:
-        path: hub/cluster/kubevirt/operator
-        timeout: 10m
-        wait: true
     llm-gateway:
       spec:
         dependsOn:
