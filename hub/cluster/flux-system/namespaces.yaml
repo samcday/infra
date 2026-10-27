@@ -23,7 +23,6 @@ spec:
     dex:
     etcdetcetc:
     external-dns:
-    forgejo:
     headscale:
     ingress-nginx:
     llm-gateway:

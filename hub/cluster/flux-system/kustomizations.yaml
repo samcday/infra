@@ -61,13 +61,6 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/external-dns
-    forgejo:
-      spec:
-        dependsOn:
-          - name: dex
-          - name: ingress-nginx
-          - name: rook-ceph
-        path: hub/cluster/forgejo
     global:
       spec:
         path: hub/cluster/global
