@@ -75,13 +75,6 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/kube-system
-    llm-gateway:
-      spec:
-        dependsOn:
-          - name: ingress-nginx
-          - name: rook-ceph
-        path: hub/cluster/llm-gateway
-        wait: true
     monitoring:
       spec:
         dependsOn:
