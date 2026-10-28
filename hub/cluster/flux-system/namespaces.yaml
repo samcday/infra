@@ -20,7 +20,6 @@ spec:
       kind: Namespace
     bootie:
     cert-manager:
-    dex:
     etcdetcetc:
     external-dns:
     headscale:
