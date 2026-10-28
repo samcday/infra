@@ -49,10 +49,6 @@ spec:
       spec:
         dependsOn: [name: gateway-api]
         path: hub/cluster/cert-manager
-    dex:
-      spec:
-        dependsOn: [name: ingress-nginx]
-        path: hub/cluster/dex
     etcdetcetc:
       spec:
         dependsOn: [name: cert-manager]
